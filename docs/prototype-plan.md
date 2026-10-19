@@ -4,131 +4,216 @@
 
 Decide the orchestration layer of the k8s-native software factory on
 evidence, not argument: build **two prototypes of the process manager** over
-a shared facade, evaluate them side by side, and record the verdict in a
-final ADR (0007).
+a shared facade, evaluate them side by side with a fixed rubric, and record
+the verdict in ADR-0007.
 
 **Build order: Prototype A (Temporal) first**, then Prototype B (own
 event-driven process manager), reusing everything around the process manager
 unchanged.
 
-The architectural constraint that makes this affordable: the process manager
-is the *only* box that differs. Adapters, the domain event store, the outbox,
-and the SSE egress are identical in both prototypes — that work is invested
-once and survives the verdict either way.
-
 ```
-                 Shared (identical in A and B)
- ─────────────────────────────────────────────────────────────
- POST /v1/runs ──► api-gateway ──► process manager ──► Postgres
-                                        │            event_log (+outbox)
-                                        │                  │
- GET /v1/runs/{id}/events ◄── sse-gateway ◄── relay ◄──────┘
-                                        │
-                                 browser tracker page
-
-                 Variant
- ─────────────────────────────────────────────────────────────
- A: Temporal worker (workflow code, activities, signals)
- B: own process manager (state machine consuming domain events,
-    transition table, timers)
+                     Shared (must be identical, verified by e2e + diff)
+ ────────────────────────────────────────────────────────────────────────
+ POST /v1/runs ──► api-gateway ──► Postgres event_log (+ outbox, same tx)
+ POST /v1/runs/{id}/approval          │
+                                      │ (bridge consumes events,
+                                      │  feeds engine)      ┌ variant code
+                                      ▼                     ▼
+                             A: bridge → StartWorkflow / Signal
+                             B: process manager consumes directly
+                                      │
+ GET /v1/runs/{id}/events ◄── sse-gateway ◄── relay ◄── outbox
+                        │
+                 projection-builder ──► run_projection (snapshots)
+                        │
+                 browser tracker page
 ```
 
-## Evaluation criteria (both prototypes scored against these)
+## Facade purity rules (non-negotiable)
 
-1. **Loop ergonomics.** Improvement loop (rework on quality-gate failure,
-   bounded iterations): how naturally does it express? How painful is
-   changing logic while runs are in flight?
-2. **Signals.** Cancel / re-prioritize a running run from outside. How does
-   the signal path map onto our domain events?
-3. **Audit fit.** Cost of maintaining our domain event store alongside:
-   A pays a dual history (Temporal's + ours) by design; B has one history.
-   Measure how accidental or manageable the duplication feels in A.
-4. **Visibility vs. event tap.** Is the engine's query/visibility sufficient
-   for the tracking page, or do we serve the page from our event log
-   regardless? (Hypothesis: the latter — then Temporal's visibility adds no
-   unique value.)
-5. **Ops weight.** Real cost of running the variant on k8s: A = Temporal
-   server + its backing DB beside our Postgres; B = one more Go service.
-6. **Replaceability.** Effort estimate to swap the engine out in year two,
-   given the facade.
-7. **Implementation cost.** Actual engineer-days, measured, not estimated.
+These rules are what makes the comparison honest and the facade real. They
+apply to both variants.
+
+1. **Adapters write domain events only.** The api-gateway appends
+   `WorkflowRequested` / `WorkflowCancelled` / `ApprovalGranted` to the
+   event store and returns. It never calls the engine. Consequence: the
+   gateway is byte-identical across variants and the audit trail always
+   contains the trigger.
+2. **Engine inputs come from bridges.** Each variant ships a small
+   `bridge` component that consumes event-store facts and translates them
+   into engine inputs (A: `StartWorkflow`, signals; B: the process manager
+   consumes events directly, so the bridge is a no-op). This keeps engine
+   vocabulary out of adapters while allowing A to be event-fed.
+3. **The run id is minted at the gateway** (UUID). In A it doubles as the
+   Temporal workflow id; everywhere it is `correlationid`. No engine
+   generates identity.
+4. **The tracker page consumes domain events only** — never Temporal
+   query, never controller APIs. Temporal UI is a comparison datapoint,
+   not a component.
+5. **Both variants must pass the identical golden scenario producing the
+   identical event sequence**, asserted by a shared e2e harness
+   (`make e2e VARIANT=a|b`). The harness is written once, before the
+   variants, from the event contract below.
+
+Rule 2 makes the real difference between the variants measurable: A pays a
+bridge, B does not. If the bridge in A feels accidental-complexity-free and
+small, that is evidence for A; if it grows, that is evidence for B.
+
+## Golden scenario (fixed, shared)
+
+A single parameterized run exercises everything under evaluation:
+
+1. `POST /v1/runs {repo, iterations_to_pass: 1, approval: granted}` —
+   quality gate stub fails on iteration 1, passes on iteration ≥ 2
+   (parameterized, deterministic)
+2. build → test → `QualityGateEvaluated(fail)` → `ReworkRequested` →
+   build → test → `QualityGateEvaluated(pass)`
+3. **Approval gate** (human-in-the-loop): `ApprovalRequested` emitted; run
+   waits for `ApprovalGranted` (posted via the gateway) or times out after
+   60s. Exercises signals *and* timers in both variants.
+4. `WorkflowCompleted`
+
+Expected event sequence (the e2e contract, `iterations_to_pass=1`):
+
+```
+WorkflowRequested
+StageStarted(build, iter 1)      StageCompleted(build, iter 1)
+StageStarted(test, iter 1)       StageCompleted(test, iter 1)
+QualityGateEvaluated(iter 1, fail)
+ReworkRequested(iter 1 → 2)
+StageStarted(build, iter 2)      StageCompleted(build, iter 2)
+StageStarted(test, iter 2)       StageCompleted(test, iter 2)
+QualityGateEvaluated(iter 2, pass)
+ApprovalRequested
+ApprovalGranted
+WorkflowCompleted
+```
+
+Variations run by the same harness: approval timeout path (no grant →
+escalation/failure after 60s), cancel mid-run, `iterations_to_pass: 2`.
+
+## Evaluation rubric (fixed before build)
+
+Each criterion scored 1–5 per variant, every score citing evidence (phase
+log entry, commit, test run). Constraints must pass or the variant is out.
+
+| # | Criterion | Weight | Kind |
+|---|---|---|---|
+| 1 | Loop + approval ergonomics, versioning pain | 20% | tradeoff |
+| 2 | Signal path naturalness (cancel/approval as events) | 15% | tradeoff |
+| 3 | Audit fit (dual history vs. single) | 20% | **constraint: A must score ≥3** |
+| 4 | Visibility vs. event tap (does engine query add value?) | 5% | tradeoff |
+| 5 | Ops weight on k8s | 15% | tradeoff |
+| 6 | Replaceability estimate in year two | 15% | tradeoff |
+| 7 | Measured implementation effort | 10% | tradeoff |
+
+Verdict: weighted sum, but criteria 3 and 6 dominate — a variant cannot win
+by ergonomics what it loses in audit and lock-in. ADR-0007 must contain the
+filled matrix with evidence links.
 
 ## Scope
 
-### Shared, built once
-- Go services: `api-gateway`, `relay`, `sse-gateway`, tracker page
-- Postgres: `event_log` (append-only), `outbox`, `run_projection`
-- Event envelope (CloudEvents-conformant, see ADR-0001) and the eight
-  milestone-1 domain events
-- docker-compose for local dev; k8s manifests optional
+### Shared, built once (identical for A and B — verified by diff)
+- `api-gateway` (trigger, approval, cancel; appends events, mints run ids)
+- `relay` (outbox → LISTEN/NOTIFY fan-out), `sse-gateway` (snapshot +
+  deltas, `Last-Event-ID`, heartbeats), `projection-builder`, tracker page
+- Postgres DDL: `event_log` (append-only, `(run_id, seq)` unique — `seq`
+  gives SSE replay ordering), `outbox`, `run_projection`, `waiting_for` (B)
+- e2e harness asserting the event contract above
+- docker-compose: postgres + temporal dev server (`temporal server
+  start-dev` locally; full server + own DB deferred to k8s phase)
 
-### Prototype A (Temporal) — first
-- Temporal server (own DB) via docker-compose
-- Worker: workflow `FactoryWorkflow` with improvement loop, activities:
-  stub stages, quality gate, `emitEvent` (audit + outbox tx)
-- Cancel via Temporal signal
-- Temporal UI as a comparison datapoint (not the tracker page)
+### Variant A (Temporal) — built first
+- `worker`: workflow `FactoryWorkflow` (loop, approval wait via
+  signal + timer, cancel signal), activities: stub stages, quality gate
+  stub, `emitEvent` (event_log + outbox tx)
+- `bridge`: `WorkflowRequested` → StartWorkflow; `ApprovalGranted` /
+  `WorkflowCancelled` → signals
 
-### Prototype B (own process manager)
-- Event-driven state machine per run: consume event → load state →
-  transition function → write new events + outbox atomically
-- Timers via a `waiting_for` table + scanner (CronJob or long-poll loop)
-- Cancel is just a domain event the transition function handles
-- Crash resume free: state = fold of event log; dedup by event id
-- Iteration/loop logic in the transition table, executors stay acyclic
-  (ADR-0005)
+### Variant B (own process manager)
+- process manager: consume event → load run state (fold) → transition
+  table → write events + outbox atomically; loop, cancel, approval are
+  transition-table rows
+- timers: `waiting_for` table + scanner (CronJob or long-poll)
+- bridge: none (consumes directly)
 
-### Out (both prototypes)
-- Knative Eventing (publisher port is a direct Postgres writer; the port
-  keeps the swap cheap — ADR-0002)
+### Out (both variants)
+- Knative Eventing (publisher port writes Postgres directly — ADR-0002)
 - Slack / Jira adapters, RBAC, multi-tenancy
 - Real Tekton stages (stub sleeps)
 - Event schema migration machinery (payload version fields only)
 - Retention / partitioning of the event log
 
-## Event envelope (first cut, CloudEvents-conformant)
+## Phases, with acceptance criteria
 
-```
-type, source, id, time, subject,
-correlationid (workflow run), causationid (parent event, if any),
-iteration, actor, payloadversion, payload
-```
+| Phase | Deliverable | Accept when | Est. |
+|---|---|---|---|
+| 0 | Scaffold, DDL, docker-compose, e2e harness skeleton (contract test, red) | `make e2e` runs and fails on empty impl | 1d |
+| A1 | Temporal worker: golden scenario incl. loop, approval, cancel | golden run visible in Temporal UI; cancel mid-run halts | 1–2d |
+| A2 | Event emission from activities | event_log holds the exact contract sequence; outbox drains | 1d |
+| A3 | Shared stack wired: gateway, bridge, relay, sse, projection, page | `make e2e VARIANT=a` green; SSE survives reconnect with replay | 1.5d |
+| A4 | A-specific failure + change exercises (below); log observations | matrix evidence recorded | 1d |
+| B1 | Process manager: transition table incl. loop, approval, cancel | `make e2e VARIANT=b` green against the same contract | 2d |
+| B2 | Timer service, failure exercises; log observations | `make e2e VARIANT=b` green incl. timeout variation | 1d |
+| B3 | Purity audit: `git diff` on shared dirs = empty when switching variant | diff verified clean | 0.5d |
+| C | Rubric scored with evidence → ADR-0007 | ADR-0007 merged | 1d |
 
-Domain events: `WorkflowRequested`, `StageStarted`, `StageCompleted`,
-`QualityGateEvaluated`, `ReworkRequested`, `WorkflowCompleted`,
-`WorkflowFailed`, `WorkflowCancelled`.
+Total: ~9–12 days.
 
-## Phases
+## Failure-injection suite (identical for both variants)
 
-| Phase | Deliverable | Est. |
-|---|---|---|
-| 0 | Shared scaffold: repo layout, docker-compose (postgres [+ temporal]), Makefile | 0.5d |
-| A1 | Temporal worker: workflow with loop, stub stages, cancel signal, Temporal UI | 1–2d |
-| A2 | Domain event emission from activities (event_log + outbox tx) | 1d |
-| A3 | api-gateway, relay, sse-gateway, tracker page wired to Temporal run | 2d |
-| B1 | Process manager: state machine, transition table, loop + cancel as events | 2d |
-| B2 | Timer service + crash-resume/idempotency tests | 1d |
-| B3 | Wiring reuses A3 components unchanged (target: zero diffs) | 0.5d |
-| C | Side-by-side evaluation matrix, verdict → ADR-0007 | 1d |
+1. `kill -9` the worker / process manager mid-stage → restart → run
+   completes, no duplicate events (event ids unique in `event_log`).
+2. Re-deliver a duplicate event to B (and to the relay) → no double
+   transition; SSE clients see no duplication.
+3. Cancel races with stage completion → per-run serialization holds; one
+   coherent outcome (`WorkflowCancelled` or iteration advances, never both).
+4. Relay restart with pending outbox rows → all events published, SSE
+   replay has no gaps.
+5. Approval timeout with page connected → escalation event reaches SSE.
 
-Total: ~8–11 days to a defensible verdict on both variants.
+## Mid-run change exercise (criterion 1 evidence)
+
+While a run is in flight, change quality-gate behavior
+(`iterations_to_pass` 1 → 2) and deploy, in both variants. Record: what
+happens to in-flight runs, what the author had to do, how versioning is
+expressed. This is the single most expensive surprise in both approaches;
+measure it rather than guess.
+
+## Measured effort log (criterion 7 — fill as work happens)
+
+| Phase | Planned | Actual | Notes |
+|---|---|---|---|
+| 0 | 1d | | |
+| A1 | 1–2d | | |
+| A2 | 1d | | |
+| A3 | 1.5d | | |
+| A4 | 1d | | |
+| B1 | 2d | | |
+| B2 | 1d | | |
+| B3 | 0.5d | | |
+| C | 1d | | |
 
 ## Watchouts
 
 - Temporal workflow determinism: no `time.Now()`, no random, no direct I/O
   in workflow code — side effects only in activities.
-- Do not build the tracker page on Temporal's query API in A: the point is
-  to validate the event-driven egress; query is only a comparison datapoint.
 - Keep B's transition function honest: no hidden state outside the event
-  store, or crash-resume is no longer free.
-- SSE through proxies: disable response buffering, heartbeat every 15–30s.
+  store, or crash-resume is no longer free; per-run events must be
+  processed serially (ordering + race safety).
+- History growth on loops: keep iterations bounded in the prototypes.
+- Do not strengthen either variant with features the other lacks — the
+  shared contract is the equalizer; extensions go through the contract.
+- SSE through proxies: disable response buffering, heartbeats 15–30s.
 - Append-only enforcement on `event_log`: app role gets INSERT/SELECT only.
-- Measure implementation cost honestly per phase — criterion 7 needs real
-  numbers, and B starts with A's shared components already built.
+- Pin the Temporal server and SDK versions; record them in the ADR-0007
+  evidence.
 
 ## Decisions still open (not blocking Phase 0)
 
-- Language confirmed as Go (assumption; temporal-go-sdk most mature).
-- Quality-gate policy shape (seeded stub pass/fail in both prototypes).
-- Whether k8s deployment is required for the verdict or docker-compose
-  suffices (criterion 5 then stays partially theoretical).
+- Go confirmed as the implementation language (assumption).
+- Whether the k8s deployment (Temporal helm chart, criterion 5) is required
+  for the verdict or the dev server + ops estimate suffices.
+- Retention/partitioning design (explicitly deferred, must not leak into
+  prototype schema decisions badly — `seq` per run chosen to keep options
+  open).

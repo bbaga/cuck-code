@@ -30,20 +30,32 @@ ADR-0007 after a side-by-side evaluation.
 
 **Build order: Prototype A (Temporal) first**, Prototype B second,
 reusing all shared components unchanged (target: zero diffs in shared
-components when wiring B).
+components when wiring B, verified by `git diff`).
 
-Evaluation criteria and phase plan are defined in
-[docs/prototype-plan.md](../prototype-plan.md) and fixed before build, so
-neither prototype is graded by the rules of the other.
+Fairness and purity rules (enforced, not aspirational — see
+[docs/prototype-plan.md](../prototype-plan.md)):
+
+- Adapters write domain events only and never call the engine; engine
+  inputs are fed by per-variant bridges that translate event-store facts
+  into engine calls (A: StartWorkflow/signals; B: no bridge needed).
+- Run identity is minted at the gateway, not by the engine.
+- Both variants must pass the identical golden scenario (loop + approval
+  gate + cancel) producing the identical event sequence, asserted by one
+  e2e harness written from the event contract before either variant.
+- Both variants undergo the identical failure-injection suite (crash
+  mid-stage, duplicate delivery, cancel race, relay restart, timer).
+- The verdict is scored against a rubric fixed before implementation;
+  audit fit and replaceability are constraints, not tradeoffs.
 
 ## Consequences
 
-- ~8–11 engineer-days to a defensible verdict on both variants; shared
+- ~9–12 engineer-days to a defensible verdict on both variants; shared
   components survive either outcome.
-- The facade (ADR-0002 publisher port, ADR-0004 event store, ADR-0003 SSE
-  egress) becomes a proven artifact in itself: whichever engine loses, the
-  demonstration that the process manager is swappable is worth the extra
-  week.
+- The bridge component is itself evidence: its size and friction in A
+  measures exactly how much a dual-history, engine-fed design costs.
 - Risk: prototype B can unconsciously inherit A's temporal-shaped
   assumptions (e.g., signal-like RPC). Mitigation: B's transition function
   consumes domain events only, and cancel is an event, not a call.
+- The golden-scenario contract and failure suite must exist before variant
+  implementation begins (Phase 0), or the comparison degrades to
+  narrative.
