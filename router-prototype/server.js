@@ -56,7 +56,7 @@ function removeContainers(filter, cb) {
     if (!ids) return cb && cb(false);
     const list = ids.split(/\s+/).filter(Boolean);
     if (!list.length) return cb && cb(false);
-    dockerRun(["rm", "-f", ...list], () => cb && cb(true));
+    dockerRun(["rm", "-fv", ...list], () => cb && cb(true));
   });
 }
 
@@ -104,7 +104,7 @@ function reconcileInventory(line, cb) {
 function killItem(item) {
   if (item.status !== "running") return false;
   if (item.kind === "container") {
-    dockerRun(["rm", "-f", item.ref]);
+    dockerRun(["rm", "-fv", item.ref]);
   } else {
     try { process.kill(item.ref, "SIGTERM"); } catch {}
   }
@@ -124,7 +124,7 @@ function cleanupStage(line, by) {
       const [cid, cworker] = row.split("\t");
       if ((cworker || "planner") !== by) continue;
       if (kept.has(cid)) continue;
-      dockerRun(["rm", "-f", cid]);
+      dockerRun(["rm", "-fv", cid]);
     }
   });
   for (const item of line.inventory.values()) {
@@ -152,6 +152,16 @@ function frontendToolsBlock(workerId, implId, lineId) {
   when you are done (docker rm -f <name>); the router force-removes
   any container still carrying your labels when your run ends or the
   line is deleted.
+- If the app depends on docker itself (compose, builds, nested
+  containers), run it inside a docker-in-docker container:
+  docker run -d --privileged --label cuck.line=${lineId} --label cuck.worker=${workerId} --name <name>-dind docker:27-dind
+  Wait for the daemon before use: docker exec <name>-dind docker info
+  Use docker exec for the docker work inside it. A --privileged
+  container is not a security boundary: use it only for trusted
+  project code. Everything nested
+  inside dies with the labeled container. Never mount the host docker
+  socket (-v /var/run/docker.sock:...): containers started through a
+  shared socket escape the label cleanup.
 ${implId ? `- The implementor's app port: read ui.port at the repo root, or call
   curl -s http://localhost:${PORT}/api/protocol/workers/${implId}/port
   If the app is not running, you may start it yourself (directly or in
@@ -224,6 +234,15 @@ ${userPrompt}
 ## Container and process hygiene
 If you start any docker container, always set this label on it:
 --label cuck.line=${lineId}
+If the project depends on docker itself, start a docker-in-docker
+container with the label and run your docker work inside it:
+docker run -d --privileged --label cuck.line=${lineId} --name <name>-dind docker:27-dind
+Wait for the daemon before use: docker exec <name>-dind docker info
+Everything started inside the dind container dies with it when the
+router kills the labeled container. A --privileged container is not
+a security boundary: use it only for trusted project code. Do NOT mount the host docker
+socket instead: containers started through a shared socket escape
+the label cleanup.
 If you start a background process that outlives your commands (for
 example a dev server), register it:
 curl -s -X POST http://localhost:${port}/api/protocol/lines/${lineId}/inventory \\
@@ -290,6 +309,18 @@ function containersBlock(workerId, lineId) {
 ## Container and process hygiene
 If you start any docker container, always set both labels on it:
 --label cuck.line=${lineId} --label cuck.worker=${workerId}
+If the project depends on docker itself (docker compose, image
+builds, nested containers), start a docker-in-docker container with
+both labels and run your docker work inside it:
+docker run -d --privileged --label cuck.line=${lineId} --label cuck.worker=${workerId} --name <name>-dind docker:27-dind
+Wait for the daemon before use: docker exec <name>-dind docker info
+Then use docker exec for docker commands inside it. A --privileged
+container is not a security boundary: use it only for trusted project
+code. Everything
+started inside the dind container dies with it when the router kills
+the labeled container. Do NOT mount the host docker socket
+(-v /var/run/docker.sock:...) instead: containers started through a
+shared socket escape the label cleanup.
 If you start a background process that outlives your commands (for
 example a dev server), register it:
 curl -s -X POST http://localhost:${PORT}/api/protocol/lines/${lineId}/inventory \\
@@ -681,7 +712,7 @@ const server = http.createServer((req, res) => {
       (out) => {
         if (!out) return;
         const kill = out.split(/\s+/).filter((c) => c && !keptRefs.has(c));
-        if (kill.length) dockerRun(["rm", "-f", ...kill]);
+        if (kill.length) dockerRun(["rm", "-fv", ...kill]);
       });
     for (const item of line.inventory.values()) {
       if (item.keep) continue;

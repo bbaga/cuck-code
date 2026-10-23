@@ -9,14 +9,16 @@
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
-  body { margin: 0; display: flex; flex-direction: column; min-height: 100vh;
+  [hidden] { display: none !important; }
+  body { margin: 0; display: flex; min-height: 100vh;
     font-family: system-ui, sans-serif; background: #111418; color: #d8dee6; }
-  #topbar { display: flex; gap: 6px; padding: 10px 16px; background: #161a20;
-    border-bottom: 1px solid #262b33; flex-shrink: 0; }
-  .tabBtn { padding: 8px 18px; background: transparent; color: #8fa3bd; border: 0;
-    border-radius: 4px; cursor: pointer; font-size: .85rem; }
+  .tabBtn { padding: 6px 14px; background: transparent; color: #8fa3bd; border: 0;
+    border-radius: 4px; cursor: pointer; font-size: .8rem; }
   .tabBtn.active { background: #182335; color: #d8dee6; outline: 1px solid #2d6cdf; }
-  #content { display: flex; flex: 1; min-height: 0; }
+  .procPane { flex: 1; overflow-y: auto; padding: 12px 16px; font-size: .78rem; }
+  .procPane .pHead { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .procPane .pHead .sub { color: #6c7a8c; font-size: .72rem; }
+  .pEmpty { color: #4a5563; font-size: .72rem; }
   #sidebar { width: 280px; padding: 24px; border-right: 1px solid #262b33;
     background: #161a20; flex-shrink: 0; }
   #sidebar h1 { font-size: 1.1rem; margin: 0 0 16px; }
@@ -70,13 +72,6 @@
   .badge { padding: 3px 10px; border-radius: 10px; background: #14331f;
     color: #58d68d; font-size: .75rem; }
   .graph { position: relative; border-bottom: 1px solid #262b33; overflow: hidden; }
-  .inventory { padding: 0; }
-  .pSection { border: 1px solid #262b33; border-radius: 8px; background: #161a20;
-    margin-bottom: 16px; padding: 12px 16px; }
-  .pHead { display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
-    font-weight: 600; }
-  .pHead .sub { color: #6c7a8c; font-size: .72rem; font-weight: 400; }
-  .pEmpty { color: #4a5563; font-size: .72rem; }
   .invRow { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: .78rem; }
   .invRow .kind { color: #6c7a8c; width: 34px; flex-shrink: 0; }
   .invRow .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -85,7 +80,6 @@
   .keepBtn { background: #14331f; color: #58d68d; }
   .keepBtn.kept { background: #58d68d; color: #10261a; }
   .killBtn { background: #4d1420; color: #ff8095; }
-  .pEmpty { color: #4a5563; font-size: .72rem; }
   .graph svg { position: absolute; inset: 0; }
   .graph svg .edge { stroke: #333c48; stroke-width: 1.5; }
   .gnode { position: absolute; display: flex; align-items: center; gap: 8px;
@@ -122,48 +116,21 @@
 </style>
 </head>
 <body>
-<div id="topbar">
-  <button id="tabLine" class="tabBtn active">Production line</button>
-  <button id="tabProcesses" class="tabBtn">Processes</button>
-</div>
-<div id="content">
 <aside id="sidebar">
   <h1>cuck-code</h1>
   <button id="create">+ Create new line</button>
   <div id="linelist"></div>
 </aside>
 <main id="lines">
-  <div id="lineView">
-    <div id="empty">Select or create a production line.</div>
-  </div>
-  <div id="processesView" hidden></div>
+  <div id="empty">Select or create a production line.</div>
 </main>
-</div>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
   const cards = new Map();
   const linesEl = document.getElementById("lines");
-  const lineView = document.getElementById("lineView");
-  const processesView = document.getElementById("processesView");
   const listEl = document.getElementById("linelist");
   let selectedLine = null;
-  let currentTab = "line";
   const SVGNS = "http://www.w3.org/2000/svg";
-
-  function setTab(tab) {
-    currentTab = tab;
-    document.getElementById("tabLine").classList.toggle("active", tab === "line");
-    document.getElementById("tabProcesses").classList.toggle("active", tab === "processes");
-    lineView.hidden = tab !== "line";
-    processesView.hidden = tab !== "processes";
-    if (tab === "processes") pollInventory();
-    if (tab === "line" && selectedLine !== null) {
-      const st = cards.get(selectedLine);
-      if (st) renderGraph(st);
-    }
-  }
-  document.getElementById("tabLine").addEventListener("click", () => setTab("line"));
-  document.getElementById("tabProcesses").addEventListener("click", () => setTab("processes"));
 
   mermaid.initialize({ startOnLoad: false, theme: "dark" });
 
@@ -342,6 +309,13 @@ window.addEventListener("DOMContentLoaded", () => {
     name.textContent = line.name;
     const dot = document.createElement("span");
     dot.className = "dot";
+    const tabLineBtn = document.createElement("button");
+    tabLineBtn.className = "tabBtn active";
+    tabLineBtn.textContent = "Line";
+    tabLineBtn.style.marginLeft = "auto";
+    const tabProcBtn = document.createElement("button");
+    tabProcBtn.className = "tabBtn";
+    tabProcBtn.textContent = "Processes";
     const delBtn = document.createElement("button");
     delBtn.className = "deleteBtn";
     delBtn.textContent = "Delete";
@@ -361,7 +335,7 @@ window.addEventListener("DOMContentLoaded", () => {
       await fetch("/api/lines/" + line.id, { method: "DELETE" });
       removeCard(line.id);
     });
-    head.append(name, dot, delBtn);
+    head.append(name, dot, tabLineBtn, tabProcBtn, delBtn);
     const banner = document.createElement("div");
     banner.className = "banner";
     banner.hidden = true;
@@ -396,15 +370,22 @@ window.addEventListener("DOMContentLoaded", () => {
     const send = document.createElement("button");
     send.textContent = "Send";
     row.append(input, send);
-    card.append(head, banner, plan, graph, transcript, row);
-    lineView.appendChild(card);
+    const procPane = document.createElement("div");
+    procPane.className = "procPane";
+    procPane.hidden = true;
+    card.append(head, banner, plan, graph, transcript, row, procPane);
+    linesEl.appendChild(card);
 
     const st = { id: line.id, dot, banner, transcript, input, send,
       waiting, planBody, graph, approveBtn, badge,
+      tab: "line", tabLineBtn, tabProcBtn, plan, row, procPane,
       plannerStatus: line.status, started: line.started === true,
       planContent: undefined, approved: false,
       workers: new Map(), workerTranscripts: new Map(),
       plannerTranscript: [], selected: null };
+
+    tabLineBtn.addEventListener("click", () => setLineTab(st, "line"));
+    tabProcBtn.addEventListener("click", () => setLineTab(st, "processes"));
 
     const setStatus = (status) => {
       st.plannerStatus = status;
@@ -546,9 +527,23 @@ window.addEventListener("DOMContentLoaded", () => {
     st.entryCount.textContent = st.workers.size ? st.workers.size + "w" : "";
   }
 
+  function setLineTab(st, tab) {
+    st.tab = tab;
+    st.tabLineBtn.classList.toggle("active", tab === "line");
+    st.tabProcBtn.classList.toggle("active", tab === "processes");
+    for (const el of [st.plan, st.graph, st.transcript, st.row]) {
+      el.hidden = tab !== "line";
+    }
+    st.procPane.hidden = tab !== "processes";
+    if (tab === "processes") pollInventory();
+    if (tab === "line") {
+      renderGraph(st);
+      st.transcript.scrollTop = st.transcript.scrollHeight;
+    }
+  }
+
   function selectLine(id) {
     selectedLine = id;
-    setTab("line");
     for (const st of cards.values()) {
       const show = st.id === id;
       st.card.style.display = show ? "flex" : "none";
@@ -556,7 +551,9 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     document.getElementById("empty").hidden = id !== null;
     const st = cards.get(id);
-    if (st) {
+    if (!st) return;
+    if (st.tab === "processes") pollInventory();
+    else {
       renderGraph(st);
       st.transcript.scrollTop = st.transcript.scrollHeight;
     }
@@ -599,60 +596,46 @@ window.addEventListener("DOMContentLoaded", () => {
     return row;
   }
 
-  function renderProcesses(snapshots) {
-    processesView.innerHTML = "";
-    if (!snapshots.length) {
+  function renderLineProcesses(st, items) {
+    const pane = st.procPane;
+    pane.innerHTML = "";
+    const head = document.createElement("div");
+    head.className = "pHead";
+    const sub = document.createElement("span");
+    sub.className = "sub";
+    const running = items.filter((i) => i.status === "running").length;
+    sub.textContent = items.length + " items, " + running + " running";
+    const killAll = document.createElement("button");
+    killAll.className = "killBtn";
+    killAll.style.marginLeft = "auto";
+    killAll.textContent = "Kill all";
+    killAll.addEventListener("click", async () => {
+      await fetch("/api/lines/" + st.id + "/inventory/kill-all", { method: "POST" });
+      pollInventory();
+    });
+    head.append(sub, killAll);
+    pane.appendChild(head);
+    if (!items.length) {
       const e = document.createElement("div");
       e.className = "pEmpty";
-      e.textContent = "No production lines.";
-      processesView.appendChild(e);
+      e.textContent = "No processes or containers started.";
+      pane.appendChild(e);
       return;
     }
-    for (const { line, items } of snapshots) {
-      const section = document.createElement("div");
-      section.className = "pSection";
-      const head = document.createElement("div");
-      head.className = "pHead";
-      const nm = document.createElement("span");
-      nm.textContent = line.name;
-      const sub = document.createElement("span");
-      sub.className = "sub";
-      const running = items.filter((i) => i.status === "running").length;
-      sub.textContent = items.length + " items, " + running + " running";
-      const killAll = document.createElement("button");
-      killAll.className = "killBtn";
-      killAll.style.marginLeft = "auto";
-      killAll.textContent = "Kill all";
-      killAll.addEventListener("click", async () => {
-        await fetch("/api/lines/" + line.id + "/inventory/kill-all", { method: "POST" });
-        pollInventory();
-      });
-      head.append(nm, sub, killAll);
-      section.appendChild(head);
-      if (!items.length) {
-        const e = document.createElement("div");
-        e.className = "pEmpty";
-        e.textContent = "No processes or containers started.";
-        section.appendChild(e);
-      } else {
-        for (const item of items) section.appendChild(inventoryRow(line.id, item));
-      }
-      processesView.appendChild(section);
-    }
+    for (const item of items) pane.appendChild(inventoryRow(st.id, item));
   }
 
   async function pollInventory() {
-    if (currentTab !== "processes") return;
-    const snapshots = [];
-    for (const st of cards.values()) {
-      try {
-        const res = await fetch("/api/lines/" + st.id + "/inventory");
-        if (!res.ok) continue;
-        const { items } = await res.json();
-        snapshots.push({ line: { id: st.id, name: st.entry ? st.entry.querySelector(".lname").textContent : st.id }, items });
-      } catch {}
-    }
-    renderProcesses(snapshots);
+    const st = cards.get(selectedLine);
+    if (!st || st.tab !== "processes") return;
+    const gen = (st.invGen = (st.invGen || 0) + 1);
+    try {
+      const res = await fetch("/api/lines/" + st.id + "/inventory");
+      if (!res.ok) return;
+      const { items } = await res.json();
+      if (gen !== st.invGen || st.tab !== "processes" || selectedLine !== st.id) return;
+      renderLineProcesses(st, items);
+    } catch {}
   }
 
   async function pollPlans() {

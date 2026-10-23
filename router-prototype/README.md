@@ -81,7 +81,26 @@ Every stage labels its containers: workers set both
 `--label cuck.line=<lineId> --label cuck.worker=<workerId>`, the planner sets
 `--label cuck.line=<lineId>`. Stages register background processes that
 outlive their commands: `POST /api/protocol/lines/:id/inventory` with
-`{kind: "process", pid, name}`. Nothing survives unless the user asks: each
+`{kind: "process", pid, name}`.
+
+When the project depends on docker itself (compose, image builds, nested
+containers), stages give the container docker-in-docker capability instead of
+sharing the host daemon socket:
+
+```
+docker run -d --privileged --label cuck.line=... --label cuck.worker=... --name <name>-dind docker:27-dind
+```
+
+Wait for the inner daemon (docker exec <name>-dind docker info), then run the
+docker work inside with docker exec. Everything started inside the dind
+container dies with the labeled parent when the router removes it, and the
+router removes labeled containers with -v, so their anonymous volumes (the
+DinD image declares VOLUME /var/lib/docker) do not leak disk space. A
+--privileged container is NOT a security boundary - use it for trusted
+project code only. Mounting the host docker socket is forbidden: containers
+started through a shared socket escape the label-based cleanup.
+
+Nothing survives unless the user asks: each
 line keeps an inventory of its processes and containers (containers are
 auto-discovered from the labels; the UI panel shows every item with a keep
 toggle and a Kill button, plus Kill-all). Worker close, planner run close,
