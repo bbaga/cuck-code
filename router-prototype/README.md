@@ -26,5 +26,14 @@ conversation.
 
 ## Limitations
 
-Single user, no authentication, all state in memory (a restart loses lines and
-transcripts), and prompts on a line execute strictly one at a time.
+Single user, no authentication, and prompts on a line execute strictly one at
+a time. Lines (id, name, session) persist to `lines/<id>/line.json` and are
+rehydrated on restart; transcripts are in memory and do not survive a restart.
+
+## Security
+
+Lines run with `--auto-approve`: a headless process has no one to answer
+approval prompts, so every tool call (including `git push`, `gh`, file
+deletion) runs without asking. Set `LINE_AUTO_APPROVE=0` to run lines under
+`--agent accept-edits` instead — side-effecting commands will then be denied,
+not queued.

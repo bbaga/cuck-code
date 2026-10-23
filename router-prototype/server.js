@@ -6,6 +6,7 @@ const { spawn } = require("node:child_process");
 
 const PORT = Number(process.env.PORT || 7788);
 const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
+const AUTO_APPROVE = process.env.LINE_AUTO_APPROVE !== "0";
 const INDEX_HTML = path.join(__dirname, "web", "index.html");
 
 const lines = new Map();
@@ -25,6 +26,13 @@ function broadcast(line, event, data) {
   }
 }
 
+function saveLine(line) {
+  try {
+    fs.writeFileSync(path.join(line.workdir, "line.json"),
+      JSON.stringify({ id: line.id, name: line.name, sessionId: line.sessionId }));
+  } catch {}
+}
+
 function readBody(req, cb) {
   let data = "";
   req.on("data", (c) => { data += c; if (data.length > 1e6) req.destroy(); });
@@ -41,7 +49,9 @@ function pump(line) {
 
   const args = line.sessionId ? ["--resume", line.sessionId] : [];
   args.push("--workdir", line.workdir, "--trust", "--agent", "accept-edits",
-    "--output", "streaming", "--time-limit", "900", "-p", text);
+    "--output", "streaming", "--time-limit", "900");
+  if (AUTO_APPROVE) args.push("--auto-approve");
+  args.push("-p", text);
   const child = spawn("vibe", args, { stdio: ["ignore", "pipe", "pipe"] });
   line.child = child;
 
@@ -69,6 +79,7 @@ function pump(line) {
 
   child.on("close", (code) => {
     line.child = null;
+    saveLine(line);
     if (code !== 0) {
       broadcast(line, "error", { message: stderr.slice(-500) || `vibe exited with code ${code}` });
     }
@@ -93,6 +104,7 @@ const server = http.createServer((req, res) => {
       const line = { id, name: body.name, sessionId: null, workdir, status: "idle",
         queue: [{ text: body.prompt }], clients: new Set(), transcript: [] };
       lines.set(id, line);
+      saveLine(line);
       pump(line);
       json(res, 201, { id });
     });
@@ -162,4 +174,18 @@ function shutdown() {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
+function loadLines() {
+  fs.mkdirSync(LINES_DIR, { recursive: true });
+  for (const entry of fs.readdirSync(LINES_DIR, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    try {
+      const meta = JSON.parse(fs.readFileSync(path.join(LINES_DIR, entry.name, "line.json"), "utf8"));
+      lines.set(meta.id, { id: meta.id, name: meta.name, sessionId: meta.sessionId,
+        workdir: path.join(LINES_DIR, entry.name), status: "idle", queue: [],
+        clients: new Set(), transcript: [] });
+    } catch {}
+  }
+}
+
+loadLines();
 server.listen(PORT, () => console.log(`router listening on http://localhost:${PORT}`));
