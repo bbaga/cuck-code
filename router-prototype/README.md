@@ -127,8 +127,9 @@ a numbered list of criteria (or SKIP VALIDATION, which skips the loop). The
 router then spawns a VALIDATOR: a fresh vibe session pinned to the
 full-effort model, running in the implementor's worktree (no new worktree, no
 new branch), with a brief containing the implementor's report and the
-criteria. The validator checks the work — it may run the code, the tests, and
-headless UI tests through the playwright browser tools — and replies with a
+criteria. The validator checks the work — it may run the code, the unit
+tests, and headless UI tests through the playwright browser tools — and
+replies with a
 VALIDATION REPORT ending in `VERDICT: PASS` or `VERDICT: FAIL`. The router
 wakes the planner with that report, and the planner decides: accept the work,
 send follow-up instructions to the original implementor session via the
@@ -139,6 +140,22 @@ Validators are never resumed: each validation is a fresh session by
 construction, so no validator state can pollute later runs. A second
 validation of the same implementor gets a deduplicated validator name
 (`validator-<name>`, `validator-<name>-2`, ...).
+
+### Test scope
+
+Implementors and validators run UNIT TESTS only — they never run
+integration tests. The CI pipelines of the repository run the
+integration tests (on lines with a remote, the validator opens the
+draft PR and waits for CI, so integration failures still gate the
+loop). Only the integration validator runs integration tests locally.
+
+### Worktree discipline
+
+Every implementor works exclusively in its own git worktree and must
+never use the shared checkout of the line. Each implementor reports
+the location of its worktree (`git rev-parse --show-toplevel`) in its
+final report; the planner passes that location to the validator, and
+the validator checks the work in that same worktree.
 
 Independent tasks are spawned in parallel as parallel processes. Worker output
 streams to the UI live, drawn as nodes connected to the planner node. When a

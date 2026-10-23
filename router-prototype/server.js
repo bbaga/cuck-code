@@ -251,6 +251,15 @@ ${userPrompt}
    worker prompts must be SELF-CONTAINED (workers share no context
    with you): include the repo state, the task, file paths, acceptance
    criteria, and that they must commit their work in their worktree.
+   In every worker prompt, order the implementor to do all work in its
+   own git worktree and to NEVER use the shared checkout. Order every
+   implementor to report the location of its worktree (the output of
+   git rev-parse --show-toplevel) in its final report. You must give
+   that worktree location to the validator that checks the work.
+   Test scope: implementors and validators run UNIT TESTS only. They
+   must NOT run integration tests. The CI pipelines of the repository
+   run the integration tests. Only the integration validator runs
+   integration tests locally.
    Choose the persona per task: "backend" for architecture, data,
    APIs, and logic; "frontend" for user interfaces, pages, and
    interaction. The validator of each worker uses the same persona.
@@ -343,8 +352,9 @@ Priorities:
 - Keep the data model and its integrity correct. Keep API contracts
   clear and stable.
 - Write error handling for every failure path you add.
-- Add tests: unit tests for logic, integration tests for contracts.
-Verify the work: run the build and the tests you added.`,
+- Add unit tests for the logic you change. Do not run integration
+  tests: the CI pipelines of the repository run them.
+Verify the work: run the build and the unit tests you added.`,
   frontend: `Your persona: frontend / UX.
 Priorities:
 - Build a usable, accessible interface: semantic HTML, labels for
@@ -412,7 +422,11 @@ Report the branch name with: git rev-parse --abbrev-ref HEAD`;
 function workerBrief(name, lineName, prompt, persona, workerId, lineId, repoUrl) {
   return `You are implementor worker '${name}' (id ${workerId}) on factory line '${lineName}'.
 You run inside your own git worktree - all work happens here, do not
-touch other directories. Commit your work with clear messages.
+touch other directories. NEVER use the shared checkout of the line
+(the main repo directory): every file you read or write must be inside
+your worktree. Commit your work with clear messages.
+Test scope: run UNIT TESTS only. Do NOT run integration tests. The CI
+pipelines of the repository run the integration tests.
 ${containersBlock(workerId, lineId)}${remoteBlockImplementor(repoUrl)}
 
 ${IMPL_PERSONA[persona] || IMPL_PERSONA.backend}
@@ -427,8 +441,11 @@ topic per sentence, the active voice, numbered steps for procedures,
 and no idioms or jargon.
 
 When done, reply with a concise report: what you implemented, files
-changed, how you verified it, and any open issues. That report goes
-back to the planner verbatim.`;
+changed, how you verified it (which unit tests you ran), the LOCATION
+OF YOUR WORKTREE (the output of: git rev-parse --show-toplevel), and
+any open issues. That report goes back to the planner verbatim. The
+planner gives your worktree location to the validator that checks
+your work.`;
 }
 
 function remoteBlockValidator(repoUrl, implName) {
@@ -457,8 +474,12 @@ After the local criteria validation:
 
 function validatorBrief(implName, report, criteria, persona, workerId, implId, lineId, repoUrl) {
   return `You are the VALIDATOR (id ${workerId}) for the work of implementor '${implName}' (id ${implId}).
-Your workdir is the implementor's git worktree. Do not change the
-implementation. You check the work only.
+Your workdir is the implementor's git worktree (the implementor
+reported its location to the planner; the planner passed it to you).
+Do not change the implementation. You check the work only.
+Test scope: run UNIT TESTS only. Do NOT run integration tests. The
+integration tests run in the CI pipelines of the repository (see the
+CI section below when a remote exists).
 ${containersBlock(workerId, lineId)}${remoteBlockValidator(repoUrl, implName)}
 
 ${VAL_PERSONA[persona] || VAL_PERSONA.backend}
@@ -473,7 +494,8 @@ ${criteria}
 Tasks:
 1. Check the work against each criterion. For each criterion, record
    PASS or FAIL with one sentence of evidence.
-2. You may run the code and the tests. You may run them inside docker
+2. You may run the code and the UNIT TESTS. Do not run integration
+   tests: the CI pipelines run them. You may run code inside docker
    containers; publish ports only on your allocated port (see the
    frontend tools block when present). You may run headless UI tests
    with the playwright browser tools (browser_navigate,
@@ -492,6 +514,9 @@ Your workdir is a dedicated worktree on a fresh integration branch
 created from the main branch. You NEVER commit to main/master and you
 NEVER push to the remote. All merging happens on your integration
 branch.
+You are the ONLY stage that runs integration tests locally: the
+implementors and the validators run unit tests only. Run the full
+acceptance and integration test suites here.
 
 The feature branches to merge (one per implementor):
 ${branches.map((b) => "- " + b).join("\n")}
