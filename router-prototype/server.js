@@ -246,7 +246,15 @@ ${userPrompt}
 3. When you receive PLAN APPROVED, spawn implementor workers with curl:
    curl -s -X POST http://localhost:${port}/api/protocol/lines/${lineId}/workers \\
      -H 'Content-Type: application/json' \\
-     -d '{"name":"<worker-name>","persona":"backend|frontend","prompt":"<full instructions>"}'
+     -d '{"name":"<worker-name>","persona":"backend|frontend","repo":"<repo-name>","prompt":"<full instructions>"}'
+   The "repo" field is optional and selects the repository the worker
+   works in (default "primary" - your workdir). A line can work across
+   several repositories: register additional ones with
+   curl -s -X POST http://localhost:${port}/api/protocol/lines/${lineId}/repos \\
+     -H 'Content-Type: application/json' \\
+     -d '{"name":"<repo-name>","url":"<clone url>"}'
+   The router clones the repo. List the registered repos:
+   GET http://localhost:${port}/api/protocol/lines/${lineId}/repos
    Rules: spawn independent tasks in parallel (several curl calls);
    worker prompts must be SELF-CONTAINED (workers share no context
    with you): include the repo state, the task, file paths, acceptance
@@ -345,6 +353,47 @@ implementors in ASD-STE100 Simplified Technical English:
 
 const PERSONAS = ["backend", "frontend"];
 
+// A factory line can work across several repositories. The line
+// workdir itself is the "primary" repo; the planner registers
+// additional repos through the protocol (cloned under
+// lines/<lineId>/repos/<name>). A repo's remote may exist even when it
+// was never recorded (the planner can add an origin during its run),
+// so remotes are detected at spawn time instead of being trusted.
+
+function primaryRepo(line) {
+  return { name: "primary", path: line.workdir, url: line.repoUrl || null };
+}
+
+// Detect the real remote of a repo path instead of trusting stored values.
+function effectiveRepoUrl(repoPath) {
+  try {
+    const r = spawnSync("git", ["-C", repoPath, "remote", "get-url", "origin"],
+      { encoding: "utf8" });
+    if (r.status === 0 && r.stdout && r.stdout.trim()) return r.stdout.trim();
+  } catch {}
+  return null;
+}
+
+// Resolve a repo by name ("primary"/undefined = the line workdir).
+// Returns {name, path, url} or null for an unknown name.
+function resolveRepo(line, name) {
+  if (!name || name === "primary") {
+    const p = primaryRepo(line);
+    return { name: p.name, path: p.path, url: p.url || effectiveRepoUrl(p.path) };
+  }
+  const repo = (line.repos || new Map()).get(String(name));
+  if (!repo) return null;
+  return { name: repo.name, path: repo.path, url: repo.url || effectiveRepoUrl(repo.path) };
+}
+
+function repoList(line) {
+  const list = [resolveRepo(line, "primary")];
+  for (const r of (line.repos || new Map()).values()) {
+    list.push({ name: r.name, path: r.path, url: r.url || effectiveRepoUrl(r.path) });
+  }
+  return list;
+}
+
 const IMPL_PERSONA = {
   backend: `Your persona: backend / architecture.
 Priorities:
@@ -412,19 +461,25 @@ function remoteBlockImplementor(repoUrl) {
   if (!repoUrl) return "";
   return `
 ## Remote work
-This repository has a remote (origin): ${repoUrl}
+The repository has a remote (origin): ${repoUrl}
+Confirm it first: git remote get-url origin. If that command fails,
+the remote is gone: skip the remote steps and say so in your report.
 Commit your work with clear messages. When your task is done, push
 your branch to the remote:
 git push -u origin HEAD
 Report the branch name with: git rev-parse --abbrev-ref HEAD`;
 }
 
-function workerBrief(name, lineName, prompt, persona, workerId, lineId, repoUrl) {
+function workerBrief(name, lineName, prompt, persona, workerId, lineId, repo) {
+  const repoUrl = repo && repo.url ? repo.url : null;
   return `You are implementor worker '${name}' (id ${workerId}) on factory line '${lineName}'.
-You run inside your own git worktree - all work happens here, do not
-touch other directories. NEVER use the shared checkout of the line
-(the main repo directory): every file you read or write must be inside
-your worktree. Commit your work with clear messages.
+Your repository for this task: '${repo ? repo.name : "primary"}'${repoUrl ? ` (remote: ${repoUrl})` : " (no remote)"}.
+A factory line can work across several repositories - work ONLY in the
+repository named above.
+You run inside your own git worktree of that repository - all work
+happens here, do not touch other directories. NEVER use the shared
+checkout: every file you read or write must be inside your worktree.
+Commit your work with clear messages.
 Test scope: run UNIT TESTS only. Do NOT run integration tests. The CI
 pipelines of the repository run the integration tests.
 ${containersBlock(workerId, lineId)}${remoteBlockImplementor(repoUrl)}
@@ -453,6 +508,8 @@ function remoteBlockValidator(repoUrl, implName) {
   return `
 ## Remote validation and CI
 The implementor branch in your workdir has a remote (origin): ${repoUrl}
+Confirm it first: git remote get-url origin. If that command fails,
+there is no remote: skip this section and validate locally only.
 After the local criteria validation:
 1. Make sure the branch is on the remote:
    git fetch origin
@@ -472,11 +529,12 @@ After the local criteria validation:
 5. Do not mark the PR ready for review. Leave it as a draft.`;
 }
 
-function validatorBrief(implName, report, criteria, persona, workerId, implId, lineId, repoUrl) {
+function validatorBrief(implName, report, criteria, persona, workerId, implId, lineId, repoName, repoUrl) {
   return `You are the VALIDATOR (id ${workerId}) for the work of implementor '${implName}' (id ${implId}).
-Your workdir is the implementor's git worktree (the implementor
-reported its location to the planner; the planner passed it to you).
-Do not change the implementation. You check the work only.
+Your workdir is the implementor's git worktree in repository '${repoName || "primary"}'${repoUrl ? ` (remote: ${repoUrl})` : " (no remote)"}.
+The implementor reported its location to the planner; the planner
+passed it to you. Do not change the implementation. You check the work
+only.
 Test scope: run UNIT TESTS only. Do NOT run integration tests. The
 integration tests run in the CI pipelines of the repository (see the
 CI section below when a remote exists).
@@ -508,51 +566,59 @@ idioms).`;
 }
 
 
-function integrationValidatorBrief(line, branches, instructions, workerId, repoUrl) {
+function integrationValidatorBrief(line, branchEntries, instructions, workerId, repos) {
+  const primary = repos.find((r) => r.name === "primary") || { url: null };
+  const extraRepos = repos.filter((r) => r.name !== "primary");
   return `You are the INTEGRATION VALIDATOR (id ${workerId}) for factory line '${line.name}'.
-Your workdir is a dedicated worktree on a fresh integration branch
-created from the main branch. You NEVER commit to main/master and you
-NEVER push to the remote. All merging happens on your integration
-branch.
+This line works across ${repos.length} repositor${repos.length === 1 ? "y" : "ies"}:
+${repos.map((r) => `- '${r.name}': ${r.url ? `remote ${r.url}` : `local clone at ${r.path}`}`).join("\n")}
+Your workdir is a dedicated worktree of the 'primary' repository on a
+fresh integration branch created from its main branch. You NEVER
+commit to main/master and you NEVER push to any remote. All merging
+happens on your integration branches.
 You are the ONLY stage that runs integration tests locally: the
 implementors and the validators run unit tests only. Run the full
 acceptance and integration test suites here.
 
 The feature branches to merge (one per implementor):
-${branches.map((b) => "- " + b).join("\n")}
+${branchEntries.map((e) => `- ${e.branch} (repo '${e.repo}')`).join("\n")}
 
 Instructions from the planner:
 ${instructions}
 
 Procedure:
-1. Merge each feature branch on top of your integration branch, one by
-   one, in the order listed:
+1. For the 'primary' repo: merge each of its feature branches on top
+   of your integration branch, one by one:
    git merge <branch> --no-edit
    Resolve conflicts yourself, keeping both features where possible.
    If a conflict cannot be resolved sensibly, stop and report it.
-2. When all branches are merged, run ALL acceptance tests and verify
+${extraRepos.length ? `2. For EVERY other repo in the list: make your own copy inside
+   your workdir (git clone <remote or path> <repo-name>), create a
+   local integration branch from its main branch, and merge its
+   feature branches there the same way. Never push to their remotes.` : "2. No additional repositories are registered for this line."}
+3. When all branches are merged, run ALL acceptance tests and verify
    everything works together. Build and run the project if needed.
-3. For EACH use case you test, record a video of the test case running.
+4. For EACH use case you test, record a video of the test case running.
    Use playwright with video recording enabled: in a playwright test use
    video: 'on' (or npx playwright test --video=on); in a raw playwright
    script enable recordVideo on the browser context, for example
    browser.newContext({ recordVideo: { dir: 'evidence' } }).
    Save each video as a separate file under evidence/ in your workdir
    (for example evidence/use-case-login.webm).
-4. IMPORTANT: close the browser context (or let the playwright
+5. IMPORTANT: close the browser context (or let the playwright
    test run finish) BEFORE you register the video file. A video that
    is still recording is not finalized: it has no duration and will
    not play. Register only files that are complete (usually larger
    than 10 KB).
-5. Register every evidence video with the router:
+6. Register every evidence video with the router:
    curl -s -X POST http://localhost:${PORT}/api/protocol/workers/${workerId}/evidence \
      -H 'Content-Type: application/json' \
      -d '{"useCase":"<one line describing the use case>","file":"evidence/<file>.webm"}'
    The file path is relative to your workdir. Register each use case
    as you complete it.
-6. Reply with an INTEGRATION REPORT: branches merged, conflicts
-   resolved (per branch, one line), acceptance test results, the list
-   of registered evidence use cases, then a final line
+7. Reply with an INTEGRATION REPORT: branches merged (per repo),
+   conflicts resolved (per branch, one line), acceptance test results,
+   the list of registered evidence use cases, then a final line
    "VERDICT: PASS" or "VERDICT: FAIL".
 Write the report in ASD-STE100 Simplified Technical English.`;
 }
@@ -582,6 +648,8 @@ function saveLine(line) {
     fs.writeFileSync(path.join(line.workdir, "line.json"),
       JSON.stringify({ id: line.id, name: line.name, sessionId: line.sessionId,
         repoUrl: line.repoUrl || null,
+        repos: [...(line.repos || new Map()).values()].map((r) => ({
+          name: r.name, url: r.url, path: r.path })),
         started: line.started, planApproved: line.planApproved,
         inventory: [...(line.inventory || new Map()).values()].map((i) => ({
           id: i.id, kind: i.kind, name: i.name, by: i.by, ref: i.ref,
@@ -591,6 +659,7 @@ function saveLine(line) {
         workers: [...line.workers.values()].map((w) => ({
           id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch, status: w.status,
           role: w.role, validates: w.validates, persona: w.persona || "backend",
+          repo: w.repo || "primary", worktreePath: w.worktreePath,
           kind: w.kind || "standard", verdict: w.verdict || null })) }));
   } catch {}
 }
@@ -830,10 +899,14 @@ function spawnValidator(line, implWorker, criteria) {
     name = `validator-${implWorker.name}-${n++}`;
   }
   const id = crypto.randomUUID();
+  const repo = resolveRepo(line, implWorker.repo);
+  const repoName = repo ? repo.name : "primary";
+  const repoUrl = repo ? repo.url : null;
   const worker = { id, lineId: line.id, name,
-    role: "validator", validates: implWorker.id, persona: implWorker.persona || "backend", kind: "standard",
+    role: "validator", validates: implWorker.id, persona: implWorker.persona || "backend",
+    kind: "standard", repo: repoName,
     prompt: validatorBrief(implWorker.name, reportText(implWorker.transcript), criteria,
-      implWorker.persona || "backend", id, implWorker.id, line.id, line.repoUrl),
+      implWorker.persona || "backend", id, implWorker.id, line.id, repoName, repoUrl),
     sessionId: null, worktreePath: implWorker.worktreePath, branch: implWorker.branch,
     status: "running", stopRequested: false, child: null, transcript: [] };
   line.workers.set(id, worker);
@@ -884,6 +957,7 @@ const server = http.createServer((req, res) => {
       }
       const line = { id, name, sessionId: null, workdir, status: "standby",
         repoUrl, started: false, planApproved: false, workers: new Map(),
+        repos: new Map(),
         inventory: new Map(),
         queue: [], clients: new Set(), transcript: [] };
       lines.set(id, line);
@@ -1049,6 +1123,40 @@ const server = http.createServer((req, res) => {
     return json(res, 202, { killed: true });
   }
 
+  if (parts[0] === "api" && parts[1] === "protocol" && parts[2] === "lines"
+    && parts[4] === "repos" && (req.method === "GET" || req.method === "POST")) {
+    const line = lines.get(parts[3]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    if (req.method === "GET") {
+      return json(res, 200, { repos: repoList(line).map((r) => ({
+        name: r.name, url: r.url, path: r.path })) });
+    }
+    readBody(req, (err, body) => {
+      if (err || !body || typeof body.name !== "string" || !body.name.trim()
+        || typeof body.url !== "string" || !body.url.trim()) {
+        return json(res, 400, { error: "expected {name, url}" });
+      }
+      const name = body.name.trim();
+      const sName = sanitizeName(name);
+      if (!sName || sName === "primary") {
+        return json(res, 400, { error: "repo name must contain [a-zA-Z0-9-] and must not be 'primary'" });
+      }
+      if (!line.repos) line.repos = new Map();
+      if (line.repos.has(sName)) {
+        return json(res, 409, { error: `repo '${sName}' is already registered` });
+      }
+      const dest = path.join(LINES_DIR, line.id, "repos", sName);
+      const clone = spawnSync("git", ["clone", body.url.trim(), dest], { encoding: "utf8" });
+      if (clone.error) return json(res, 500, { error: `git is not available: ${clone.error.message}` });
+      if (clone.status !== 0) return json(res, 500, { error: "git clone failed", stderr: clone.stderr });
+      line.repos.set(sName, { name: sName, url: body.url.trim(), path: dest });
+      saveLine(line);
+      slog("info", "repo.registered", { lineId: line.id, name: sName, url: body.url.trim() });
+      json(res, 201, { name: sName, path: dest });
+    });
+    return;
+  }
+
   if (parts[0] === "api" && parts[1] === "protocol" && parts[2] === "lines" && parts[4] === "workers"
     && (req.method === "GET" || req.method === "POST")) {
     const line = lines.get(parts[3]);
@@ -1071,6 +1179,12 @@ const server = http.createServer((req, res) => {
       if (!PERSONAS.includes(persona)) {
         return json(res, 400, { error: `persona must be one of: ${PERSONAS.join(", ")}` });
       }
+      const repoName = body.repo === undefined || body.repo === null || body.repo === ""
+        ? "primary" : body.repo;
+      const repo = resolveRepo(line, repoName);
+      if (!repo) {
+        return json(res, 404, { error: `no such repo: '${repoName}'. Register it first with POST /api/protocol/lines/${line.id}/repos` });
+      }
       for (const w of line.workers.values()) {
         if (w.name === body.name) return json(res, 409, { error: `worker '${body.name}' already exists` });
       }
@@ -1081,24 +1195,26 @@ const server = http.createServer((req, res) => {
       if (!sName) return json(res, 400, { error: "worker name must contain [a-zA-Z0-9-]" });
       const id = crypto.randomUUID();
       const branch = `${line.id.slice(0, 8)}/${sName}`;
-      const worktreePath = path.join(LINES_DIR, "worktrees", line.id, sName);
+      const worktreePath = repo.name === "primary"
+        ? path.join(LINES_DIR, "worktrees", line.id, sName)
+        : path.join(LINES_DIR, "worktrees", line.id, repo.name, sName);
       fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
-      const wt = spawnSync("git", ["-C", line.workdir, "worktree", "add", "-b", branch, worktreePath],
+      const wt = spawnSync("git", ["-C", repo.path, "worktree", "add", "-b", branch, worktreePath],
         { encoding: "utf8" });
       if (wt.error) return json(res, 500, { error: `git is not available: ${wt.error.message}` });
       if (wt.status !== 0) return json(res, 500, { error: "git worktree add failed", stderr: wt.stderr });
       const worker = { id, lineId: line.id, name: body.name,
-        role: "implementor", validates: null, persona, kind: "standard",
-        prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, line.repoUrl),
+        role: "implementor", validates: null, persona, kind: "standard", repo: repo.name,
+        prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo),
         sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
         child: null, transcript: [] };
       line.workers.set(id, worker);
       saveLine(line);
       slog("info", "worker.spawned", { lineId: line.id, workerId: id,
-        name: body.name, persona, branch });
+        name: body.name, persona, branch, repo: repo.name, repoUrl: repo.url || undefined });
       spawnWorker(line, worker, worker.prompt, IMPL_MODEL);
-      broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona } });
-      json(res, 201, { workerId: id, branch, worktree: worktreePath });
+      broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona, repo: repo.name } });
+      json(res, 201, { workerId: id, branch, worktree: worktreePath, repo: repo.name });
     });
     return;
   }
@@ -1179,10 +1295,10 @@ const server = http.createServer((req, res) => {
       if (err || !body || typeof body.prompt !== "string" || !body.prompt.trim()) {
         return json(res, 400, { error: "expected {prompt}" });
       }
-      const branches = [...line.workers.values()]
+      const branchEntries = [...line.workers.values()]
         .filter((w) => w.role === "implementor" && w.kind !== "integration")
-        .map((w) => w.branch);
-      if (!branches.length) return json(res, 409, { error: "no feature branches to integrate" });
+        .map((w) => ({ repo: w.repo || "primary", branch: w.branch }));
+      if (!branchEntries.length) return json(res, 409, { error: "no feature branches to integrate" });
       let name = "integration-validator";
       let n = 2;
       while ([...line.workers.values()].some((w) => w.name === name)) {
@@ -1198,17 +1314,20 @@ const server = http.createServer((req, res) => {
       if (wt.error) return json(res, 500, { error: `git is not available: ${wt.error.message}` });
       if (wt.status !== 0) return json(res, 500, { error: "git worktree add failed", stderr: wt.stderr });
       const worker = { id, lineId: line.id, name, kind: "integration",
-        role: "validator", validates: null, persona: "backend",
-        prompt: integrationValidatorBrief(line, branches, body.prompt, id, line.repoUrl),
+        role: "validator", validates: null, persona: "backend", repo: "primary",
+        prompt: integrationValidatorBrief(line, branchEntries, body.prompt, id, repoList(line)),
         sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
         child: null, transcript: [] };
       line.workers.set(id, worker);
       saveLine(line);
-      slog("info", "integration.spawned", { lineId: line.id, validatorId: id, branches });
+      slog("info", "integration.spawned", { lineId: line.id, validatorId: id,
+        branches: branchEntries.map((e) => `${e.repo}:${e.branch}`) });
       broadcast(line, "worker_spawned", { worker: { id, name, branch, status: worker.status,
         role: worker.role, validates: null, persona: worker.persona, kind: "integration" } });
       spawnWorker(line, worker, worker.prompt, VAL_MODEL);
-      json(res, 201, { validatorId: id, branch, branches, worktree: worktreePath });
+      json(res, 201, { validatorId: id, branch,
+        branches: branchEntries.map((e) => ({ repo: e.repo, branch: e.branch })),
+        worktree: worktreePath });
     });
     return;
   }
@@ -1409,7 +1528,10 @@ function loadLines() {
           role: w.role === "validator" && w.kind === "integration" ? "validator" : "implementor",
           validates: null, prompt: null, kind: w.kind || "standard", verdict: w.verdict || null,
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
-          sessionId: w.sessionId, worktreePath: path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name)),
+          repo: w.repo || "primary",
+          sessionId: w.sessionId,
+          worktreePath: w.worktreePath
+            || path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name)),
           branch: w.branch, status: w.status === "running" ? "stopped" : w.status,
           stopRequested: false, child: null, transcript: [] });
       }
@@ -1420,9 +1542,11 @@ function loadLines() {
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
           role: "validator", validates: w.validates, prompt: null, kind: w.kind || "standard", verdict: w.verdict || null,
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
+          repo: w.repo || (impl ? impl.repo : "primary"),
           sessionId: w.sessionId,
-          worktreePath: impl ? impl.worktreePath
-            : path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name)),
+          worktreePath: w.worktreePath
+            || (impl ? impl.worktreePath
+              : path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name))),
           branch: w.branch,
           status: w.status === "running" ? "stopped" : w.status,
           stopRequested: false, child: null, transcript: [] });
@@ -1435,6 +1559,8 @@ function loadLines() {
       }
       const line = { id: meta.id, name: meta.name, sessionId: meta.sessionId,
         repoUrl: meta.repoUrl || null,
+        repos: new Map((meta.repos || []).map((r) => [r.name,
+          { name: r.name, url: r.url, path: r.path }])),
         workdir: path.join(LINES_DIR, entry.name),
         status: started ? "idle" : "standby", queue: [],
         started,

@@ -42,16 +42,25 @@ until approval.
 On approval the planner spawns workers by calling the router's protocol API
 (agents reach it with curl from bash):
 
-- `POST /api/protocol/lines/:id/workers {name, persona, prompt}` — spawn a
+- `POST /api/protocol/lines/:id/workers {name, persona, repo, prompt}` — spawn a
   worker (role implementor). Persona: `backend` (architecture, data, APIs,
   logic — the default) or `frontend` (UI, pages, interaction); the persona
   selects the worker's brief (priorities and verification approach), and the
   validator spawned after the implementor inherits the same persona with the
   matching validation focus (frontend validators run headless UI tests with
-  the playwright tools). 409 before plan approval, on a duplicate worker name,
-  or past the cap of 8 workers per line. Each worker runs in its own git
-  worktree on branch `<lineIdPrefix>/<name>`, with no shared context with the
-  planner: worker prompts must be self-contained.
+  the playwright tools). The optional `repo` field selects which of the
+  line's repositories the worker works in (default `primary`). 409 before
+  plan approval, on a duplicate worker name, or past the cap of 8 workers
+  per line; 404 for an unregistered repo name. Each worker runs in its own
+  git worktree of its repo on branch `<lineIdPrefix>/<name>`, with no shared
+  context with the planner: worker prompts must be self-contained.
+- `GET /api/protocol/lines/:id/repos` / `POST /api/protocol/lines/:id/repos
+  {name, url}` — the line's repository registry. A line works across several
+  repositories: the line workdir is the implicit `primary` repo, and the
+  planner registers additional repos (the router clones them under
+  `lines/<lineId>/repos/<name>`). Remotes are resolved at spawn time
+  (`git remote get-url origin`), so an origin the planner added later is
+  still detected.
 - `GET /api/protocol/lines/:id/workers` — worker statuses, including role
   (implementor/validator) and which implementor a validator validates
   (planner polling fallback).
@@ -151,11 +160,11 @@ loop). Only the integration validator runs integration tests locally.
 
 ### Worktree discipline
 
-Every implementor works exclusively in its own git worktree and must
-never use the shared checkout of the line. Each implementor reports
-the location of its worktree (`git rev-parse --show-toplevel`) in its
-final report; the planner passes that location to the validator, and
-the validator checks the work in that same worktree.
+Every implementor works exclusively in its own git worktree of its assigned
+repository and must never use the shared checkout of the line. Each
+implementor reports the location of its worktree (`git rev-parse
+--show-toplevel`) in its final report; the planner passes that location to
+the validator, and the validator checks the work in that same worktree.
 
 Independent tasks are spawned in parallel as parallel processes. Worker output
 streams to the UI live, drawn as nodes connected to the planner node. When a
@@ -231,6 +240,9 @@ main/master branch - merging is the integration validator's job:
 - The integration validator gets its own worktree on a fresh
   `integration/<name>-<id>` branch created from main. It merges every feature
   branch there (resolving conflicts), never touching main or the remote.
+  When the line works across several repositories, it makes its own local
+  copies of the non-primary repos inside its workdir and merges their
+  feature branches there the same way - never pushing to any remote.
 - It runs all acceptance tests, and for EVERY use case records a video of the
   test running (playwright `video: 'on'`, files under `evidence/` in its
   workdir), registering each one with
