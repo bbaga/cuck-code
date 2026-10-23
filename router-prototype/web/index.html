@@ -9,8 +9,14 @@
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
-  body { margin: 0; display: flex; min-height: 100vh;
+  body { margin: 0; display: flex; flex-direction: column; min-height: 100vh;
     font-family: system-ui, sans-serif; background: #111418; color: #d8dee6; }
+  #topbar { display: flex; gap: 6px; padding: 10px 16px; background: #161a20;
+    border-bottom: 1px solid #262b33; flex-shrink: 0; }
+  .tabBtn { padding: 8px 18px; background: transparent; color: #8fa3bd; border: 0;
+    border-radius: 4px; cursor: pointer; font-size: .85rem; }
+  .tabBtn.active { background: #182335; color: #d8dee6; outline: 1px solid #2d6cdf; }
+  #content { display: flex; flex: 1; min-height: 0; }
   #sidebar { width: 280px; padding: 24px; border-right: 1px solid #262b33;
     background: #161a20; flex-shrink: 0; }
   #sidebar h1 { font-size: 1.1rem; margin: 0 0 16px; }
@@ -21,7 +27,7 @@
   #lines { flex: 1; padding: 24px; }
   .card { border: 1px solid #262b33; border-radius: 8px; background: #161a20;
     display: flex; flex-direction: column; width: 100%;
-    max-height: calc(100vh - 48px); }
+    max-height: calc(100vh - 110px); }
   #empty { color: #6c7a8c; font-size: .9rem; }
   #linelist { margin-top: 20px; border-top: 1px solid #262b33; padding-top: 12px; }
   .lineentry { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
@@ -64,12 +70,14 @@
   .badge { padding: 3px 10px; border-radius: 10px; background: #14331f;
     color: #58d68d; font-size: .75rem; }
   .graph { position: relative; border-bottom: 1px solid #262b33; overflow: hidden; }
-  .inventory { border-bottom: 1px solid #262b33; padding: 8px 16px;
-    max-height: 160px; overflow-y: auto; font-size: .78rem; }
-  .inventory .invHead { display: flex; align-items: center; gap: 8px;
-    color: #6c7a8c; margin-bottom: 6px; font-size: .72rem;
-    text-transform: uppercase; letter-spacing: .5px; }
-  .invRow { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .inventory { padding: 0; }
+  .pSection { border: 1px solid #262b33; border-radius: 8px; background: #161a20;
+    margin-bottom: 16px; padding: 12px 16px; }
+  .pHead { display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
+    font-weight: 600; }
+  .pHead .sub { color: #6c7a8c; font-size: .72rem; font-weight: 400; }
+  .pEmpty { color: #4a5563; font-size: .72rem; }
+  .invRow { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: .78rem; }
   .invRow .kind { color: #6c7a8c; width: 34px; flex-shrink: 0; }
   .invRow .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .invRow .by { color: #6c7a8c; flex-shrink: 0; font-size: .7rem; }
@@ -77,7 +85,7 @@
   .keepBtn { background: #14331f; color: #58d68d; }
   .keepBtn.kept { background: #58d68d; color: #10261a; }
   .killBtn { background: #4d1420; color: #ff8095; }
-  .invEmpty { color: #4a5563; font-size: .72rem; }
+  .pEmpty { color: #4a5563; font-size: .72rem; }
   .graph svg { position: absolute; inset: 0; }
   .graph svg .edge { stroke: #333c48; stroke-width: 1.5; }
   .gnode { position: absolute; display: flex; align-items: center; gap: 8px;
@@ -114,21 +122,48 @@
 </style>
 </head>
 <body>
+<div id="topbar">
+  <button id="tabLine" class="tabBtn active">Production line</button>
+  <button id="tabProcesses" class="tabBtn">Processes</button>
+</div>
+<div id="content">
 <aside id="sidebar">
   <h1>cuck-code</h1>
   <button id="create">+ Create new line</button>
   <div id="linelist"></div>
 </aside>
 <main id="lines">
-  <div id="empty">Select or create a production line.</div>
+  <div id="lineView">
+    <div id="empty">Select or create a production line.</div>
+  </div>
+  <div id="processesView" hidden></div>
 </main>
+</div>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
   const cards = new Map();
   const linesEl = document.getElementById("lines");
+  const lineView = document.getElementById("lineView");
+  const processesView = document.getElementById("processesView");
   const listEl = document.getElementById("linelist");
   let selectedLine = null;
+  let currentTab = "line";
   const SVGNS = "http://www.w3.org/2000/svg";
+
+  function setTab(tab) {
+    currentTab = tab;
+    document.getElementById("tabLine").classList.toggle("active", tab === "line");
+    document.getElementById("tabProcesses").classList.toggle("active", tab === "processes");
+    lineView.hidden = tab !== "line";
+    processesView.hidden = tab !== "processes";
+    if (tab === "processes") pollInventory();
+    if (tab === "line" && selectedLine !== null) {
+      const st = cards.get(selectedLine);
+      if (st) renderGraph(st);
+    }
+  }
+  document.getElementById("tabLine").addEventListener("click", () => setTab("line"));
+  document.getElementById("tabProcesses").addEventListener("click", () => setTab("processes"));
 
   mermaid.initialize({ startOnLoad: false, theme: "dark" });
 
@@ -361,28 +396,11 @@ window.addEventListener("DOMContentLoaded", () => {
     const send = document.createElement("button");
     send.textContent = "Send";
     row.append(input, send);
-    const inv = document.createElement("div");
-    inv.className = "inventory";
-    const invHead = document.createElement("div");
-    invHead.className = "invHead";
-    const invTitle = document.createElement("span");
-    invTitle.textContent = "Inventory";
-    invTitle.style.flex = "1";
-    const killAll = document.createElement("button");
-    killAll.className = "killBtn";
-    killAll.textContent = "Kill all";
-    killAll.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      await fetch("/api/lines/" + line.id + "/inventory/kill-all", { method: "POST" });
-    });
-    invHead.append(invTitle, killAll);
-    const invBody = document.createElement("div");
-    inv.append(invHead, invBody);
-    card.append(head, banner, plan, graph, inv, transcript, row);
-    linesEl.appendChild(card);
+    card.append(head, banner, plan, graph, transcript, row);
+    lineView.appendChild(card);
 
     const st = { id: line.id, dot, banner, transcript, input, send,
-      waiting, planBody, graph, approveBtn, badge, invBody,
+      waiting, planBody, graph, approveBtn, badge,
       plannerStatus: line.status, started: line.started === true,
       planContent: undefined, approved: false,
       workers: new Map(), workerTranscripts: new Map(),
@@ -530,6 +548,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   function selectLine(id) {
     selectedLine = id;
+    setTab("line");
     for (const st of cards.values()) {
       const show = st.id === id;
       st.card.style.display = show ? "flex" : "none";
@@ -543,63 +562,97 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function renderInventory(st, items) {
-    const body = st.invBody;
-    body.innerHTML = "";
-    if (!items.length) {
+  function inventoryRow(lineId, item) {
+    const row = document.createElement("div");
+    row.className = "invRow";
+    const kind = document.createElement("span");
+    kind.className = "kind";
+    kind.textContent = item.kind === "container" ? "ctr" : "proc";
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = item.name + (item.status === "running" ? "" : "  (" + item.status + ")");
+    nm.style.color = item.status === "running" ? "#d8dee6" : "#4a5563";
+    const by = document.createElement("span");
+    by.className = "by";
+    by.textContent = "by: " + (item.by === "planner" ? "planner"
+      : String(item.by).slice(0, 8));
+    const keep = document.createElement("button");
+    keep.className = "keepBtn" + (item.keep ? " kept" : "");
+    keep.textContent = item.keep ? "kept" : "keep";
+    keep.title = "Keep: survives stage end and line deletion until killed";
+    keep.addEventListener("click", async () => {
+      await fetch("/api/lines/" + lineId + "/inventory/" + item.id + "/keep", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keep: !item.keep }),
+      });
+      pollInventory();
+    });
+    const kill = document.createElement("button");
+    kill.className = "killBtn";
+    kill.textContent = "Kill";
+    kill.disabled = item.status !== "running";
+    kill.addEventListener("click", async () => {
+      await fetch("/api/lines/" + lineId + "/inventory/" + item.id + "/kill", { method: "POST" });
+      pollInventory();
+    });
+    row.append(kind, nm, by, keep, kill);
+    return row;
+  }
+
+  function renderProcesses(snapshots) {
+    processesView.innerHTML = "";
+    if (!snapshots.length) {
       const e = document.createElement("div");
-      e.className = "invEmpty";
-      e.textContent = "no processes or containers started";
-      body.appendChild(e);
+      e.className = "pEmpty";
+      e.textContent = "No production lines.";
+      processesView.appendChild(e);
       return;
     }
-    for (const item of items) {
-      const row = document.createElement("div");
-      row.className = "invRow";
-      const kind = document.createElement("span");
-      kind.className = "kind";
-      kind.textContent = item.kind === "container" ? "ctr" : "proc";
+    for (const { line, items } of snapshots) {
+      const section = document.createElement("div");
+      section.className = "pSection";
+      const head = document.createElement("div");
+      head.className = "pHead";
       const nm = document.createElement("span");
-      nm.className = "nm";
-      nm.textContent = item.name + (item.status === "running" ? "" : "  (" + item.status + ")");
-      nm.style.color = item.status === "running" ? "#d8dee6" : "#4a5563";
-      const by = document.createElement("span");
-      by.className = "by";
-      by.textContent = "by: " + (item.by === "planner" ? "planner"
-        : String(item.by).slice(0, 8));
-      const keep = document.createElement("button");
-      keep.className = "keepBtn" + (item.keep ? " kept" : "");
-      keep.textContent = item.keep ? "kept" : "keep";
-      keep.title = "Keep: survives stage end and line deletion until killed";
-      keep.addEventListener("click", async () => {
-        await fetch("/api/lines/" + st.id + "/inventory/" + item.id + "/keep", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ keep: !item.keep }),
-        });
+      nm.textContent = line.name;
+      const sub = document.createElement("span");
+      sub.className = "sub";
+      const running = items.filter((i) => i.status === "running").length;
+      sub.textContent = items.length + " items, " + running + " running";
+      const killAll = document.createElement("button");
+      killAll.className = "killBtn";
+      killAll.style.marginLeft = "auto";
+      killAll.textContent = "Kill all";
+      killAll.addEventListener("click", async () => {
+        await fetch("/api/lines/" + line.id + "/inventory/kill-all", { method: "POST" });
         pollInventory();
       });
-      const kill = document.createElement("button");
-      kill.className = "killBtn";
-      kill.textContent = "Kill";
-      kill.disabled = item.status !== "running";
-      kill.addEventListener("click", async () => {
-        await fetch("/api/lines/" + st.id + "/inventory/" + item.id + "/kill", { method: "POST" });
-        pollInventory();
-      });
-      row.append(kind, nm, by, keep, kill);
-      body.appendChild(row);
+      head.append(nm, sub, killAll);
+      section.appendChild(head);
+      if (!items.length) {
+        const e = document.createElement("div");
+        e.className = "pEmpty";
+        e.textContent = "No processes or containers started.";
+        section.appendChild(e);
+      } else {
+        for (const item of items) section.appendChild(inventoryRow(line.id, item));
+      }
+      processesView.appendChild(section);
     }
   }
 
   async function pollInventory() {
+    if (currentTab !== "processes") return;
+    const snapshots = [];
     for (const st of cards.values()) {
       try {
         const res = await fetch("/api/lines/" + st.id + "/inventory");
         if (!res.ok) continue;
         const { items } = await res.json();
-        renderInventory(st, items);
+        snapshots.push({ line: { id: st.id, name: st.entry ? st.entry.querySelector(".lname").textContent : st.id }, items });
       } catch {}
     }
+    renderProcesses(snapshots);
   }
 
   async function pollPlans() {
