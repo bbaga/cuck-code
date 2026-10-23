@@ -353,6 +353,7 @@ window.addEventListener("DOMContentLoaded", () => {
       setStatus(state.status);
       renderTranscript(st);
     });
+    es.addEventListener("status", (e) => setStatus(JSON.parse(e.data).status));
     es.addEventListener("entry", (e) => {
       const entry = JSON.parse(e.data);
       st.plannerTranscript.push(entry);
