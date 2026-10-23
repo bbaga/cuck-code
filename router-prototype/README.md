@@ -225,6 +225,21 @@ main/master branch - merging is the integration validator's job:
 - In the UI, clicking a validator node reveals an Evidence tab in the line
   toolbar; it lists every tested use case with the video recording underneath,
   streamed from `GET /api/lines/:id/evidence/:id/video`.
+
+### Where videos live and how they stream
+
+- Each evidence video is recorded by the integration validator inside its own
+  worktree: `router-prototype/lines/worktrees/<lineId>/integration-validator-<id8>/evidence/*.webm`
+  (the worker's workdir). The absolute file path is stored in
+  `lines/<lineId>/line.json`, so evidence survives restarts as long as the
+  worktree is not deleted.
+- The router streams the file from disk with HTTP range support
+  (`Accept-Ranges: bytes`, `206 Partial Content`, `416` for invalid ranges),
+  which browsers require for video seeking and streaming.
+- The evidence registration endpoint rejects unfinalized recordings
+  (0-byte or <1 KB files) - a webm is only playable after the browser
+  context that recorded it is closed, so the integration brief instructs
+  the worker to close the context BEFORE registering each video.
 - Integration workers, their branches, and evidence items persist across
   restarts.
 

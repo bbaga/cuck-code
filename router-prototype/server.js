@@ -508,18 +508,24 @@ Procedure:
 2. When all branches are merged, run ALL acceptance tests and verify
    everything works together. Build and run the project if needed.
 3. For EACH use case you test, record a video of the test case running.
-   Use playwright with video recording enabled, for example a test
-   file with a context that has video: 'on', or:
-   npx playwright test --video=on
+   Use playwright with video recording enabled: in a playwright test use
+   video: 'on' (or npx playwright test --video=on); in a raw playwright
+   script enable recordVideo on the browser context, for example
+   browser.newContext({ recordVideo: { dir: 'evidence' } }).
    Save each video as a separate file under evidence/ in your workdir
    (for example evidence/use-case-login.webm).
-4. Register every evidence video with the router:
+4. IMPORTANT: close the browser context (or let the playwright
+   test run finish) BEFORE you register the video file. A video that
+   is still recording is not finalized: it has no duration and will
+   not play. Register only files that are complete (usually larger
+   than 10 KB).
+5. Register every evidence video with the router:
    curl -s -X POST http://localhost:${PORT}/api/protocol/workers/${workerId}/evidence \
      -H 'Content-Type: application/json' \
      -d '{"useCase":"<one line describing the use case>","file":"evidence/<file>.webm"}'
    The file path is relative to your workdir. Register each use case
    as you complete it.
-5. Reply with an INTEGRATION REPORT: branches merged, conflicts
+6. Reply with an INTEGRATION REPORT: branches merged, conflicts
    resolved (per branch, one line), acceptance test results, the list
    of registered evidence use cases, then a final line
    "VERDICT: PASS" or "VERDICT: FAIL".
@@ -1200,6 +1206,9 @@ const server = http.createServer((req, res) => {
         return json(res, 400, { error: "file must be inside your workdir" });
       }
       if (!fs.existsSync(abs)) return json(res, 400, { error: "no such file: " + body.file });
+      const stat = fs.statSync(abs);
+      if (stat.size === 0) return json(res, 400, { error: "video file is empty (0 bytes) - recording was never finalized. Close the browser context before registering." });
+      if (stat.size < 1024) return json(res, 400, { error: "video file is suspiciously small (" + stat.size + " bytes) - register only finalized recordings" });
       const id = crypto.randomUUID();
       if (!line.evidence) line.evidence = new Map();
       line.evidence.set(id, { id, useCase: body.useCase.trim(), path: abs,
@@ -1230,7 +1239,32 @@ const server = http.createServer((req, res) => {
     const item = (line.evidence || new Map()).get(parts[4]);
     if (!item) return json(res, 404, { error: "no such evidence" });
     if (!fs.existsSync(item.path)) return json(res, 404, { error: "evidence file is gone" });
-    res.writeHead(200, { "Content-Type": "video/webm", "Cache-Control": "no-cache" });
+    const size = fs.statSync(item.path).size;
+    const range = req.headers.range;
+    if (range) {
+      const m = range.match(/bytes=(\d+)-(\d*)/);
+      const start = m ? Number(m[1]) : 0;
+      const end = (m && m[2]) ? Math.min(Number(m[2]), size - 1) : size - 1;
+      if (start >= size) {
+        res.writeHead(416, { "Content-Range": `bytes */${size}` });
+        return res.end();
+      }
+      res.writeHead(206, {
+        "Content-Type": "video/webm",
+        "Content-Length": end - start + 1,
+        "Content-Range": `bytes ${start}-${end}/${size}`,
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-cache",
+      });
+      fs.createReadStream(item.path, { start, end }).pipe(res);
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "video/webm",
+      "Content-Length": size,
+      "Accept-Ranges": "bytes",
+      "Cache-Control": "no-cache",
+    });
     fs.createReadStream(item.path).pipe(res);
     return;
   }
