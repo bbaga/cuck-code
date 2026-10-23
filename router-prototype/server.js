@@ -698,7 +698,8 @@ function spawnValidator(line, implWorker, criteria) {
   slog("info", "validator.spawned", { lineId: line.id, validatorId: id,
     implementorId: implWorker.id, persona: worker.persona });
   broadcast(line, "worker_spawned", { worker: { id, name, branch: worker.branch,
-    status: worker.status, role: worker.role, persona: worker.persona } });
+    status: worker.status, role: worker.role, validates: worker.validates,
+    persona: worker.persona } });
   spawnWorker(line, worker, worker.prompt, VAL_MODEL);
 }
 
@@ -944,7 +945,7 @@ const server = http.createServer((req, res) => {
       slog("info", "worker.spawned", { lineId: line.id, workerId: id,
         name: body.name, persona, branch });
       spawnWorker(line, worker, worker.prompt, IMPL_MODEL);
-      broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, persona } });
+      broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona } });
       json(res, 201, { workerId: id, branch, worktree: worktreePath });
     });
     return;
@@ -1075,7 +1076,7 @@ When done, reply with a report: what you changed, files changed, how you verifie
       planApproved: line.planApproved,
       workers: [...line.workers.values()].map((w) => ({
         id: w.id, name: w.name, status: w.status, branch: w.branch, role: w.role,
-        persona: w.persona || "backend",
+        validates: w.validates, persona: w.persona || "backend",
       })) });
     req.on("close", () => {
       line.clients.delete(res);

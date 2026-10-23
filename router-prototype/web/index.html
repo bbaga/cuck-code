@@ -86,7 +86,7 @@
   .keepBtn { background: #14331f; color: #58d68d; }
   .keepBtn.kept { background: #58d68d; color: #10261a; }
   .killBtn { background: #4d1420; color: #ff8095; }
-  .graph svg { position: absolute; inset: 0; }
+  .graph svg { display: block; }
   .graph svg .edge { stroke: #333c48; stroke-width: 1.5; }
   .gnode { position: absolute; display: flex; align-items: center; gap: 8px;
     padding: 0 10px; height: 36px; border: 1px solid #333c48; border-radius: 8px;
@@ -215,24 +215,64 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  function workerNode(st, w, x, y, width, withEdges) {
+    const validator = (w.role || "implementor") === "validator";
+    const n = document.createElement("div");
+    n.className = "gnode worker w-" + w.status + (validator ? " w-validator" : "")
+      + (st.selected === w.id ? " sel" : "");
+    n.style.left = x + "px";
+    n.style.top = y + "px";
+    n.style.width = width + "px";
+    const nm = document.createElement("span");
+    nm.textContent = w.name;
+    nm.style.overflow = "hidden";
+    nm.style.textOverflow = "ellipsis";
+    nm.style.whiteSpace = "nowrap";
+    const tag = document.createElement("span");
+    tag.className = "persona-chip p-" + (w.persona || "backend");
+    tag.textContent = validator ? "val" : (w.persona || "backend");
+    n.append(tag, nm);
+    const d = document.createElement("span");
+    d.className = "dot " + w.status;
+    n.append(d);
+    if (w.status === "running") {
+      const stop = document.createElement("button");
+      stop.className = "stopBtn";
+      stop.textContent = "Stop";
+      stop.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        await fetch("/api/protocol/workers/" + w.id + "/stop", { method: "POST" });
+      });
+      n.appendChild(stop);
+    }
+    n.addEventListener("click", () => selectNode(st, w.id));
+    return n;
+  }
+
   function renderGraph(st) {
-    const ws = [...st.workers.values()];
-    const h = Math.max(140, ws.length ? 14 + (ws.length - 1) * 46 + 36 + 14 : 140);
+    const impls = [...st.workers.values()].filter((w) => (w.role || "implementor") !== "validator");
+    const vals = [...st.workers.values()].filter((w) => (w.role || "implementor") === "validator");
+    const rows = Math.max(impls.length, vals.length, 1);
+    const h = Math.max(140, 14 + (rows - 1) * 46 + 36 + 14);
     const graph = st.graph;
     graph.innerHTML = "";
     const W = graph.clientWidth || 440;
+    const plannerW = 92, plannerX = 12;
+    const nodeW = 190;
+    const implX = plannerX + plannerW + 46;
+    const valX = implX + nodeW + 46;
+    const innerW = Math.max(W, valX + nodeW + 12);
     const inner = document.createElement("div");
     inner.style.position = "relative";
     inner.style.height = h + "px";
-    graph.appendChild(inner);
+    inner.style.width = innerW + "px";
     const svg = document.createElementNS(SVGNS, "svg");
+    svg.setAttribute("width", innerW);
+    svg.setAttribute("height", h);
     inner.appendChild(svg);
-
-    const plannerW = 92, plannerX = 12;
+    graph.appendChild(inner);
     const plannerY = Math.round(h / 2 - 18);
-    const workerX = Math.max(plannerX + plannerW + 40, W - 208);
-    const workerW = 196;
-    inner.style.width = Math.max(W, workerX + workerW + 12) + "px";
+    const implY = (i) => 14 + i * 46;
 
     const pn = document.createElement("div");
     pn.className = "gnode planner" + (st.selected === null ? " sel" : "");
@@ -247,46 +287,26 @@ window.addEventListener("DOMContentLoaded", () => {
     pn.addEventListener("click", () => selectNode(st, null));
     inner.appendChild(pn);
 
-    ws.forEach((w, i) => {
-      const y = 14 + i * 46;
+    const edge = (x1, y1, x2, y2) => {
       const line = document.createElementNS(SVGNS, "line");
-      line.setAttribute("x1", plannerX + plannerW);
-      line.setAttribute("y1", plannerY + 18);
-      line.setAttribute("x2", workerX);
-      line.setAttribute("y2", y + 18);
+      line.setAttribute("x1", x1);
+      line.setAttribute("y1", y1);
+      line.setAttribute("x2", x2);
+      line.setAttribute("y2", y2);
       line.setAttribute("class", "edge");
       svg.appendChild(line);
-      const validator = (w.role || "implementor") === "validator";
-      const n = document.createElement("div");
-      n.className = "gnode worker w-" + w.status + (validator ? " w-validator" : "")
-        + (st.selected === w.id ? " sel" : "");
-      n.style.left = workerX + "px";
-      n.style.top = y + "px";
-      n.style.width = workerW + "px";
-      const nm = document.createElement("span");
-      nm.textContent = (validator ? "validator: " : "") + w.name;
-      nm.style.overflow = "hidden";
-      nm.style.textOverflow = "ellipsis";
-      nm.style.whiteSpace = "nowrap";
-      const tag = document.createElement("span");
-      tag.className = "persona-chip p-" + (w.persona || "backend");
-      tag.textContent = w.persona || "backend";
-      n.append(tag, nm);
-      const d = document.createElement("span");
-      d.className = "dot " + w.status;
-      n.append(d);
-      if (w.status === "running") {
-        const stop = document.createElement("button");
-        stop.className = "stopBtn";
-        stop.textContent = "Stop";
-        stop.addEventListener("click", async (e) => {
-          e.stopPropagation();
-          await fetch("/api/protocol/workers/" + w.id + "/stop", { method: "POST" });
-        });
-        n.appendChild(stop);
-      }
-      n.addEventListener("click", () => selectNode(st, w.id));
-      inner.appendChild(n);
+    };
+
+    impls.forEach((w, i) => {
+      edge(plannerX + plannerW, plannerY + 18, implX, implY(i) + 18);
+      inner.appendChild(workerNode(st, w, implX, implY(i), nodeW));
+    });
+
+    vals.forEach((v, j) => {
+      const implIdx = impls.findIndex((w) => w.id === v.validates);
+      const fromY = implIdx !== -1 ? implY(implIdx) : plannerY;
+      edge(implX + nodeW, fromY + 18, valX, implY(j) + 18);
+      inner.appendChild(workerNode(st, v, valX, implY(j), nodeW));
     });
   }
 
