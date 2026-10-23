@@ -64,6 +64,20 @@
   .badge { padding: 3px 10px; border-radius: 10px; background: #14331f;
     color: #58d68d; font-size: .75rem; }
   .graph { position: relative; border-bottom: 1px solid #262b33; overflow: hidden; }
+  .inventory { border-bottom: 1px solid #262b33; padding: 8px 16px;
+    max-height: 160px; overflow-y: auto; font-size: .78rem; }
+  .inventory .invHead { display: flex; align-items: center; gap: 8px;
+    color: #6c7a8c; margin-bottom: 6px; font-size: .72rem;
+    text-transform: uppercase; letter-spacing: .5px; }
+  .invRow { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .invRow .kind { color: #6c7a8c; width: 34px; flex-shrink: 0; }
+  .invRow .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .invRow .by { color: #6c7a8c; flex-shrink: 0; font-size: .7rem; }
+  .invRow button { padding: 2px 8px; font-size: .7rem; }
+  .keepBtn { background: #14331f; color: #58d68d; }
+  .keepBtn.kept { background: #58d68d; color: #10261a; }
+  .killBtn { background: #4d1420; color: #ff8095; }
+  .invEmpty { color: #4a5563; font-size: .72rem; }
   .graph svg { position: absolute; inset: 0; }
   .graph svg .edge { stroke: #333c48; stroke-width: 1.5; }
   .gnode { position: absolute; display: flex; align-items: center; gap: 8px;
@@ -347,11 +361,28 @@ window.addEventListener("DOMContentLoaded", () => {
     const send = document.createElement("button");
     send.textContent = "Send";
     row.append(input, send);
-    card.append(head, banner, plan, graph, transcript, row);
+    const inv = document.createElement("div");
+    inv.className = "inventory";
+    const invHead = document.createElement("div");
+    invHead.className = "invHead";
+    const invTitle = document.createElement("span");
+    invTitle.textContent = "Inventory";
+    invTitle.style.flex = "1";
+    const killAll = document.createElement("button");
+    killAll.className = "killBtn";
+    killAll.textContent = "Kill all";
+    killAll.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await fetch("/api/lines/" + line.id + "/inventory/kill-all", { method: "POST" });
+    });
+    invHead.append(invTitle, killAll);
+    const invBody = document.createElement("div");
+    inv.append(invHead, invBody);
+    card.append(head, banner, plan, graph, inv, transcript, row);
     linesEl.appendChild(card);
 
     const st = { id: line.id, dot, banner, transcript, input, send,
-      waiting, planBody, graph, approveBtn, badge,
+      waiting, planBody, graph, approveBtn, badge, invBody,
       plannerStatus: line.status, started: line.started === true,
       planContent: undefined, approved: false,
       workers: new Map(), workerTranscripts: new Map(),
@@ -512,6 +543,65 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  function renderInventory(st, items) {
+    const body = st.invBody;
+    body.innerHTML = "";
+    if (!items.length) {
+      const e = document.createElement("div");
+      e.className = "invEmpty";
+      e.textContent = "no processes or containers started";
+      body.appendChild(e);
+      return;
+    }
+    for (const item of items) {
+      const row = document.createElement("div");
+      row.className = "invRow";
+      const kind = document.createElement("span");
+      kind.className = "kind";
+      kind.textContent = item.kind === "container" ? "ctr" : "proc";
+      const nm = document.createElement("span");
+      nm.className = "nm";
+      nm.textContent = item.name + (item.status === "running" ? "" : "  (" + item.status + ")");
+      nm.style.color = item.status === "running" ? "#d8dee6" : "#4a5563";
+      const by = document.createElement("span");
+      by.className = "by";
+      by.textContent = "by: " + (item.by === "planner" ? "planner"
+        : String(item.by).slice(0, 8));
+      const keep = document.createElement("button");
+      keep.className = "keepBtn" + (item.keep ? " kept" : "");
+      keep.textContent = item.keep ? "kept" : "keep";
+      keep.title = "Keep: survives stage end and line deletion until killed";
+      keep.addEventListener("click", async () => {
+        await fetch("/api/lines/" + st.id + "/inventory/" + item.id + "/keep", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ keep: !item.keep }),
+        });
+        pollInventory();
+      });
+      const kill = document.createElement("button");
+      kill.className = "killBtn";
+      kill.textContent = "Kill";
+      kill.disabled = item.status !== "running";
+      kill.addEventListener("click", async () => {
+        await fetch("/api/lines/" + st.id + "/inventory/" + item.id + "/kill", { method: "POST" });
+        pollInventory();
+      });
+      row.append(kind, nm, by, keep, kill);
+      body.appendChild(row);
+    }
+  }
+
+  async function pollInventory() {
+    for (const st of cards.values()) {
+      try {
+        const res = await fetch("/api/lines/" + st.id + "/inventory");
+        if (!res.ok) continue;
+        const { items } = await res.json();
+        renderInventory(st, items);
+      } catch {}
+    }
+  }
+
   async function pollPlans() {
     for (const st of cards.values()) {
       try {
@@ -565,6 +655,7 @@ window.addEventListener("DOMContentLoaded", () => {
   refresh();
   setInterval(refresh, 3000);
   setInterval(pollPlans, 3000);
+  setInterval(pollInventory, 3000);
 });
 </script>
 </body>

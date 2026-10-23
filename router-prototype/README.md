@@ -79,14 +79,21 @@ On approval the planner spawns workers by calling the router's protocol API
 
 Every stage labels its containers: workers set both
 `--label cuck.line=<lineId> --label cuck.worker=<workerId>`, the planner sets
-`--label cuck.line=<lineId>`. The router force-removes containers with a
-worker's label when that worker closes, and removes ALL containers with a
-line's label when the line is deleted (`DELETE /api/lines/:id`, exposed as a
-two-step Delete button in the UI) — the delete also kills the planner and all
-running workers, releases their UI test slots, closes their SSE streams, and
-removes the line's workdir and worktrees. On boot the router sweeps and
-removes every `cuck.worker`- and `cuck.line`-labeled container, cleaning up
-orphans from a crashed router. Unlabeled containers are never touched.
+`--label cuck.line=<lineId>`. Stages register background processes that
+outlive their commands: `POST /api/protocol/lines/:id/inventory` with
+`{kind: "process", pid, name}`. Nothing survives unless the user asks: each
+line keeps an inventory of its processes and containers (containers are
+auto-discovered from the labels; the UI panel shows every item with a keep
+toggle and a Kill button, plus Kill-all). Worker close, planner run close,
+and line deletion kill their items — skipping only items the user marked
+keep, which survive stage end and line deletion. A router restart sweeps and
+removes every labeled container (including kept ones); registered processes
+are not swept on restart (a pid may have been reused).
+
+`DELETE /api/lines/:id` (two-step Delete button in the UI) kills the planner
+and all running workers, releases their UI test slots, closes their SSE
+streams, removes the line's workdir and worktrees, and cleans the inventory
+per the keep rule. Unlabeled containers are never touched.
 
 Planner-to-worker prompts and worker reports use ASD-STE100 Simplified
 Technical English (the router injects the rule into both briefs): approved

@@ -47,8 +47,8 @@ function dockerRun(args, cb) {
   catch { return cb(null); }
   let out = "";
   child.stdout.on("data", (c) => { out += c; });
-  child.on("error", () => cb(null));
-  child.on("close", () => cb(out.trim()));
+  child.on("error", () => cb && cb(null));
+  child.on("close", () => cb && cb(out.trim()));
 }
 
 function removeContainers(filter, cb) {
@@ -66,6 +66,74 @@ function cleanupWorkerContainers(workerId) {
 
 function sweepWorkerContainers() {
   removeContainers("label=cuck.worker");
+}
+
+// ---- line inventory: processes and containers started by stages ----
+
+function reconcileInventory(line, cb) {
+  dockerRun(["ps", "-a", "--filter", `label=cuck.line=${line.id}`,
+    "--format", "{{.ID}}\t{{.Names}}\t{{.Label \"cuck.worker\"}}"], (out) => {
+    if (out != null) {
+      const seen = new Set();
+      for (const row of out.split("\n").filter(Boolean)) {
+        const [cid, cname, cworker] = row.split("\t");
+        seen.add(cid);
+        const existing = [...line.inventory.values()]
+          .find((i) => i.kind === "container" && i.ref === cid);
+        if (!existing) {
+          const id = crypto.randomUUID();
+          line.inventory.set(id, { id, kind: "container", name: cname || cid.slice(0, 12),
+            by: cworker || "planner", ref: cid, keep: false, status: "running",
+            startedAt: Date.now() });
+          saveLine(line);
+        }
+      }
+      for (const item of line.inventory.values()) {
+        if (item.kind === "container" && !seen.has(item.ref)) item.status = "stopped";
+      }
+    }
+    for (const item of line.inventory.values()) {
+      if (item.kind === "process" && item.status === "running") {
+        try { process.kill(item.ref, 0); } catch { item.status = "stopped"; }
+      }
+    }
+    cb && cb();
+  });
+}
+
+function killItem(item) {
+  if (item.status !== "running") return false;
+  if (item.kind === "container") {
+    dockerRun(["rm", "-f", item.ref]);
+  } else {
+    try { process.kill(item.ref, "SIGTERM"); } catch {}
+  }
+  item.status = "stopped";
+  item.keep = false;
+  return true;
+}
+
+function cleanupStage(line, by) {
+  // containers belonging to this stage, unless the user kept them
+  dockerRun(["ps", "-aq", "--filter", `label=cuck.line=${line.id}`,
+    "--format", "{{.ID}}\t{{.Label \"cuck.worker\"}}"], (out) => {
+    if (!out) return;
+    const kept = new Set([...line.inventory.values()]
+      .filter((i) => i.keep && i.kind === "container").map((i) => i.ref));
+    for (const row of out.split("\n").filter(Boolean)) {
+      const [cid, cworker] = row.split("\t");
+      if ((cworker || "planner") !== by) continue;
+      if (kept.has(cid)) continue;
+      dockerRun(["rm", "-f", cid]);
+    }
+  });
+  for (const item of line.inventory.values()) {
+    if (item.kind === "process" && item.by === by && item.status === "running" && !item.keep) {
+      try { process.kill(item.ref, "SIGTERM"); } catch {}
+      item.status = "stopped";
+    }
+  }
+  saveLine(line);
 }
 
 function frontendToolsBlock(workerId, implId, lineId) {
@@ -153,12 +221,19 @@ ${userPrompt}
    - or spawn a new implementor with a corrected prompt (new name).
    Use the workerId and session id given in each report.
 
-## Container hygiene
+## Container and process hygiene
 If you start any docker container, always set this label on it:
 --label cuck.line=${lineId}
-The router force-removes containers with this label when the factory
-line is deleted or the router restarts. Stop and remove your
-containers yourself when you finish with them (docker rm -f <name>).
+If you start a background process that outlives your commands (for
+example a dev server), register it:
+curl -s -X POST http://localhost:${port}/api/protocol/lines/${lineId}/inventory \\
+  -H 'Content-Type: application/json' \\
+  -d '{"kind":"process","pid":<pid>,"name":"<what it is>"}'
+The router kills registered processes and removes labeled containers
+when your run ends, when the factory line is deleted, and on router
+restart. Only an explicit user request keeps an item alive. Stop and
+remove your containers yourself when you finish with them
+(docker rm -f <name>).
 
 ## Language rule (ASD-STE100)
 Write every worker prompt and every written communication with
@@ -212,12 +287,19 @@ the changed pages when the work includes a user interface.`,
 
 function containersBlock(workerId, lineId) {
   return `
-## Container hygiene
+## Container and process hygiene
 If you start any docker container, always set both labels on it:
 --label cuck.line=${lineId} --label cuck.worker=${workerId}
-The router force-removes your containers when your run ends or when
-the factory line is deleted. Stop and remove your containers yourself
-when you finish with them (docker rm -f <name>).`;
+If you start a background process that outlives your commands (for
+example a dev server), register it:
+curl -s -X POST http://localhost:${PORT}/api/protocol/lines/${lineId}/inventory \\
+  -H 'Content-Type: application/json' \\
+  -d '{"kind":"process","pid":<pid>,"name":"<what it is>","worker":"${workerId}"}'
+The router kills registered processes and removes labeled containers
+when your run ends, when the factory line is deleted, and on router
+restart. Only an explicit user request keeps an item alive. Stop and
+remove your containers yourself when you finish with them
+(docker rm -f <name>).`;
 }
 
 function workerBrief(name, lineName, prompt, persona, workerId, lineId) {
@@ -297,6 +379,9 @@ function saveLine(line) {
     fs.writeFileSync(path.join(line.workdir, "line.json"),
       JSON.stringify({ id: line.id, name: line.name, sessionId: line.sessionId,
         started: line.started, planApproved: line.planApproved,
+        inventory: [...(line.inventory || new Map()).values()].map((i) => ({
+          id: i.id, kind: i.kind, name: i.name, by: i.by, ref: i.ref,
+          keep: i.keep, status: i.status })),
         workers: [...line.workers.values()].map((w) => ({
           id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch, status: w.status,
           role: w.role, validates: w.validates, persona: w.persona || "backend" })) }));
@@ -363,6 +448,7 @@ function pump(line) {
   child.on("close", (code) => {
     line.child = null;
     if (line.deleted) return;
+    cleanupStage(line, "planner");
     saveLine(line);
     if (code !== 0) {
       broadcast(line, "error", { message: stderr.slice(-500) || `vibe exited with code ${code}` });
@@ -445,7 +531,7 @@ function workerClosed(line, worker, code) {
   if (worker.stopRequested) worker.status = "stopped";
   else if (code === 0) worker.status = "completed";
   else worker.status = "failed";
-  cleanupWorkerContainers(worker.id);
+  cleanupStage(line, worker.id);
   if (uiSlots.held.has(worker.id) || uiSlots.waiters.some((w) => w.workerId === worker.id)) {
     releaseUiSlot(worker.id);
   }
@@ -523,6 +609,7 @@ const server = http.createServer((req, res) => {
       }
       const line = { id, name, sessionId: null, workdir, status: "standby",
         started: false, planApproved: false, workers: new Map(),
+        inventory: new Map(),
         queue: [], clients: new Set(), transcript: [] };
       lines.set(id, line);
       saveLine(line);
@@ -588,7 +675,21 @@ const server = http.createServer((req, res) => {
         releaseUiSlot(w.id);
       }
     }
-    removeContainers(`label=cuck.line=${line.id}`);
+    const keptRefs = new Set([...line.inventory.values()]
+      .filter((i) => i.keep && i.kind === "container").map((i) => i.ref));
+    dockerRun(["ps", "-aq", "--filter", `label=cuck.line=${line.id}`, "--format", "{{.ID}}"],
+      (out) => {
+        if (!out) return;
+        const kill = out.split(/\s+/).filter((c) => c && !keptRefs.has(c));
+        if (kill.length) dockerRun(["rm", "-f", ...kill]);
+      });
+    for (const item of line.inventory.values()) {
+      if (item.keep) continue;
+      if (item.kind === "process" && item.status === "running") {
+        try { process.kill(item.ref, "SIGTERM"); } catch {}
+        item.status = "stopped";
+      }
+    }
     for (const res2 of line.clients) { try { res2.end(); } catch {} }
     line.clients.clear();
     lines.delete(line.id);
@@ -596,6 +697,66 @@ const server = http.createServer((req, res) => {
       try { fs.rmSync(p, { recursive: true, force: true }); } catch {}
     }
     return json(res, 202, { deleted: true });
+  }
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "lines"
+    && parts[4] === "inventory") {
+    const line = lines.get(parts[3]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    readBody(req, (err, body) => {
+      if (err || !body || body.kind !== "process" || !Number.isInteger(body.pid)
+        || typeof body.name !== "string" || !body.name.trim()) {
+        return json(res, 400, { error: "expected {kind: 'process', pid, name}" });
+      }
+      try { process.kill(body.pid, 0); } catch {
+        return json(res, 400, { error: "no such process" });
+      }
+      const id = crypto.randomUUID();
+      line.inventory.set(id, { id, kind: "process", name: body.name.trim(),
+        by: typeof body.worker === "string" ? body.worker : "planner",
+        ref: body.pid, keep: false, status: "running", startedAt: Date.now() });
+      saveLine(line);
+      json(res, 201, { itemId: id });
+    });
+    return;
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "inventory") {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    return reconcileInventory(line, () =>
+      json(res, 200, { items: [...line.inventory.values()] }));
+  }
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "inventory"
+    && parts[4] === "kill-all") {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    let n = 0;
+    for (const item of line.inventory.values()) {
+      if (!item.keep && killItem(item)) n += 1;
+    }
+    saveLine(line);
+    return json(res, 202, { killed: n });
+  }
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "inventory"
+    && (parts[5] === "kill" || parts[5] === "keep")) {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    const item = line.inventory.get(parts[4]);
+    if (!item) return json(res, 404, { error: "no such item" });
+    if (parts[5] === "keep") {
+      return readBody(req, (err, body) => {
+        if (err || !body) return json(res, 400, { error: "expected {keep}" });
+        item.keep = !!body.keep;
+        saveLine(line);
+        json(res, 202, { keep: item.keep });
+      });
+    }
+    killItem(item);
+    saveLine(line);
+    return json(res, 202, { killed: true });
   }
 
   if (parts[0] === "api" && parts[1] === "protocol" && parts[2] === "lines" && parts[4] === "workers"
@@ -834,11 +995,16 @@ function loadLines() {
           stopRequested: false, child: null, transcript: [] });
       }
       const started = meta.started === true || !!meta.sessionId;
+      const inventory = new Map();
+      for (const i of meta.inventory || []) {
+        inventory.set(i.id, { id: i.id, kind: i.kind, name: i.name, by: i.by,
+          ref: i.ref, keep: !!i.keep, status: "stopped" });
+      }
       lines.set(meta.id, { id: meta.id, name: meta.name, sessionId: meta.sessionId,
         workdir: path.join(LINES_DIR, entry.name),
         status: started ? "idle" : "standby", queue: [],
         started,
-        planApproved: meta.planApproved === true, workers,
+        planApproved: meta.planApproved === true, workers, inventory,
         clients: new Set(), transcript: [] });
     } catch {}
   }
