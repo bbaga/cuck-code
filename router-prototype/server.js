@@ -30,11 +30,14 @@ ${userPrompt}
 3. When you receive PLAN APPROVED, spawn implementor workers with curl:
    curl -s -X POST http://localhost:${port}/api/protocol/lines/${lineId}/workers \\
      -H 'Content-Type: application/json' \\
-     -d '{"name":"<worker-name>","prompt":"<full instructions>"}'
+     -d '{"name":"<worker-name>","persona":"backend|frontend","prompt":"<full instructions>"}'
    Rules: spawn independent tasks in parallel (several curl calls);
    worker prompts must be SELF-CONTAINED (workers share no context
    with you): include the repo state, the task, file paths, acceptance
    criteria, and that they must commit their work in their worktree.
+   Choose the persona per task: "backend" for architecture, data,
+   APIs, and logic; "frontend" for user interfaces, pages, and
+   interaction. The validator of each worker uses the same persona.
    Worker names are unique per line. After spawning, end your turn and
    wait: worker completions arrive as new prompts (WORKER REPORT...).
 4. On each WORKER REPORT / FAILURE / STOPPED prompt: assess, then
@@ -74,10 +77,47 @@ implementors in ASD-STE100 Simplified Technical English:
 - Do not use idioms, metaphors, or jargon.`;
 }
 
-function workerBrief(name, lineName, prompt) {
+const PERSONAS = ["backend", "frontend"];
+
+const IMPL_PERSONA = {
+  backend: `Your persona: backend / architecture.
+Priorities:
+- Keep the architecture layered and the domain logic correct.
+- Keep the data model and its integrity correct. Keep API contracts
+  clear and stable.
+- Write error handling for every failure path you add.
+- Add tests: unit tests for logic, integration tests for contracts.
+Verify the work: run the build and the tests you added.`,
+  frontend: `Your persona: frontend / UX.
+Priorities:
+- Build a usable, accessible interface: semantic HTML, labels for
+  inputs, keyboard operation, sufficient contrast.
+- Keep the visual language consistent with the existing pages.
+- Make the layout responsive. Keep the state handling correct.
+Verify the work: run the app and check the rendering. Use the
+playwright browser tools (browser_navigate, browser_snapshot,
+browser_click) for a smoke pass of the pages you touched. Keep the
+browser console free of errors.`,
+};
+
+const VAL_PERSONA = {
+  backend: `Your validation persona: backend / architecture.
+Check with extra care: layer boundaries, the data model, API contract
+consistency, error paths, test coverage of the changed logic, and dead
+code.`,
+  frontend: `Your validation persona: frontend / UX.
+Check with extra care: correct rendering, layout at different widths,
+labels and keyboard access, console errors, and the flows a user
+performs. Run headless UI tests with the playwright browser tools on
+the changed pages when the work includes a user interface.`,
+};
+
+function workerBrief(name, lineName, prompt, persona) {
   return `You are implementor worker '${name}' on factory line '${lineName}'.
 You run inside your own git worktree - all work happens here, do not
 touch other directories. Commit your work with clear messages.
+
+${IMPL_PERSONA[persona] || IMPL_PERSONA.backend}
 
 Task from the planner:
 ${prompt}
@@ -92,10 +132,12 @@ changed, how you verified it, and any open issues. That report goes
 back to the planner verbatim.`;
 }
 
-function validatorBrief(implName, report, criteria) {
+function validatorBrief(implName, report, criteria, persona) {
   return `You are the VALIDATOR for the work of implementor '${implName}'.
 Your workdir is the implementor's git worktree. Do not change the
 implementation. You check the work only.
+
+${VAL_PERSONA[persona] || VAL_PERSONA.backend}
 
 The implementor reported:
 ${report}
@@ -142,7 +184,7 @@ function saveLine(line) {
         planApproved: line.planApproved,
         workers: [...line.workers.values()].map((w) => ({
           id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch, status: w.status,
-          role: w.role, validates: w.validates })) }));
+          role: w.role, validates: w.validates, persona: w.persona || "backend" })) }));
   } catch {}
 }
 
@@ -323,14 +365,14 @@ function spawnValidator(line, implWorker, criteria) {
   }
   const id = crypto.randomUUID();
   const worker = { id, lineId: line.id, name,
-    role: "validator", validates: implWorker.id,
-    prompt: validatorBrief(implWorker.name, reportText(implWorker.transcript), criteria),
+    role: "validator", validates: implWorker.id, persona: implWorker.persona || "backend",
+    prompt: validatorBrief(implWorker.name, reportText(implWorker.transcript), criteria, implWorker.persona),
     sessionId: null, worktreePath: implWorker.worktreePath, branch: implWorker.branch,
     status: "running", stopRequested: false, child: null, transcript: [] };
   line.workers.set(id, worker);
   saveLine(line);
   broadcast(line, "worker_spawned", { worker: { id, name, branch: worker.branch,
-    status: worker.status, role: worker.role } });
+    status: worker.status, role: worker.role, persona: worker.persona } });
   spawnWorker(line, worker, worker.prompt, VAL_MODEL);
 }
 
@@ -417,7 +459,7 @@ const server = http.createServer((req, res) => {
     if (req.method === "GET") {
       return json(res, 200, { workers: [...line.workers.values()].map((w) => ({
         id: w.id, name: w.name, status: w.status, sessionId: w.sessionId, branch: w.branch,
-        role: w.role, validates: w.validates,
+        role: w.role, validates: w.validates, persona: w.persona || "backend",
       })) });
     }
     if (!line.planApproved) return json(res, 409, { error: "plan not approved" });
@@ -425,6 +467,11 @@ const server = http.createServer((req, res) => {
       if (err || !body || typeof body.name !== "string" || !body.name
         || typeof body.prompt !== "string") {
         return json(res, 400, { error: "expected {name, prompt}" });
+      }
+      const persona = body.persona === undefined || body.persona === null
+        ? "backend" : body.persona;
+      if (!PERSONAS.includes(persona)) {
+        return json(res, 400, { error: `persona must be one of: ${PERSONAS.join(", ")}` });
       }
       for (const w of line.workers.values()) {
         if (w.name === body.name) return json(res, 409, { error: `worker '${body.name}' already exists` });
@@ -443,14 +490,14 @@ const server = http.createServer((req, res) => {
       if (wt.error) return json(res, 500, { error: `git is not available: ${wt.error.message}` });
       if (wt.status !== 0) return json(res, 500, { error: "git worktree add failed", stderr: wt.stderr });
       const worker = { id, lineId: line.id, name: body.name,
-        role: "implementor", validates: null,
-        prompt: workerBrief(body.name, line.name, body.prompt),
+        role: "implementor", validates: null, persona,
+        prompt: workerBrief(body.name, line.name, body.prompt, persona),
         sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
         child: null, transcript: [] };
       line.workers.set(id, worker);
       saveLine(line);
       spawnWorker(line, worker, worker.prompt, IMPL_MODEL);
-      broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role } });
+      broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, persona } });
       json(res, 201, { workerId: id, branch, worktree: worktreePath });
     });
     return;
@@ -528,6 +575,7 @@ When done, reply with a report: what you changed, files changed, how you verifie
       planApproved: line.planApproved,
       workers: [...line.workers.values()].map((w) => ({
         id: w.id, name: w.name, status: w.status, branch: w.branch, role: w.role,
+        persona: w.persona || "backend",
       })) });
     req.on("close", () => line.clients.delete(res));
     return;
@@ -577,6 +625,7 @@ function loadLines() {
         if (w.role === "validator") continue;
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
           role: "implementor", validates: null, prompt: null,
+          persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           sessionId: w.sessionId, worktreePath: path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name)),
           branch: w.branch, status: w.status === "running" ? "stopped" : w.status,
           stopRequested: false, child: null, transcript: [] });
@@ -587,6 +636,7 @@ function loadLines() {
         if (!impl) continue;
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
           role: "validator", validates: w.validates, prompt: null,
+          persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           sessionId: w.sessionId, worktreePath: impl.worktreePath, branch: w.branch,
           status: w.status === "running" ? "stopped" : w.status,
           stopRequested: false, child: null, transcript: [] });

@@ -38,11 +38,16 @@ approves it. The router blocks worker spawning until approval.
 On approval the planner spawns workers by calling the router's protocol API
 (agents reach it with curl from bash):
 
-- `POST /api/protocol/lines/:id/workers {name, prompt}` — spawn a worker
-  (role implementor). 409 before plan approval, on a duplicate worker name, or
-  past the cap of 8 workers per line. Each worker runs in its own git worktree
-  on branch `<lineIdPrefix>/<name>`, with no shared context with the planner:
-  worker prompts must be self-contained.
+- `POST /api/protocol/lines/:id/workers {name, persona, prompt}` — spawn a
+  worker (role implementor). Persona: `backend` (architecture, data, APIs,
+  logic — the default) or `frontend` (UI, pages, interaction); the persona
+  selects the worker's brief (priorities and verification approach), and the
+  validator spawned after the implementor inherits the same persona with the
+  matching validation focus (frontend validators run headless UI tests with
+  the playwright tools). 409 before plan approval, on a duplicate worker name,
+  or past the cap of 8 workers per line. Each worker runs in its own git
+  worktree on branch `<lineIdPrefix>/<name>`, with no shared context with the
+  planner: worker prompts must be self-contained.
 - `GET /api/protocol/lines/:id/workers` — worker statuses, including role
   (implementor/validator) and which implementor a validator validates
   (planner polling fallback).
