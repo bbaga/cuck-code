@@ -105,6 +105,8 @@
   .gnode.w-stopped { border-color: #6c7a8c; }
   .gnode.w-validator { border-color: #a78bfa; }
   .gnode.w-validator .dot { background: #a78bfa; }
+  .gnode.w-issue { border-color: #e5a04b; }
+  .gnode.w-issue .dot { background: #e5a04b; }
   .persona-chip { flex-shrink: 0; margin-right: 6px; padding: 1px 6px;
     border-radius: 8px; font-size: .65rem; text-transform: uppercase;
     letter-spacing: .4px; }
@@ -225,6 +227,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const validator = (w.role || "implementor") === "validator";
     const n = document.createElement("div");
     n.className = "gnode worker w-" + w.status + (validator ? " w-validator" : "")
+      + (w.verdict === "fail" ? " w-issue" : "")
       + (st.selected === w.id ? " sel" : "");
     n.style.left = x + "px";
     n.style.top = y + "px";
@@ -256,9 +259,11 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderGraph(st) {
-    const impls = [...st.workers.values()].filter((w) => (w.role || "implementor") !== "validator");
-    const vals = [...st.workers.values()].filter((w) => (w.role || "implementor") === "validator");
-    const rows = Math.max(impls.length, vals.length, 1);
+    const isVal = (w) => (w.role || "implementor") === "validator";
+    const impls = [...st.workers.values()].filter((w) => !isVal(w));
+    const vals = [...st.workers.values()].filter((w) => isVal(w) && w.kind !== "integration");
+    const ints = [...st.workers.values()].filter((w) => isVal(w) && w.kind === "integration");
+    const rows = Math.max(impls.length, vals.length, ints.length, 1);
     const h = Math.max(140, 14 + (rows - 1) * 46 + 36 + 14);
     const graph = st.graph;
     graph.innerHTML = "";
@@ -267,7 +272,8 @@ window.addEventListener("DOMContentLoaded", () => {
     const nodeW = 190;
     const implX = plannerX + plannerW + 46;
     const valX = implX + nodeW + 46;
-    const innerW = Math.max(W, valX + nodeW + 12);
+    const intX = valX + nodeW + 46;
+    const innerW = Math.max(W, intX + nodeW + 12);
     const inner = document.createElement("div");
     inner.style.position = "relative";
     inner.style.height = h + "px";
@@ -313,6 +319,11 @@ window.addEventListener("DOMContentLoaded", () => {
       const fromY = implIdx !== -1 ? implY(implIdx) : plannerY;
       edge(implX + nodeW, fromY + 18, valX, implY(j) + 18);
       inner.appendChild(workerNode(st, v, valX, implY(j), nodeW));
+    });
+
+    ints.forEach((iv, j) => {
+      edge(plannerX + plannerW, plannerY + 18, intX, implY(j) + 18);
+      inner.appendChild(workerNode(st, iv, intX, implY(j), nodeW));
     });
   }
 
@@ -516,9 +527,9 @@ window.addEventListener("DOMContentLoaded", () => {
       updateListEntry(st);
     });
     es.addEventListener("worker_status", (e) => {
-      const { workerId, status } = JSON.parse(e.data);
+      const { workerId, status, verdict } = JSON.parse(e.data);
       const w = st.workers.get(workerId);
-      if (w) w.status = status;
+      if (w) { w.status = status; if (verdict) w.verdict = verdict; }
       renderGraph(st);
       updateListEntry(st);
     });

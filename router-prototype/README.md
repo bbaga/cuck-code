@@ -227,3 +227,10 @@ main/master branch - merging is the integration validator's job:
   streamed from `GET /api/lines/:id/evidence/:id/video`.
 - Integration workers, their branches, and evidence items persist across
   restarts.
+
+The graph renders four tiers: planner -> implementors -> validators ->
+integration validators. When a validator or integration validator pushes
+back on a change (VERDICT: FAIL in its report), the router records the
+verdict and the node renders in an amber "issue found" state - visually
+distinct from the red error state (a worker that crashed) and from green
+completed. Verdicts persist across restarts.

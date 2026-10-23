@@ -560,7 +560,7 @@ function saveLine(line) {
         workers: [...line.workers.values()].map((w) => ({
           id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch, status: w.status,
           role: w.role, validates: w.validates, persona: w.persona || "backend",
-          kind: w.kind || "standard" })) }));
+          kind: w.kind || "standard", verdict: w.verdict || null })) }));
   } catch {}
 }
 
@@ -743,12 +743,18 @@ function workerClosed(line, worker, code) {
     releaseUiSlot(worker.id);
   }
   if (line.deleted) return;
-  broadcast(line, "worker_status", { workerId: worker.id, status: worker.status });
+  broadcast(line, "worker_status", { workerId: worker.id, status: worker.status,
+    verdict: worker.verdict || null });
   saveLine(line);
   const sid = worker.sessionId || "unknown";
   const report = reportText(worker.transcript);
+  if (worker.role === "validator") {
+    worker.verdict = /\bVERDICT:\s*FAIL\b/i.test(report) ? "fail"
+      : /\bVERDICT:\s*PASS\b/i.test(report) ? "pass" : null;
+  }
   slog("info", "worker.closed", { lineId: line.id, workerId: worker.id, name: worker.name,
-    role: worker.role, status: worker.status, reportChars: report.length,
+    role: worker.role, status: worker.status, verdict: worker.verdict || undefined,
+    reportChars: report.length,
     report: preview(report, 300) });
   if (worker.role === "validator" && worker.kind === "integration") {
     if (worker.status === "completed") {
@@ -1020,7 +1026,7 @@ const server = http.createServer((req, res) => {
       return json(res, 200, { workers: [...line.workers.values()].map((w) => ({
         id: w.id, name: w.name, status: w.status, sessionId: w.sessionId, branch: w.branch,
         role: w.role, validates: w.validates, persona: w.persona || "backend",
-        kind: w.kind || "standard",
+        kind: w.kind || "standard", verdict: w.verdict || null,
       })) });
     }
     if (!line.planApproved) return json(res, 409, { error: "plan not approved" });
@@ -1288,6 +1294,7 @@ When done, reply with a report: what you changed, files changed, how you verifie
       workers: [...line.workers.values()].map((w) => ({
         id: w.id, name: w.name, status: w.status, branch: w.branch, role: w.role,
         validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
+        verdict: w.verdict || null,
       })) });
     req.on("close", () => {
       line.clients.delete(res);
@@ -1341,7 +1348,7 @@ function loadLines() {
         if (w.role === "validator") continue;
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
           role: w.role === "validator" && w.kind === "integration" ? "validator" : "implementor",
-          validates: null, prompt: null, kind: w.kind || "standard",
+          validates: null, prompt: null, kind: w.kind || "standard", verdict: w.verdict || null,
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           sessionId: w.sessionId, worktreePath: path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name)),
           branch: w.branch, status: w.status === "running" ? "stopped" : w.status,
@@ -1352,7 +1359,7 @@ function loadLines() {
         const impl = workers.get(w.validates);
         if (!impl && w.kind !== "integration") continue;
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
-          role: "validator", validates: w.validates, prompt: null, kind: w.kind || "standard",
+          role: "validator", validates: w.validates, prompt: null, kind: w.kind || "standard", verdict: w.verdict || null,
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           sessionId: w.sessionId,
           worktreePath: impl ? impl.worktreePath
