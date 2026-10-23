@@ -62,6 +62,18 @@ On approval the planner spawns workers by calling the router's protocol API
   worker; 409 for validators, while the worker is running, or before it has a
   session. When the continued run finishes, the report and validation loop run
   again as usual.
+- `GET /api/protocol/workers/:id/port` — idempotent per-worker port allocation
+  (base `UI_PORT_BASE`, default 4100). Frontend workers serve their app on this
+  port (directly or in a docker container with `-p <port>:<containerPort>`) and
+  record it in `ui.port`; frontend validators read it to reach the app.
+- `POST /api/protocol/workers/:id/uitest` / `.../uitest/release` — UI test
+  slot semaphore (`UI_TEST_SLOTS`, default 1). Acquire long-polls up to 120 s
+  while other validators hold slots (408 on timeout); release is idempotent;
+  slots auto-release when a worker stops. Only running workers can acquire.
+  Validators that cannot acquire a slot are told to prefer parallel-safe
+  scenarios instead: unique ports, isolated containers or headless browsers,
+  no shared fixtures. Each worker session has its own playwright MCP server
+  and therefore its own browser.
 
 Planner-to-worker prompts and worker reports use ASD-STE100 Simplified
 Technical English (the router injects the rule into both briefs): approved

@@ -9,6 +9,67 @@ const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
 const AUTO_APPROVE = process.env.LINE_AUTO_APPROVE !== "0";
 const INDEX_HTML = path.join(__dirname, "web", "index.html");
 const WORKER_CAP = 8;
+const UI_PORT_BASE = Number(process.env.UI_PORT_BASE || 4100);
+const UI_TEST_SLOTS = Number(process.env.UI_TEST_SLOTS || 1);
+
+const portByWorker = new Map();
+const uiSlots = { held: new Set(), waiters: [] };
+
+function portFor(workerId) {
+  if (!portByWorker.has(workerId)) {
+    let p = UI_PORT_BASE + portByWorker.size;
+    while ([...portByWorker.values()].includes(p)) p += 1;
+    portByWorker.set(workerId, p);
+  }
+  return portByWorker.get(workerId);
+}
+
+function releaseUiSlot(workerId) {
+  uiSlots.held.delete(workerId);
+  for (let i = uiSlots.waiters.length - 1; i >= 0; i--) {
+    if (uiSlots.waiters[i].workerId === workerId) {
+      clearTimeout(uiSlots.waiters[i].timer);
+      const w = uiSlots.waiters.splice(i, 1)[0];
+      json(w.res, 409, { error: "worker stopped while waiting for a UI test slot" });
+    }
+  }
+  while (uiSlots.held.size < UI_TEST_SLOTS && uiSlots.waiters.length) {
+    const w = uiSlots.waiters.shift();
+    clearTimeout(w.timer);
+    uiSlots.held.add(w.workerId);
+    json(w.res, 200, { acquired: true });
+  }
+}
+
+function frontendToolsBlock(workerId, implId) {
+  return `
+## Browser, port, and docker tools (frontend persona)
+- Your session has its own playwright browser (MCP tools). No other
+  worker shares your browser.
+- If you serve the app, allocate a port first (idempotent):
+  curl -s http://localhost:${PORT}/api/protocol/workers/${workerId}/port
+  -> {"port": <number>}. Serve the app on that port. Record the port
+  in ui.port at the repo root.
+- You may run the app inside a docker container. Publish it on your
+  allocated port: docker run -p <port>:<containerPort> ... . Name
+  containers uniquely with your worker id. Stop and remove them when
+  you are done (docker rm -f <name>).
+${implId ? `- The implementor's app port: read ui.port at the repo root, or call
+  curl -s http://localhost:${PORT}/api/protocol/workers/${implId}/port
+  If the app is not running, you may start it yourself (directly or in
+  a docker container) on that port.` : ""}
+- Before browser tests, acquire a UI test slot (other validators may run
+  at the same time):
+  curl -s -X POST http://localhost:${PORT}/api/protocol/workers/${workerId}/uitest
+  200 = acquired (the call waits up to 120 s while others hold slots);
+  408 = timeout, wait and try again.
+- Release the slot when your tests end:
+  curl -s -X POST http://localhost:${PORT}/api/protocol/workers/${workerId}/uitest/release
+- The slot frees itself automatically if your process stops.
+- If you cannot acquire a slot, prefer parallel-safe scenarios instead:
+  unique ports, isolated containers or headless browsers, no shared
+  fixtures.`;
+}
 const IMPL_MODEL = process.env.IMPLEMENTOR_MODEL || "glm-5-3-flash";
 const VAL_MODEL = process.env.VALIDATOR_MODEL || "glm-5-3";
 
@@ -112,12 +173,13 @@ performs. Run headless UI tests with the playwright browser tools on
 the changed pages when the work includes a user interface.`,
 };
 
-function workerBrief(name, lineName, prompt, persona) {
-  return `You are implementor worker '${name}' on factory line '${lineName}'.
+function workerBrief(name, lineName, prompt, persona, workerId) {
+  return `You are implementor worker '${name}' (id ${workerId}) on factory line '${lineName}'.
 You run inside your own git worktree - all work happens here, do not
 touch other directories. Commit your work with clear messages.
 
 ${IMPL_PERSONA[persona] || IMPL_PERSONA.backend}
+${persona === "frontend" ? frontendToolsBlock(workerId) : ""}
 
 Task from the planner:
 ${prompt}
@@ -132,12 +194,13 @@ changed, how you verified it, and any open issues. That report goes
 back to the planner verbatim.`;
 }
 
-function validatorBrief(implName, report, criteria, persona) {
-  return `You are the VALIDATOR for the work of implementor '${implName}'.
+function validatorBrief(implName, report, criteria, persona, workerId, implId) {
+  return `You are the VALIDATOR (id ${workerId}) for the work of implementor '${implName}' (id ${implId}).
 Your workdir is the implementor's git worktree. Do not change the
 implementation. You check the work only.
 
 ${VAL_PERSONA[persona] || VAL_PERSONA.backend}
+${persona === "frontend" ? frontendToolsBlock(workerId, implId) : ""}
 
 The implementor reported:
 ${report}
@@ -148,7 +211,9 @@ ${criteria}
 Tasks:
 1. Check the work against each criterion. For each criterion, record
    PASS or FAIL with one sentence of evidence.
-2. You may run the code and the tests. You may run headless UI tests
+2. You may run the code and the tests. You may run them inside docker
+   containers; publish ports only on your allocated port (see the
+   frontend tools block when present). You may run headless UI tests
    with the playwright browser tools (browser_navigate,
    browser_snapshot, browser_click, browser_type).
 3. Reply with a VALIDATION REPORT: one line per criterion with PASS or
@@ -329,6 +394,9 @@ function workerClosed(line, worker, code) {
   if (worker.stopRequested) worker.status = "stopped";
   else if (code === 0) worker.status = "completed";
   else worker.status = "failed";
+  if (uiSlots.held.has(worker.id) || uiSlots.waiters.some((w) => w.workerId === worker.id)) {
+    releaseUiSlot(worker.id);
+  }
   broadcast(line, "worker_status", { workerId: worker.id, status: worker.status });
   saveLine(line);
   const sid = worker.sessionId || "unknown";
@@ -366,7 +434,8 @@ function spawnValidator(line, implWorker, criteria) {
   const id = crypto.randomUUID();
   const worker = { id, lineId: line.id, name,
     role: "validator", validates: implWorker.id, persona: implWorker.persona || "backend",
-    prompt: validatorBrief(implWorker.name, reportText(implWorker.transcript), criteria, implWorker.persona),
+    prompt: validatorBrief(implWorker.name, reportText(implWorker.transcript), criteria,
+      implWorker.persona || "backend", id, implWorker.id),
     sessionId: null, worktreePath: implWorker.worktreePath, branch: implWorker.branch,
     status: "running", stopRequested: false, child: null, transcript: [] };
   line.workers.set(id, worker);
@@ -490,7 +559,7 @@ const server = http.createServer((req, res) => {
       if (wt.status !== 0) return json(res, 500, { error: "git worktree add failed", stderr: wt.stderr });
       const worker = { id, lineId: line.id, name: body.name,
         role: "implementor", validates: null, persona,
-        prompt: workerBrief(body.name, line.name, body.prompt, persona),
+        prompt: workerBrief(body.name, line.name, body.prompt, persona, id),
         sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
         child: null, transcript: [] };
       line.workers.set(id, worker);
@@ -518,6 +587,51 @@ const server = http.createServer((req, res) => {
       enqueue(line, `WORKER STOPPED - '${worker.name}' (workerId ${worker.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.`);
     }
     return json(res, 202, { stopped: true });
+  }
+
+  function findWorker(id) {
+    for (const l of lines.values()) {
+      const w = l.workers.get(id);
+      if (w) return w;
+    }
+    return null;
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "workers"
+    && parts[4] === "port") {
+    const worker = findWorker(parts[3]);
+    if (!worker) return json(res, 404, { error: "no such worker" });
+    return json(res, 200, { port: portFor(worker.id) });
+  }
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "workers"
+    && parts[4] === "uitest" && parts.length === 5) {
+    const worker = findWorker(parts[3]);
+    if (!worker) return json(res, 404, { error: "no such worker" });
+    if (worker.status !== "running") {
+      return json(res, 409, { error: "worker is not running" });
+    }
+    if (uiSlots.held.has(worker.id)) return json(res, 200, { acquired: true, already: true });
+    if (uiSlots.held.size < UI_TEST_SLOTS) {
+      uiSlots.held.add(worker.id);
+      return json(res, 200, { acquired: true });
+    }
+    const waiter = { workerId: worker.id, res,
+      timer: setTimeout(() => {
+        const i = uiSlots.waiters.indexOf(waiter);
+        if (i !== -1) uiSlots.waiters.splice(i, 1);
+        json(res, 408, { error: "timeout acquiring UI test slot - wait and try again" });
+      }, 120000) };
+    uiSlots.waiters.push(waiter);
+    return;
+  }
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "workers"
+    && parts[4] === "uitest" && parts[5] === "release") {
+    const worker = findWorker(parts[3]);
+    if (!worker) return json(res, 404, { error: "no such worker" });
+    releaseUiSlot(worker.id);
+    return json(res, 202, { released: true });
   }
 
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "workers"
