@@ -159,6 +159,13 @@ function enqueue(line, text) {
   pump(line);
 }
 
+const WAKE_PREFIXES = ["IMPLEMENTOR REPORT", "VALIDATION REPORT", "VALIDATOR FAILURE",
+  "VALIDATOR STOPPED", "WORKER FAILURE", "WORKER STOPPED", "PLAN APPROVED"];
+
+function isWake(text) {
+  return typeof text === "string" && WAKE_PREFIXES.some((p) => text.startsWith(p));
+}
+
 function pump(line) {
   if (line.status === "running" || line.queue.length === 0) return;
   const { text } = line.queue.shift();
@@ -201,6 +208,18 @@ function pump(line) {
     saveLine(line);
     if (code !== 0) {
       broadcast(line, "error", { message: stderr.slice(-500) || `vibe exited with code ${code}` });
+      if (isWake(line.lastRun)) {
+        line.wakeRetries = line.wakeRetries || {};
+        const attempts = (line.wakeRetries[line.lastRun] || 0);
+        if (attempts < 2) {
+          line.wakeRetries[line.lastRun] = attempts + 1;
+          line.queue.unshift({ text: line.lastRun });
+        } else {
+          broadcast(line, "error", {
+            message: "dropped a wake message after repeated planner failures: "
+              + line.lastRun.slice(0, 120) });
+        }
+      }
     }
     if (code === 0 && typeof line.lastRun === "string"
       && line.lastRun.startsWith("IMPLEMENTOR REPORT")) {
@@ -467,6 +486,11 @@ const server = http.createServer((req, res) => {
       return json(res, 409, { error: "validators are fresh each run - spawn a new task instead" });
     }
     if (worker.child) return json(res, 409, { error: "worker is currently running" });
+    for (const w of line.workers.values()) {
+      if (w.role === "validator" && w.validates === worker.id && w.status === "running") {
+        return json(res, 409, { error: "a validator is still checking this implementor" });
+      }
+    }
     if (!worker.sessionId) return json(res, 409, { error: "worker has no session yet" });
     readBody(req, (err, body) => {
       if (err || !body || typeof body.prompt !== "string" || !body.prompt.trim()) {
