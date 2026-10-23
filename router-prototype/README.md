@@ -203,3 +203,27 @@ repository into the line workdir. The pipeline then extends past validation:
   and routes the revised task back to the ORIGINAL implementor session via
   the continue endpoint; the implementor pushes again and the loop repeats.
 - Lines without a repoUrl keep the local-only flow.
+
+## Integration validation and evidence
+
+When all implementor validators report VERDICT: PASS, the planner starts the
+integration validator (`POST /api/protocol/lines/:id/integration` with the
+integration instructions). The planner itself NEVER commits to or pushes the
+main/master branch - merging is the integration validator's job:
+
+- The integration validator gets its own worktree on a fresh
+  `integration/<name>-<id>` branch created from main. It merges every feature
+  branch there (resolving conflicts), never touching main or the remote.
+- It runs all acceptance tests, and for EVERY use case records a video of the
+  test running (playwright `video: 'on'`, files under `evidence/` in its
+  workdir), registering each one with
+  `POST /api/protocol/workers/:id/evidence {useCase, file}`.
+- Its INTEGRATION REPORT wakes the planner with the merged result branch, the
+  per-branch conflict resolutions, and the verdict. On FAIL the planner routes
+  fixes back to the ORIGINAL implementors and starts a fresh integration
+  validator afterwards.
+- In the UI, clicking a validator node reveals an Evidence tab in the line
+  toolbar; it lists every tested use case with the video recording underneath,
+  streamed from `GET /api/lines/:id/evidence/:id/video`.
+- Integration workers, their branches, and evidence items persist across
+  restarts.

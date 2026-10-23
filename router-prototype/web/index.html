@@ -16,6 +16,12 @@
     border-radius: 4px; cursor: pointer; font-size: .8rem; }
   .tabBtn.active { background: #182335; color: #d8dee6; outline: 1px solid #2d6cdf; }
   .procPane { flex: 1; overflow-y: auto; padding: 12px 16px; font-size: .78rem; }
+  .evPane { flex: 1; overflow-y: auto; padding: 12px 16px; }
+  .evCase { margin-bottom: 18px; }
+  .evCase .uc { font-size: .82rem; margin-bottom: 6px; color: #d8dee6; }
+  .evCase .meta { color: #6c7a8c; font-size: .7rem; margin-bottom: 4px; }
+  .evCase video { width: 100%; max-width: 640px; border: 1px solid #262b33;
+    border-radius: 6px; background: #000; }
   .procPane .pHead { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
   .procPane .pHead .sub { color: #6c7a8c; font-size: .72rem; }
   .pEmpty { color: #4a5563; font-size: .72rem; }
@@ -312,6 +318,9 @@ window.addEventListener("DOMContentLoaded", () => {
 
   function selectNode(st, id) {
     st.selected = id;
+    const w = id !== null ? st.workers.get(id) : null;
+    const isValidator = w && (w.role || "implementor") === "validator";
+    st.tabEvBtn.hidden = !isValidator;
     renderGraph(st);
     renderTranscript(st);
   }
@@ -355,6 +364,10 @@ window.addEventListener("DOMContentLoaded", () => {
     const tabProcBtn = document.createElement("button");
     tabProcBtn.className = "tabBtn";
     tabProcBtn.textContent = "Processes";
+    const tabEvBtn = document.createElement("button");
+    tabEvBtn.className = "tabBtn";
+    tabEvBtn.textContent = "Evidence";
+    tabEvBtn.hidden = true;
     const delBtn = document.createElement("button");
     delBtn.className = "deleteBtn";
     delBtn.textContent = "Delete";
@@ -374,7 +387,7 @@ window.addEventListener("DOMContentLoaded", () => {
       await fetch("/api/lines/" + line.id, { method: "DELETE" });
       removeCard(line.id);
     });
-    head.append(name, dot, tabLineBtn, tabProcBtn, delBtn);
+    head.append(name, dot, tabLineBtn, tabProcBtn, tabEvBtn, delBtn);
     const planDetails = document.createElement("details");
     planDetails.className = "planDetails";
     planDetails.hidden = true;
@@ -418,12 +431,15 @@ window.addEventListener("DOMContentLoaded", () => {
     const procPane = document.createElement("div");
     procPane.className = "procPane";
     procPane.hidden = true;
-    card.append(head, planDetails, banner, plan, graph, transcript, row, procPane);
+    const evPane = document.createElement("div");
+    evPane.className = "evPane";
+    evPane.hidden = true;
+    card.append(head, planDetails, banner, plan, graph, transcript, row, procPane, evPane);
     linesEl.appendChild(card);
 
     const st = { id: line.id, dot, banner, transcript, input, send,
       waiting, planBody, graph, approveBtn, badge, planDetails, planControls: controls,
-      tab: "line", tabLineBtn, tabProcBtn, plan, row, procPane,
+      tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, plan, row, procPane, evPane,
       plannerStatus: line.status, started: line.started === true,
       planContent: undefined, approved: false,
       workers: new Map(), workerTranscripts: new Map(),
@@ -431,6 +447,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
     tabLineBtn.addEventListener("click", () => setLineTab(st, "line"));
     tabProcBtn.addEventListener("click", () => setLineTab(st, "processes"));
+    tabEvBtn.addEventListener("click", () => setLineTab(st, "evidence"));
 
     const setStatus = (status) => {
       st.plannerStatus = status;
@@ -485,7 +502,7 @@ window.addEventListener("DOMContentLoaded", () => {
         st.workerTranscripts.set(workerId, []);
         if (!st.workers.has(workerId)) {
           st.workers.set(workerId, { id: workerId, name: workerId, status: "running", branch: "",
-            role: "implementor" });
+            role: "implementor", kind: "standard" });
         }
       }
       st.workerTranscripts.get(workerId).push(entry);
@@ -576,11 +593,14 @@ window.addEventListener("DOMContentLoaded", () => {
     st.tab = tab;
     st.tabLineBtn.classList.toggle("active", tab === "line");
     st.tabProcBtn.classList.toggle("active", tab === "processes");
+    st.tabEvBtn.classList.toggle("active", tab === "evidence");
     for (const el of [st.plan, st.planDetails, st.graph, st.transcript, st.row]) {
       el.hidden = tab !== "line";
     }
     st.procPane.hidden = tab !== "processes";
+    st.evPane.hidden = tab !== "evidence";
     if (tab === "processes") pollInventory();
+    if (tab === "evidence") pollEvidence();
     if (tab === "line") {
       renderGraph(st);
       st.transcript.scrollTop = st.transcript.scrollHeight;
@@ -670,6 +690,45 @@ window.addEventListener("DOMContentLoaded", () => {
     for (const item of items) pane.appendChild(inventoryRow(st.id, item));
   }
 
+  function renderEvidence(st, items) {
+    const pane = st.evPane;
+    pane.innerHTML = "";
+    if (!items.length) {
+      const e = document.createElement("div");
+      e.className = "pEmpty";
+      e.textContent = "No evidence registered for this validator yet.";
+      pane.appendChild(e);
+      return;
+    }
+    for (const item of items) {
+      const box = document.createElement("div");
+      box.className = "evCase";
+      const uc = document.createElement("div");
+      uc.className = "uc";
+      uc.textContent = item.useCase;
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = new Date(item.at).toLocaleString() + " - " + item.name;
+      const video = document.createElement("video");
+      video.controls = true;
+      video.preload = "metadata";
+      video.src = item.video;
+      box.append(uc, meta, video);
+      pane.appendChild(box);
+    }
+  }
+
+  async function pollEvidence() {
+    const st = cards.get(selectedLine);
+    if (!st || st.tab !== "evidence") return;
+    try {
+      const res = await fetch("/api/lines/" + st.id + "/evidence");
+      if (!res.ok) return;
+      const { items } = await res.json();
+      renderEvidence(st, items);
+    } catch {}
+  }
+
   async function pollInventory() {
     const st = cards.get(selectedLine);
     if (!st || st.tab !== "processes") return;
@@ -737,6 +796,7 @@ window.addEventListener("DOMContentLoaded", () => {
   setInterval(refresh, 3000);
   setInterval(pollPlans, 3000);
   setInterval(pollInventory, 3000);
+  setInterval(pollEvidence, 3000);
 });
 </script>
 </body>

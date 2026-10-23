@@ -281,6 +281,20 @@ ${userPrompt}
      The implementor runs again; validation repeats after it finishes.
    - or spawn a new implementor with a corrected prompt (new name).
    Use the workerId and session id given in each report.
+   NEVER commit to or push the main/master branch yourself. You plan
+   and coordinate only; integration merging happens in the
+   integration validator.
+6. Integration: when ALL implementor validators report VERDICT: PASS,
+   start the integration validator:
+   curl -s -X POST http://localhost:${port}/api/protocol/lines/${lineId}/integration \
+     -H 'Content-Type: application/json' \
+     -d '{"prompt":"<integration and acceptance test instructions>"}'
+   It merges all feature branches on top of master in its own worktree,
+   runs the acceptance tests, and records a video per use case as
+   structured evidence. You receive an INTEGRATION REPORT with the
+   verdict. On VERDICT: FAIL, route fixes to the ORIGINAL implementors
+   (continue endpoint), then start a new integration validator.
+   On VERDICT: PASS, report completion to the user.
 
 ## Container and process hygiene
 If you start any docker container, always set this label on it:
@@ -471,6 +485,47 @@ words, short sentences, one topic per sentence, active voice, no
 idioms).`;
 }
 
+
+function integrationValidatorBrief(line, branches, instructions, workerId, repoUrl) {
+  return `You are the INTEGRATION VALIDATOR (id ${workerId}) for factory line '${line.name}'.
+Your workdir is a dedicated worktree on a fresh integration branch
+created from the main branch. You NEVER commit to main/master and you
+NEVER push to the remote. All merging happens on your integration
+branch.
+
+The feature branches to merge (one per implementor):
+${branches.map((b) => "- " + b).join("\n")}
+
+Instructions from the planner:
+${instructions}
+
+Procedure:
+1. Merge each feature branch on top of your integration branch, one by
+   one, in the order listed:
+   git merge <branch> --no-edit
+   Resolve conflicts yourself, keeping both features where possible.
+   If a conflict cannot be resolved sensibly, stop and report it.
+2. When all branches are merged, run ALL acceptance tests and verify
+   everything works together. Build and run the project if needed.
+3. For EACH use case you test, record a video of the test case running.
+   Use playwright with video recording enabled, for example a test
+   file with a context that has video: 'on', or:
+   npx playwright test --video=on
+   Save each video as a separate file under evidence/ in your workdir
+   (for example evidence/use-case-login.webm).
+4. Register every evidence video with the router:
+   curl -s -X POST http://localhost:${PORT}/api/protocol/workers/${workerId}/evidence \
+     -H 'Content-Type: application/json' \
+     -d '{"useCase":"<one line describing the use case>","file":"evidence/<file>.webm"}'
+   The file path is relative to your workdir. Register each use case
+   as you complete it.
+5. Reply with an INTEGRATION REPORT: branches merged, conflicts
+   resolved (per branch, one line), acceptance test results, the list
+   of registered evidence use cases, then a final line
+   "VERDICT: PASS" or "VERDICT: FAIL".
+Write the report in ASD-STE100 Simplified Technical English.`;
+}
+
 function sanitizeName(name) {
   return String(name).toLowerCase().replace(/[^a-z0-9-]/g, "");
 }
@@ -500,9 +555,12 @@ function saveLine(line) {
         inventory: [...(line.inventory || new Map()).values()].map((i) => ({
           id: i.id, kind: i.kind, name: i.name, by: i.by, ref: i.ref,
           keep: i.keep, status: i.status })),
+        evidence: [...(line.evidence || new Map()).values()].map((e) => ({
+          id: e.id, useCase: e.useCase, path: e.path, name: e.name, by: e.by, at: e.at })),
         workers: [...line.workers.values()].map((w) => ({
           id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch, status: w.status,
-          role: w.role, validates: w.validates, persona: w.persona || "backend" })) }));
+          role: w.role, validates: w.validates, persona: w.persona || "backend",
+          kind: w.kind || "standard" })) }));
   } catch {}
 }
 
@@ -692,7 +750,15 @@ function workerClosed(line, worker, code) {
   slog("info", "worker.closed", { lineId: line.id, workerId: worker.id, name: worker.name,
     role: worker.role, status: worker.status, reportChars: report.length,
     report: preview(report, 300) });
-  if (worker.role === "validator") {
+  if (worker.role === "validator" && worker.kind === "integration") {
+    if (worker.status === "completed") {
+      enqueue(line, `INTEGRATION REPORT - integration validator '${worker.name}' finished: ${report}. The merged result is on branch ${worker.branch} in its worktree; main/master is untouched. Decide: report completion to the user, or route fixes to the ORIGINAL implementors (continue endpoint) and start a new integration validator after they pass again.`);
+    } else if (timedOut) {
+      enqueue(line, `INTEGRATION TIMEOUT - integration validator '${worker.name}' hit the run time limit. The merged work is on branch ${worker.branch}. Decide how to proceed.`);
+    } else {
+      enqueue(line, `INTEGRATION STOPPED/FAILED - integration validator '${worker.name}' did not complete. Its worktree may be partially merged. Decide how to proceed.`);
+    }
+  } else if (worker.role === "validator") {
     const impl = line.workers.get(worker.validates);
     const implName = impl ? impl.name : "unknown";
     const implId = worker.validates || "unknown";
@@ -728,7 +794,7 @@ function spawnValidator(line, implWorker, criteria) {
   }
   const id = crypto.randomUUID();
   const worker = { id, lineId: line.id, name,
-    role: "validator", validates: implWorker.id, persona: implWorker.persona || "backend",
+    role: "validator", validates: implWorker.id, persona: implWorker.persona || "backend", kind: "standard",
     prompt: validatorBrief(implWorker.name, reportText(implWorker.transcript), criteria,
       implWorker.persona || "backend", id, implWorker.id, line.id, line.repoUrl),
     sessionId: null, worktreePath: implWorker.worktreePath, branch: implWorker.branch,
@@ -954,6 +1020,7 @@ const server = http.createServer((req, res) => {
       return json(res, 200, { workers: [...line.workers.values()].map((w) => ({
         id: w.id, name: w.name, status: w.status, sessionId: w.sessionId, branch: w.branch,
         role: w.role, validates: w.validates, persona: w.persona || "backend",
+        kind: w.kind || "standard",
       })) });
     }
     if (!line.planApproved) return json(res, 409, { error: "plan not approved" });
@@ -984,7 +1051,7 @@ const server = http.createServer((req, res) => {
       if (wt.error) return json(res, 500, { error: `git is not available: ${wt.error.message}` });
       if (wt.status !== 0) return json(res, 500, { error: "git worktree add failed", stderr: wt.stderr });
       const worker = { id, lineId: line.id, name: body.name,
-        role: "implementor", validates: null, persona,
+        role: "implementor", validates: null, persona, kind: "standard",
         prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, line.repoUrl),
         sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
         child: null, transcript: [] };
@@ -1066,6 +1133,102 @@ const server = http.createServer((req, res) => {
     return json(res, 202, { released: true });
   }
 
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "lines"
+    && parts[4] === "integration") {
+    const line = lines.get(parts[3]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    if (!line.planApproved) return json(res, 409, { error: "plan not approved" });
+    readBody(req, (err, body) => {
+      if (err || !body || typeof body.prompt !== "string" || !body.prompt.trim()) {
+        return json(res, 400, { error: "expected {prompt}" });
+      }
+      const branches = [...line.workers.values()]
+        .filter((w) => w.role === "implementor" && w.kind !== "integration")
+        .map((w) => w.branch);
+      if (!branches.length) return json(res, 409, { error: "no feature branches to integrate" });
+      let name = "integration-validator";
+      let n = 2;
+      while ([...line.workers.values()].some((w) => w.name === name)) {
+        name = `integration-validator-${n++}`;
+      }
+      const id = crypto.randomUUID();
+      const worktreePath = path.join(LINES_DIR, "worktrees", line.id,
+        sanitizeName(name) + "-" + id.slice(0, 8));
+      const branch = `integration/${sanitizeName(name)}-${id.slice(0, 8)}`;
+      fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+      const wt = spawnSync("git", ["-C", line.workdir, "worktree", "add", "-b", branch, worktreePath, "HEAD"],
+        { encoding: "utf8" });
+      if (wt.error) return json(res, 500, { error: `git is not available: ${wt.error.message}` });
+      if (wt.status !== 0) return json(res, 500, { error: "git worktree add failed", stderr: wt.stderr });
+      const worker = { id, lineId: line.id, name, kind: "integration",
+        role: "validator", validates: null, persona: "backend",
+        prompt: integrationValidatorBrief(line, branches, body.prompt, id, line.repoUrl),
+        sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
+        child: null, transcript: [] };
+      line.workers.set(id, worker);
+      saveLine(line);
+      slog("info", "integration.spawned", { lineId: line.id, validatorId: id, branches });
+      broadcast(line, "worker_spawned", { worker: { id, name, branch, status: worker.status,
+        role: worker.role, validates: null, persona: worker.persona, kind: "integration" } });
+      spawnWorker(line, worker, worker.prompt, VAL_MODEL);
+      json(res, 201, { validatorId: id, branch, branches, worktree: worktreePath });
+    });
+    return;
+  }
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "workers"
+    && parts[4] === "evidence") {
+    let line = null, worker = null;
+    for (const l of lines.values()) {
+      const w = l.workers.get(parts[3]);
+      if (w) { line = l; worker = w; break; }
+    }
+    if (!worker) return json(res, 404, { error: "no such worker" });
+    readBody(req, (err, body) => {
+      if (err || !body || typeof body.useCase !== "string" || !body.useCase.trim()
+        || typeof body.file !== "string" || !body.file.trim()) {
+        return json(res, 400, { error: "expected {useCase, file}" });
+      }
+      const abs = path.resolve(worker.worktreePath, body.file.trim());
+      if (!abs.startsWith(path.resolve(worker.worktreePath))) {
+        return json(res, 400, { error: "file must be inside your workdir" });
+      }
+      if (!fs.existsSync(abs)) return json(res, 400, { error: "no such file: " + body.file });
+      const id = crypto.randomUUID();
+      if (!line.evidence) line.evidence = new Map();
+      line.evidence.set(id, { id, useCase: body.useCase.trim(), path: abs,
+        name: path.basename(abs), by: worker.id, at: Date.now() });
+      saveLine(line);
+      slog("info", "evidence.registered", { lineId: line.id, evidenceId: id,
+        useCase: preview(body.useCase, 120), file: body.file.trim(), by: worker.name });
+      json(res, 201, { evidenceId: id });
+    });
+    return;
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "evidence"
+    && parts.length === 4) {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    const items = [...(line.evidence || new Map()).values()].map((e) => ({
+      id: e.id, useCase: e.useCase, name: e.name, at: e.at,
+      video: `/api/lines/${line.id}/evidence/${e.id}/video`,
+    }));
+    return json(res, 200, { items });
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "evidence"
+    && parts.length === 6 && parts[5] === "video") {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    const item = (line.evidence || new Map()).get(parts[4]);
+    if (!item) return json(res, 404, { error: "no such evidence" });
+    if (!fs.existsSync(item.path)) return json(res, 404, { error: "evidence file is gone" });
+    res.writeHead(200, { "Content-Type": "video/webm", "Cache-Control": "no-cache" });
+    fs.createReadStream(item.path).pipe(res);
+    return;
+  }
+
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "workers"
     && parts[4] === "continue") {
     let line = null, worker = null;
@@ -1124,7 +1287,7 @@ When done, reply with a report: what you changed, files changed, how you verifie
       planApproved: line.planApproved,
       workers: [...line.workers.values()].map((w) => ({
         id: w.id, name: w.name, status: w.status, branch: w.branch, role: w.role,
-        validates: w.validates, persona: w.persona || "backend",
+        validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
       })) });
     req.on("close", () => {
       line.clients.delete(res);
@@ -1177,7 +1340,8 @@ function loadLines() {
       for (const w of meta.workers || []) {
         if (w.role === "validator") continue;
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
-          role: "implementor", validates: null, prompt: null,
+          role: w.role === "validator" && w.kind === "integration" ? "validator" : "implementor",
+          validates: null, prompt: null, kind: w.kind || "standard",
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           sessionId: w.sessionId, worktreePath: path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name)),
           branch: w.branch, status: w.status === "running" ? "stopped" : w.status,
@@ -1186,11 +1350,14 @@ function loadLines() {
       for (const w of meta.workers || []) {
         if (w.role !== "validator") continue;
         const impl = workers.get(w.validates);
-        if (!impl) continue;
+        if (!impl && w.kind !== "integration") continue;
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
-          role: "validator", validates: w.validates, prompt: null,
+          role: "validator", validates: w.validates, prompt: null, kind: w.kind || "standard",
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
-          sessionId: w.sessionId, worktreePath: impl.worktreePath, branch: w.branch,
+          sessionId: w.sessionId,
+          worktreePath: impl ? impl.worktreePath
+            : path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name)),
+          branch: w.branch,
           status: w.status === "running" ? "stopped" : w.status,
           stopRequested: false, child: null, transcript: [] });
       }
@@ -1206,6 +1373,7 @@ function loadLines() {
         status: started ? "idle" : "standby", queue: [],
         started,
         planApproved: meta.planApproved === true, workers, inventory,
+        evidence: new Map((meta.evidence || []).map((e) => [e.id, e])),
         clients: new Set(), transcript: [] };
       lines.set(meta.id, line);
       const hadRunning = (meta.workers || []).some((w) => w.status === "running");
