@@ -167,3 +167,19 @@ approval prompts, so every tool call (including `git push`, `gh`, file
 deletion) runs without asking. Set `LINE_AUTO_APPROVE=0` to run lines under
 `--agent accept-edits` instead — side-effecting commands will then be denied,
 not queued.
+
+## Logging
+
+Everything is logged as JSON lines to `logs/router.log`: every HTTP request
+and response (method, path, status, duration), planner runs (start, streamed
+entries, end with exit code and duration), decisions (validation skip vs
+spawn, wake retries and drops), worker lifecycle (spawn, run start, entries,
+close with report), validators, UI slot acquire/release, port assignment,
+inventory (discovery, registration, keep, kills), docker cleanups with
+counts, SSE connections, and server boot/shutdown. Warnings and errors are
+mirrored to stdout.
+
+Log rotation: when `router.log` would exceed `LOG_MAX_BYTES` (default 1 MB),
+it rotates to `router.log.1`, shifting older files up to `LOG_KEEP` (default
+5) backups. Entries carry `t` (ISO timestamp), `level`, `event`, and
+event-specific fields; prompt/report text is previewed with a length cap.

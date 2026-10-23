@@ -1,3 +1,4 @@
 lines/
 node_modules/
 .playwright-mcp/
+logs/

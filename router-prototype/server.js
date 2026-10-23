@@ -12,6 +12,43 @@ const WORKER_CAP = 8;
 const UI_PORT_BASE = Number(process.env.UI_PORT_BASE || 4100);
 const UI_TEST_SLOTS = Number(process.env.UI_TEST_SLOTS || 1);
 
+// ---- structured logging with size-based rotation ----
+const LOG_DIR = path.join(__dirname, "logs");
+const LOG_FILE = path.join(LOG_DIR, "router.log");
+const LOG_MAX_BYTES = Number(process.env.LOG_MAX_BYTES || 1024 * 1024);
+const LOG_KEEP = Number(process.env.LOG_KEEP || 5);
+let logStream = null;
+let logBytes = 0;
+
+function preview(text, n) {
+  const s = String(text == null ? "" : text);
+  return s.length <= n ? s : s.slice(0, n) + "…";
+}
+
+function slog(level, event, fields) {
+  const entry = { t: new Date().toISOString(), level, event, ...fields };
+  const line = JSON.stringify(entry) + "\n";
+  const bytes = Buffer.byteLength(line);
+  if (logBytes + bytes > LOG_MAX_BYTES) {
+    try { if (logStream) logStream.end(); } catch {}
+    for (let i = LOG_KEEP - 1; i >= 1; i--) {
+      try { fs.renameSync(`${LOG_FILE}.${i}`, `${LOG_FILE}.${i + 1}`); } catch {}
+    }
+    try { fs.renameSync(LOG_FILE, `${LOG_FILE}.1`); } catch {}
+    logStream = null;
+    logBytes = 0;
+  }
+  if (!logStream) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    try { logBytes = fs.statSync(LOG_FILE).size; } catch { logBytes = 0; }
+    logStream = fs.createWriteStream(LOG_FILE, { flags: "a" });
+  }
+  logStream.write(line);
+  logBytes += bytes;
+  if (level === "error" || level === "warn") console.log(line.trim());
+  return entry;
+}
+
 const portByWorker = new Map();
 const uiSlots = { held: new Set(), waiters: [] };
 
@@ -20,12 +57,15 @@ function portFor(workerId) {
     let p = UI_PORT_BASE + portByWorker.size;
     while ([...portByWorker.values()].includes(p)) p += 1;
     portByWorker.set(workerId, p);
+    slog("info", "port.assigned", { workerId, port: p });
   }
   return portByWorker.get(workerId);
 }
 
 function releaseUiSlot(workerId) {
+  const wasHeld = uiSlots.held.has(workerId);
   uiSlots.held.delete(workerId);
+  if (wasHeld) slog("info", "slot.released", { workerId });
   for (let i = uiSlots.waiters.length - 1; i >= 0; i--) {
     if (uiSlots.waiters[i].workerId === workerId) {
       clearTimeout(uiSlots.waiters[i].timer);
@@ -56,6 +96,7 @@ function removeContainers(filter, cb) {
     if (!ids) return cb && cb(false);
     const list = ids.split(/\s+/).filter(Boolean);
     if (!list.length) return cb && cb(false);
+    slog("info", "docker.cleanup", { filter, count: list.length });
     dockerRun(["rm", "-fv", ...list], () => cb && cb(true));
   });
 }
@@ -86,6 +127,8 @@ function reconcileInventory(line, cb) {
             by: cworker || "planner", ref: cid, keep: false, status: "running",
             startedAt: Date.now() });
           saveLine(line);
+          slog("info", "inventory.discovered", { lineId: line.id, itemId: id,
+            container: cname || cid.slice(0, 12), by: cworker || "planner" });
         }
       }
       for (const item of line.inventory.values()) {
@@ -103,6 +146,8 @@ function reconcileInventory(line, cb) {
 
 function killItem(item) {
   if (item.status !== "running") return false;
+  slog("info", "inventory.killed", { kind: item.kind, name: item.name,
+    ref: item.ref, by: item.by, keep: item.keep });
   if (item.kind === "container") {
     dockerRun(["rm", "-fv", item.ref]);
   } else {
@@ -439,12 +484,24 @@ function isWake(text) {
   return typeof text === "string" && WAKE_PREFIXES.some((p) => text.startsWith(p));
 }
 
+
+function entryText(entry) {
+  if (typeof entry.text === "string") return entry.text;
+  if (Array.isArray(entry.content)) {
+    return entry.content.filter((p) => p && p.type === "text").map((p) => p.text).join("");
+  }
+  return "";
+}
+
 function pump(line) {
   if (line.deleted || line.status === "running" || line.queue.length === 0) return;
   const { text } = line.queue.shift();
   line.lastRun = text;
   line.status = "running";
   broadcast(line, "status", { status: line.status });
+  const t0 = Date.now();
+  slog("info", "planner.run.start", { lineId: line.id, resume: !!line.sessionId,
+    chars: text.length, prompt: preview(text, 400) });
 
   const args = line.sessionId ? ["--resume", line.sessionId] : [];
   args.push("--workdir", line.workdir, "--trust", "--agent", "accept-edits",
@@ -468,6 +525,8 @@ function pump(line) {
       if (!line.sessionId && entry.sessionId) line.sessionId = entry.sessionId;
       line.transcript.push(entry);
       if (line.transcript.length > 500) line.transcript.shift();
+      slog("debug", "planner.entry", { lineId: line.id, type: entry.type,
+        role: entry.role || null, chars: raw.length, text: preview(entryText(entry), 200) });
       broadcast(line, "entry", entry);
     }
   });
@@ -479,6 +538,8 @@ function pump(line) {
   child.on("close", (code) => {
     line.child = null;
     if (line.deleted) return;
+    slog("info", "planner.run.end", { lineId: line.id, code, ms: Date.now() - t0,
+      stderr: code !== 0 ? preview(stderr, 300) : undefined });
     cleanupStage(line, "planner");
     saveLine(line);
     if (code !== 0) {
@@ -489,7 +550,10 @@ function pump(line) {
         if (attempts < 2) {
           line.wakeRetries[line.lastRun] = attempts + 1;
           line.queue.unshift({ text: line.lastRun });
+          slog("warn", "wake.retry", { lineId: line.id, attempt: attempts + 1,
+            wake: preview(line.lastRun, 200) });
         } else {
+          slog("error", "wake.dropped", { lineId: line.id, wake: preview(line.lastRun, 200) });
           broadcast(line, "error", {
             message: "dropped a wake message after repeated planner failures: "
               + line.lastRun.slice(0, 120) });
@@ -502,7 +566,11 @@ function pump(line) {
       const implWorker = m ? line.workers.get(m[1]) : null;
       if (implWorker) {
         const criteria = reportText(line.transcript);
-        if (!criteria.trim().toUpperCase().startsWith("SKIP VALIDATION")) {
+        const skip = criteria.trim().toUpperCase().startsWith("SKIP VALIDATION");
+        slog("info", "planner.decision", { lineId: line.id,
+          decision: skip ? "skip-validation" : "spawn-validator",
+          criteria: preview(criteria, 400) });
+        if (!skip) {
           spawnValidator(line, implWorker, criteria);
         }
       }
@@ -528,6 +596,9 @@ function reportText(transcript) {
 }
 
 function spawnWorker(line, worker, prompt, model, resume) {
+  slog("info", "worker.run.start", { lineId: line.id, workerId: worker.id,
+    name: worker.name, role: worker.role, model,
+    resume: !!(resume && worker.sessionId), chars: prompt.length });
   const args = resume && worker.sessionId ? ["--resume", worker.sessionId] : [];
   args.push("--workdir", worker.worktreePath, "--trust", "--agent", "accept-edits",
     "--output", "streaming", "--time-limit", "900");
@@ -550,6 +621,9 @@ function spawnWorker(line, worker, prompt, model, resume) {
       if (!entry || typeof entry !== "object") continue;
       if (!worker.sessionId && entry.sessionId) worker.sessionId = entry.sessionId;
       worker.transcript.push(entry);
+      slog("debug", "worker.entry", { lineId: line.id, workerId: worker.id,
+        type: entry.type, role: entry.role || null, chars: raw.length,
+        text: preview(entryText(entry), 200) });
       broadcast(line, "worker_entry", { workerId: worker.id, entry });
     }
   });
@@ -571,6 +645,9 @@ function workerClosed(line, worker, code) {
   saveLine(line);
   const sid = worker.sessionId || "unknown";
   const report = reportText(worker.transcript);
+  slog("info", "worker.closed", { lineId: line.id, workerId: worker.id, name: worker.name,
+    role: worker.role, status: worker.status, reportChars: report.length,
+    report: preview(report, 300) });
   if (worker.role === "validator") {
     const impl = line.workers.get(worker.validates);
     const implName = impl ? impl.name : "unknown";
@@ -610,6 +687,8 @@ function spawnValidator(line, implWorker, criteria) {
     status: "running", stopRequested: false, child: null, transcript: [] };
   line.workers.set(id, worker);
   saveLine(line);
+  slog("info", "validator.spawned", { lineId: line.id, validatorId: id,
+    implementorId: implWorker.id, persona: worker.persona });
   broadcast(line, "worker_spawned", { worker: { id, name, branch: worker.branch,
     status: worker.status, role: worker.role, persona: worker.persona } });
   spawnWorker(line, worker, worker.prompt, VAL_MODEL);
@@ -618,6 +697,11 @@ function spawnValidator(line, implWorker, criteria) {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://localhost");
   const parts = url.pathname.split("/").filter(Boolean);
+  const t0 = Date.now();
+  res.on("finish", () => slog("info", "http", {
+    method: req.method, path: url.pathname, status: res.statusCode,
+    ms: Date.now() - t0,
+  }));
 
   if (req.method === "POST" && url.pathname === "/api/lines") {
     readBody(req, (err, body) => {
@@ -644,6 +728,7 @@ const server = http.createServer((req, res) => {
         queue: [], clients: new Set(), transcript: [] };
       lines.set(id, line);
       saveLine(line);
+      slog("info", "line.created", { lineId: id, name });
       json(res, 201, { id, name });
     });
     return;
@@ -657,17 +742,22 @@ const server = http.createServer((req, res) => {
         return json(res, 400, { error: "expected {text}" });
       }
       let text = body.text;
+      let kind = "plain";
       if (!line.started) {
         line.started = true;
+        kind = "initial";
         text = plannerBrief(line.name, line.id, body.text, PORT);
       } else if (!line.planApproved) {
         try {
           fs.accessSync(path.join(line.workdir, "plan.md"));
+          kind = "feedback";
           text = `PLAN FEEDBACK from the user: ${body.text}. Revise plan.md accordingly. Do not spawn workers yet.`;
         } catch {}
       }
       line.queue.push({ text });
       const position = line.queue.length;
+      slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
+        prompt: preview(body.text, 2000) });
       pump(line);
       json(res, 202, { queued: true, position });
     });
@@ -688,6 +778,7 @@ const server = http.createServer((req, res) => {
     line.planApproved = true;
     saveLine(line);
     enqueue(line, "PLAN APPROVED by the user. Spawn your implementor workers now per the plan and the protocol. After spawning, end your turn and wait for worker reports.");
+    slog("info", "line.approved", { lineId: line.id });
     return json(res, 202, { approved: true });
   }
 
@@ -696,7 +787,10 @@ const server = http.createServer((req, res) => {
     if (!line) return json(res, 404, { error: "no such line" });
     line.deleted = true;
     line.queue.length = 0;
+    const runningWorkers = [...line.workers.values()].filter((w) => w.child).length;
     if (line.child) line.child.kill("SIGTERM");
+    slog("info", "line.delete", { lineId: line.id, runningWorkers,
+      plannerKilled: !!line.child });
     for (const w of line.workers.values()) {
       if (w.child) {
         w.stopRequested = true;
@@ -747,6 +841,8 @@ const server = http.createServer((req, res) => {
         by: typeof body.worker === "string" ? body.worker : "planner",
         ref: body.pid, keep: false, status: "running", startedAt: Date.now() });
       saveLine(line);
+      slog("info", "inventory.registered", { lineId: line.id, itemId: id,
+        kind: "process", pid: body.pid, name: body.name.trim() });
       json(res, 201, { itemId: id });
     });
     return;
@@ -768,6 +864,7 @@ const server = http.createServer((req, res) => {
       if (!item.keep && killItem(item)) n += 1;
     }
     saveLine(line);
+    slog("info", "inventory.killall", { lineId: line.id, killed: n });
     return json(res, 202, { killed: n });
   }
 
@@ -782,6 +879,8 @@ const server = http.createServer((req, res) => {
         if (err || !body) return json(res, 400, { error: "expected {keep}" });
         item.keep = !!body.keep;
         saveLine(line);
+        slog("info", "inventory.keep", { lineId: line.id, itemId: item.id,
+          name: item.name, keep: item.keep });
         json(res, 202, { keep: item.keep });
       });
     }
@@ -834,6 +933,8 @@ const server = http.createServer((req, res) => {
         child: null, transcript: [] };
       line.workers.set(id, worker);
       saveLine(line);
+      slog("info", "worker.spawned", { lineId: line.id, workerId: id,
+        name: body.name, persona, branch });
       spawnWorker(line, worker, worker.prompt, IMPL_MODEL);
       broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, persona } });
       json(res, 201, { workerId: id, branch, worktree: worktreePath });
@@ -849,6 +950,8 @@ const server = http.createServer((req, res) => {
       if (w) { line = l; worker = w; break; }
     }
     if (!worker) return json(res, 404, { error: "no such worker" });
+    slog("info", "worker.stop", { lineId: line.id, workerId: worker.id,
+      name: worker.name, role: worker.role, wasRunning: !!worker.child });
     if (worker.child) {
       worker.stopRequested = true;
       worker.child.kill("SIGTERM");
@@ -884,6 +987,7 @@ const server = http.createServer((req, res) => {
     if (uiSlots.held.has(worker.id)) return json(res, 200, { acquired: true, already: true });
     if (uiSlots.held.size < UI_TEST_SLOTS) {
       uiSlots.held.add(worker.id);
+      slog("info", "slot.acquired", { workerId: worker.id, waited: false });
       return json(res, 200, { acquired: true });
     }
     const waiter = { workerId: worker.id, res,
@@ -893,6 +997,7 @@ const server = http.createServer((req, res) => {
         json(res, 408, { error: "timeout acquiring UI test slot - wait and try again" });
       }, 120000) };
     uiSlots.waiters.push(waiter);
+    slog("info", "slot.waiting", { workerId: worker.id, waiters: uiSlots.waiters.length });
     return;
   }
 
@@ -934,6 +1039,8 @@ When done, reply with a report: what you changed, files changed, how you verifie
       worker.stopRequested = false;
       broadcast(line, "worker_status", { workerId: worker.id, status: "running" });
       saveLine(line);
+      slog("info", "worker.continued", { lineId: line.id, workerId: worker.id,
+        chars: body.prompt.length, prompt: preview(body.prompt, 400) });
       spawnWorker(line, worker, prompt, IMPL_MODEL, true);
       json(res, 202, { queued: true });
     });
@@ -953,6 +1060,7 @@ When done, reply with a report: what you changed, files changed, how you verifie
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache",
       "Connection": "keep-alive", "X-Accel-Buffering": "no" });
     line.clients.add(res);
+    slog("info", "sse.open", { lineId: line.id, clients: line.clients.size });
     sseSend(res, "state", { id: line.id, name: line.name, status: line.status,
       sessionId: line.sessionId, started: line.started,
       transcript: line.transcript.slice(-50),
@@ -961,7 +1069,10 @@ When done, reply with a report: what you changed, files changed, how you verifie
         id: w.id, name: w.name, status: w.status, branch: w.branch, role: w.role,
         persona: w.persona || "backend",
       })) });
-    req.on("close", () => line.clients.delete(res));
+    req.on("close", () => {
+      line.clients.delete(res);
+      slog("info", "sse.close", { lineId: line.id, clients: line.clients.size });
+    });
     return;
   }
 
@@ -987,6 +1098,7 @@ setInterval(() => {
 }, 25000).unref();
 
 function shutdown() {
+  slog("info", "server.shutdown", { lines: lines.size });
   for (const line of lines.values()) {
     if (line.child) line.child.kill("SIGTERM");
     for (const w of line.workers.values()) if (w.child) w.child.kill("SIGTERM");
@@ -1044,4 +1156,7 @@ function loadLines() {
 loadLines();
 sweepWorkerContainers();
 removeContainers("label=cuck.line");
-server.listen(PORT, () => console.log(`router listening on http://localhost:${PORT}`));
+slog("info", "server.boot", { lines: lines.size,
+  workers: [...lines.values()].reduce((n, l) => n + l.workers.size, 0),
+  port: PORT, logMaxBytes: LOG_MAX_BYTES, logKeep: LOG_KEEP });
+server.listen(PORT, () => slog("info", "server.listen", { port: PORT }));
