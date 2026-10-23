@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cuck-code router</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; display: flex; min-height: 100vh;
+    font-family: system-ui, sans-serif; background: #111418; color: #d8dee6; }
+  #sidebar { width: 280px; padding: 24px; border-right: 1px solid #262b33;
+    background: #161a20; flex-shrink: 0; }
+  #sidebar h1 { font-size: 1.1rem; margin: 0 0 16px; }
+  #sidebar input, #sidebar textarea { width: 100%; margin-bottom: 12px; padding: 8px;
+    background: #0d1014; color: inherit; border: 1px solid #2c333d; border-radius: 4px; }
+  #sidebar textarea { min-height: 90px; resize: vertical; }
+  button { padding: 8px 14px; background: #2d6cdf; color: #fff; border: 0;
+    border-radius: 4px; cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  #lines { flex: 1; padding: 24px; display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+    gap: 20px; align-content: start; }
+  .card { border: 1px solid #262b33; border-radius: 8px; background: #161a20;
+    display: flex; flex-direction: column; max-height: 80vh; }
+  .head { display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+    border-bottom: 1px solid #262b33; font-weight: 600; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; margin-left: auto; }
+  .dot.idle { background: #35c46a; }
+  .dot.running { background: #3d8bff; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .banner { margin: 8px 16px 0; padding: 8px; border-radius: 4px;
+    background: #4d1420; color: #ff8095; font-size: .85rem; white-space: pre-wrap; }
+  .transcript { flex: 1; overflow-y: auto; padding: 12px 16px;
+    font-family: ui-monospace, monospace; font-size: .8rem; white-space: pre-wrap;
+    word-break: break-word; }
+  .transcript > div { margin-bottom: 10px; }
+  .user { color: #8fa3bd; }
+  .assistant { color: #d8dee6; }
+  .transcript details { border-left: 2px solid #333c48; padding-left: 8px; }
+  .transcript summary { cursor: pointer; color: #6c7a8c; font-size: .75rem; }
+  .transcript pre { margin: 6px 0 0; color: #8b98a8; }
+  .row { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #262b33; }
+  .row input { flex: 1; padding: 8px; background: #0d1014; color: inherit;
+    border: 1px solid #2c333d; border-radius: 4px; }
+</style>
+</head>
+<body>
+<aside id="sidebar">
+  <h1>New production line</h1>
+  <input id="name" placeholder="Line name">
+  <textarea id="prompt" placeholder="Initial prompt"></textarea>
+  <button id="create">Create line</button>
+</aside>
+<main id="lines"></main>
+<script>
+const cards = new Map();
+const linesEl = document.getElementById("lines");
+
+function textOf(entry) {
+  const c = entry.content;
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) return c.filter(p => p && p.type === "text").map(p => p.text).join("");
+  if (typeof entry.text === "string") return entry.text;
+  return "";
+}
+
+function entryEl(entry) {
+  const div = document.createElement("div");
+  const details = (label, body) => {
+    const d = document.createElement("details");
+    const s = document.createElement("summary");
+    s.textContent = label;
+    const pre = document.createElement("pre");
+    pre.textContent = body;
+    d.append(s, pre);
+    div.appendChild(d);
+  };
+  if (entry && entry.type === "message" && entry.role === "user") {
+    div.className = "user";
+    div.textContent = "> " + textOf(entry);
+  } else if (entry && entry.type === "message" && entry.role === "assistant") {
+    div.className = "assistant";
+    div.textContent = textOf(entry);
+  } else if (entry && entry.type === "reasoning") {
+    details("thinking", textOf(entry));
+  } else {
+    details((entry && entry.type) || "unknown", JSON.stringify(entry, null, 2));
+  }
+  return div;
+}
+
+function addCard(line) {
+  const card = document.createElement("div");
+  card.className = "card";
+  const head = document.createElement("div");
+  head.className = "head";
+  const name = document.createElement("span");
+  name.textContent = line.name;
+  const dot = document.createElement("span");
+  dot.className = "dot";
+  head.append(name, dot);
+  const banner = document.createElement("div");
+  banner.className = "banner";
+  banner.hidden = true;
+  const transcript = document.createElement("div");
+  transcript.className = "transcript";
+  const row = document.createElement("div");
+  row.className = "row";
+  const input = document.createElement("input");
+  input.placeholder = "Send a prompt";
+  const send = document.createElement("button");
+  send.textContent = "Send";
+  row.append(input, send);
+  card.append(head, banner, transcript, row);
+  linesEl.appendChild(card);
+
+  const refs = { dot, banner, transcript, input, send };
+
+  const setStatus = (status) => {
+    dot.className = "dot " + (status === "running" ? "running" : "idle");
+    input.disabled = send.disabled = status === "running";
+  };
+  const append = (el) => {
+    transcript.appendChild(el);
+    transcript.scrollTop = transcript.scrollHeight;
+  };
+  const showError = (message) => {
+    banner.textContent = message;
+    banner.hidden = false;
+  };
+
+  const es = new EventSource("/api/lines/" + line.id + "/events");
+  es.addEventListener("state", (e) => {
+    const state = JSON.parse(e.data);
+    transcript.innerHTML = "";
+    for (const entry of state.transcript) append(entryEl(entry));
+    setStatus(state.status);
+  });
+  es.addEventListener("entry", (e) => append(entryEl(JSON.parse(e.data))));
+  es.addEventListener("status", (e) => setStatus(JSON.parse(e.data).status));
+  es.addEventListener("error", (e) => { if (e.data) showError(JSON.parse(e.data).message); });
+
+  const post = async () => {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    await fetch("/api/lines/" + line.id + "/prompts", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+  };
+  send.addEventListener("click", post);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") post(); });
+
+  setStatus(line.status);
+  cards.set(line.id, refs);
+}
+
+async function refresh() {
+  try {
+    const res = await fetch("/api/lines");
+    const { lines } = await res.json();
+    for (const line of lines) if (!cards.has(line.id)) addCard(line);
+  } catch {}
+}
+
+document.getElementById("create").addEventListener("click", async () => {
+  const name = document.getElementById("name").value.trim();
+  const prompt = document.getElementById("prompt").value.trim();
+  if (!name || !prompt) return;
+  await fetch("/api/lines", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, prompt }),
+  });
+  document.getElementById("name").value = "";
+  document.getElementById("prompt").value = "";
+  refresh();
+});
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
