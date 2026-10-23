@@ -278,6 +278,15 @@ ${userPrompt}
    under a NEW name with a corrected prompt, or conclude. You may call
    GET http://localhost:${port}/api/protocol/lines/${lineId}/workers to
    check statuses. Never invent worker results you were not told.
+   A maximum of ${WORKER_CAP} workers runs at the same time. A stopped
+   or failed worker that you do not need anymore can be removed - this
+   frees its name and branch for reuse and cleans its finished
+   validators:
+   curl -s -X POST http://localhost:${port}/api/protocol/workers/<workerId>/remove
+   Removing DISCARDS the worker's local work: the router deletes its
+   worktree and its branch. Remove only workers that are stopped or
+   failed, and only after their validator (if any) gave its verdict.
+   Branches already pushed to the remote stay there.
 5. Validation loop: when an implementor finishes, you receive an
    IMPLEMENTOR REPORT and a request for acceptance criteria. Reply
    with a numbered list of criteria only (imperative steps). If the
@@ -1190,8 +1199,9 @@ const server = http.createServer((req, res) => {
       for (const w of line.workers.values()) {
         if (w.name === body.name) return json(res, 409, { error: `worker '${body.name}' already exists` });
       }
-      if (line.workers.size >= WORKER_CAP) {
-        return json(res, 409, { error: `worker cap reached (${WORKER_CAP})` });
+      const running = [...line.workers.values()].filter((w) => w.status === "running").length;
+      if (running >= WORKER_CAP) {
+        return json(res, 409, { error: `worker cap reached (${WORKER_CAP} concurrent workers)` });
       }
       const sName = sanitizeName(body.name);
       if (!sName) return json(res, 400, { error: "worker name must contain [a-zA-Z0-9-]" });
@@ -1239,6 +1249,60 @@ const server = http.createServer((req, res) => {
       enqueue(line, `WORKER STOPPED - '${worker.name}' (workerId ${worker.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.`);
     }
     return json(res, 202, { stopped: true });
+  }
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "workers"
+    && parts[4] === "remove") {
+    let line = null, worker = null;
+    for (const l of lines.values()) {
+      const w = l.workers.get(parts[3]);
+      if (w) { line = l; worker = w; break; }
+    }
+    if (!worker) return json(res, 404, { error: "no such worker" });
+    if (worker.status === "running" || worker.child) {
+      return json(res, 409, { error: "worker is running - stop it first with POST /api/protocol/workers/" + worker.id + "/stop" });
+    }
+    if (worker.role === "implementor") {
+      for (const w of line.workers.values()) {
+        if (w.role === "validator" && w.validates === worker.id && w.status === "running") {
+          return json(res, 409, { error: `a validator (${w.id}) is still checking this implementor - wait for its verdict first` });
+        }
+      }
+    }
+    const removed = [worker.id];
+    if (worker.role === "implementor") {
+      for (const w of [...line.workers.values()]) {
+        if (w.role === "validator" && w.validates === worker.id
+          && w.status !== "running" && !w.child) {
+          line.workers.delete(w.id);
+          removed.push(w.id);
+        }
+      }
+    }
+    line.workers.delete(worker.id);
+    // Discard the local work of a removed implementor or integration
+    // validator: drop its worktree and branch so the name and branch can
+    // be reused. Standard validators share the implementor's worktree -
+    // never clean those. Pushed branches stay on the remote.
+    if (worker.role === "implementor" || worker.kind === "integration") {
+      const repo = resolveRepo(line, worker.repo);
+      const repoPath = repo ? repo.path : line.workdir;
+      if (worker.worktreePath) {
+        const r1 = spawnSync("git", ["-C", repoPath, "worktree", "remove", "--force", worker.worktreePath],
+          { encoding: "utf8" });
+        if (r1.status !== 0) slog("warn", "worker.remove.worktree", { lineId: line.id,
+          workerId: worker.id, worktree: worker.worktreePath, stderr: preview(String(r1.stderr || ""), 200) });
+      }
+      if (worker.branch) {
+        const r2 = spawnSync("git", ["-C", repoPath, "branch", "-D", worker.branch], { encoding: "utf8" });
+        if (r2.status !== 0) slog("warn", "worker.remove.branch", { lineId: line.id,
+          workerId: worker.id, branch: worker.branch, stderr: preview(String(r2.stderr || ""), 200) });
+      }
+    }
+    saveLine(line);
+    slog("info", "worker.removed", { lineId: line.id, removed });
+    broadcast(line, "worker_removed", { workerIds: removed });
+    return json(res, 200, { removed });
   }
 
   function findWorker(id) {

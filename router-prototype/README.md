@@ -50,8 +50,10 @@ On approval the planner spawns workers by calling the router's protocol API
   matching validation focus (frontend validators run headless UI tests with
   the playwright tools). The optional `repo` field selects which of the
   line's repositories the worker works in (default `primary`). 409 before
-  plan approval, on a duplicate worker name, or past the cap of 8 workers
-  per line; 404 for an unregistered repo name. Each worker runs in its own
+  plan approval, on a duplicate worker name, or with 8 workers already
+  RUNNING concurrently (the cap counts running workers only - completed,
+  stopped, or failed workers do not block new spawns); 404 for an
+  unregistered repo name. Each worker runs in its own
   git worktree of its repo on branch `<lineIdPrefix>/<name>`, with no shared
   context with the planner: worker prompts must be self-contained.
 - `GET /api/protocol/lines/:id/repos` / `POST /api/protocol/lines/:id/repos
@@ -66,6 +68,13 @@ On approval the planner spawns workers by calling the router's protocol API
   (planner polling fallback).
 - `POST /api/protocol/workers/:id/stop` — stop a worker; the planner is woken
   with a WORKER STOPPED prompt (or VALIDATOR STOPPED for validators).
+- `POST /api/protocol/workers/:id/remove` — remove a stopped/failed worker
+  from the line: frees its name and branch for reuse, cascades to its
+  finished validators, and (for implementors and integration validators)
+  deletes its worktree and branch - the local work is discarded, pushed
+  branches stay on the remote. 409 while the worker (or a validator of it)
+  is still running. The planner brief documents the command and the
+  semantics.
 - `POST /api/protocol/workers/:id/continue {prompt}` — resume the ORIGINAL
   implementor session in its worktree with follow-up instructions. 404 unknown
   worker; 409 for validators, while the worker is running, or before it has a

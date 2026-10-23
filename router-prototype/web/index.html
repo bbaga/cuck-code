@@ -545,6 +545,16 @@ window.addEventListener("DOMContentLoaded", () => {
       renderGraph(st);
       updateListEntry(st);
     });
+    es.addEventListener("worker_removed", (e) => {
+      const { workerIds } = JSON.parse(e.data);
+      for (const id of workerIds || []) {
+        st.workers.delete(id);
+        st.workerTranscripts.delete(id);
+      }
+      if (st.selected !== null && !st.workers.has(st.selected)) selectNode(st, null);
+      renderGraph(st);
+      updateListEntry(st);
+    });
     es.addEventListener("error", (e) => { if (e.data) showError(JSON.parse(e.data).message); });
 
     const post = async () => {
