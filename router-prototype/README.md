@@ -50,9 +50,10 @@ On approval the planner spawns workers by calling the router's protocol API
   matching validation focus (frontend validators run headless UI tests with
   the playwright tools). The optional `repo` field selects which of the
   line's repositories the worker works in (default `primary`). 409 before
-  plan approval, on a duplicate worker name, or with 8 workers already
-  RUNNING concurrently (the cap counts running workers only - completed,
-  stopped, or failed workers do not block new spawns); 404 for an
+  plan approval, on a duplicate worker name, or with 8 workers/validators
+  already RUNNING concurrently - the cap counts running implementors and
+  validators together, never finished ones (large pipelines with many
+  completed workers are fine); 404 for an
   unregistered repo name. Each worker runs in its own
   git worktree of its repo on branch `<lineIdPrefix>/<name>`, with no shared
   context with the planner: worker prompts must be self-contained.
@@ -167,6 +168,17 @@ integration tests (on lines with a remote, the validator opens the
 draft PR and waits for CI, so integration failures still gate the
 loop). Only the integration validator runs integration tests locally.
 
+### Concurrency
+
+The cap of 8 counts concurrently RUNNING implementors and validators
+together — never finished, stopped, or failed workers, which stay in
+the line's history (implementors are only removed explicitly). A
+router-driven validator that would exceed the cap is deferred: it is
+queued per line (`pendingValidations` in `line.json`), spawns
+automatically when a worker closes, and survives restarts. The
+planner-driven spawns (workers, integration validator) get a 409 and
+the planner brief tells the planner to wait for completions and retry.
+
 ### Worktree discipline
 
 Every implementor works exclusively in its own git worktree of its assigned
@@ -243,7 +255,8 @@ repository into the line workdir. The pipeline then extends past validation:
 
 When all implementor validators report VERDICT: PASS, the planner starts the
 integration validator (`POST /api/protocol/lines/:id/integration` with the
-integration instructions). The planner itself NEVER commits to or pushes the
+integration instructions; 409 at the concurrent-worker cap). The planner
+itself NEVER commits to or pushes the
 main/master branch - merging is the integration validator's job:
 
 - The integration validator gets its own worktree on a fresh

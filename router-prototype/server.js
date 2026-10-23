@@ -278,10 +278,14 @@ ${userPrompt}
    under a NEW name with a corrected prompt, or conclude. You may call
    GET http://localhost:${port}/api/protocol/lines/${lineId}/workers to
    check statuses. Never invent worker results you were not told.
-   A maximum of ${WORKER_CAP} workers runs at the same time. A stopped
-   or failed worker that you do not need anymore can be removed - this
-   frees its name and branch for reuse and cleans its finished
-   validators:
+   A maximum of ${WORKER_CAP} workers AND validators runs at the same
+   time. Implementors are never removed automatically: keep completed
+   workers. If a spawn fails with the cap error, wait for the reports
+   of running workers, then spawn again. Validations that do not fit
+   start automatically when a slot frees.
+   A stopped or failed worker that you do not need anymore can be
+   removed - this frees its name and branch for reuse and cleans its
+   finished validators:
    curl -s -X POST http://localhost:${port}/api/protocol/workers/<workerId>/remove
    Removing DISCARDS the worker's local work: the router deletes its
    worktree and its branch. Remove only workers that are stopped or
@@ -657,6 +661,7 @@ function saveLine(line) {
     fs.writeFileSync(path.join(line.workdir, "line.json"),
       JSON.stringify({ id: line.id, name: line.name, sessionId: line.sessionId,
         repoUrl: line.repoUrl || null,
+        pendingValidations: line.pendingValidations || [],
         repos: [...(line.repos || new Map()).values()].map((r) => ({
           name: r.name, url: r.url, path: r.path })),
         started: line.started, planApproved: line.planApproved,
@@ -781,7 +786,7 @@ function pump(line) {
           decision: skip ? "skip-validation" : "spawn-validator",
           criteria: preview(criteria, 400) });
         if (!skip) {
-          spawnValidator(line, implWorker, criteria);
+          trySpawnValidator(line, implWorker, criteria);
         }
       }
     }
@@ -790,6 +795,38 @@ function pump(line) {
     broadcast(line, "status", { status: line.status });
     pump(line);
   });
+}
+
+function runningCount(line) {
+  return [...line.workers.values()].filter((w) => w.status === "running").length;
+}
+
+function flushPendingValidations(line) {
+  if (!line.pendingValidations || !line.pendingValidations.length) return;
+  while (line.pendingValidations.length && runningCount(line) < WORKER_CAP) {
+    const { implWorkerId, criteria } = line.pendingValidations.shift();
+    const implWorker = line.workers.get(implWorkerId);
+    if (!implWorker || implWorker.status === "running" || implWorker.deleted) continue;
+    trySpawnValidator(line, implWorker, criteria, true);
+    saveLine(line);
+  }
+}
+
+// Spawn the validator for an implementor, or defer it when the line is at
+// the cap of concurrently running workers and validators.
+function trySpawnValidator(line, implWorker, criteria, deferred) {
+  if (runningCount(line) >= WORKER_CAP) {
+    if (!line.pendingValidations) line.pendingValidations = [];
+    line.pendingValidations.push({ implWorkerId: implWorker.id, criteria });
+    saveLine(line);
+    slog("info", "validator.deferred", { lineId: line.id, implementorId: implWorker.id,
+      queued: line.pendingValidations.length });
+    if (!deferred) {
+      enqueue(line, `VALIDATION DEFERRED - the line is at the cap of ${WORKER_CAP} concurrently running workers and validators. The validation of implementor '${implWorker.name}' starts automatically when a slot frees. You do not need to act.`);
+    }
+    return;
+  }
+  spawnValidator(line, implWorker, criteria);
 }
 
 function reportText(transcript) {
@@ -901,6 +938,7 @@ the work needs no validation, reply with SKIP VALIDATION.`);
   } else {
     enqueue(line, `WORKER STOPPED - '${worker.name}' (workerId ${worker.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.`);
   }
+  flushPendingValidations(line);
 }
 
 function spawnValidator(line, implWorker, criteria) {
@@ -1199,9 +1237,9 @@ const server = http.createServer((req, res) => {
       for (const w of line.workers.values()) {
         if (w.name === body.name) return json(res, 409, { error: `worker '${body.name}' already exists` });
       }
-      const running = [...line.workers.values()].filter((w) => w.status === "running").length;
+      const running = runningCount(line);
       if (running >= WORKER_CAP) {
-        return json(res, 409, { error: `worker cap reached (${WORKER_CAP} concurrent workers)` });
+        return json(res, 409, { error: `cap reached: ${WORKER_CAP} workers/validators are running concurrently - wait for completions or stop workers` });
       }
       const sName = sanitizeName(body.name);
       if (!sName) return json(res, 400, { error: "worker name must contain [a-zA-Z0-9-]" });
@@ -1357,6 +1395,9 @@ const server = http.createServer((req, res) => {
     const line = lines.get(parts[3]);
     if (!line) return json(res, 404, { error: "no such line" });
     if (!line.planApproved) return json(res, 409, { error: "plan not approved" });
+    if (runningCount(line) >= WORKER_CAP) {
+      return json(res, 409, { error: `cap reached: ${WORKER_CAP} workers/validators are running concurrently - wait for completions first` });
+    }
     readBody(req, (err, body) => {
       if (err || !body || typeof body.prompt !== "string" || !body.prompt.trim()) {
         return json(res, 400, { error: "expected {prompt}" });
@@ -1632,8 +1673,14 @@ function loadLines() {
         started,
         planApproved: meta.planApproved === true, workers, inventory,
         evidence: new Map((meta.evidence || []).map((e) => [e.id, e])),
+        pendingValidations: meta.pendingValidations || [],
         clients: new Set(), transcript: [] };
       lines.set(meta.id, line);
+      if (line.pendingValidations.length && line.planApproved) {
+        slog("info", "boot.pending-validations", { lineId: meta.id,
+          count: line.pendingValidations.length });
+        flushPendingValidations(line);
+      }
       const hadRunning = (meta.workers || []).some((w) => w.status === "running");
       if (hadRunning) {
         slog("info", "boot.stale-running", { lineId: meta.id,
