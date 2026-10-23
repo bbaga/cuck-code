@@ -649,10 +649,11 @@ function loadLines() {
           status: w.status === "running" ? "stopped" : w.status,
           stopRequested: false, child: null, transcript: [] });
       }
+      const started = meta.started === true || !!meta.sessionId;
       lines.set(meta.id, { id: meta.id, name: meta.name, sessionId: meta.sessionId,
         workdir: path.join(LINES_DIR, entry.name),
-        status: meta.started === true ? "idle" : "standby", queue: [],
-        started: meta.started === true || !!meta.sessionId,
+        status: started ? "idle" : "standby", queue: [],
+        started,
         planApproved: meta.planApproved === true, workers,
         clients: new Set(), transcript: [] });
     } catch {}
