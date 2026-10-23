@@ -183,3 +183,23 @@ Log rotation: when `router.log` would exceed `LOG_MAX_BYTES` (default 1 MB),
 it rotates to `router.log.1`, shifting older files up to `LOG_KEEP` (default
 5) backups. Entries carry `t` (ISO timestamp), `level`, `event`, and
 event-specific fields; prompt/report text is previewed with a length cap.
+
+## Remote pipeline (lines with a repository)
+
+Create a line with a repo URL to work on a real project:
+`POST /api/lines {"name": "...", "repoUrl": "<any git URL>"}` clones the
+repository into the line workdir. The pipeline then extends past validation:
+
+- Implementors commit in their worktree branch and push it to the remote
+  (`git push -u origin HEAD`), reporting the branch name.
+- Validators run the local criteria validation first; if it passes they make
+  sure the branch is on the remote, open a DRAFT pull request
+  (`gh pr create --draft`), and wait for the repository CI pipelines
+  (polling `gh pr checks`, up to 20 minutes). The verdict carries CI state:
+  `CI: PASS` / `CI: FAIL` with failed check names and log excerpts
+  (`gh run view --log-failed`). PRs stay drafts - the factory never marks
+  them ready for review.
+- On a FAIL verdict (local or CI), the planner receives the failure feedback
+  and routes the revised task back to the ORIGINAL implementor session via
+  the continue endpoint; the implementor pushes again and the loop repeats.
+- Lines without a repoUrl keep the local-only flow.

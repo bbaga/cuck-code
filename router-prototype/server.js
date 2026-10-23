@@ -267,8 +267,12 @@ ${userPrompt}
    work needs no validation, reply with SKIP VALIDATION. A validator
    then checks the work against your criteria and you receive a
    VALIDATION REPORT with a VERDICT line.
+   The verdict may carry CI results: the validator opens a draft
+   pull request for the implementor branch and waits for the
+   repository CI pipelines.
    On VERDICT: PASS you can accept the work or plan follow-up work.
-   On VERDICT: FAIL you can:
+   On VERDICT: FAIL (local or CI) the revised task goes back to the
+   ORIGINAL implementor with the failure feedback:
    - send follow-up instructions to the ORIGINAL implementor session
      (it keeps its worktree and its memory):
      curl -s -X POST http://localhost:${port}/api/protocol/workers/<workerId>/continue \\
@@ -380,11 +384,22 @@ remove your containers yourself when you finish with them
 (docker rm -f <name>).`;
 }
 
-function workerBrief(name, lineName, prompt, persona, workerId, lineId) {
+function remoteBlockImplementor(repoUrl) {
+  if (!repoUrl) return "";
+  return `
+## Remote work
+This repository has a remote (origin): ${repoUrl}
+Commit your work with clear messages. When your task is done, push
+your branch to the remote:
+git push -u origin HEAD
+Report the branch name with: git rev-parse --abbrev-ref HEAD`;
+}
+
+function workerBrief(name, lineName, prompt, persona, workerId, lineId, repoUrl) {
   return `You are implementor worker '${name}' (id ${workerId}) on factory line '${lineName}'.
 You run inside your own git worktree - all work happens here, do not
 touch other directories. Commit your work with clear messages.
-${containersBlock(workerId, lineId)}
+${containersBlock(workerId, lineId)}${remoteBlockImplementor(repoUrl)}
 
 ${IMPL_PERSONA[persona] || IMPL_PERSONA.backend}
 ${persona === "frontend" ? frontendToolsBlock(workerId, null, lineId) : ""}
@@ -402,11 +417,35 @@ changed, how you verified it, and any open issues. That report goes
 back to the planner verbatim.`;
 }
 
-function validatorBrief(implName, report, criteria, persona, workerId, implId, lineId) {
+function remoteBlockValidator(repoUrl, implName) {
+  if (!repoUrl) return "";
+  return `
+## Remote validation and CI
+The implementor branch in your workdir has a remote (origin): ${repoUrl}
+After the local criteria validation:
+1. Make sure the branch is on the remote:
+   git fetch origin
+   If origin/<branch> is missing or behind your local branch, push:
+   git push -u origin HEAD
+2. Open a DRAFT pull request:
+   gh pr create --draft --title "${implName}" --head <branch> --fill
+   (If the repository already has an open PR for this branch, use it.)
+3. Wait for the CI pipelines of the pull request (up to 20 minutes).
+   Poll with: gh pr checks
+   Use: gh pr checks --json for machine-readable results.
+4. Report the outcome:
+   - All checks pass: include the PR url and "CI: PASS". VERDICT: PASS.
+   - Checks fail: attach the failed check names and the failure log
+     excerpts (gh run view <run-id> --log-failed), write "CI: FAIL".
+     VERDICT: FAIL.
+5. Do not mark the PR ready for review. Leave it as a draft.`;
+}
+
+function validatorBrief(implName, report, criteria, persona, workerId, implId, lineId, repoUrl) {
   return `You are the VALIDATOR (id ${workerId}) for the work of implementor '${implName}' (id ${implId}).
 Your workdir is the implementor's git worktree. Do not change the
 implementation. You check the work only.
-${containersBlock(workerId, lineId)}
+${containersBlock(workerId, lineId)}${remoteBlockValidator(repoUrl, implName)}
 
 ${VAL_PERSONA[persona] || VAL_PERSONA.backend}
 ${persona === "frontend" ? frontendToolsBlock(workerId, implId, lineId) : ""}
@@ -456,6 +495,7 @@ function saveLine(line) {
   try {
     fs.writeFileSync(path.join(line.workdir, "line.json"),
       JSON.stringify({ id: line.id, name: line.name, sessionId: line.sessionId,
+        repoUrl: line.repoUrl || null,
         started: line.started, planApproved: line.planApproved,
         inventory: [...(line.inventory || new Map()).values()].map((i) => ({
           id: i.id, kind: i.kind, name: i.name, by: i.by, ref: i.ref,
@@ -690,7 +730,7 @@ function spawnValidator(line, implWorker, criteria) {
   const worker = { id, lineId: line.id, name,
     role: "validator", validates: implWorker.id, persona: implWorker.persona || "backend",
     prompt: validatorBrief(implWorker.name, reportText(implWorker.transcript), criteria,
-      implWorker.persona || "backend", id, implWorker.id, line.id),
+      implWorker.persona || "backend", id, implWorker.id, line.id, line.repoUrl),
     sessionId: null, worktreePath: implWorker.worktreePath, branch: implWorker.branch,
     status: "running", stopRequested: false, child: null, transcript: [] };
   line.workers.set(id, worker);
@@ -719,25 +759,33 @@ const server = http.createServer((req, res) => {
       const name = typeof body.name === "string" && body.name.trim()
         ? body.name.trim()
         : `Draft line ${[...lines.values()].filter((l) => /^Draft line/.test(l.name)).length + 1}`;
+      const repoUrl = typeof body.repoUrl === "string" && body.repoUrl.trim()
+        ? body.repoUrl.trim() : null;
       const id = crypto.randomUUID();
       const workdir = path.join(LINES_DIR, id);
-      fs.mkdirSync(workdir, { recursive: true });
-      const init = spawnSync("git", ["-C", workdir, "init"], { encoding: "utf8" });
-      if (init.error) return json(res, 500, { error: `git is not available: ${init.error.message}` });
-      if (init.status !== 0) return json(res, 500, { error: "git init failed", stderr: init.stderr });
-      const head = spawnSync("git", ["-C", workdir, "rev-parse", "--verify", "HEAD"], { encoding: "utf8" });
-      if (head.status !== 0) {
-        const commit = spawnSync("git", ["-C", workdir, "-c", "user.name=router", "-c", "user.email=router@localhost",
-          "commit", "--allow-empty", "-m", "init"], { encoding: "utf8" });
-        if (commit.status !== 0) return json(res, 500, { error: "git commit failed", stderr: commit.stderr });
+      if (repoUrl) {
+        const clone = spawnSync("git", ["clone", repoUrl, workdir], { encoding: "utf8" });
+        if (clone.error) return json(res, 500, { error: `git is not available: ${clone.error.message}` });
+        if (clone.status !== 0) return json(res, 500, { error: "git clone failed", stderr: clone.stderr });
+      } else {
+        fs.mkdirSync(workdir, { recursive: true });
+        const init = spawnSync("git", ["-C", workdir, "init"], { encoding: "utf8" });
+        if (init.error) return json(res, 500, { error: `git is not available: ${init.error.message}` });
+        if (init.status !== 0) return json(res, 500, { error: "git init failed", stderr: init.stderr });
+        const head = spawnSync("git", ["-C", workdir, "rev-parse", "--verify", "HEAD"], { encoding: "utf8" });
+        if (head.status !== 0) {
+          const commit = spawnSync("git", ["-C", workdir, "-c", "user.name=router", "-c", "user.email=router@localhost",
+            "commit", "--allow-empty", "-m", "init"], { encoding: "utf8" });
+          if (commit.status !== 0) return json(res, 500, { error: "git commit failed", stderr: commit.stderr });
+        }
       }
       const line = { id, name, sessionId: null, workdir, status: "standby",
-        started: false, planApproved: false, workers: new Map(),
+        repoUrl, started: false, planApproved: false, workers: new Map(),
         inventory: new Map(),
         queue: [], clients: new Set(), transcript: [] };
       lines.set(id, line);
       saveLine(line);
-      slog("info", "line.created", { lineId: id, name });
+      slog("info", "line.created", { lineId: id, name, repoUrl });
       json(res, 201, { id, name });
     });
     return;
@@ -937,7 +985,7 @@ const server = http.createServer((req, res) => {
       if (wt.status !== 0) return json(res, 500, { error: "git worktree add failed", stderr: wt.stderr });
       const worker = { id, lineId: line.id, name: body.name,
         role: "implementor", validates: null, persona,
-        prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id),
+        prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, line.repoUrl),
         sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
         child: null, transcript: [] };
       line.workers.set(id, worker);
@@ -1153,6 +1201,7 @@ function loadLines() {
           ref: i.ref, keep: !!i.keep, status: "stopped" });
       }
       const line = { id: meta.id, name: meta.name, sessionId: meta.sessionId,
+        repoUrl: meta.repoUrl || null,
         workdir: path.join(LINES_DIR, entry.name),
         status: started ? "idle" : "standby", queue: [],
         started,
