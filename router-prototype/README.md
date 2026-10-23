@@ -45,6 +45,11 @@ On approval the planner spawns workers by calling the router's protocol API
 - `POST /api/protocol/workers/:id/stop` — stop a worker; the planner is woken
   with a WORKER STOPPED prompt.
 
+Planner-to-worker prompts and worker reports use ASD-STE100 Simplified
+Technical English (the router injects the rule into both briefs): approved
+words only, short sentences, one topic per sentence, imperative numbered
+steps for procedures, active voice, no idioms or jargon.
+
 Independent tasks are spawned in parallel as parallel processes. Worker output
 streams to the UI live, drawn as nodes connected to the planner node. When a
 worker finishes (or fails, or is stopped), the router wakes the planner with

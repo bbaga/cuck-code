@@ -39,7 +39,21 @@ ${userPrompt}
    decide and act - spawn follow-up workers, restart a failed task
    under a NEW name with a corrected prompt, or conclude. You may call
    GET http://localhost:${port}/api/protocol/lines/${lineId}/workers to
-   check statuses. Never invent worker results you were not told.`;
+   check statuses. Never invent worker results you were not told.
+
+## Language rule (ASD-STE100)
+Write every worker prompt and every written communication with
+implementors in ASD-STE100 Simplified Technical English:
+- Use only approved words, each only in its approved part of speech.
+- Keep sentences short: a maximum of 20 words. One topic per sentence.
+- Write procedures as separate numbered steps. One action per step.
+- Use the imperative in instructions ("Write the file.", not "The file
+  should be written.").
+- Use the active voice. Use the present tense for procedures; use the
+  past tense only for events that occurred.
+- Do not use "-ing" forms as verbs. Do not use noun clusters of more
+  than three nouns. Do not use a word that has several meanings.
+- Do not use idioms, metaphors, or jargon.`;
 }
 
 function workerBrief(name, lineName, prompt) {
@@ -49,6 +63,11 @@ touch other directories. Commit your work with clear messages.
 
 Task from the planner:
 ${prompt}
+
+Write your report back in ASD-STE100 Simplified Technical English: use
+only approved words, keep sentences short (a maximum of 20 words), one
+topic per sentence, the active voice, numbered steps for procedures,
+and no idioms or jargon.
 
 When done, reply with a concise report: what you implemented, files
 changed, how you verified it, and any open issues. That report goes
