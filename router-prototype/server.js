@@ -723,6 +723,7 @@ function pump(line) {
       try { entry = JSON.parse(raw); } catch { continue; }
       if (!entry || typeof entry !== "object") continue;
       if (!line.sessionId && entry.sessionId) line.sessionId = entry.sessionId;
+      if (typeof entry.at !== "number") entry.at = Date.now();
       line.transcript.push(entry);
       if (line.transcript.length > 500) line.transcript.shift();
       slog("debug", "planner.entry", { lineId: line.id, type: entry.type,
@@ -820,6 +821,7 @@ function spawnWorker(line, worker, prompt, model, resume) {
       try { entry = JSON.parse(raw); } catch { continue; }
       if (!entry || typeof entry !== "object") continue;
       if (!worker.sessionId && entry.sessionId) worker.sessionId = entry.sessionId;
+      if (typeof entry.at !== "number") entry.at = Date.now();
       worker.transcript.push(entry);
       slog("debug", "worker.entry", { lineId: line.id, workerId: worker.id,
         type: entry.type, role: entry.role || null, chars: raw.length,
