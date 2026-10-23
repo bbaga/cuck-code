@@ -75,6 +75,16 @@ On approval the planner spawns workers by calling the router's protocol API
   no shared fixtures. Each worker session has its own playwright MCP server
   and therefore its own browser.
 
+### Container lifecycle
+
+Workers that start docker containers must label them
+`--label cuck.worker=<workerId>`. The router force-removes every container
+with a worker's label when that worker closes (completed, failed, or stopped
+— SIGTERM does not reach detached containers, so the router does the killing
+even when the worker forgets or crashes). On boot the router sweeps and
+removes every `cuck.worker`-labeled container, cleaning up orphans from a
+crashed router instance.
+
 Planner-to-worker prompts and worker reports use ASD-STE100 Simplified
 Technical English (the router injects the rule into both briefs): approved
 words only, short sentences, one topic per sentence, imperative numbered

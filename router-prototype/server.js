@@ -41,6 +41,33 @@ function releaseUiSlot(workerId) {
   }
 }
 
+function dockerRun(args, cb) {
+  let child;
+  try { child = spawn("docker", args, { stdio: ["ignore", "pipe", "ignore"] }); }
+  catch { return cb(null); }
+  let out = "";
+  child.stdout.on("data", (c) => { out += c; });
+  child.on("error", () => cb(null));
+  child.on("close", () => cb(out.trim()));
+}
+
+function removeContainers(filter, cb) {
+  dockerRun(["ps", "-aq", "--filter", filter], (ids) => {
+    if (!ids) return cb && cb(false);
+    const list = ids.split(/\s+/).filter(Boolean);
+    if (!list.length) return cb && cb(false);
+    dockerRun(["rm", "-f", ...list], () => cb && cb(true));
+  });
+}
+
+function cleanupWorkerContainers(workerId) {
+  removeContainers(`label=cuck.worker=${workerId}`);
+}
+
+function sweepWorkerContainers() {
+  removeContainers("label=cuck.worker");
+}
+
 function frontendToolsBlock(workerId, implId) {
   return `
 ## Browser, port, and docker tools (frontend persona)
@@ -51,9 +78,11 @@ function frontendToolsBlock(workerId, implId) {
   -> {"port": <number>}. Serve the app on that port. Record the port
   in ui.port at the repo root.
 - You may run the app inside a docker container. Publish it on your
-  allocated port: docker run -p <port>:<containerPort> ... . Name
-  containers uniquely with your worker id. Stop and remove them when
-  you are done (docker rm -f <name>).
+  allocated port, with your worker label:
+  docker run --label cuck.worker=${workerId} -p <port>:<containerPort> ...
+  Name containers uniquely with your worker id. Stop and remove them
+  when you are done (docker rm -f <name>); the router force-removes
+  any container still carrying your label when your run ends.
 ${implId ? `- The implementor's app port: read ui.port at the repo root, or call
   curl -s http://localhost:${PORT}/api/protocol/workers/${implId}/port
   If the app is not running, you may start it yourself (directly or in
@@ -173,10 +202,21 @@ performs. Run headless UI tests with the playwright browser tools on
 the changed pages when the work includes a user interface.`,
 };
 
+function containersBlock(workerId) {
+  return `
+## Container hygiene
+If you start any docker container, always set this label on it:
+--label cuck.worker=${workerId}
+The router force-removes containers that carry your label when your
+run ends. Stop and remove your containers yourself when you finish
+with them (docker rm -f <name>).`;
+}
+
 function workerBrief(name, lineName, prompt, persona, workerId) {
   return `You are implementor worker '${name}' (id ${workerId}) on factory line '${lineName}'.
 You run inside your own git worktree - all work happens here, do not
 touch other directories. Commit your work with clear messages.
+${containersBlock(workerId)}
 
 ${IMPL_PERSONA[persona] || IMPL_PERSONA.backend}
 ${persona === "frontend" ? frontendToolsBlock(workerId) : ""}
@@ -198,6 +238,7 @@ function validatorBrief(implName, report, criteria, persona, workerId, implId) {
   return `You are the VALIDATOR (id ${workerId}) for the work of implementor '${implName}' (id ${implId}).
 Your workdir is the implementor's git worktree. Do not change the
 implementation. You check the work only.
+${containersBlock(workerId)}
 
 ${VAL_PERSONA[persona] || VAL_PERSONA.backend}
 ${persona === "frontend" ? frontendToolsBlock(workerId, implId) : ""}
@@ -394,6 +435,7 @@ function workerClosed(line, worker, code) {
   if (worker.stopRequested) worker.status = "stopped";
   else if (code === 0) worker.status = "completed";
   else worker.status = "failed";
+  cleanupWorkerContainers(worker.id);
   if (uiSlots.held.has(worker.id) || uiSlots.waiters.some((w) => w.workerId === worker.id)) {
     releaseUiSlot(worker.id);
   }
@@ -767,4 +809,5 @@ function loadLines() {
 }
 
 loadLines();
+sweepWorkerContainers();
 server.listen(PORT, () => console.log(`router listening on http://localhost:${PORT}`));
