@@ -55,6 +55,11 @@
   @keyframes pulse { 50% { opacity: .3; } }
   .banner { margin: 8px 16px 0; padding: 8px; border-radius: 4px;
     background: #4d1420; color: #ff8095; font-size: .85rem; white-space: pre-wrap; }
+  .planDetails { border-bottom: 1px solid #262b33; }
+  .planDetails summary { cursor: pointer; padding: 6px 16px; color: #6c7a8c;
+    font-size: .75rem; user-select: none; }
+  .planDetails[open] summary { color: #8fa3bd; }
+  .planDetails .planBody { padding: 4px 16px 12px; }
   .plan { padding: 12px 16px; border-bottom: 1px solid #262b33;
     max-height: 260px; overflow-y: auto; font-size: .85rem; }
   .plan .waiting { color: #6c7a8c; font-size: .8rem; }
@@ -71,7 +76,8 @@
   .plan .controls button { padding: 6px 12px; font-size: .8rem; }
   .badge { padding: 3px 10px; border-radius: 10px; background: #14331f;
     color: #58d68d; font-size: .75rem; }
-  .graph { position: relative; border-bottom: 1px solid #262b33; overflow: hidden; }
+  .graph { position: relative; border-bottom: 1px solid #262b33;
+    overflow: auto; max-height: 300px; min-height: 120px; }
   .invRow { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: .78rem; }
   .invRow .kind { color: #6c7a8c; width: 34px; flex-shrink: 0; }
   .invRow .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -193,6 +199,15 @@ window.addEventListener("DOMContentLoaded", () => {
   function updateControls(st) {
     st.approveBtn.hidden = st.approved;
     st.badge.hidden = !st.approved;
+    if (st.approved && st.planBody.parentNode !== st.planDetails) {
+      st.planDetails.appendChild(st.planBody);
+      st.planDetails.hidden = false;
+      st.plan.hidden = true;
+    } else if (!st.approved && st.planBody.parentNode === st.planDetails) {
+      st.plan.insertBefore(st.planBody, st.planControls);
+      st.planDetails.hidden = true;
+      st.plan.hidden = false;
+    }
     if (st.started && st.planContent && !st.approved) {
       st.input.placeholder = "Plan proposed - type feedback here";
     } else if (st.started) {
@@ -204,16 +219,20 @@ window.addEventListener("DOMContentLoaded", () => {
     const ws = [...st.workers.values()];
     const h = Math.max(140, ws.length ? 14 + (ws.length - 1) * 46 + 36 + 14 : 140);
     const graph = st.graph;
-    graph.style.height = h + "px";
     graph.innerHTML = "";
     const W = graph.clientWidth || 440;
+    const inner = document.createElement("div");
+    inner.style.position = "relative";
+    inner.style.height = h + "px";
+    graph.appendChild(inner);
     const svg = document.createElementNS(SVGNS, "svg");
-    graph.appendChild(svg);
+    inner.appendChild(svg);
 
     const plannerW = 92, plannerX = 12;
     const plannerY = Math.round(h / 2 - 18);
     const workerX = Math.max(plannerX + plannerW + 40, W - 208);
     const workerW = 196;
+    inner.style.width = Math.max(W, workerX + workerW + 12) + "px";
 
     const pn = document.createElement("div");
     pn.className = "gnode planner" + (st.selected === null ? " sel" : "");
@@ -226,7 +245,7 @@ window.addEventListener("DOMContentLoaded", () => {
     pd.className = "dot " + (st.plannerStatus === "running" ? "running" : "idle");
     pn.append(pnLabel, pd);
     pn.addEventListener("click", () => selectNode(st, null));
-    graph.appendChild(pn);
+    inner.appendChild(pn);
 
     ws.forEach((w, i) => {
       const y = 14 + i * 46;
@@ -267,7 +286,7 @@ window.addEventListener("DOMContentLoaded", () => {
         n.appendChild(stop);
       }
       n.addEventListener("click", () => selectNode(st, w.id));
-      graph.appendChild(n);
+      inner.appendChild(n);
     });
   }
 
@@ -336,6 +355,12 @@ window.addEventListener("DOMContentLoaded", () => {
       removeCard(line.id);
     });
     head.append(name, dot, tabLineBtn, tabProcBtn, delBtn);
+    const planDetails = document.createElement("details");
+    planDetails.className = "planDetails";
+    planDetails.hidden = true;
+    const planSummary = document.createElement("summary");
+    planSummary.textContent = "Plan";
+    planDetails.appendChild(planSummary);
     const banner = document.createElement("div");
     banner.className = "banner";
     banner.hidden = true;
@@ -373,11 +398,11 @@ window.addEventListener("DOMContentLoaded", () => {
     const procPane = document.createElement("div");
     procPane.className = "procPane";
     procPane.hidden = true;
-    card.append(head, banner, plan, graph, transcript, row, procPane);
+    card.append(head, planDetails, banner, plan, graph, transcript, row, procPane);
     linesEl.appendChild(card);
 
     const st = { id: line.id, dot, banner, transcript, input, send,
-      waiting, planBody, graph, approveBtn, badge,
+      waiting, planBody, graph, approveBtn, badge, planDetails, planControls: controls,
       tab: "line", tabLineBtn, tabProcBtn, plan, row, procPane,
       plannerStatus: line.status, started: line.started === true,
       planContent: undefined, approved: false,
@@ -531,7 +556,7 @@ window.addEventListener("DOMContentLoaded", () => {
     st.tab = tab;
     st.tabLineBtn.classList.toggle("active", tab === "line");
     st.tabProcBtn.classList.toggle("active", tab === "processes");
-    for (const el of [st.plan, st.graph, st.transcript, st.row]) {
+    for (const el of [st.plan, st.planDetails, st.graph, st.transcript, st.row]) {
       el.hidden = tab !== "line";
     }
     st.procPane.hidden = tab !== "processes";

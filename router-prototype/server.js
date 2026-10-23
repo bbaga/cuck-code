@@ -11,6 +11,8 @@ const INDEX_HTML = path.join(__dirname, "web", "index.html");
 const WORKER_CAP = 8;
 const UI_PORT_BASE = Number(process.env.UI_PORT_BASE || 4100);
 const UI_TEST_SLOTS = Number(process.env.UI_TEST_SLOTS || 1);
+const PLANNER_TIME_LIMIT = Number(process.env.PLANNER_TIME_LIMIT || 1800);
+const WORKER_TIME_LIMIT = Number(process.env.WORKER_TIME_LIMIT || 3600);
 
 // ---- structured logging with size-based rotation ----
 const LOG_DIR = path.join(__dirname, "logs");
@@ -505,7 +507,7 @@ function pump(line) {
 
   const args = line.sessionId ? ["--resume", line.sessionId] : [];
   args.push("--workdir", line.workdir, "--trust", "--agent", "accept-edits",
-    "--output", "streaming", "--time-limit", "900");
+    "--output", "streaming", "--time-limit", String(PLANNER_TIME_LIMIT));
   if (AUTO_APPROVE) args.push("--auto-approve");
   args.push("-p", text);
   const child = spawn("vibe", args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -601,7 +603,7 @@ function spawnWorker(line, worker, prompt, model, resume) {
     resume: !!(resume && worker.sessionId), chars: prompt.length });
   const args = resume && worker.sessionId ? ["--resume", worker.sessionId] : [];
   args.push("--workdir", worker.worktreePath, "--trust", "--agent", "accept-edits",
-    "--output", "streaming", "--time-limit", "900");
+    "--output", "streaming", "--time-limit", String(WORKER_TIME_LIMIT));
   if (AUTO_APPROVE) args.push("--auto-approve");
   args.push("-p", prompt);
   const child = spawn("vibe", args, { stdio: ["ignore", "pipe", "pipe"],
@@ -633,8 +635,10 @@ function spawnWorker(line, worker, prompt, model, resume) {
 
 function workerClosed(line, worker, code) {
   worker.child = null;
+  const timedOut = code === 3 && !worker.stopRequested;
   if (worker.stopRequested) worker.status = "stopped";
   else if (code === 0) worker.status = "completed";
+  else if (timedOut) worker.status = "stopped";
   else worker.status = "failed";
   cleanupStage(line, worker.id);
   if (uiSlots.held.has(worker.id) || uiSlots.waiters.some((w) => w.workerId === worker.id)) {
@@ -655,6 +659,8 @@ function workerClosed(line, worker, code) {
     const implSession = impl ? (impl.sessionId || "unknown") : "unknown";
     if (worker.status === "completed") {
       enqueue(line, `VALIDATION REPORT - validator '${worker.name}' checked the work of implementor '${implName}' (workerId ${implId}, vibe session ${implSession}, branch ${worker.branch}): ${report}. Decide: accept the work, send follow-up instructions to the original implementor (POST /api/protocol/workers/${implId}/continue with {"prompt": ...}), or spawn a new implementor with a corrected prompt.`);
+    } else if (timedOut) {
+      enqueue(line, `VALIDATOR TIMEOUT - the validator hit the run time limit and was interrupted. Validators are fresh sessions each time: the implementor work is unchanged, decide how to proceed (usually nothing - validation repeats after the next implementor completion).`);
     } else if (worker.status === "failed") {
       enqueue(line, `VALIDATOR FAILURE - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) exited non-zero. Decide how to proceed.`);
     } else {
@@ -665,6 +671,8 @@ function workerClosed(line, worker, code) {
 Now give the acceptance criteria for the validation of this work.
 Reply with a numbered list of criteria only. Use the imperative. If
 the work needs no validation, reply with SKIP VALIDATION.`);
+  } else if (timedOut) {
+    enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: POST /api/protocol/workers/${worker.id}/continue with {"prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.`);
   } else if (worker.status === "failed") {
     enqueue(line, `WORKER FAILURE - '${worker.name}' (workerId ${worker.id}, session ${sid}): vibe exited non-zero. Decide whether to restart it with a corrected prompt (new name, e.g. ${worker.name}-2) or to proceed without it.`);
   } else {
@@ -1143,12 +1151,19 @@ function loadLines() {
         inventory.set(i.id, { id: i.id, kind: i.kind, name: i.name, by: i.by,
           ref: i.ref, keep: !!i.keep, status: "stopped" });
       }
-      lines.set(meta.id, { id: meta.id, name: meta.name, sessionId: meta.sessionId,
+      const line = { id: meta.id, name: meta.name, sessionId: meta.sessionId,
         workdir: path.join(LINES_DIR, entry.name),
         status: started ? "idle" : "standby", queue: [],
         started,
         planApproved: meta.planApproved === true, workers, inventory,
-        clients: new Set(), transcript: [] });
+        clients: new Set(), transcript: [] };
+      lines.set(meta.id, line);
+      const hadRunning = (meta.workers || []).some((w) => w.status === "running");
+      if (hadRunning) {
+        slog("info", "boot.stale-running", { lineId: meta.id,
+          workers: (meta.workers || []).filter((w) => w.status === "running").map((w) => w.name) });
+        saveLine(line);
+      }
     } catch {}
   }
 }
