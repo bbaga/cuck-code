@@ -34,6 +34,9 @@
   .lcount { color: #6c7a8c; font-size: .75rem; flex-shrink: 0; }
   .head { display: flex; align-items: center; gap: 8px; padding: 12px 16px;
     border-bottom: 1px solid #262b33; font-weight: 600; }
+  .deleteBtn { margin-left: 8px; padding: 3px 10px; font-size: .7rem;
+    background: #4d1420; color: #ff8095; }
+  .deleteBtn.armed { background: #ff8095; color: #2a0810; }
   .dot { width: 10px; height: 10px; border-radius: 50%; margin-left: auto; flex-shrink: 0; }
   .dot.idle { background: #35c46a; }
   .dot.running { background: #3d8bff; animation: pulse 1.2s infinite; }
@@ -290,7 +293,26 @@ window.addEventListener("DOMContentLoaded", () => {
     name.textContent = line.name;
     const dot = document.createElement("span");
     dot.className = "dot";
-    head.append(name, dot);
+    const delBtn = document.createElement("button");
+    delBtn.className = "deleteBtn";
+    delBtn.textContent = "Delete";
+    let disarmTimer = null;
+    delBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!delBtn.classList.contains("armed")) {
+        delBtn.classList.add("armed");
+        delBtn.textContent = "Sure?";
+        disarmTimer = setTimeout(() => {
+          delBtn.classList.remove("armed");
+          delBtn.textContent = "Delete";
+        }, 4000);
+        return;
+      }
+      clearTimeout(disarmTimer);
+      await fetch("/api/lines/" + line.id, { method: "DELETE" });
+      removeCard(line.id);
+    });
+    head.append(name, dot, delBtn);
     const banner = document.createElement("div");
     banner.className = "banner";
     banner.hidden = true;
@@ -361,6 +383,7 @@ window.addEventListener("DOMContentLoaded", () => {
     });
 
     const es = new EventSource("/api/lines/" + st.id + "/events");
+    st.es = es;
     es.addEventListener("state", (e) => {
       const state = JSON.parse(e.data);
       st.plannerTranscript = state.transcript;
@@ -451,6 +474,20 @@ window.addEventListener("DOMContentLoaded", () => {
     if (selectedLine === null) selectLine(line.id);
   }
 
+  function removeCard(id) {
+    const st = cards.get(id);
+    if (st) {
+      if (st.es) st.es.close();
+      st.card.remove();
+      st.entry.remove();
+      cards.delete(id);
+    }
+    if (selectedLine === id) {
+      const next = cards.keys().next();
+      selectLine(next.done ? null : next.value);
+    }
+  }
+
   function updateListEntry(st) {
     if (!st.entry) return;
     const anyRunning = st.plannerStatus === "running"
@@ -500,6 +537,10 @@ window.addEventListener("DOMContentLoaded", () => {
     try {
       const res = await fetch("/api/lines");
       const { lines } = await res.json();
+      const present = new Set(lines.map((l) => l.id));
+      for (const id of [...cards.keys()]) {
+        if (!present.has(id)) removeCard(id);
+      }
       for (const line of lines) {
         if (!cards.has(line.id)) { addCard(line); continue; }
         const st = cards.get(line.id);

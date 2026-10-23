@@ -68,7 +68,7 @@ function sweepWorkerContainers() {
   removeContainers("label=cuck.worker");
 }
 
-function frontendToolsBlock(workerId, implId) {
+function frontendToolsBlock(workerId, implId, lineId) {
   return `
 ## Browser, port, and docker tools (frontend persona)
 - Your session has its own playwright browser (MCP tools). No other
@@ -78,11 +78,12 @@ function frontendToolsBlock(workerId, implId) {
   -> {"port": <number>}. Serve the app on that port. Record the port
   in ui.port at the repo root.
 - You may run the app inside a docker container. Publish it on your
-  allocated port, with your worker label:
-  docker run --label cuck.worker=${workerId} -p <port>:<containerPort> ...
+  allocated port, with both labels:
+  docker run --label cuck.line=${lineId} --label cuck.worker=${workerId} -p <port>:<containerPort> ...
   Name containers uniquely with your worker id. Stop and remove them
   when you are done (docker rm -f <name>); the router force-removes
-  any container still carrying your label when your run ends.
+  any container still carrying your labels when your run ends or the
+  line is deleted.
 ${implId ? `- The implementor's app port: read ui.port at the repo root, or call
   curl -s http://localhost:${PORT}/api/protocol/workers/${implId}/port
   If the app is not running, you may start it yourself (directly or in
@@ -152,6 +153,13 @@ ${userPrompt}
    - or spawn a new implementor with a corrected prompt (new name).
    Use the workerId and session id given in each report.
 
+## Container hygiene
+If you start any docker container, always set this label on it:
+--label cuck.line=${lineId}
+The router force-removes containers with this label when the factory
+line is deleted or the router restarts. Stop and remove your
+containers yourself when you finish with them (docker rm -f <name>).
+
 ## Language rule (ASD-STE100)
 Write every worker prompt and every written communication with
 implementors in ASD-STE100 Simplified Technical English:
@@ -202,24 +210,24 @@ performs. Run headless UI tests with the playwright browser tools on
 the changed pages when the work includes a user interface.`,
 };
 
-function containersBlock(workerId) {
+function containersBlock(workerId, lineId) {
   return `
 ## Container hygiene
-If you start any docker container, always set this label on it:
---label cuck.worker=${workerId}
-The router force-removes containers that carry your label when your
-run ends. Stop and remove your containers yourself when you finish
-with them (docker rm -f <name>).`;
+If you start any docker container, always set both labels on it:
+--label cuck.line=${lineId} --label cuck.worker=${workerId}
+The router force-removes your containers when your run ends or when
+the factory line is deleted. Stop and remove your containers yourself
+when you finish with them (docker rm -f <name>).`;
 }
 
-function workerBrief(name, lineName, prompt, persona, workerId) {
+function workerBrief(name, lineName, prompt, persona, workerId, lineId) {
   return `You are implementor worker '${name}' (id ${workerId}) on factory line '${lineName}'.
 You run inside your own git worktree - all work happens here, do not
 touch other directories. Commit your work with clear messages.
-${containersBlock(workerId)}
+${containersBlock(workerId, lineId)}
 
 ${IMPL_PERSONA[persona] || IMPL_PERSONA.backend}
-${persona === "frontend" ? frontendToolsBlock(workerId) : ""}
+${persona === "frontend" ? frontendToolsBlock(workerId, null, lineId) : ""}
 
 Task from the planner:
 ${prompt}
@@ -234,14 +242,14 @@ changed, how you verified it, and any open issues. That report goes
 back to the planner verbatim.`;
 }
 
-function validatorBrief(implName, report, criteria, persona, workerId, implId) {
+function validatorBrief(implName, report, criteria, persona, workerId, implId, lineId) {
   return `You are the VALIDATOR (id ${workerId}) for the work of implementor '${implName}' (id ${implId}).
 Your workdir is the implementor's git worktree. Do not change the
 implementation. You check the work only.
-${containersBlock(workerId)}
+${containersBlock(workerId, lineId)}
 
 ${VAL_PERSONA[persona] || VAL_PERSONA.backend}
-${persona === "frontend" ? frontendToolsBlock(workerId, implId) : ""}
+${persona === "frontend" ? frontendToolsBlock(workerId, implId, lineId) : ""}
 
 The implementor reported:
 ${report}
@@ -284,6 +292,7 @@ function broadcast(line, event, data) {
 }
 
 function saveLine(line) {
+  if (line.deleted) return;
   try {
     fs.writeFileSync(path.join(line.workdir, "line.json"),
       JSON.stringify({ id: line.id, name: line.name, sessionId: line.sessionId,
@@ -315,7 +324,7 @@ function isWake(text) {
 }
 
 function pump(line) {
-  if (line.status === "running" || line.queue.length === 0) return;
+  if (line.deleted || line.status === "running" || line.queue.length === 0) return;
   const { text } = line.queue.shift();
   line.lastRun = text;
   line.status = "running";
@@ -353,6 +362,7 @@ function pump(line) {
 
   child.on("close", (code) => {
     line.child = null;
+    if (line.deleted) return;
     saveLine(line);
     if (code !== 0) {
       broadcast(line, "error", { message: stderr.slice(-500) || `vibe exited with code ${code}` });
@@ -439,6 +449,7 @@ function workerClosed(line, worker, code) {
   if (uiSlots.held.has(worker.id) || uiSlots.waiters.some((w) => w.workerId === worker.id)) {
     releaseUiSlot(worker.id);
   }
+  if (line.deleted) return;
   broadcast(line, "worker_status", { workerId: worker.id, status: worker.status });
   saveLine(line);
   const sid = worker.sessionId || "unknown";
@@ -477,7 +488,7 @@ function spawnValidator(line, implWorker, criteria) {
   const worker = { id, lineId: line.id, name,
     role: "validator", validates: implWorker.id, persona: implWorker.persona || "backend",
     prompt: validatorBrief(implWorker.name, reportText(implWorker.transcript), criteria,
-      implWorker.persona || "backend", id, implWorker.id),
+      implWorker.persona || "backend", id, implWorker.id, line.id),
     sessionId: null, worktreePath: implWorker.worktreePath, branch: implWorker.branch,
     status: "running", stopRequested: false, child: null, transcript: [] };
   line.workers.set(id, worker);
@@ -562,6 +573,31 @@ const server = http.createServer((req, res) => {
     return json(res, 202, { approved: true });
   }
 
+  if (req.method === "DELETE" && parts[0] === "api" && parts[1] === "lines" && parts.length === 3) {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    line.deleted = true;
+    line.queue.length = 0;
+    if (line.child) line.child.kill("SIGTERM");
+    for (const w of line.workers.values()) {
+      if (w.child) {
+        w.stopRequested = true;
+        w.child.kill("SIGTERM");
+      }
+      if (uiSlots.held.has(w.id) || uiSlots.waiters.some((x) => x.workerId === w.id)) {
+        releaseUiSlot(w.id);
+      }
+    }
+    removeContainers(`label=cuck.line=${line.id}`);
+    for (const res2 of line.clients) { try { res2.end(); } catch {} }
+    line.clients.clear();
+    lines.delete(line.id);
+    for (const p of [line.workdir, path.join(LINES_DIR, "worktrees", line.id)]) {
+      try { fs.rmSync(p, { recursive: true, force: true }); } catch {}
+    }
+    return json(res, 202, { deleted: true });
+  }
+
   if (parts[0] === "api" && parts[1] === "protocol" && parts[2] === "lines" && parts[4] === "workers"
     && (req.method === "GET" || req.method === "POST")) {
     const line = lines.get(parts[3]);
@@ -601,7 +637,7 @@ const server = http.createServer((req, res) => {
       if (wt.status !== 0) return json(res, 500, { error: "git worktree add failed", stderr: wt.stderr });
       const worker = { id, lineId: line.id, name: body.name,
         role: "implementor", validates: null, persona,
-        prompt: workerBrief(body.name, line.name, body.prompt, persona, id),
+        prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id),
         sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
         child: null, transcript: [] };
       line.workers.set(id, worker);
@@ -810,4 +846,5 @@ function loadLines() {
 
 loadLines();
 sweepWorkerContainers();
+removeContainers("label=cuck.line");
 server.listen(PORT, () => console.log(`router listening on http://localhost:${PORT}`));

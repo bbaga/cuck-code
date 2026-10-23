@@ -77,13 +77,16 @@ On approval the planner spawns workers by calling the router's protocol API
 
 ### Container lifecycle
 
-Workers that start docker containers must label them
-`--label cuck.worker=<workerId>`. The router force-removes every container
-with a worker's label when that worker closes (completed, failed, or stopped
-— SIGTERM does not reach detached containers, so the router does the killing
-even when the worker forgets or crashes). On boot the router sweeps and
-removes every `cuck.worker`-labeled container, cleaning up orphans from a
-crashed router instance.
+Every stage labels its containers: workers set both
+`--label cuck.line=<lineId> --label cuck.worker=<workerId>`, the planner sets
+`--label cuck.line=<lineId>`. The router force-removes containers with a
+worker's label when that worker closes, and removes ALL containers with a
+line's label when the line is deleted (`DELETE /api/lines/:id`, exposed as a
+two-step Delete button in the UI) — the delete also kills the planner and all
+running workers, releases their UI test slots, closes their SSE streams, and
+removes the line's workdir and worktrees. On boot the router sweeps and
+removes every `cuck.worker`- and `cuck.line`-labeled container, cleaning up
+orphans from a crashed router. Unlabeled containers are never touched.
 
 Planner-to-worker prompts and worker reports use ASD-STE100 Simplified
 Technical English (the router injects the rule into both briefs): approved
