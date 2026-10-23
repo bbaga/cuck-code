@@ -34,8 +34,10 @@ conversation.
 Each line is a graph: a planner (the line's Vibe session) plus the implementor
 workers it spawns. On creation the planner writes `plan.md` (markdown, including
 a mermaid diagram of the task graph) in its workdir and waits. A human reviews
-the plan in the UI and either sends feedback (the planner revises `plan.md`) or
-approves it. The router blocks worker spawning until approval.
+the plan in the UI and either sends feedback through the line's prompt input
+(while a plan is proposed and unapproved, every prompt is plan feedback; the
+planner revises `plan.md`) or approves it. The router blocks worker spawning
+until approval.
 
 On approval the planner spawns workers by calling the router's protocol API
 (agents reach it with curl from bash):

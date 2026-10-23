@@ -58,8 +58,6 @@
     margin: 6px 0; text-align: center; }
   .plan .controls { display: flex; gap: 8px; margin-top: 10px; align-items: flex-start; }
   .plan .controls button { padding: 6px 12px; font-size: .8rem; }
-  .plan .controls textarea { flex: 1; min-height: 34px; padding: 6px; resize: vertical;
-    background: #0d1014; color: inherit; border: 1px solid #2c333d; border-radius: 4px; }
   .badge { padding: 3px 10px; border-radius: 10px; background: #14331f;
     color: #58d68d; font-size: .75rem; }
   .graph { position: relative; border-bottom: 1px solid #262b33; overflow: hidden; }
@@ -175,9 +173,12 @@ window.addEventListener("DOMContentLoaded", () => {
 
   function updateControls(st) {
     st.approveBtn.hidden = st.approved;
-    st.fb.hidden = st.approved;
-    st.sendFb.hidden = st.approved;
     st.badge.hidden = !st.approved;
+    if (st.started && st.planContent && !st.approved) {
+      st.input.placeholder = "Plan proposed - type feedback here";
+    } else if (st.started) {
+      st.input.placeholder = "Send a prompt";
+    }
   }
 
   function renderGraph(st) {
@@ -309,11 +310,7 @@ window.addEventListener("DOMContentLoaded", () => {
     badge.hidden = true;
     const approveBtn = document.createElement("button");
     approveBtn.textContent = "Approve";
-    const fb = document.createElement("textarea");
-    fb.placeholder = "Plan feedback";
-    const sendFb = document.createElement("button");
-    sendFb.textContent = "Send feedback";
-    controls.append(badge, approveBtn, fb, sendFb);
+    controls.append(badge, approveBtn);
     plan.append(waiting, planBody, controls);
 
     const graph = document.createElement("div");
@@ -332,7 +329,7 @@ window.addEventListener("DOMContentLoaded", () => {
     linesEl.appendChild(card);
 
     const st = { id: line.id, dot, banner, transcript, input, send,
-      waiting, planBody, graph, approveBtn, fb, sendFb, badge,
+      waiting, planBody, graph, approveBtn, badge,
       plannerStatus: line.status, started: line.started === true,
       planContent: undefined, approved: false,
       workers: new Map(), workerTranscripts: new Map(),
@@ -343,8 +340,12 @@ window.addEventListener("DOMContentLoaded", () => {
       dot.className = "dot " + (status === "running" ? "running"
         : status === "standby" ? "standby" : "idle");
       input.disabled = send.disabled = status === "running";
-      input.placeholder = st.started ? "Send a prompt"
-        : "Type the initial prompt and press Enter";
+      if (st.started) {
+        input.placeholder = (st.planContent && !st.approved)
+          ? "Plan proposed - type feedback here" : "Send a prompt";
+      } else {
+        input.placeholder = "Type the initial prompt and press Enter";
+      }
       renderGraph(st);
       updateListEntry(st);
     };
@@ -357,15 +358,6 @@ window.addEventListener("DOMContentLoaded", () => {
       await fetch("/api/lines/" + st.id + "/approve", { method: "POST" });
       st.approved = true;
       updateControls(st);
-    });
-    sendFb.addEventListener("click", async () => {
-      const text = fb.value.trim();
-      if (!text) return;
-      fb.value = "";
-      await fetch("/api/lines/" + st.id + "/feedback", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
     });
 
     const es = new EventSource("/api/lines/" + st.id + "/events");
@@ -496,6 +488,7 @@ window.addEventListener("DOMContentLoaded", () => {
         if (content !== st.planContent) {
           st.planContent = content;
           st.waiting.hidden = content !== null;
+          updateControls(st);
           st.planBody.innerHTML = "";
           if (content !== null) renderPlan(st, content);
         }

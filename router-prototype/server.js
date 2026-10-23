@@ -420,6 +420,11 @@ const server = http.createServer((req, res) => {
       if (!line.started) {
         line.started = true;
         text = plannerBrief(line.name, line.id, body.text, PORT);
+      } else if (!line.planApproved) {
+        try {
+          fs.accessSync(path.join(line.workdir, "plan.md"));
+          text = `PLAN FEEDBACK from the user: ${body.text}. Revise plan.md accordingly. Do not spawn workers yet.`;
+        } catch {}
       }
       line.queue.push({ text });
       const position = line.queue.length;
@@ -444,19 +449,6 @@ const server = http.createServer((req, res) => {
     saveLine(line);
     enqueue(line, "PLAN APPROVED by the user. Spawn your implementor workers now per the plan and the protocol. After spawning, end your turn and wait for worker reports.");
     return json(res, 202, { approved: true });
-  }
-
-  if (req.method === "POST" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "feedback") {
-    const line = lines.get(parts[2]);
-    if (!line) return json(res, 404, { error: "no such line" });
-    readBody(req, (err, body) => {
-      if (err || !body || typeof body.text !== "string" || !body.text.trim()) {
-        return json(res, 400, { error: "expected {text}" });
-      }
-      enqueue(line, `PLAN FEEDBACK from the user: ${body.text}. Revise plan.md accordingly. Do not spawn workers yet.`);
-      json(res, 202, { queued: true });
-    });
-    return;
   }
 
   if (parts[0] === "api" && parts[1] === "protocol" && parts[2] === "lines" && parts[4] === "workers"
