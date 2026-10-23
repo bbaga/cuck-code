@@ -14,9 +14,7 @@
   #sidebar { width: 280px; padding: 24px; border-right: 1px solid #262b33;
     background: #161a20; flex-shrink: 0; }
   #sidebar h1 { font-size: 1.1rem; margin: 0 0 16px; }
-  #sidebar input, #sidebar textarea { width: 100%; margin-bottom: 12px; padding: 8px;
-    background: #0d1014; color: inherit; border: 1px solid #2c333d; border-radius: 4px; }
-  #sidebar textarea { min-height: 90px; resize: vertical; }
+  #sidebar button { width: 100%; }
   button { padding: 8px 14px; background: #2d6cdf; color: #fff; border: 0;
     border-radius: 4px; cursor: pointer; }
   button:disabled { opacity: .4; cursor: default; }
@@ -42,6 +40,7 @@
   .dot.completed { background: #35c46a; }
   .dot.failed { background: #ff5f6e; }
   .dot.stopped { background: #6c7a8c; }
+  .dot.standby { background: #6c7a8c; }
   @keyframes pulse { 50% { opacity: .3; } }
   .banner { margin: 8px 16px 0; padding: 8px; border-radius: 4px;
     background: #4d1420; color: #ff8095; font-size: .85rem; white-space: pre-wrap; }
@@ -101,10 +100,8 @@
 </head>
 <body>
 <aside id="sidebar">
-  <h1>New production line</h1>
-  <input id="name" placeholder="Line name">
-  <textarea id="prompt" placeholder="Initial prompt"></textarea>
-  <button id="create">Create line</button>
+  <h1>cuck-code</h1>
+  <button id="create">+ Create new line</button>
   <div id="linelist"></div>
 </aside>
 <main id="lines">
@@ -336,14 +333,18 @@ window.addEventListener("DOMContentLoaded", () => {
 
     const st = { id: line.id, dot, banner, transcript, input, send,
       waiting, planBody, graph, approveBtn, fb, sendFb, badge,
-      plannerStatus: line.status, planContent: undefined, approved: false,
+      plannerStatus: line.status, started: line.started === true,
+      planContent: undefined, approved: false,
       workers: new Map(), workerTranscripts: new Map(),
       plannerTranscript: [], selected: null };
 
     const setStatus = (status) => {
       st.plannerStatus = status;
-      dot.className = "dot " + (status === "running" ? "running" : "idle");
+      dot.className = "dot " + (status === "running" ? "running"
+        : status === "standby" ? "standby" : "idle");
       input.disabled = send.disabled = status === "running";
+      input.placeholder = st.started ? "Send a prompt"
+        : "Type the initial prompt and press Enter";
       renderGraph(st);
       updateListEntry(st);
     };
@@ -372,6 +373,7 @@ window.addEventListener("DOMContentLoaded", () => {
       const state = JSON.parse(e.data);
       st.plannerTranscript = state.transcript;
       st.approved = !!state.planApproved;
+      if (state.started === true) st.started = true;
       updateControls(st);
       st.workers = new Map(state.workers.map((w) => [w.id, w]));
       for (const w of state.workers) {
@@ -419,6 +421,10 @@ window.addEventListener("DOMContentLoaded", () => {
       const text = input.value.trim();
       if (!text) return;
       input.value = "";
+      if (!st.started) {
+        st.started = true;
+        input.placeholder = "Send a prompt";
+      }
       await fetch("/api/lines/" + st.id + "/prompts", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
@@ -457,7 +463,8 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!st.entry) return;
     const anyRunning = st.plannerStatus === "running"
       || [...st.workers.values()].some((w) => w.status === "running");
-    st.entryDot.className = "dot " + (anyRunning ? "running" : "idle");
+    st.entryDot.className = "dot " + (anyRunning ? "running"
+      : st.plannerStatus === "standby" ? "standby" : "idle");
     st.entryCount.textContent = st.workers.size ? st.workers.size + "w" : "";
   }
 
@@ -503,22 +510,20 @@ window.addEventListener("DOMContentLoaded", () => {
       for (const line of lines) {
         if (!cards.has(line.id)) { addCard(line); continue; }
         const st = cards.get(line.id);
+        if (line.started && !st.started) {
+          st.started = true;
+          st.input.placeholder = "Send a prompt";
+        }
         if (st.entryCount) st.entryCount.textContent = line.workers ? line.workers + "w" : "";
       }
     } catch {}
   }
 
   document.getElementById("create").addEventListener("click", async () => {
-    const name = document.getElementById("name").value.trim();
-    const prompt = document.getElementById("prompt").value.trim();
-    if (!name || !prompt) return;
     const res = await fetch("/api/lines", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, prompt }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
     });
     const { id } = await res.json().catch(() => ({}));
-    document.getElementById("name").value = "";
-    document.getElementById("prompt").value = "";
     await refresh();
     if (id) selectLine(id);
   });

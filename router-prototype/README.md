@@ -21,10 +21,12 @@ config. Requires Node >= 18 and the `vibe` CLI on PATH.
 
 ## Production lines
 
-Creating a line makes a work directory under `lines/` and sends the initial
-prompt to a headless Vibe run (`vibe --workdir ... --trust --agent accept-edits
---output streaming`). The first run yields a `sessionId`; every later prompt is
-sent with `--resume <sessionId>`, so each line is one long-lived, stateful Vibe
+Clicking "Create new line" adds a standing-by "Draft line" (work directory under
+`lines/`, git-initialized) and selects it. The first prompt typed into the line
+is the initial prompt: the router wraps it in the planner brief and sends it to
+a headless Vibe run (`vibe --workdir ... --trust --agent accept-edits --output
+streaming`). The first run yields a `sessionId`; every later prompt is sent with
+`--resume <sessionId>`, so each line is one long-lived, stateful Vibe
 conversation.
 
 ## Factory protocol

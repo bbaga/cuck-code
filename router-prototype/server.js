@@ -181,7 +181,7 @@ function saveLine(line) {
   try {
     fs.writeFileSync(path.join(line.workdir, "line.json"),
       JSON.stringify({ id: line.id, name: line.name, sessionId: line.sessionId,
-        planApproved: line.planApproved,
+        started: line.started, planApproved: line.planApproved,
         workers: [...line.workers.values()].map((w) => ({
           id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch, status: w.status,
           role: w.role, validates: w.validates, persona: w.persona || "backend" })) }));
@@ -382,9 +382,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && url.pathname === "/api/lines") {
     readBody(req, (err, body) => {
-      if (err || !body || typeof body.name !== "string" || typeof body.prompt !== "string") {
-        return json(res, 400, { error: "expected {name, prompt}" });
-      }
+      body = body || {};
+      if (err) return json(res, 400, { error: "invalid JSON" });
+      const name = typeof body.name === "string" && body.name.trim()
+        ? body.name.trim()
+        : `Draft line ${[...lines.values()].filter((l) => /^Draft line/.test(l.name)).length + 1}`;
       const id = crypto.randomUUID();
       const workdir = path.join(LINES_DIR, id);
       fs.mkdirSync(workdir, { recursive: true });
@@ -397,14 +399,12 @@ const server = http.createServer((req, res) => {
           "commit", "--allow-empty", "-m", "init"], { encoding: "utf8" });
         if (commit.status !== 0) return json(res, 500, { error: "git commit failed", stderr: commit.stderr });
       }
-      const line = { id, name: body.name, sessionId: null, workdir, status: "idle",
-        planApproved: false, workers: new Map(),
-        queue: [{ text: plannerBrief(body.name, id, body.prompt, PORT) }],
-        clients: new Set(), transcript: [] };
+      const line = { id, name, sessionId: null, workdir, status: "standby",
+        started: false, planApproved: false, workers: new Map(),
+        queue: [], clients: new Set(), transcript: [] };
       lines.set(id, line);
       saveLine(line);
-      pump(line);
-      json(res, 201, { id });
+      json(res, 201, { id, name });
     });
     return;
   }
@@ -413,8 +413,15 @@ const server = http.createServer((req, res) => {
     const line = lines.get(parts[2]);
     if (!line) return json(res, 404, { error: "no such line" });
     readBody(req, (err, body) => {
-      if (err || !body || typeof body.text !== "string") return json(res, 400, { error: "expected {text}" });
-      line.queue.push({ text: body.text });
+      if (err || !body || typeof body.text !== "string" || !body.text.trim()) {
+        return json(res, 400, { error: "expected {text}" });
+      }
+      let text = body.text;
+      if (!line.started) {
+        line.started = true;
+        text = plannerBrief(line.name, line.id, body.text, PORT);
+      }
+      line.queue.push({ text });
       const position = line.queue.length;
       pump(line);
       json(res, 202, { queued: true, position });
@@ -560,7 +567,7 @@ When done, reply with a report: what you changed, files changed, how you verifie
   if (req.method === "GET" && url.pathname === "/api/lines") {
     return json(res, 200, { lines: [...lines.values()].map((l) => ({
       id: l.id, name: l.name, status: l.status, queueDepth: l.queue.length,
-      sessionId: l.sessionId, workers: l.workers.size,
+      sessionId: l.sessionId, started: l.started, workers: l.workers.size,
     })) });
   }
 
@@ -571,7 +578,8 @@ When done, reply with a report: what you changed, files changed, how you verifie
       "Connection": "keep-alive", "X-Accel-Buffering": "no" });
     line.clients.add(res);
     sseSend(res, "state", { id: line.id, name: line.name, status: line.status,
-      sessionId: line.sessionId, transcript: line.transcript.slice(-50),
+      sessionId: line.sessionId, started: line.started,
+      transcript: line.transcript.slice(-50),
       planApproved: line.planApproved,
       workers: [...line.workers.values()].map((w) => ({
         id: w.id, name: w.name, status: w.status, branch: w.branch, role: w.role,
@@ -642,7 +650,9 @@ function loadLines() {
           stopRequested: false, child: null, transcript: [] });
       }
       lines.set(meta.id, { id: meta.id, name: meta.name, sessionId: meta.sessionId,
-        workdir: path.join(LINES_DIR, entry.name), status: "idle", queue: [],
+        workdir: path.join(LINES_DIR, entry.name),
+        status: meta.started === true ? "idle" : "standby", queue: [],
+        started: meta.started === true || !!meta.sessionId,
         planApproved: meta.planApproved === true, workers,
         clients: new Set(), transcript: [] });
     } catch {}
