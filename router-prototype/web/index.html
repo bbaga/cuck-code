@@ -20,11 +20,20 @@
   button { padding: 8px 14px; background: #2d6cdf; color: #fff; border: 0;
     border-radius: 4px; cursor: pointer; }
   button:disabled { opacity: .4; cursor: default; }
-  #lines { flex: 1; padding: 24px; display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
-    gap: 20px; align-content: start; }
+  #lines { flex: 1; padding: 24px; }
   .card { border: 1px solid #262b33; border-radius: 8px; background: #161a20;
-    display: flex; flex-direction: column; max-height: 80vh; }
+    display: flex; flex-direction: column; width: 100%;
+    max-height: calc(100vh - 48px); }
+  #empty { color: #6c7a8c; font-size: .9rem; }
+  #linelist { margin-top: 20px; border-top: 1px solid #262b33; padding-top: 12px; }
+  .lineentry { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+    border-radius: 6px; cursor: pointer; font-size: .85rem; }
+  .lineentry:hover { background: #0d1014; }
+  .lineentry.selected { background: #182335; outline: 1px solid #2d6cdf; }
+  .lineentry .dot { margin-left: 0; }
+  .lineentry .lname { flex: 1; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .lcount { color: #6c7a8c; font-size: .75rem; flex-shrink: 0; }
   .head { display: flex; align-items: center; gap: 8px; padding: 12px 16px;
     border-bottom: 1px solid #262b33; font-weight: 600; }
   .dot { width: 10px; height: 10px; border-radius: 50%; margin-left: auto; flex-shrink: 0; }
@@ -96,12 +105,17 @@
   <input id="name" placeholder="Line name">
   <textarea id="prompt" placeholder="Initial prompt"></textarea>
   <button id="create">Create line</button>
+  <div id="linelist"></div>
 </aside>
-<main id="lines"></main>
+<main id="lines">
+  <div id="empty">Select or create a production line.</div>
+</main>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
   const cards = new Map();
   const linesEl = document.getElementById("lines");
+  const listEl = document.getElementById("linelist");
+  let selectedLine = null;
   const SVGNS = "http://www.w3.org/2000/svg";
 
   mermaid.initialize({ startOnLoad: false, theme: "dark" });
@@ -331,6 +345,7 @@ window.addEventListener("DOMContentLoaded", () => {
       dot.className = "dot " + (status === "running" ? "running" : "idle");
       input.disabled = send.disabled = status === "running";
       renderGraph(st);
+      updateListEntry(st);
     };
     const showError = (message) => {
       banner.textContent = message;
@@ -389,12 +404,14 @@ window.addEventListener("DOMContentLoaded", () => {
       st.workers.set(worker.id, worker);
       if (!st.workerTranscripts.has(worker.id)) st.workerTranscripts.set(worker.id, []);
       renderGraph(st);
+      updateListEntry(st);
     });
     es.addEventListener("worker_status", (e) => {
       const { workerId, status } = JSON.parse(e.data);
       const w = st.workers.get(workerId);
       if (w) w.status = status;
       renderGraph(st);
+      updateListEntry(st);
     });
     es.addEventListener("error", (e) => { if (e.data) showError(JSON.parse(e.data).message); });
 
@@ -413,7 +430,50 @@ window.addEventListener("DOMContentLoaded", () => {
     setStatus(line.status);
     renderGraph(st);
     updateControls(st);
+
+    const entryDot = document.createElement("span");
+    entryDot.className = "dot";
+    const entryName = document.createElement("span");
+    entryName.className = "lname";
+    entryName.textContent = line.name;
+    const entryCount = document.createElement("span");
+    entryCount.className = "lcount";
+    const entry = document.createElement("div");
+    entry.className = "lineentry";
+    entry.append(entryDot, entryName, entryCount);
+    entry.addEventListener("click", () => selectLine(st.id));
+    listEl.appendChild(entry);
+    st.card = card;
+    st.entry = entry;
+    st.entryDot = entryDot;
+    st.entryCount = entryCount;
+    card.style.display = "none";
     cards.set(line.id, st);
+    updateListEntry(st);
+    if (selectedLine === null) selectLine(line.id);
+  }
+
+  function updateListEntry(st) {
+    if (!st.entry) return;
+    const anyRunning = st.plannerStatus === "running"
+      || [...st.workers.values()].some((w) => w.status === "running");
+    st.entryDot.className = "dot " + (anyRunning ? "running" : "idle");
+    st.entryCount.textContent = st.workers.size ? st.workers.size + "w" : "";
+  }
+
+  function selectLine(id) {
+    selectedLine = id;
+    for (const st of cards.values()) {
+      const show = st.id === id;
+      st.card.style.display = show ? "flex" : "none";
+      st.entry.classList.toggle("selected", show);
+    }
+    document.getElementById("empty").hidden = id !== null;
+    const st = cards.get(id);
+    if (st) {
+      renderGraph(st);
+      st.transcript.scrollTop = st.transcript.scrollHeight;
+    }
   }
 
   async function pollPlans() {
@@ -440,7 +500,11 @@ window.addEventListener("DOMContentLoaded", () => {
     try {
       const res = await fetch("/api/lines");
       const { lines } = await res.json();
-      for (const line of lines) if (!cards.has(line.id)) addCard(line);
+      for (const line of lines) {
+        if (!cards.has(line.id)) { addCard(line); continue; }
+        const st = cards.get(line.id);
+        if (st.entryCount) st.entryCount.textContent = line.workers ? line.workers + "w" : "";
+      }
     } catch {}
   }
 
@@ -448,13 +512,15 @@ window.addEventListener("DOMContentLoaded", () => {
     const name = document.getElementById("name").value.trim();
     const prompt = document.getElementById("prompt").value.trim();
     if (!name || !prompt) return;
-    await fetch("/api/lines", {
+    const res = await fetch("/api/lines", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, prompt }),
     });
+    const { id } = await res.json().catch(() => ({}));
     document.getElementById("name").value = "";
     document.getElementById("prompt").value = "";
-    refresh();
+    await refresh();
+    if (id) selectLine(id);
   });
 
   refresh();
