@@ -4,7 +4,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
 const { PHASES, HARNESS_IDS, validatePipelineConfig, probeHarnesses,
-  HARNESS_PROBES } = require("./pipeline-config");
+  probeResultFor, HARNESS_PROBES } = require("./pipeline-config");
 
 const PORT = Number(process.env.PORT || 7788);
 const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
@@ -729,11 +729,13 @@ function runProbe(cmd, timeoutMs = 2000) {
   });
 }
 
-// Probe a single harness and report whether it is installed.
+// Probe a single harness and report whether it is installed. An unknown
+// harness id has no probe entry and counts as not installed.
 async function harnessInstalled(harnessId) {
   const probe = HARNESS_PROBES.find((h) => h.id === harnessId);
   if (!probe) return false;
-  const [result] = await probeHarnesses((cmd) => runProbe(cmd));
+  const results = await probeHarnesses((cmd) => runProbe(cmd));
+  const result = probeResultFor(results, harnessId);
   return !!(result && result.installed);
 }
 
