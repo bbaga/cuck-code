@@ -165,6 +165,8 @@
 <script src="pipeline-ui.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
+  const { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge } =
+    window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
   const listEl = document.getElementById("linelist");
