@@ -4,7 +4,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
 const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
-  resolvePipeline, probeResultFor,
+  resolvePipeline, probeResultFor, piProviderDetail,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   validateWorkerSpawnBody, lineSummary } = require("./spawn-plan");
@@ -772,6 +772,19 @@ async function harnessInstalled(harnessId) {
 const HARNESS_CACHE_MS = 30000;
 let harnessCache = null; // { atIso, harnesses }
 
+// Base harness probe with the 30-second cache. The cache holds only the
+// base probe; per-provider detail results are computed per request and
+// never cached, so one provider's result cannot become another's.
+async function harnessProbe(refresh) {
+  if (!refresh && harnessCache
+    && Date.now() - Date.parse(harnessCache.atIso) < HARNESS_CACHE_MS) {
+    return harnessCache;
+  }
+  const harnesses = await probeHarnesses((cmd) => runProbe(cmd));
+  harnessCache = { atIso: new Date().toISOString(), harnesses };
+  return harnessCache;
+}
+
 // Reject the request when it configures a harness that is not installed.
 async function gateHarnesses(harnessIds, res) {
   for (const id of harnessIds) {
@@ -1183,13 +1196,25 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && url.pathname === "/api/harnesses") {
     const refresh = url.searchParams.get("refresh") === "1";
-    if (!refresh && harnessCache
-      && Date.now() - Date.parse(harnessCache.atIso) < HARNESS_CACHE_MS) {
-      return json(res, 200, { harnesses: harnessCache.harnesses, probedAt: harnessCache.atIso });
-    }
-    probeHarnesses((cmd) => runProbe(cmd)).then((harnesses) => {
-      harnessCache = { atIso: new Date().toISOString(), harnesses };
-      json(res, 200, { harnesses, probedAt: harnessCache.atIso });
+    harnessProbe(refresh).then((cached) => {
+      json(res, 200, { harnesses: cached.harnesses, probedAt: cached.atIso });
+    }).catch(() => json(res, 500, { error: "harness probe failed" }));
+    return;
+  }
+
+  // Per-provider pi detail: {id, authMode, auth, loginHint, models}. The
+  // provider is validated against the discovered provider list; the auth
+  // check runs per request (never cached) with an argument array and its
+  // raw output is never returned.
+  if (req.method === "GET" && url.pathname === "/api/harnesses/pi") {
+    const provider = url.searchParams.get("provider");
+    const refresh = url.searchParams.get("refresh") === "1";
+    harnessProbe(refresh).then(async (cached) => {
+      const piEntry = probeResultFor(cached.harnesses, "pi");
+      const result = await piProviderDetail(provider, piEntry,
+        (cmd) => runProbe(cmd));
+      if (result.error) return json(res, 400, { error: result.error });
+      return json(res, 200, result.detail);
     }).catch(() => json(res, 500, { error: "harness probe failed" }));
     return;
   }

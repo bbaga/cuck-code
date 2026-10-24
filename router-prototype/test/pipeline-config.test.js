@@ -11,6 +11,12 @@ const {
   HARNESS_PROBES,
   probeHarnesses,
   probeResultFor,
+  parsePiModelCatalog,
+  piAuthCheckArgs,
+  parsePiAuthCheck,
+  parseVibeModelsEnv,
+  vibeModelChoices,
+  piProviderDetail,
 } = require("../pipeline-config");
 
 // ---- validatePipelineConfig ----
@@ -61,6 +67,13 @@ test("validatePipelineConfig rejects bad timeLimits", () => {
   assert.match(validatePipelineConfig({ planner: { timeLimit: -5 } }), /positive number/);
   assert.match(validatePipelineConfig({ planner: { timeLimit: "60" } }), /positive number/);
   assert.match(validatePipelineConfig({ planner: { timeLimit: Number.NaN } }), /positive number/);
+});
+
+test("validatePipelineConfig rejects authMode: model stays a string", () => {
+  assert.match(
+    validatePipelineConfig({ planner: { authMode: "anthropic" } }),
+    /unknown field/);
+  assert.strictEqual(validatePipelineConfig({ planner: { model: "provider/model" } }), null);
 });
 
 // ---- resolvePipeline ----
@@ -140,6 +153,12 @@ test("HARNESS_PROBES covers every harness id", () => {
   }
 });
 
+test("pi probe has no provider-free auth check and lists models", () => {
+  const pi = HARNESS_PROBES.find((p) => p.id === "pi");
+  assert.strictEqual(pi.authCmd, null);
+  assert.deepStrictEqual(pi.listModelsCmd, ["pi", "--list-models"]);
+});
+
 // ---- probeResultFor ----
 
 test("probeResultFor returns the entry with the matching id", () => {
@@ -170,7 +189,7 @@ test("probeHarnesses reports installed with version and auth ok", async () => {
   const run = fakeRun({
     "vibe --version": { code: 0, stdout: "vibe 3.0.2\nmore\n" },
     "pi --version": { code: 0, stdout: "0.87.1\n" },
-    "pi auth check": { code: 0, stdout: "ready\n" },
+    "pi --list-models": { code: 0, stdout: "Provider  Model\nanthropic  claude-x\n" },
   });
   const results = await probeHarnesses(run);
   const vibe = results.find((r) => r.id === "vibe");
@@ -180,8 +199,10 @@ test("probeHarnesses reports installed with version and auth ok", async () => {
   assert.strictEqual(vibe.loginHint, "vibe --setup");
   const pi = results.find((r) => r.id === "pi");
   assert.strictEqual(pi.installed, true);
-  assert.strictEqual(pi.auth, "ok");
+  assert.strictEqual(pi.auth, "unknown"); // no provider-free auth check
   assert.strictEqual(pi.version, "0.87.1");
+  assert.deepStrictEqual(pi.authModes, [{ value: "anthropic", label: "anthropic" }]);
+  assert.deepStrictEqual(pi.models, [{ value: "anthropic/claude-x", label: "claude-x" }]);
 });
 
 test("probeHarnesses reports not installed and auth missing", async () => {
@@ -209,4 +230,215 @@ test("probeHarnesses returns one entry per harness", async () => {
     assert.strictEqual(r.installed, false);
     assert.strictEqual(r.version, null);
   }
+});
+
+test("probeHarnesses never runs a provider-free pi auth check", async () => {
+  const calls = [];
+  await probeHarnesses(async (cmd) => { calls.push(cmd.join(" ")); return null; });
+  assert.ok(!calls.some((c) => c.startsWith("pi auth check")),
+    `unexpected provider-free pi auth call: ${calls.join("; ")}`);
+  assert.ok(calls.includes("pi --list-models"));
+});
+
+test("probeHarnesses attaches vibe models from env and defaults", async () => {
+  const results = await probeHarnesses(async () => null, {
+    IMPLEMENTOR_MODEL: "impl-x",
+    VIBE_MODELS: "extra-1, extra-1 ,,extra-2",
+  });
+  const vibe = results.find((r) => r.id === "vibe");
+  assert.deepStrictEqual(vibe.models, [
+    { value: "glm-5-3-flash", label: "glm-5-3-flash" },
+    { value: "glm-5-3", label: "glm-5-3" },
+    { value: "impl-x", label: "impl-x" },
+    { value: "extra-1", label: "extra-1" },
+    { value: "extra-2", label: "extra-2" },
+  ]);
+});
+
+// ---- parsePiModelCatalog ----
+
+test("parsePiModelCatalog parses a table with header and variable spacing", () => {
+  const out = [
+    "Provider   Model",
+    "----------------",
+    "anthropic    claude-sonnet-4",
+    "openai\t\tgpt-5",
+    "anthropic   claude-opus-4",
+  ].join("\n");
+  assert.deepStrictEqual(parsePiModelCatalog(out), {
+    providers: [
+      { value: "anthropic", label: "anthropic" },
+      { value: "openai", label: "openai" },
+    ],
+    models: [
+      { value: "anthropic/claude-sonnet-4", label: "claude-sonnet-4" },
+      { value: "openai/gpt-5", label: "gpt-5" },
+      { value: "anthropic/claude-opus-4", label: "claude-opus-4" },
+    ],
+  });
+});
+
+test("parsePiModelCatalog parses section headers with indented models", () => {
+  const out = [
+    "anthropic:",
+    "  claude-sonnet-4",
+    "  claude-opus-4",
+    "openai:",
+    "  gpt-5",
+  ].join("\n");
+  const parsed = parsePiModelCatalog(out);
+  assert.deepStrictEqual(parsed.providers, [
+    { value: "anthropic", label: "anthropic" },
+    { value: "openai", label: "openai" },
+  ]);
+  assert.deepStrictEqual(parsed.models.map((m) => m.value),
+    ["anthropic/claude-sonnet-4", "anthropic/claude-opus-4", "openai/gpt-5"]);
+});
+
+test("parsePiModelCatalog handles pipe tables and CRLF", () => {
+  const out = "| provider | model |\r\n|---|---|\r\n| p1 | m1 |\r\n";
+  assert.deepStrictEqual(parsePiModelCatalog(out), {
+    providers: [{ value: "p1", label: "p1" }],
+    models: [{ value: "p1/m1", label: "m1" }],
+  });
+});
+
+test("parsePiModelCatalog handles empty output and failed commands", () => {
+  assert.deepStrictEqual(parsePiModelCatalog(""), { providers: [], models: [] });
+  assert.deepStrictEqual(parsePiModelCatalog("   \n\t\n"), { providers: [], models: [] });
+  assert.deepStrictEqual(parsePiModelCatalog(null), { providers: [], models: [] });
+  assert.deepStrictEqual(parsePiModelCatalog(undefined), { providers: [], models: [] });
+});
+
+test("parsePiModelCatalog ignores junk lines without a model column", () => {
+  const parsed = parsePiModelCatalog("BANNER\n\np1 m1\n");
+  assert.deepStrictEqual(parsed.providers, [{ value: "p1", label: "p1" }]);
+  assert.deepStrictEqual(parsed.models, [{ value: "p1/m1", label: "m1" }]);
+});
+
+// ---- piAuthCheckArgs / parsePiAuthCheck ----
+
+test("piAuthCheckArgs builds an argument array, not a shell string", () => {
+  assert.deepStrictEqual(piAuthCheckArgs("anthropic"),
+    ["pi", "auth", "check", "--provider", "anthropic", "--json"]);
+});
+
+test("parsePiAuthCheck extracts only the login hint", () => {
+  assert.deepStrictEqual(
+    parsePiAuthCheck('{"loginHint":"run pi /login","token":"secret"}'),
+    { loginHint: "run pi /login" });
+  assert.deepStrictEqual(parsePiAuthCheck('{"authenticated":true}'), { loginHint: null });
+  assert.deepStrictEqual(parsePiAuthCheck("not json at all"), { loginHint: null });
+  assert.deepStrictEqual(parsePiAuthCheck(""), { loginHint: null });
+  assert.deepStrictEqual(parsePiAuthCheck(null), { loginHint: null });
+});
+
+test("parsePiAuthCheck truncates a long hint", () => {
+  const parsed = parsePiAuthCheck(JSON.stringify({ loginHint: "x".repeat(500) }));
+  assert.strictEqual(parsed.loginHint.length, 200);
+});
+
+// ---- parseVibeModelsEnv / vibeModelChoices ----
+
+test("parseVibeModelsEnv splits on commas and ignores empty values", () => {
+  assert.deepStrictEqual(parseVibeModelsEnv("a, b ,,c"), ["a", "b", "c"]);
+  assert.deepStrictEqual(parseVibeModelsEnv(","), []);
+  assert.deepStrictEqual(parseVibeModelsEnv(""), []);
+  assert.deepStrictEqual(parseVibeModelsEnv(undefined), []);
+  assert.deepStrictEqual(parseVibeModelsEnv(5), []);
+});
+
+test("vibeModelChoices deduplicates defaults, env values, and VIBE_MODELS", () => {
+  const env = {
+    PLANNER_MODEL: "glm-5-3", // duplicates a default
+    IMPLEMENTOR_MODEL: "impl-x",
+    VIBE_ACTIVE_MODEL: "impl-x", // duplicate
+    VIBE_MODELS: "extra-1, ,extra-2,impl-x",
+  };
+  assert.deepStrictEqual(vibeModelChoices(env), [
+    { value: "glm-5-3-flash", label: "glm-5-3-flash" },
+    { value: "glm-5-3", label: "glm-5-3" },
+    { value: "impl-x", label: "impl-x" },
+    { value: "extra-1", label: "extra-1" },
+    { value: "extra-2", label: "extra-2" },
+  ]);
+});
+
+test("vibeModelChoices ignores empty and non-string values", () => {
+  const env = { PLANNER_MODEL: "  ", IMPLEMENTOR_MODEL: "", VIBE_MODELS: " ,," };
+  assert.deepStrictEqual(vibeModelChoices(env), [
+    { value: "glm-5-3-flash", label: "glm-5-3-flash" },
+    { value: "glm-5-3", label: "glm-5-3" },
+  ]);
+});
+
+// ---- piProviderDetail ----
+
+function piProbe(overrides = {}) {
+  return {
+    id: "pi",
+    installed: true,
+    auth: "unknown",
+    loginHint: "pi /login (in the pi TUI)",
+    authModes: [
+      { value: "anthropic", label: "anthropic" },
+      { value: "openai", label: "openai" },
+    ],
+    models: [
+      { value: "anthropic/claude-x", label: "claude-x" },
+      { value: "openai/gpt-5", label: "gpt-5" },
+    ],
+    ...overrides,
+  };
+}
+
+test("piProviderDetail returns the fixed contract shape", async () => {
+  const calls = [];
+  const run = async (cmd) => { calls.push(cmd); return { code: 0, stdout: "{}" }; };
+  const result = await piProviderDetail("anthropic", piProbe(), run);
+  assert.strictEqual(result.error, undefined);
+  assert.deepStrictEqual(result.detail, {
+    id: "pi",
+    authMode: "anthropic",
+    auth: "ok",
+    loginHint: "pi /login (in the pi TUI)",
+    models: [{ value: "anthropic/claude-x", label: "claude-x" }],
+  });
+  // argument array, not a shell string
+  assert.deepStrictEqual(calls, [["pi", "auth", "check", "--provider", "anthropic", "--json"]]);
+});
+
+test("piProviderDetail reports missing auth and a hint from the check output", async () => {
+  const run = async () => ({ code: 1, stdout: '{"loginHint":"run pi /login now"}' });
+  const result = await piProviderDetail("openai", piProbe(), run);
+  assert.strictEqual(result.detail.auth, "missing");
+  assert.strictEqual(result.detail.loginHint, "run pi /login now");
+  assert.strictEqual(result.detail.authMode, "openai");
+});
+
+test("piProviderDetail reports unknown when the check cannot run", async () => {
+  const run = async () => null;
+  const result = await piProviderDetail("openai", piProbe(), run);
+  assert.strictEqual(result.detail.auth, "unknown");
+});
+
+test("piProviderDetail rejects missing and unknown providers with an error", async () => {
+  const run = async () => { throw new Error("must not run"); };
+  assert.match((await piProviderDetail(undefined, piProbe(), run)).error, /required/);
+  assert.match((await piProviderDetail("  ", piProbe(), run)).error, /required/);
+  assert.match((await piProviderDetail("gemini", piProbe(), run)).error,
+    /unknown provider 'gemini'/);
+  const noPi = await piProviderDetail("anthropic", piProbe({ installed: false, authModes: [] }), run);
+  assert.match(noPi.error, /pi is not installed or reported no providers/);
+});
+
+test("piProviderDetail never leaks credentials or raw output", async () => {
+  const run = async () => ({
+    code: 0,
+    stdout: '{"apiKey":"sk-secret","token":"hunter2","loginHint":"pi /login"}',
+  });
+  const result = await piProviderDetail("anthropic", piProbe(), run);
+  const serialized = JSON.stringify(result);
+  assert.ok(!serialized.includes("sk-secret"));
+  assert.ok(!serialized.includes("hunter2"));
 });
