@@ -1,6 +1,8 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   PHASE_ROWS,
   EFFORT_LEVELS,
@@ -26,6 +28,7 @@ const {
   buildPipelinePayload,
   authBadge,
 } = require("../web/pipeline-ui.js");
+const pipelineUiModule = require("../web/pipeline-ui.js");
 
 test("PHASE_ROWS lists the four pipeline phases", () => {
   assert.deepEqual(
@@ -477,4 +480,46 @@ test("fetchPiDetail reports a fetch error only when the token is current", async
   assert.equal(fresh.stage, "fetch-error");
   assert.equal(fresh.current, true);
   assert.match(fresh.error, /boom/);
+});
+
+test("pipeline-ui exports fetchPiDetail for the browser global and Node tests", () => {
+  assert.equal(typeof pipelineUiModule.fetchPiDetail, "function");
+});
+
+test("index.html binds fetchPiDetail from window.pipelineUI", () => {
+  const indexSource = fs.readFileSync(
+    path.join(__dirname, "..", "web", "index.html"),
+    "utf8",
+  );
+  const destructure = indexSource.match(
+    /const\s*\{([\s\S]*?)\}\s*=\s*window\.pipelineUI;/,
+  );
+  assert.ok(destructure, "index.html destructures window.pipelineUI");
+  const bound = new Set(
+    destructure[1].split(",").map((name) => name.trim()).filter(Boolean),
+  );
+  assert.ok(bound.has("fetchPiDetail"), "fetchPiDetail must be bound");
+});
+
+test("index.html binds every pipelineUI helper its script uses", () => {
+  const indexSource = fs.readFileSync(
+    path.join(__dirname, "..", "web", "index.html"),
+    "utf8",
+  );
+  const destructureMatch = indexSource.match(
+    /const\s*\{([\s\S]*?)\}\s*=\s*window\.pipelineUI;/,
+  );
+  assert.ok(destructureMatch, "index.html destructures window.pipelineUI");
+  const bound = new Set(
+    destructureMatch[1].split(",").map((name) => name.trim()).filter(Boolean),
+  );
+  // Remove the destructure itself, then look for bare uses of exported names.
+  const script = indexSource.replace(
+    /const\s*\{[\s\S]*?\}\s*=\s*window\.pipelineUI;/,
+    "",
+  );
+  const unbound = Object.keys(pipelineUiModule).filter(
+    (name) => new RegExp("\\b" + name + "\\b").test(script) && !bound.has(name),
+  );
+  assert.deepEqual(unbound, []);
 });
