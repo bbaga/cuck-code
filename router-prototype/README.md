@@ -19,6 +19,60 @@ model). The router pins each vibe session to its role's model via
 `VIBE_ACTIVE_MODEL` in the spawn environment; planner runs inherit the ambient
 config. Requires Node >= 18 and the `vibe` CLI on PATH.
 
+## Tests and static validation
+
+Run these commands from the repository root:
+
+```
+node --test router-prototype/test/*.test.js
+node router-prototype/scripts/validate-build.js
+```
+
+The first command runs the complete unit test suite. The second parses the
+production server and browser JavaScript, the inline scripts in `web/index.html`,
+and checks required and referenced local web assets. It does not execute scripts
+or start the router. This plain-JavaScript application has no transpilation or
+bundling build; static validation is not a compile or integration test.
+
+## Planner and worker text handoff
+
+The router uses one text contract for a completed message: normalized entries
+use `text`; older entries can use a string or an array of `{ type: "text", text }`
+blocks in `content`. It accepts text from assistant messages only. It excludes
+thinking, tool calls, tool results, malformed blocks, and other roles. Vibe and
+Pi preserve the source role and never default an unknown or missing role to
+assistant. Codex `agent_message` and Claude `assistant` events imply assistant
+only when the schema omits role; an explicit contradictory role is rejected.
+Pi finalization flushes only text from `assistantMessageEvent`, and a completed
+non-assistant message clears any pending partial text.
+
+Each planner or worker process has a separate output capture. It collects every
+assistant text entry from that process run. The UI transcript can keep its
+500-entry limit without cutting the criteria or report sent to another stage.
+For Pi JSON mode, `message_end.message` is authoritative. The adapter replaces
+streaming deltas with the completed message and does not append them twice. A
+`text_end` block replaces its partial deltas. If Pi closes before a completed
+message, the adapter flushes the buffered block text.
+The JSONL decoder handles split records, LF or CRLF framing, and a final record
+without LF. It does not split on Unicode line separators.
+
+The planner criteria for validation come only from the current planner run.
+Empty criteria produce a `VALIDATION NOT STARTED` diagnostic. They do not use
+old transcript text and do not start a validator. `SKIP VALIDATION` remains an
+explicit planner response. Each implementor report enters the planner queue
+with trusted internal source metadata: worker ID, invocation ID, run generation,
+and the immutable report body. Planner dispatch and wake retries preserve that
+metadata. Criteria are accepted only for that exact source, never by parsing
+worker IDs from prompt text or reading the worker's mutable latest report. If a
+continuation supersedes the source before criteria return, the router reports
+cancellation and keeps the newer report request intact. Deferred validation
+stores its criteria, report, and invocation identity together. Worker
+completion sets status and verdict before
+saving state or sending the status event. A verdict requires the final non-empty
+report line to be exactly `VERDICT: PASS` or `VERDICT: FAIL`; a missing or
+incomplete verdict stays unset and produces a diagnostic. Report bodies are
+sent in full, without adding punctuation to the report text.
+
 ## Production lines
 
 Clicking "Create new line" adds a standing-by "Draft line" (work directory under
@@ -183,6 +237,16 @@ queued per line (`pendingValidations` in `line.json`), spawns
 automatically when a worker closes, and survives restarts. The
 planner-driven spawns (workers, integration validator) get a 409 and
 the planner brief tells the planner to wait for completions and retry.
+
+A deferred validation stays queued while its implementor is running. Each flush
+checks at most the items that were queued at the start of that pass. It rotates
+blocked items so ready validations can use free capacity. Removing an
+implementor removes its pending validations and records that cancellation.
+Each queued item stores its criteria, report, worker ID, invocation ID, and
+run generation. A continuation advances that generation. If it changes the
+work before a queued validation starts, the router cancels the old item with a
+diagnostic. The new run needs new criteria. Planner request metadata, pending
+validation metadata, and run generations persist in `line.json`.
 
 ### Worktree discipline
 

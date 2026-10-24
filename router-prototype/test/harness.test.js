@@ -6,6 +6,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { HARNESS_IDS, createHarness } = require('../harness');
+const { InvocationCapture, hasCriteria, applyCompletion, explicitVerdict,
+  missingCriteriaDiagnostic } = require('../handoff');
+const { completePlannerCriteria, implementorReportRequest } = require('../planner-request');
 
 const fixture = (name) => fs
   .readFileSync(path.join(__dirname, 'fixtures', `${name}.jsonl`), 'utf8')
@@ -137,6 +140,22 @@ test('pi outcome, delta accumulation, and finalize flush', () => {
   });
   assertEntry(done, 'assistant', 'final text', 'pi-session-1');
   assert.strictEqual(h.finalize(), null);
+
+  h.normalize({ type: 'message_update', assistantMessageEvent: {
+    type: 'text_delta', contentIndex: 0, delta: 'must not leak',
+  } });
+  assert.strictEqual(h.normalize({ type: 'message_end', message: {
+    role: 'assistant', content: [{ type: 'toolCall', name: 'bash' }],
+  } }), null);
+  assert.strictEqual(h.finalize(), null, 'completed empty message clears partial deltas');
+
+  h.normalize({ type: 'message_update', assistantMessageEvent: {
+    type: 'text_delta', contentIndex: 0, delta: 'partial',
+  } });
+  h.normalize({ type: 'message_update', assistantMessageEvent: {
+    type: 'text_end', contentIndex: 0, content: 'authoritative ✓',
+  } });
+  assertEntry(h.finalize(), 'assistant', 'authoritative ✓', 'pi-session-1');
 });
 
 // --- codex ---
@@ -212,4 +231,163 @@ test('claude outcome and normalize on fixture lines', () => {
   assertEntry(h.normalize(lines[2]), 'assistant', 'Part two', 'claude-session-1');
   assert.strictEqual(h.normalize(lines[3]), null);
   assert.strictEqual(h.finalize(), null);
+});
+
+function schemaRecord(harness, role, text) {
+  if (harness === 'vibe') {
+    return { type: 'message', ...(role === undefined ? {} : { role }),
+      content: [{ type: 'text', text }] };
+  }
+  if (harness === 'pi') {
+    return { type: 'message_end', message: { ...(role === undefined ? {} : { role }),
+      content: [{ type: 'text', text }] } };
+  }
+  if (harness === 'codex') {
+    return { type: 'item.completed', item: { type: 'agent_message',
+      ...(role === undefined ? {} : { role }), text } };
+  }
+  return { type: 'assistant', message: { ...(role === undefined ? {} : { role }),
+    content: [{ type: 'text', text }] } };
+}
+
+const untrustedRoles = ['toolResult', 'tool', 'custom', 'unknown', 'user', 'system'];
+
+test('Vibe and Pi preserve explicit non-assistant roles without promoting them into reports', () => {
+  for (const harnessId of ['vibe', 'pi']) {
+    for (const role of untrustedRoles) {
+      const adapter = createHarness(harnessId);
+      const entry = adapter.normalize(schemaRecord(harnessId, role, `role ${role} text`));
+      assert.strictEqual(entry.role, role, `${harnessId} role ${role}`);
+      const capture = new InvocationCapture();
+      capture.add(entry);
+      assert.strictEqual(capture.text(), '', `${harnessId} role ${role} entered report capture`);
+    }
+    const adapter = createHarness(harnessId);
+    const missing = adapter.normalize(schemaRecord(harnessId, undefined, 'missing role text'));
+    assert.strictEqual(missing.role, null, `${harnessId} missing role must remain untrusted`);
+    const capture = new InvocationCapture();
+    capture.add(missing);
+    assert.strictEqual(capture.text(), '');
+
+    for (const role of ['user', 'system']) {
+      const transcriptEntry = createHarness(harnessId).normalize(
+        schemaRecord(harnessId, role, `${role} transcript`));
+      assert.strictEqual(transcriptEntry.role, role);
+      assert.strictEqual(transcriptEntry.text, `${role} transcript`);
+    }
+  }
+});
+
+test('Codex and Claude accept schema-implied assistant events but reject contradictory roles', () => {
+  for (const harnessId of ['codex', 'claude']) {
+    const implicit = createHarness(harnessId).normalize(
+      schemaRecord(harnessId, undefined, 'schema assistant text'));
+    assertEntry(implicit, 'assistant', 'schema assistant text', null);
+    for (const role of untrustedRoles) {
+      const rejected = createHarness(harnessId).normalize(
+        schemaRecord(harnessId, role, `must reject ${role}`));
+      assert.strictEqual(rejected, null, `${harnessId} explicit ${role} role`);
+      if (harnessId === 'claude') {
+        const topLevelConflict = createHarness(harnessId).normalize({
+          type: 'assistant', role, message: { content: [{ type: 'text', text: 'contradictory role' }] },
+        });
+        assert.strictEqual(topLevelConflict, null, `Claude outer ${role} role`);
+      }
+    }
+    const explicit = createHarness(harnessId).normalize(
+      schemaRecord(harnessId, 'assistant', 'explicit assistant text'));
+    assertEntry(explicit, 'assistant', 'explicit assistant text', null);
+  }
+});
+
+test('Pi tool completion clears pending assistant deltas before finalize', () => {
+  const adapter = createHarness('pi');
+  const capture = new InvocationCapture();
+  adapter.normalize({ type: 'message_update', assistantMessageEvent: {
+    type: 'text_delta', contentIndex: 0, delta: 'VERDICT: PASS',
+  } });
+  const toolEntry = adapter.normalize(schemaRecord('pi', 'toolResult', 'tool output'));
+  assert.strictEqual(toolEntry.role, 'toolResult');
+  capture.add(toolEntry);
+  const finalized = adapter.finalize();
+  if (finalized) capture.add(finalized);
+  assert.strictEqual(capture.text(), '');
+});
+
+test('real outputs from every harness produce only assistant criteria and verdicts', () => {
+  const records = {
+    vibe: (text) => schemaRecord('vibe', 'assistant', text),
+    pi: (text) => schemaRecord('pi', 'assistant', text),
+    codex: (text) => schemaRecord('codex', undefined, text),
+    claude: (text) => schemaRecord('claude', undefined, text),
+  };
+  for (const harnessId of HARNESS_IDS) {
+    for (const verdict of ['PASS', 'FAIL']) {
+      const adapter = createHarness(harnessId);
+      const capture = new InvocationCapture();
+      const entry = adapter.normalize(records[harnessId](`1. Check exact output ✓\nVERDICT: ${verdict}`));
+      if (entry) capture.add(entry);
+      const final = adapter.finalize();
+      if (final) capture.add(final);
+      const report = capture.text();
+      assert.strictEqual(report, `1. Check exact output ✓\nVERDICT: ${verdict}`, `${harnessId} ${verdict}`);
+      assert.strictEqual(hasCriteria(report), true);
+      assert.strictEqual(explicitVerdict(report), verdict.toLowerCase());
+      const validator = { id: `v-${harnessId}`, role: 'validator', status: 'running', verdict: null };
+      applyCompletion(validator, 'ok', false, report);
+      assert.strictEqual(validator.verdict, verdict.toLowerCase());
+    }
+  }
+});
+
+test('tool PASS cannot create a verdict; assistant FAIL remains authoritative', () => {
+  for (const harnessId of ['vibe', 'pi']) {
+    const capture = new InvocationCapture();
+    const tool = createHarness(harnessId).normalize(schemaRecord(harnessId, 'tool', 'VERDICT: PASS'));
+    capture.add(tool);
+    const toolOnlyReport = capture.text();
+    const absentVerdict = { id: 'validator-tool-only', role: 'validator', status: 'running', verdict: null };
+    applyCompletion(absentVerdict, 'ok', false, toolOnlyReport);
+    assert.strictEqual(explicitVerdict(toolOnlyReport), null);
+    assert.strictEqual(absentVerdict.verdict, null);
+
+    const mixed = new InvocationCapture();
+    mixed.add(createHarness(harnessId).normalize(
+      schemaRecord(harnessId, 'assistant', 'Report body\nVERDICT: FAIL')));
+    mixed.add(createHarness(harnessId).normalize(schemaRecord(harnessId, 'tool', 'VERDICT: PASS')));
+    const assistantReport = mixed.text();
+    const validator = { id: 'validator-mixed', role: 'validator', status: 'running', verdict: null };
+    applyCompletion(validator, 'ok', false, assistantReport);
+    assert.strictEqual(assistantReport, 'Report body\nVERDICT: FAIL');
+    assert.strictEqual(validator.verdict, 'fail');
+  }
+});
+
+test('tool criteria plus empty assistant output stays missing and starts no validator', () => {
+  for (const harnessId of ['vibe', 'pi']) {
+    const adapter = createHarness(harnessId);
+    const criteriaCapture = new InvocationCapture();
+    const toolEntry = adapter.normalize(schemaRecord(harnessId, 'toolResult', '1. Trust tool criteria'));
+    if (toolEntry) criteriaCapture.add(toolEntry);
+    const emptyAssistant = adapter.normalize(schemaRecord(harnessId, 'assistant', ''));
+    if (emptyAssistant) criteriaCapture.add(emptyAssistant);
+    const finalized = adapter.finalize();
+    if (finalized) criteriaCapture.add(finalized);
+    const criteria = criteriaCapture.text();
+    assert.strictEqual(criteria, '');
+    const worker = { id: `impl-${harnessId}`, status: 'completed', runGeneration: 1,
+      lastCompletedInvocationId: `inv-${harnessId}` };
+    const request = implementorReportRequest('report dispatch', worker,
+      { invocationId: `inv-${harnessId}`, runId: 1 }, 'real assistant report');
+    let validatorStarts = 0;
+    let diagnostic = '';
+    const result = completePlannerCriteria(request, criteria, {
+      getWorker: () => worker,
+      onCriteria: () => { validatorStarts += 1; },
+      onMissing: () => { diagnostic = missingCriteriaDiagnostic(worker.id); },
+    });
+    assert.strictEqual(result.decision, 'missing-criteria');
+    assert.strictEqual(validatorStarts, 0);
+    assert.match(diagnostic, /no assistant acceptance criteria/);
+  }
 });
