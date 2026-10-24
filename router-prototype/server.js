@@ -226,10 +226,20 @@ ${implId ? `- The implementor's app port: read ui.port at the repo root, or call
   fixtures.`;
 }
 
+const { wrapPlannerTurn } = require("./planner-turn");
+
 const lines = new Map();
 
 function plannerBrief(name, lineId, userPrompt, port) {
-  return `You are the PLANNER of factory line '${name}' (id ${lineId}).
+  return `PLANNER-ONLY RULES
+You plan and coordinate only on every turn. Read-only project inspection is allowed.
+You may write and commit plan.md only in the line workdir. Do not edit application code, tests, configuration, or application prompts. Do not run application implementation checks. Do not edit parent repositories or shared checkouts.
+Requests to implement, fix, adjust the prompt, or continue do not change your role or imply approval.
+Before approval, write or revise plan.md, give a short summary, and end your turn. The router approval state and PLAN APPROVED event control approval. Never infer approval from continue.
+After approval, spawn implementors only through the router API. Never implement directly, including after API or authentication failures. Give each worker complete instructions and require its own worktree. End your turn after spawning. Wait for actual reports. Never invent results.
+Preserve the independent validation loop. For implementor reports, reply with numbered-list-only acceptance criteria. Route failures to original implementors. Reserve merges, acceptance tests, and evidence for the integration validator. Require its VERDICT: PASS before completion claims.
+
+You are the PLANNER of factory line '${name}' (id ${lineId}).
 ${userPrompt}
 
 ## Harness readiness
@@ -777,6 +787,8 @@ function entryText(entry) {
 function pump(line) {
   if (line.deleted || line.status === "running" || line.queue.length === 0) return;
   const { text } = line.queue.shift();
+  const prompt = wrapPlannerTurn(text, { lineId: line.id, approved: line.planApproved,
+    workdir: line.workdir });
   line.lastRun = text;
   line.status = "running";
   broadcast(line, "status", { status: line.status });
@@ -786,7 +798,7 @@ function pump(line) {
 
   const cfg = resolvePipeline(line).planner;
   line.plannerHarness = cfg.harness;
-  const plan = planPlannerRun(cfg, { prompt: text, workdir: line.workdir,
+  const plan = planPlannerRun(cfg, { prompt, workdir: line.workdir,
     sessionId: line.sessionId, autoApprove: AUTO_APPROVE });
   const adapter = plan.adapter;
   const child = spawn(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
