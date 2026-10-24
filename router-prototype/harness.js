@@ -10,14 +10,12 @@
 //
 // normalize() returns a common entry:
 //   { type: "message", role, text, sessionId, at }
-// with role one of "assistant", "user", "system", or null for event
-// lines that carry no message text.
+// It preserves explicit source roles and uses null when the source omits a
+// role. Only the exact "assistant" role is trusted by report capture.
 
 const path = require('path');
 
 const HARNESS_IDS = ['vibe', 'pi', 'codex', 'claude'];
-
-const ROLES = new Set(['assistant', 'user', 'system']);
 
 // Content is either a plain string (pi user messages) or a list of blocks
 // that carry text in items with type "text" (vibe content parts, pi and
@@ -86,7 +84,7 @@ class VibeHarness extends BaseHarness {
     this.captureSessionId(obj.sessionId);
     const text = textFromContent(obj.content);
     if (!text) return null;
-    return this.entry(ROLES.has(obj.role) ? obj.role : 'assistant', text);
+    return this.entry(typeof obj.role === 'string' && obj.role.length > 0 ? obj.role : null, text);
   }
 
   outcome(code) {
@@ -139,13 +137,15 @@ class PiHarness extends BaseHarness {
       this.pendingTextBlocks.clear();
       const text = textFromContent(message.content);
       if (!text) return null;
-      return this.entry(ROLES.has(message.role) ? message.role : 'assistant', text);
+      return this.entry(typeof message.role === 'string' && message.role.length > 0
+        ? message.role : null, text);
     }
     return null;
   }
 
   // The stream can end without a message_end event (kill, crash); flush
-  // text blocks, using each text_end content as its authoritative value.
+  // text blocks from assistantMessageEvent, using each text_end value as
+  // authoritative. Other event types never enter this partial assistant buffer.
   finalize() {
     if (!this.pendingTextBlocks.size) return null;
     const text = [...this.pendingTextBlocks.entries()]
@@ -179,6 +179,10 @@ class CodexHarness extends BaseHarness {
       // use "session_id", older ones "thread_id".
       this.captureSessionId(obj.session_id !== undefined ? obj.session_id : obj.thread_id);
     } else if (obj.type === 'item.completed' && obj.item && obj.item.type === 'agent_message') {
+      // Codex agent_message is an assistant event when the schema omits role.
+      // Reject any explicit contradictory role instead of rewriting it.
+      const roleFields = [obj.role, obj.item.role].filter((role) => role !== undefined);
+      if (roleFields.some((role) => role !== 'assistant')) return null;
       const text = typeof obj.item.text === 'string' ? obj.item.text : '';
       if (text) return this.entry('assistant', text);
     }
@@ -208,6 +212,10 @@ class ClaudeHarness extends BaseHarness {
       // Init event: carries the session id, no message text.
       this.captureSessionId(obj.session_id);
     } else if (obj.type === 'assistant' && obj.message) {
+      // Claude's outer assistant event implies assistant only when the nested
+      // message does not provide a contradictory role.
+      const roleFields = [obj.role, obj.message.role].filter((role) => role !== undefined);
+      if (roleFields.some((role) => role !== 'assistant')) return null;
       this.captureSessionId(obj.session_id);
       const text = textFromContent(obj.message.content);
       if (text) return this.entry('assistant', text);

@@ -49,6 +49,7 @@ An interim validator that uses the older live router may still read this file as
 12. Run only unit tests and the authorized static build-validation command locally. Do not run live process/API end-to-end, integration, or browser acceptance tests.
 13. Keep CI limited to unit tests and static build validation. Do not change authentication detection, add deployment, or change provider/model UI controls.
 14. Document the root cause, text contract, invocation boundary, Pi framing, and diagnostics in `router-prototype/README.md`.
+15. Admit only explicit assistant-role messages or documented schema-specific assistant events. Never promote missing, unknown, tool, toolResult, custom, user, or system roles to assistant.
 
 ## Root cause and correction evidence
 
@@ -64,12 +65,18 @@ Each implementor report enters the planner queue with immutable internal metadat
 
 Every pending validation stores the same source identity plus exact criteria. The server persists and restores planner requests, pending items, worker invocation IDs, and validator source metadata. A continuation advances the worker generation. If it starts or completes before old criteria return, the old response is explicitly superseded and does not spawn a validator. The newer report request stays queued and receives its own criteria. Deferred items are rechecked against both run generation and invocation ID. Repeated flushes cannot launch the same item twice.
 
+## Adapter role-boundary correction
+
+The validator found that Vibe and Pi adapters converted an unknown or missing role to `assistant`. Tool output with `VERDICT: PASS` could therefore enter the validator report and create a false pass. Vibe and Pi now preserve explicit source roles, use `null` when the role is missing, and never promote other roles. Codex `agent_message` and Claude outer `assistant` events remain valid when their documented schema implies assistant; an explicit contradictory role is rejected. Pi `message_end` clears pending deltas before handling any role, and only `assistantMessageEvent` feeds the assistant partial buffer.
+
+Role-boundary regressions feed actual adapter outputs into `InvocationCapture`, report extraction, criteria handling, and verdict publication. They cover `toolResult`, `tool`, `custom`, unknown, missing, user, and system roles. Tool-only `VERDICT: PASS` produces no verdict; assistant `VERDICT: FAIL` plus tool `VERDICT: PASS` stays FAIL. Tool-provided numbered criteria plus empty assistant output invokes the missing-criteria diagnostic and starts no validator. Positive assistant criteria and PASS/FAIL verdicts remain covered for Vibe, Pi, Codex, and Claude.
+
 ## Commands and evidence
 
 Run from the repository root:
 
-- Unit tests: `node --test router-prototype/test/*.test.js` — **94 passed, 0 failed** after the source-identity race correction.
-- Static build validation: `node router-prototype/scripts/validate-build.js` — **12 checks passed** after adding `planner-request.js` to the production source list.
+- Unit tests: `node --test router-prototype/test/*.test.js` — **100 passed, 0 failed** after the adapter role-boundary correction.
+- Static build validation: `node router-prototype/scripts/validate-build.js` — **12 checks passed**.
 - `git diff --check` — passed before commit.
 - No local integration, browser, live process, or API tests were run.
 
@@ -80,7 +87,7 @@ Required test evidence:
 - Existing planner-role and report-marker tests still pass.
 - Queue tests call the production `flushPendingValidationQueue()` module used by the server. They cover a running implementor with a free slot, mixed blocked and ready items, bounded scans, full capacity and later completion, repeat flushes, source-run supersession, deleted workers, and save/restore.
 - Planner request tests call the production implementor-report request, planner-completion, and retry functions. They reproduce run 1 completion and planner dispatch, run 2 continuation and completion before run 1 criteria return, then prove run 1 criteria cannot start a validator or pair with the run 2 report. They verify the run 2 request remains intact and can start its own validator. Additional tests cover a still-running continuation, unchanged runs, retries, missing metadata, and different workers.
-- Adapter/handoff tests cover normalized assistant messages, legacy string/block content, multiple assistant messages, malformed events, current-run isolation, transcript limits, full notifications, explicit and missing verdicts, and deferred/continued report association.
+- Adapter/handoff tests cover normalized assistant messages, legacy string/block content, multiple assistant messages, malformed events, current-run isolation, transcript limits, full notifications, explicit and missing verdicts, deferred/continued report association, and tool/user/system/custom/unknown/missing role boundaries.
 - Pi and JSONL tests cover fragmented input, Unicode, CRLF, final buffered input, authoritative completed content, and no duplicate deltas.
 - Test outputs report exact totals and failures.
 - Static validation succeeds. Do not run integration or browser tests.

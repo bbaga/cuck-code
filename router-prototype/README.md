@@ -39,7 +39,12 @@ bundling build; static validation is not a compile or integration test.
 The router uses one text contract for a completed message: normalized entries
 use `text`; older entries can use a string or an array of `{ type: "text", text }`
 blocks in `content`. It accepts text from assistant messages only. It excludes
-thinking, tool calls, tool results, malformed blocks, and other roles.
+thinking, tool calls, tool results, malformed blocks, and other roles. Vibe and
+Pi preserve the source role and never default an unknown or missing role to
+assistant. Codex `agent_message` and Claude `assistant` events imply assistant
+only when the schema omits role; an explicit contradictory role is rejected.
+Pi finalization flushes only text from `assistantMessageEvent`, and a completed
+non-assistant message clears any pending partial text.
 
 Each planner or worker process has a separate output capture. It collects every
 assistant text entry from that process run. The UI transcript can keep its
