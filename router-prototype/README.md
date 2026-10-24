@@ -314,7 +314,9 @@ cached for 30 seconds; `?refresh=1` skips the cache. Per harness it reports
 (a comma-separated list of extra model ids; empty values are ignored).
 The `pi` entry carries `authModes` (`[{value, label}]`, the providers
 discovered from `pi --list-models`) and provider-qualified `models`
-(`value` is `provider/model`). pi has no provider-free auth check: its
+(`value` is `provider/model`). A failed `pi --list-models` command yields
+no providers and no models; error output never becomes a catalog row. pi
+has no provider-free auth check: its
 base `auth` stays `unknown` because the auth state depends on the
 provider. Creating a line or spawning a worker with a harness that is not
 installed fails with 400.

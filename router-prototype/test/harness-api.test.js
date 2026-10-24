@@ -17,6 +17,7 @@ let baseUrl = null;
 let tmpDir = null;
 let piLog = null;
 let failFlag = null;
+let listFailFlag = null;
 
 const PI_CATALOG = [
   "Provider  Model",
@@ -28,11 +29,13 @@ const PI_CATALOG = [
 function writeFakeClis(binDir) {
   const piLogPath = path.join(tmpDir, "pi-calls.log");
   const failFlag = path.join(tmpDir, "pi-auth-fails");
+  const listFailFlag = path.join(tmpDir, "pi-list-fails");
   const pi = `#!/bin/sh
 printf '%s\\n' "$@" >> "${piLogPath}"
 printf -- '---\\n' >> "${piLogPath}"
 if [ "$1" = "--version" ]; then echo "pi 0.87.1"; exit 0; fi
 if [ "$1" = "--list-models" ]; then
+  if [ -e "${listFailFlag}" ]; then echo "Failed to load catalog"; exit 1; fi
   printf '${PI_CATALOG.replace(/\n/g, "\\n")}\\n'
   exit 0
 fi
@@ -49,7 +52,7 @@ exit 1
 `;
   fs.writeFileSync(path.join(binDir, "pi"), pi, { mode: 0o755 });
   fs.writeFileSync(path.join(binDir, "vibe"), vibe, { mode: 0o755 });
-  return { piLogPath, failFlag };
+  return { piLogPath, failFlag, listFailFlag };
 }
 
 function piCalls() {
@@ -82,6 +85,7 @@ before(async () => {
   fs.mkdirSync(binDir);
   piLog = writeFakeClis(binDir).piLogPath;
   failFlag = path.join(tmpDir, "pi-auth-fails");
+  listFailFlag = path.join(tmpDir, "pi-list-fails");
   const port = 7900 + Math.floor(Math.random() * 100);
   baseUrl = `http://localhost:${port}`;
   server = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
@@ -193,4 +197,25 @@ test("base probe keeps the 30-second cache", async () => {
   await getJson("/api/harnesses?refresh=1");
   const afterRefresh = piCalls().filter((args) => args[0] === "--list-models").length;
   assert.strictEqual(afterRefresh, before + 1, "?refresh=1 must re-probe");
+});
+
+test("a failed catalog command yields no providers over HTTP", async () => {
+  fs.writeFileSync(listFailFlag, "");
+  try {
+    const { status, body } = await getJson("/api/harnesses?refresh=1");
+    assert.strictEqual(status, 200);
+    const pi = body.harnesses.find((h) => h.id === "pi");
+    assert.deepStrictEqual(pi.authModes, []);
+    assert.deepStrictEqual(pi.models, []);
+    assert.ok(!JSON.stringify(body).includes("Failed"));
+    // The detail route rejects every provider while the catalog is empty.
+    const detail = await getJson("/api/harnesses/pi?provider=anthropic");
+    assert.strictEqual(detail.status, 400);
+    assert.match(detail.body.error, /pi is not installed or reported no providers/);
+  } finally {
+    fs.rmSync(listFailFlag, { force: true });
+  }
+  const recovered = await getJson("/api/harnesses?refresh=1");
+  const pi = recovered.body.harnesses.find((h) => h.id === "pi");
+  assert.strictEqual(pi.authModes.length, 2);
 });

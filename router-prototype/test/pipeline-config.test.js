@@ -316,6 +316,54 @@ test("parsePiModelCatalog ignores junk lines without a model column", () => {
   assert.deepStrictEqual(parsed.models, [{ value: "p1/m1", label: "m1" }]);
 });
 
+// ---- regression: error prose must never become a catalog row ----
+
+test("parsePiModelCatalog rejects error prose passed directly", () => {
+  for (const prose of [
+    "Failed to load catalog",
+    "Command failed",
+    "Error: connection refused",
+    "Error:",
+    "no models found",
+    "p1 m1 extra", // three cells: prose, not a row
+  ]) {
+    const parsed = parsePiModelCatalog(prose);
+    assert.deepStrictEqual(parsed, { providers: [], models: [] },
+      `prose must not parse: ${prose}`);
+  }
+});
+
+test("parsePiModelCatalog still parses real rows next to prose", () => {
+  const parsed = parsePiModelCatalog([
+    "Failed to load catalog",
+    "",
+    "anthropic  claude-sonnet-4",
+  ].join("\n"));
+  assert.deepStrictEqual(parsed.providers, [{ value: "anthropic", label: "anthropic" }]);
+  assert.deepStrictEqual(parsed.models,
+    [{ value: "anthropic/claude-sonnet-4", label: "claude-sonnet-4" }]);
+});
+
+test("probeHarnesses yields no providers when the catalog command fails", async () => {
+  const run = fakeRun({
+    "pi --version": { code: 0, stdout: "0.87.1\n" },
+    // Failed command WITH output: the prose must not become rows.
+    "pi --list-models": { code: 1, stdout: "Failed to load catalog\n" },
+  });
+  const results = await probeHarnesses(run);
+  const pi = results.find((r) => r.id === "pi");
+  assert.strictEqual(pi.installed, true);
+  assert.deepStrictEqual(pi.authModes, []);
+  assert.deepStrictEqual(pi.models, []);
+});
+
+test("probeHarnesses yields no providers when the catalog command cannot start", async () => {
+  const results = await probeHarnesses(fakeRun({}));
+  const pi = results.find((r) => r.id === "pi");
+  assert.deepStrictEqual(pi.authModes, []);
+  assert.deepStrictEqual(pi.models, []);
+});
+
 // ---- piAuthCheckArgs / parsePiAuthCheck ----
 
 test("piAuthCheckArgs builds an argument array, not a shell string", () => {

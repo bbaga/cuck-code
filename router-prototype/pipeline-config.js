@@ -105,24 +105,35 @@ const HARNESS_PROBES = [
 
 const PI_LOGIN_HINT = "pi /login (in the pi TUI)";
 
+// A catalog token (provider or model name) must look like an identifier:
+// alphanumeric start, then alphanumerics or . _ @ + -. Prose words pass
+// this check, so row structure is validated further below.
+function isValidCatalogToken(token) {
+  return typeof token === "string"
+    && /^[A-Za-z0-9][A-Za-z0-9._@+-]*$/.test(token);
+}
+
+// A model id in a catalog row must carry version-like structure (a digit
+// or a separator). Ordinary error prose ("Failed to load catalog",
+// "Command failed") does not, so prose lines never become catalog rows.
+function looksLikeModelId(token) {
+  return isValidCatalogToken(token) && /[0-9._-]/.test(token.slice(1));
+}
+
 // Parse the output of `pi --list-models` into unique provider choices and
 // provider-qualified model choices. Tolerates table headers, separator
-// rows, variable spacing, "provider:" section headers with indented model
-// lines, empty output, and failed commands (null stdout). Never includes
-// credentials: only provider and model names are read.
+// rows, variable spacing, and "provider:" section headers with indented
+// model lines. Row structure is validated conservatively: a whitespace
+// row must have exactly two identifier-like cells, a pipe row takes its
+// first two cells, and a model cell must look like a model id. Error
+// prose therefore yields no providers and no models. Callers must parse
+// only after the command exited 0; a failed command never yields rows.
+// Never includes credentials: only provider and model names are read.
 function parsePiModelCatalog(stdout) {
-  const providers = [];
   const models = [];
-  const seenProviders = new Set();
   const seenModels = new Set();
-  const addProvider = (p) => {
-    if (p && !seenProviders.has(p)) {
-      seenProviders.add(p);
-      providers.push({ value: p, label: p });
-    }
-  };
   const addModel = (p, m) => {
-    if (!p || !m) return;
+    if (!isValidCatalogToken(p) || !looksLikeModelId(m)) return;
     const qualified = `${p}/${m}`;
     if (seenModels.has(qualified)) return;
     seenModels.add(qualified);
@@ -134,27 +145,48 @@ function parsePiModelCatalog(stdout) {
     if (/^[\s|:+-=]+$/.test(rawLine)) continue; // table borders/separators
     const indent = rawLine.length - rawLine.trimStart().length;
     const trimmed = rawLine.trim();
-    const cells = rawLine.includes("|")
+    const isPipeRow = rawLine.includes("|");
+    const cells = isPipeRow
       ? trimmed.split("|").map((s) => s.trim()).filter(Boolean)
       : trimmed.split(/\s+/);
-    if (cells.length >= 2) {
+    if (isPipeRow && cells.length >= 2) {
       const [first, second] = cells;
       if (/^provider$/i.test(first) && /^model$/i.test(second)) {
         current = null; // header row
         continue;
       }
-      addProvider(first);
       addModel(first, second);
       current = first;
-    } else if (cells.length === 1) {
+    } else if (!isPipeRow && cells.length === 2) {
+      const [first, second] = cells;
+      if (/^provider$/i.test(first) && /^model$/i.test(second)) {
+        current = null; // header row
+        continue;
+      }
+      // A whitespace row with more than two cells is prose, not a row.
+      addModel(first, second);
+      current = first;
+    } else if (!isPipeRow && cells.length === 1) {
       const token = cells[0];
       if (token.endsWith(":")) {
         current = token.slice(0, -1);
-        addProvider(current);
+        // The provider is emitted only when it gains a model below.
       } else if (indent > 0 && current) {
         addModel(current, token);
       }
       // A single unindented token without a colon is not a catalog row.
+    }
+    // Any other shape (long prose lines, extra columns) is ignored.
+  }
+  // Providers are derived from accepted model rows: a provider without a
+  // model (for example a stray "Error:" line) is never emitted.
+  const providers = [];
+  const seenProviders = new Set();
+  for (const m of models) {
+    const p = m.value.slice(0, m.value.indexOf("/"));
+    if (!seenProviders.has(p)) {
+      seenProviders.add(p);
+      providers.push({ value: p, label: p });
     }
   }
   return { providers, models };
@@ -234,7 +266,11 @@ async function probeHarnesses(run, env) {
     }
     if (probe.id === "pi" && probe.listModelsCmd) {
       const catalogRes = await run(probe.listModelsCmd);
-      const catalog = parsePiModelCatalog(catalogRes && catalogRes.stdout);
+      // A failed command yields no providers and no models, whatever it
+      // printed: error prose must never become a catalog row.
+      const catalog = catalogRes && catalogRes.code === 0
+        ? parsePiModelCatalog(catalogRes.stdout)
+        : { providers: [], models: [] };
       result.authModes = catalog.providers;
       result.models = catalog.models;
     }
