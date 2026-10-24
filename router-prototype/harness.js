@@ -12,10 +12,69 @@
 //   { type: "message", role, text, sessionId, at }
 // It preserves explicit source roles and uses null when the source omits a
 // role. Only the exact "assistant" role is trusted by report capture.
+//
+// buildRun() also carries an optional trusted system prompt (ctx.systemPrompt,
+// ctx.systemPromptPath) through each harness's verified native channel. See
+// SYSTEM_PROMPT_CHANNELS below; harnesses without a verified channel refuse
+// the policy instead of falling back to user text.
 
 const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
 
 const HARNESS_IDS = ['vibe', 'pi', 'codex', 'claude'];
+
+// Verified native channels for router-owned system prompt text (the trusted
+// planner policy). Each channel lists the CLI flags checked against the
+// harness's own documentation: `file` takes a router-owned file path
+// (preferred: it keeps the policy body off the command line), `text` takes
+// inline text. A `null` entry means the harness has no verified trusted
+// system or developer instruction channel: it must never receive the policy,
+// and callers must fail closed instead of prefixing it to the user prompt.
+//
+// - pi: `--append-system-prompt <text|path>` appends text or the contents of
+//   an existing file to the system prompt (pi CLI reference, repeatable).
+// - claude: `--append-system-prompt-file <path>` loads system prompt text from
+//   a file and appends it to the default prompt; `--append-system-prompt`
+//   appends inline text (Claude Code CLI reference, both valid headless).
+// - vibe and codex document no trusted system prompt flag for headless runs.
+const SYSTEM_PROMPT_CHANNELS = {
+  vibe: null,
+  pi: { file: '--append-system-prompt', text: '--append-system-prompt' },
+  codex: null,
+  claude: { file: '--append-system-prompt-file', text: '--append-system-prompt' },
+};
+
+// Capability lookup: the verified trusted channel for a harness id, or null
+// when the harness must not receive system prompt text.
+function trustedSystemChannel(id) {
+  if (!Object.prototype.hasOwnProperty.call(SYSTEM_PROMPT_CHANNELS, id)) {
+    throw new Error(`unknown harness id: ${id}`);
+  }
+  return SYSTEM_PROMPT_CHANNELS[id];
+}
+
+function hasValue(value) {
+  return typeof value === 'string' && value.length > 0;
+}
+
+// Write the trusted system prompt to a router-owned file and return its path.
+// The file name is a content hash: it never carries policy text, and equal
+// policies reuse one file. The directory and file get owner-only permissions.
+// Callers own the directory lifetime; the adapter layer never deletes it.
+function writeSystemPromptFile(systemPrompt, dir) {
+  if (!hasValue(systemPrompt)) {
+    throw new TypeError('systemPrompt must be a non-empty string');
+  }
+  if (!hasValue(dir)) {
+    throw new TypeError('dir must be a non-empty string');
+  }
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const digest = crypto.createHash('sha256').update(systemPrompt, 'utf8').digest('hex').slice(0, 16);
+  const file = path.join(dir, `system-prompt-${digest}.md`);
+  fs.writeFileSync(file, systemPrompt, { encoding: 'utf8', mode: 0o600 });
+  return file;
+}
 
 // Content is either a plain string (pi user messages) or a list of blocks
 // that carry text in items with type "text" (vibe content parts, pi and
@@ -33,6 +92,40 @@ class BaseHarness {
   constructor(id) {
     this.id = id;
     this.sessionId = null;
+    this.systemPromptChannel = trustedSystemChannel(id);
+  }
+
+  // The argv fragment that carries the trusted system prompt through the
+  // harness's native channel, or null when ctx carries none. A router-owned
+  // file (ctx.systemPromptPath) is preferred over inline text
+  // (ctx.systemPrompt). Throws when the harness has no verified trusted
+  // channel: the policy must never fall back into the user prompt, and the
+  // error message never contains the policy body.
+  systemPromptArgs(ctx) {
+    const text = ctx.systemPrompt;
+    const file = ctx.systemPromptPath;
+    if (text !== undefined && text !== null && typeof text !== 'string') {
+      throw new TypeError('ctx.systemPrompt must be a string when set');
+    }
+    if (file !== undefined && file !== null && typeof file !== 'string') {
+      throw new TypeError('ctx.systemPromptPath must be a string when set');
+    }
+    const hasText = typeof text === 'string' && text.length > 0;
+    const hasFile = typeof file === 'string' && file.length > 0;
+    // No policy in ctx: every existing plan stays byte-for-byte unchanged.
+    if (!hasText && !hasFile) return null;
+    if (!this.systemPromptChannel) {
+      throw new Error(`harness "${this.id}" has no verified trusted system channel; refusing the system prompt`);
+    }
+    // A router-owned file is preferred: it keeps the policy body off the
+    // command line, out of process listings, and out of logs.
+    if (hasFile) {
+      if (!fs.existsSync(file)) {
+        throw new Error(`system prompt file does not exist: ${file}`);
+      }
+      return [this.systemPromptChannel.file, file];
+    }
+    return [this.systemPromptChannel.text, text];
   }
 
   // First session id seen on the stream wins.
@@ -66,6 +159,7 @@ class VibeHarness extends BaseHarness {
   supportsNativeTimeLimit = true;
 
   buildRun(ctx) {
+    const systemArgs = this.systemPromptArgs(ctx);
     const args = [];
     if (ctx.sessionId) args.push('--resume', ctx.sessionId);
     if (ctx.workdir) args.push('--workdir', ctx.workdir);
@@ -73,6 +167,7 @@ class VibeHarness extends BaseHarness {
       '--time-limit', String(ctx.timeLimitSec));
     if (ctx.autoApprove) args.push('--auto-approve');
     args.push('-p', ctx.prompt);
+    if (systemArgs) args.push(...systemArgs);
     const env = {};
     if (ctx.model) env.VIBE_ACTIVE_MODEL = ctx.model;
     // vibe takes the work directory through --workdir, so no cwd.
@@ -106,11 +201,13 @@ class PiHarness extends BaseHarness {
   }
 
   buildRun(ctx) {
+    const systemArgs = this.systemPromptArgs(ctx);
     const args = ctx.sessionId
       ? ['--session-id', ctx.sessionId]
       : ['--session-dir', path.join(ctx.workdir, 'sessions')];
     args.push('-p', ctx.prompt, '--mode', 'json', '--model', ctx.model,
       '--thinking', PI_EFFORT_LEVELS.has(ctx.effort) ? ctx.effort : 'medium');
+    if (systemArgs) args.push(...systemArgs);
     return { cmd: 'pi', args, env: {}, cwd: ctx.workdir };
   }
 
@@ -161,6 +258,7 @@ class CodexHarness extends BaseHarness {
   supportsNativeTimeLimit = false;
 
   buildRun(ctx) {
+    const systemArgs = this.systemPromptArgs(ctx);
     const flags = ['--json', '-C', ctx.workdir, '--model', ctx.model,
       '-c', 'model_reasoning_effort=' + ctx.effort];
     if (ctx.autoApprove) flags.push('--full-auto');
@@ -168,6 +266,7 @@ class CodexHarness extends BaseHarness {
       ? ['exec', 'resume', ctx.sessionId, ...flags]
       : ['exec', ...flags];
     args.push(ctx.prompt);
+    if (systemArgs) args.push(...systemArgs);
     // codex takes the work directory through -C, so no cwd.
     return { cmd: 'codex', args, env: {} };
   }
@@ -196,6 +295,7 @@ class ClaudeHarness extends BaseHarness {
   supportsNativeTimeLimit = false;
 
   buildRun(ctx) {
+    const systemArgs = this.systemPromptArgs(ctx);
     const tokens = Object.prototype.hasOwnProperty.call(CLAUDE_THINKING_TOKENS, ctx.effort)
       ? CLAUDE_THINKING_TOKENS[ctx.effort]
       : CLAUDE_THINKING_TOKENS.medium;
@@ -203,6 +303,7 @@ class ClaudeHarness extends BaseHarness {
       '--model', ctx.model, '--dangerously-skip-permissions',
       '--max-thinking-tokens', String(tokens)];
     if (ctx.sessionId) args.push('--resume', ctx.sessionId);
+    if (systemArgs) args.push(...systemArgs);
     return { cmd: 'claude', args, env: {}, cwd: ctx.workdir };
   }
 
@@ -237,4 +338,4 @@ function createHarness(id) {
   return new Adapter(id);
 }
 
-module.exports = { HARNESS_IDS, createHarness };
+module.exports = { HARNESS_IDS, createHarness, trustedSystemChannel, writeSystemPromptFile };
