@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"pi-handoff-session"}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"duplicate partial"}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"secret"},{"type":"text","text":"1. Check the report ✓\n2. Preserve punctuation!"},{"type":"toolCall","id":"tool-1","name":"bash","arguments":{}}]}}

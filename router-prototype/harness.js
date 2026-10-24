@@ -35,7 +35,6 @@ class BaseHarness {
   constructor(id) {
     this.id = id;
     this.sessionId = null;
-    this.pendingText = '';
   }
 
   // First session id seen on the stream wins.
@@ -103,6 +102,11 @@ const PI_EFFORT_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', '
 class PiHarness extends BaseHarness {
   supportsNativeTimeLimit = false;
 
+  constructor(id) {
+    super(id);
+    this.pendingTextBlocks = new Map();
+  }
+
   buildRun(ctx) {
     const args = ctx.sessionId
       ? ['--session-id', ctx.sessionId]
@@ -119,26 +123,37 @@ class PiHarness extends BaseHarness {
       this.captureSessionId(obj.id);
     } else if (obj.type === 'message_update') {
       const event = obj.assistantMessageEvent;
-      if (event && event.type === 'text_delta' && typeof event.delta === 'string') {
-        this.pendingText += event.delta;
+      if (event && (event.type === 'text_delta' || event.type === 'text_end')) {
+        const index = Number.isInteger(event.contentIndex) ? event.contentIndex : 0;
+        if (event.type === 'text_delta' && typeof event.delta === 'string') {
+          this.pendingTextBlocks.set(index, (this.pendingTextBlocks.get(index) || '') + event.delta);
+        } else if (event.type === 'text_end' && typeof event.content === 'string') {
+          // text_end content is authoritative for this block.
+          this.pendingTextBlocks.set(index, event.content);
+        }
       }
     } else if (obj.type === 'message_end') {
       const message = obj.message || {};
+      // message_end is authoritative, including when it contains no text.
+      // Never flush the deltas again after a completed message.
+      this.pendingTextBlocks.clear();
       const text = textFromContent(message.content);
       if (!text) return null;
-      this.pendingText = '';
       return this.entry(ROLES.has(message.role) ? message.role : 'assistant', text);
     }
     return null;
   }
 
   // The stream can end without a message_end event (kill, crash); flush
-  // whatever text the deltas accumulated.
+  // text blocks, using each text_end content as its authoritative value.
   finalize() {
-    if (!this.pendingText) return null;
-    const text = this.pendingText;
-    this.pendingText = '';
-    return this.entry('assistant', text);
+    if (!this.pendingTextBlocks.size) return null;
+    const text = [...this.pendingTextBlocks.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, value]) => value)
+      .join('');
+    this.pendingTextBlocks.clear();
+    return text ? this.entry('assistant', text) : null;
   }
 }
 

@@ -11,6 +11,8 @@ const PRODUCTION_SCRIPTS = [
   "pipeline-config.js",
   "planner-turn.js",
   "spawn-plan.js",
+  "handoff.js",
+  "jsonl.js",
   "web/pipeline-ui.js",
 ];
 const REQUIRED_WEB_ASSETS = ["web/index.html", "web/pipeline-ui.js"];

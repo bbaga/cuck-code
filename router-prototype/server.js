@@ -8,6 +8,12 @@ const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   validateWorkerSpawnBody, lineSummary } = require("./spawn-plan");
+const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
+const { messageText, InvocationCapture, appendTranscript, isSkipValidation, hasCriteria,
+  validationCriteriaBlock, pendingValidationFor, reportForValidation,
+  applyCompletion, completionFields, missingCriteriaDiagnostic, runOutputNote,
+  buildImplementorNotification, buildValidationNotification,
+  buildIntegrationNotification } = require("./handoff");
 
 const PORT = Number(process.env.PORT || 7788);
 const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
@@ -582,8 +588,7 @@ ${persona === "frontend" ? frontendToolsBlock(workerId, implId, lineId) : ""}
 The implementor reported:
 ${report}
 
-The planner gave these acceptance criteria:
-${criteria}
+${validationCriteriaBlock(criteria)}
 
 Tasks:
 1. Check the work against each criterion. For each criterion, record
@@ -695,11 +700,12 @@ function saveLine(line) {
         evidence: [...(line.evidence || new Map()).values()].map((e) => ({
           id: e.id, useCase: e.useCase, path: e.path, name: e.name, by: e.by, at: e.at })),
         workers: [...line.workers.values()].map((w) => ({
-          id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch, status: w.status,
+          id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch,
+          ...completionFields(w), lastRunText: w.lastRunText || null,
           role: w.role, validates: w.validates, persona: w.persona || "backend",
           repo: w.repo || "primary", worktreePath: w.worktreePath,
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
-          kind: w.kind || "standard", verdict: w.verdict || null })) }));
+          kind: w.kind || "standard" })) }));
   } catch {}
 }
 
@@ -777,11 +783,7 @@ function isWake(text) {
 
 
 function entryText(entry) {
-  if (typeof entry.text === "string") return entry.text;
-  if (Array.isArray(entry.content)) {
-    return entry.content.filter((p) => p && p.type === "text").map((p) => p.text).join("");
-  }
-  return "";
+  return messageText(entry);
 }
 
 function pump(line) {
@@ -813,26 +815,24 @@ function pump(line) {
       cfg.timeLimit * 1000);
   }
 
-  let buf = "";
+  const runOutput = new InvocationCapture();
+  const stdoutRecords = new JsonlDecoder();
+  const consumePlannerRecord = (raw) => {
+    const parsed = parseJsonRecord(raw);
+    if (!parsed) return;
+    const entry = adapter.normalize(parsed);
+    if (!entry) return;
+    if (!line.sessionId && entry.sessionId) line.sessionId = entry.sessionId;
+    if (typeof entry.at !== "number") entry.at = Date.now();
+    runOutput.add(entry);
+    appendTranscript(line.transcript, entry);
+    slog("debug", "planner.entry", { lineId: line.id, type: entry.type,
+      role: entry.role || null, chars: raw.length, text: preview(entryText(entry), 200) });
+    broadcast(line, "entry", entry);
+  };
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
-    buf += chunk;
-    let nl;
-    while ((nl = buf.indexOf("\n")) !== -1) {
-      const raw = buf.slice(0, nl);
-      buf = buf.slice(nl + 1);
-      let parsed;
-      try { parsed = JSON.parse(raw); } catch { continue; }
-      const entry = adapter.normalize(parsed);
-      if (!entry) continue;
-      if (!line.sessionId && entry.sessionId) line.sessionId = entry.sessionId;
-      if (typeof entry.at !== "number") entry.at = Date.now();
-      line.transcript.push(entry);
-      if (line.transcript.length > 500) line.transcript.shift();
-      slog("debug", "planner.entry", { lineId: line.id, type: entry.type,
-        role: entry.role || null, chars: raw.length, text: preview(entryText(entry), 200) });
-      broadcast(line, "entry", entry);
-    }
+    for (const raw of stdoutRecords.push(chunk)) consumePlannerRecord(raw);
   });
 
   let stderr = "";
@@ -843,11 +843,12 @@ function pump(line) {
     if (killTimer) clearTimeout(killTimer);
     line.child = null;
     if (line.deleted) return;
+    for (const raw of stdoutRecords.finish()) consumePlannerRecord(raw);
     const finished = adapter.finalize();
     if (finished) {
       if (typeof finished.at !== "number") finished.at = Date.now();
-      line.transcript.push(finished);
-      if (line.transcript.length > 500) line.transcript.shift();
+      runOutput.add(finished);
+      appendTranscript(line.transcript, finished);
       broadcast(line, "entry", finished);
     }
     const result = adapter.outcome(code, signal);
@@ -879,13 +880,17 @@ function pump(line) {
       const m = line.lastRun.match(/workerId ([a-f0-9-]+)/);
       const implWorker = m ? line.workers.get(m[1]) : null;
       if (implWorker) {
-        const criteria = reportText(line.transcript);
-        const skip = criteria.trim().toUpperCase().startsWith("SKIP VALIDATION");
-        slog("info", "planner.decision", { lineId: line.id,
-          decision: skip ? "skip-validation" : "spawn-validator",
+        const criteria = runOutput.text();
+        const skip = isSkipValidation(criteria);
+        const validCriteria = hasCriteria(criteria);
+        const decision = skip ? "skip-validation" : validCriteria ? "spawn-validator" : "missing-criteria";
+        slog(validCriteria || skip ? "info" : "warn", "planner.decision", {
+          lineId: line.id, decision, criteriaChars: criteria.length,
           criteria: preview(criteria, 400) });
-        if (!skip) {
+        if (!skip && validCriteria) {
           trySpawnValidator(line, implWorker, criteria);
+        } else if (!skip) {
+          enqueue(line, missingCriteriaDiagnostic(implWorker.name));
         }
       }
     }
@@ -903,20 +908,26 @@ function runningCount(line) {
 function flushPendingValidations(line) {
   if (!line.pendingValidations || !line.pendingValidations.length) return;
   while (line.pendingValidations.length && runningCount(line) < WORKER_CAP) {
-    const { implWorkerId, criteria } = line.pendingValidations.shift();
+    const { implWorkerId, criteria, report } = line.pendingValidations.shift();
     const implWorker = line.workers.get(implWorkerId);
     if (!implWorker || implWorker.status === "running" || implWorker.deleted) continue;
-    trySpawnValidator(line, implWorker, criteria, true);
+    trySpawnValidator(line, implWorker, criteria, true, report);
     saveLine(line);
   }
 }
 
 // Spawn the validator for an implementor, or defer it when the line is at
 // the cap of concurrently running workers and validators.
-function trySpawnValidator(line, implWorker, criteria, deferred) {
+function trySpawnValidator(line, implWorker, criteria, deferred, report) {
+  if (!hasCriteria(criteria)) {
+    slog("warn", "validator.not-spawned", { lineId: line.id,
+      implementorId: implWorker.id, reason: "missing-criteria" });
+    enqueue(line, missingCriteriaDiagnostic(implWorker.name));
+    return;
+  }
   if (runningCount(line) >= WORKER_CAP) {
     if (!line.pendingValidations) line.pendingValidations = [];
-    line.pendingValidations.push({ implWorkerId: implWorker.id, criteria });
+    line.pendingValidations.push(pendingValidationFor(implWorker, criteria));
     saveLine(line);
     slog("info", "validator.deferred", { lineId: line.id, implementorId: implWorker.id,
       queued: line.pendingValidations.length });
@@ -925,20 +936,7 @@ function trySpawnValidator(line, implWorker, criteria, deferred) {
     }
     return;
   }
-  spawnValidator(line, implWorker, criteria);
-}
-
-function reportText(transcript) {
-  for (let i = transcript.length - 1; i >= 0; i--) {
-    const entry = transcript[i];
-    if (entry && entry.type === "message" && entry.role === "assistant") {
-      const c = entry.content;
-      if (typeof c === "string") return c;
-      if (Array.isArray(c)) return c.filter((p) => p && p.type === "text").map((p) => p.text).join("");
-      return "";
-    }
-  }
-  return "";
+  spawnValidator(line, implWorker, criteria, reportForValidation(implWorker, report));
 }
 
 function spawnWorker(line, worker, prompt, resume) {
@@ -971,75 +969,68 @@ function spawnWorker(line, worker, prompt, resume) {
       cfg.timeLimit * 1000);
   }
 
-  let buf = "";
+  const workerRunOutput = new InvocationCapture();
+  const stdoutRecords = new JsonlDecoder();
+  const consumeWorkerRecord = (raw) => {
+    const parsed = parseJsonRecord(raw);
+    if (!parsed) return;
+    const entry = adapter.normalize(parsed);
+    if (!entry) return;
+    if (!worker.sessionId && entry.sessionId) worker.sessionId = entry.sessionId;
+    if (typeof entry.at !== "number") entry.at = Date.now();
+    workerRunOutput.add(entry);
+    worker.transcript.push(entry);
+    slog("debug", "worker.entry", { lineId: line.id, workerId: worker.id,
+      type: entry.type, role: entry.role || null, chars: raw.length,
+      text: preview(entryText(entry), 200) });
+    broadcast(line, "worker_entry", { workerId: worker.id, entry });
+  };
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
-    buf += chunk;
-    let nl;
-    while ((nl = buf.indexOf("\n")) !== -1) {
-      const raw = buf.slice(0, nl);
-      buf = buf.slice(nl + 1);
-      let parsed;
-      try { parsed = JSON.parse(raw); } catch { continue; }
-      const entry = adapter.normalize(parsed);
-      if (!entry) continue;
-      if (!worker.sessionId && entry.sessionId) worker.sessionId = entry.sessionId;
-      if (typeof entry.at !== "number") entry.at = Date.now();
-      worker.transcript.push(entry);
-      slog("debug", "worker.entry", { lineId: line.id, workerId: worker.id,
-        type: entry.type, role: entry.role || null, chars: raw.length,
-        text: preview(entryText(entry), 200) });
-      broadcast(line, "worker_entry", { workerId: worker.id, entry });
-    }
+    for (const raw of stdoutRecords.push(chunk)) consumeWorkerRecord(raw);
   });
 
   child.on("close", (code, signal) => {
     if (killTimer) clearTimeout(killTimer);
+    for (const raw of stdoutRecords.finish()) consumeWorkerRecord(raw);
     const finished = adapter.finalize();
     if (finished) {
       if (typeof finished.at !== "number") finished.at = Date.now();
+      workerRunOutput.add(finished);
       worker.transcript.push(finished);
       broadcast(line, "worker_entry", { workerId: worker.id, entry: finished });
     }
-    workerClosed(line, worker, code, signal);
+    workerClosed(line, worker, code, signal, workerRunOutput);
   });
 }
 
-function workerClosed(line, worker, code, signal) {
+function workerClosed(line, worker, code, signal, workerRunOutput = new InvocationCapture()) {
   worker.child = null;
   const outcome = worker.adapter
     ? worker.adapter.outcome(code, signal)
     : (code === 0 ? "ok" : "fail");
+  const report = workerRunOutput.text();
+  const statusEvent = applyCompletion(worker, outcome, worker.stopRequested, report);
   const timedOut = outcome === "timeout" && !worker.stopRequested;
-  if (worker.stopRequested) worker.status = "stopped";
-  else if (outcome === "ok") worker.status = "completed";
-  else if (timedOut) worker.status = "stopped";
-  else worker.status = "failed";
   cleanupStage(line, worker.id);
   if (uiSlots.held.has(worker.id) || uiSlots.waiters.some((w) => w.workerId === worker.id)) {
     releaseUiSlot(worker.id);
   }
   if (line.deleted) return;
-  broadcast(line, "worker_status", { workerId: worker.id, status: worker.status,
-    verdict: worker.verdict || null });
   saveLine(line);
+  broadcast(line, "worker_status", statusEvent);
   const sid = worker.sessionId || "unknown";
-  const report = reportText(worker.transcript);
-  if (worker.role === "validator") {
-    worker.verdict = /\bVERDICT:\s*FAIL\b/i.test(report) ? "fail"
-      : /\bVERDICT:\s*PASS\b/i.test(report) ? "pass" : null;
-  }
   slog("info", "worker.closed", { lineId: line.id, workerId: worker.id, name: worker.name,
     role: worker.role, status: worker.status, verdict: worker.verdict || undefined,
     reportChars: report.length,
     report: preview(report, 300) });
   if (worker.role === "validator" && worker.kind === "integration") {
     if (worker.status === "completed") {
-      enqueue(line, `INTEGRATION REPORT - integration validator '${worker.name}' finished: ${report}. The merged result is on branch ${worker.branch} in its worktree; main/master is untouched. Decide: report completion to the user, or route fixes to the ORIGINAL implementors (continue endpoint) and start a new integration validator after they pass again.`);
+      enqueue(line, buildIntegrationNotification(worker, report));
     } else if (timedOut) {
-      enqueue(line, `INTEGRATION TIMEOUT - integration validator '${worker.name}' hit the run time limit. The merged work is on branch ${worker.branch}. Decide how to proceed.`);
+      enqueue(line, `INTEGRATION TIMEOUT - integration validator '${worker.name}' hit the run time limit. The merged work is on branch ${worker.branch}. Decide how to proceed.` + runOutputNote(report, "integration run output"));
     } else {
-      enqueue(line, `INTEGRATION STOPPED/FAILED - integration validator '${worker.name}' did not complete. Its worktree may be partially merged. Decide how to proceed.`);
+      enqueue(line, `INTEGRATION STOPPED/FAILED - integration validator '${worker.name}' did not complete. Its worktree may be partially merged. Decide how to proceed.` + runOutputNote(report, "integration run output"));
     }
   } else if (worker.role === "validator") {
     const impl = line.workers.get(worker.validates);
@@ -1047,30 +1038,27 @@ function workerClosed(line, worker, code, signal) {
     const implId = worker.validates || "unknown";
     const implSession = impl ? (impl.sessionId || "unknown") : "unknown";
     if (worker.status === "completed") {
-      enqueue(line, `VALIDATION REPORT - validator '${worker.name}' checked the work of implementor '${implName}' (workerId ${implId}, ${(impl && impl.harness) || "vibe"} session ${implSession}, branch ${worker.branch}): ${report}. Decide: accept the work, send follow-up instructions to the original implementor (POST /api/protocol/workers/${implId}/continue with {"prompt": ...}), or spawn a new implementor with a corrected prompt.`);
+      enqueue(line, buildValidationNotification(worker, impl, report));
     } else if (timedOut) {
-      enqueue(line, `VALIDATOR TIMEOUT - the validator hit the run time limit and was interrupted. Validators are fresh sessions each time: the implementor work is unchanged, decide how to proceed (usually nothing - validation repeats after the next implementor completion).`);
+      enqueue(line, `VALIDATOR TIMEOUT - the validator hit the run time limit and was interrupted. Validators are fresh sessions each time: the implementor work is unchanged, decide how to proceed (usually nothing - validation repeats after the next implementor completion).` + runOutputNote(report, "validation run output"));
     } else if (worker.status === "failed") {
-      enqueue(line, `VALIDATOR FAILURE - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) exited non-zero. Decide how to proceed.`);
+      enqueue(line, `VALIDATOR FAILURE - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) exited non-zero. Decide how to proceed.` + runOutputNote(report, "validation run output"));
     } else {
-      enqueue(line, `VALIDATOR STOPPED - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) was stopped. Decide how to proceed.`);
+      enqueue(line, `VALIDATOR STOPPED - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) was stopped. Decide how to proceed.` + runOutputNote(report, "validation run output"));
     }
   } else if (worker.status === "completed") {
-    enqueue(line, `IMPLEMENTOR REPORT - '${worker.name}' (workerId ${worker.id}, ${worker.harness || "vibe"} session ${sid}, branch ${worker.branch}) finished: ${report}.
-Now give the acceptance criteria for the validation of this work.
-Reply with a numbered list of criteria only. Use the imperative. If
-the work needs no validation, reply with SKIP VALIDATION.`);
+    enqueue(line, buildImplementorNotification(worker, report));
   } else if (timedOut) {
-    enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: POST /api/protocol/workers/${worker.id}/continue with {"prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.`);
+    enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: POST /api/protocol/workers/${worker.id}/continue with {"prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.` + runOutputNote(report, "implementor run output"));
   } else if (worker.status === "failed") {
-    enqueue(line, `WORKER FAILURE - '${worker.name}' (workerId ${worker.id}, session ${sid}): ${worker.harness || "vibe"} exited non-zero. Decide whether to restart it with a corrected prompt (new name, e.g. ${worker.name}-2) or to proceed without it.`);
+    enqueue(line, `WORKER FAILURE - '${worker.name}' (workerId ${worker.id}, session ${sid}): ${worker.harness || "vibe"} exited non-zero. Decide whether to restart it with a corrected prompt (new name, e.g. ${worker.name}-2) or to proceed without it.` + runOutputNote(report, "implementor run output"));
   } else {
-    enqueue(line, `WORKER STOPPED - '${worker.name}' (workerId ${worker.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.`);
+    enqueue(line, `WORKER STOPPED - '${worker.name}' (workerId ${worker.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.` + runOutputNote(report, "implementor run output"));
   }
   flushPendingValidations(line);
 }
 
-function spawnValidator(line, implWorker, criteria) {
+function spawnValidator(line, implWorker, criteria, report) {
   let name = `validator-${implWorker.name}`;
   let n = 2;
   while ([...line.workers.values()].some((w) => w.name === name)) {
@@ -1083,7 +1071,7 @@ function spawnValidator(line, implWorker, criteria) {
   const worker = { id, lineId: line.id, name,
     role: "validator", validates: implWorker.id, persona: implWorker.persona || "backend",
     kind: "standard", repo: repoName,
-    prompt: validatorBrief(implWorker.name, reportText(implWorker.transcript), criteria,
+    prompt: validatorBrief(implWorker.name, report, criteria,
       implWorker.persona || "backend", id, implWorker.id, line.id, repoName, repoUrl),
     sessionId: null, worktreePath: implWorker.worktreePath, branch: implWorker.branch,
     status: "running", stopRequested: false, child: null, transcript: [] };
@@ -1366,9 +1354,9 @@ const server = http.createServer((req, res) => {
     if (!line) return json(res, 404, { error: "no such line" });
     if (req.method === "GET") {
       return json(res, 200, { workers: [...line.workers.values()].map((w) => ({
-        id: w.id, name: w.name, status: w.status, sessionId: w.sessionId, branch: w.branch,
+        id: w.id, name: w.name, ...completionFields(w), sessionId: w.sessionId, branch: w.branch,
         role: w.role, validates: w.validates, persona: w.persona || "backend",
-        kind: w.kind || "standard", verdict: w.verdict || null,
+        kind: w.kind || "standard",
       })) });
     }
     if (!line.planApproved) return json(res, 409, { error: "plan not approved" });
@@ -1738,9 +1726,8 @@ When done, reply with a report: what you changed, files changed, how you verifie
       transcript: line.transcript.slice(-50),
       planApproved: line.planApproved,
       workers: [...line.workers.values()].map((w) => ({
-        id: w.id, name: w.name, status: w.status, branch: w.branch, role: w.role,
+        id: w.id, name: w.name, ...completionFields(w), branch: w.branch, role: w.role,
         validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
-        verdict: w.verdict || null,
       })) });
     req.on("close", () => {
       line.clients.delete(res);
@@ -1812,7 +1799,7 @@ function loadLines() {
           worktreePath: w.worktreePath
             || path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name)),
           branch: w.branch, status: w.status === "running" ? "stopped" : w.status,
-          stopRequested: false, child: null, transcript: [] });
+          stopRequested: false, child: null, transcript: [], lastRunText: w.lastRunText || "" });
       }
       for (const w of meta.workers || []) {
         if (w.role !== "validator") continue;
@@ -1829,7 +1816,7 @@ function loadLines() {
               : path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name))),
           branch: w.branch,
           status: w.status === "running" ? "stopped" : w.status,
-          stopRequested: false, child: null, transcript: [] });
+          stopRequested: false, child: null, transcript: [], lastRunText: w.lastRunText || "" });
       }
       const started = meta.started === true || !!meta.sessionId;
       const inventory = new Map();

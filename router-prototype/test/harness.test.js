@@ -137,6 +137,22 @@ test('pi outcome, delta accumulation, and finalize flush', () => {
   });
   assertEntry(done, 'assistant', 'final text', 'pi-session-1');
   assert.strictEqual(h.finalize(), null);
+
+  h.normalize({ type: 'message_update', assistantMessageEvent: {
+    type: 'text_delta', contentIndex: 0, delta: 'must not leak',
+  } });
+  assert.strictEqual(h.normalize({ type: 'message_end', message: {
+    role: 'assistant', content: [{ type: 'toolCall', name: 'bash' }],
+  } }), null);
+  assert.strictEqual(h.finalize(), null, 'completed empty message clears partial deltas');
+
+  h.normalize({ type: 'message_update', assistantMessageEvent: {
+    type: 'text_delta', contentIndex: 0, delta: 'partial',
+  } });
+  h.normalize({ type: 'message_update', assistantMessageEvent: {
+    type: 'text_end', contentIndex: 0, content: 'authoritative ✓',
+  } });
+  assertEntry(h.finalize(), 'assistant', 'authoritative ✓', 'pi-session-1');
 });
 
 // --- codex ---

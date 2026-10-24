@@ -34,6 +34,33 @@ and checks required and referenced local web assets. It does not execute scripts
 or start the router. This plain-JavaScript application has no transpilation or
 bundling build; static validation is not a compile or integration test.
 
+## Planner and worker text handoff
+
+The router uses one text contract for a completed message: normalized entries
+use `text`; older entries can use a string or an array of `{ type: "text", text }`
+blocks in `content`. It accepts text from assistant messages only. It excludes
+thinking, tool calls, tool results, malformed blocks, and other roles.
+
+Each planner or worker process has a separate output capture. It collects every
+assistant text entry from that process run. The UI transcript can keep its
+500-entry limit without cutting the criteria or report sent to another stage.
+For Pi JSON mode, `message_end.message` is authoritative. The adapter replaces
+streaming deltas with the completed message and does not append them twice. A
+`text_end` block replaces its partial deltas. If Pi closes before a completed
+message, the adapter flushes the buffered block text.
+The JSONL decoder handles split records, LF or CRLF framing, and a final record
+without LF. It does not split on Unicode line separators.
+
+The planner criteria for validation come only from the current planner run.
+Empty criteria produce a `VALIDATION NOT STARTED` diagnostic. They do not use
+old transcript text and do not start a validator. `SKIP VALIDATION` remains an
+explicit planner response. Deferred validation stores its criteria and matching
+implementor report together. Worker completion sets status and verdict before
+saving state or sending the status event. A verdict requires the final non-empty
+report line to be exactly `VERDICT: PASS` or `VERDICT: FAIL`; a missing or
+incomplete verdict stays unset and produces a diagnostic. Report bodies are
+sent in full, without adding punctuation to the report text.
+
 ## Production lines
 
 Clicking "Create new line" adds a standing-by "Draft line" (work directory under
