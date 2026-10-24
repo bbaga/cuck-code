@@ -1078,37 +1078,28 @@ window.addEventListener("DOMContentLoaded", () => {
     syncPhaseRow(key);
     if (!provider) return;
     const token = phaseState[key].tracker.next();
-    let res;
-    try {
-      res = await fetch(piDetailUrl(provider));
-    } catch (err) {
-      if (phaseState[key].tracker.isCurrent(token)) {
-        phaseState[key].statusText = String(err);
+    const result = await fetchPiDetail({
+      url: piDetailUrl(provider),
+      fetchImpl: fetch,
+      isCurrent: (t) => phaseState[key].tracker.isCurrent(t),
+      token,
+    });
+    if (result.stage === "fetch-error") {
+      if (result.current) {
+        phaseState[key].statusText = result.error;
         updateAuthHint(key);
       }
       return;
     }
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      // Recheck after the async json() step: a newer selection must win.
-      const outcome = piDetailApply({
-        isCurrent: phaseState[key].tracker.isCurrent(token),
-        ok: false,
-        status: res.status,
-        data,
-      });
-      if (!outcome.apply) return;
-      phaseState[key].statusText = outcome.statusText;
-      updateAuthHint(key);
-      return;
-    }
-    const data = await res.json().catch(() => null);
+    // fetchPiDetail already dropped a response that went stale when the
+    // fetch resolved, before the status was read or the body parsed.
+    if (result.stage === "stale-after-fetch") return;
     // Recheck after the async json() step: a newer selection must win.
     const outcome = piDetailApply({
-      isCurrent: phaseState[key].tracker.isCurrent(token),
-      ok: true,
-      status: res.status,
-      data,
+      isCurrent: result.current,
+      ok: result.ok,
+      status: result.status,
+      data: result.data,
     });
     if (!outcome.apply) return;
     phaseState[key].piDetail = outcome.piDetail;

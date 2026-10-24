@@ -20,6 +20,7 @@ const {
   piDetailApply,
   piAuthStatusText,
   createRequestTracker,
+  fetchPiDetail,
   clearHarnessState,
   clearProviderState,
   buildPipelinePayload,
@@ -381,4 +382,99 @@ test("piDetailApply applies a current success response", () => {
 test("piDetailApply ignores a malformed success body", () => {
   assert.deepEqual(piDetailApply({ isCurrent: true, ok: true, status: 200, data: null }), { apply: false });
   assert.deepEqual(piDetailApply({ isCurrent: true, ok: true, status: 200, data: "nope" }), { apply: false });
+});
+
+test("fetchPiDetail drops a response that goes stale when fetch resolves", async () => {
+  const tracker = createRequestTracker();
+  const token = tracker.next();
+  let jsonCalled = false;
+  const response = {
+    ok: true,
+    status: 200,
+    json: async () => {
+      jsonCalled = true;
+      return { models: [{ value: "openai/gpt-5", label: "gpt-5" }] };
+    },
+  };
+  // The row selection changes exactly as the fetch resolves, before the
+  // body parsing starts.
+  const result = await fetchPiDetail({
+    url: "/pi/detail",
+    fetchImpl: async () => {
+      tracker.next();
+      return response;
+    },
+    isCurrent: (t) => tracker.isCurrent(t),
+    token,
+  });
+  assert.equal(result.stage, "stale-after-fetch");
+  assert.equal(jsonCalled, false);
+});
+
+test("fetchPiDetail parses and reports a current response", async () => {
+  const tracker = createRequestTracker();
+  const token = tracker.next();
+  const result = await fetchPiDetail({
+    url: "/pi/detail",
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ auth: "ok" }) }),
+    isCurrent: (t) => tracker.isCurrent(t),
+    token,
+  });
+  assert.equal(result.stage, "parsed");
+  assert.equal(result.current, true);
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.data, { auth: "ok" });
+});
+
+test("fetchPiDetail reports a response that goes stale during body parsing", async () => {
+  const tracker = createRequestTracker();
+  const token = tracker.next();
+  const result = await fetchPiDetail({
+    url: "/pi/detail",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        tracker.next();
+        return { auth: "ok" };
+      },
+    }),
+    isCurrent: (t) => tracker.isCurrent(t),
+    token,
+  });
+  assert.equal(result.stage, "parsed");
+  assert.equal(result.current, false);
+  assert.deepEqual(piDetailApply({ isCurrent: result.current, ok: result.ok, status: result.status, data: result.data }), {
+    apply: false,
+  });
+});
+
+test("fetchPiDetail reports a fetch error only when the token is current", async () => {
+  const tracker = createRequestTracker();
+  const token = tracker.next();
+  const stale = await fetchPiDetail({
+    url: "/pi/detail",
+    fetchImpl: async () => {
+      tracker.next();
+      throw new Error("boom");
+    },
+    isCurrent: (t) => tracker.isCurrent(t),
+    token,
+  });
+  assert.equal(stale.stage, "fetch-error");
+  assert.equal(stale.current, false);
+  const freshTracker = createRequestTracker();
+  const freshToken = freshTracker.next();
+  const fresh = await fetchPiDetail({
+    url: "/pi/detail",
+    fetchImpl: async () => {
+      throw new Error("boom");
+    },
+    isCurrent: (t) => freshTracker.isCurrent(t),
+    token: freshToken,
+  });
+  assert.equal(fresh.stage, "fetch-error");
+  assert.equal(fresh.current, true);
+  assert.match(fresh.error, /boom/);
 });

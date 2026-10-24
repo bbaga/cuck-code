@@ -159,6 +159,24 @@
     };
   }
 
+  // Fetch a Pi detail response and gate it against the request token at
+  // both asynchronous boundaries: immediately after fetch resolves (before
+  // the status is read or the body parses) and again after the body parses
+  // (before the caller applies it). A stale response is never parsed.
+  async function fetchPiDetail({ url, fetchImpl, isCurrent, token }) {
+    let res;
+    try {
+      res = await fetchImpl(url);
+    } catch (err) {
+      return { stage: "fetch-error", current: isCurrent(token), error: String(err) };
+    }
+    if (!isCurrent(token)) return { stage: "stale-after-fetch" };
+    const ok = res.ok;
+    const status = res.status;
+    const data = await res.json().catch(() => (ok ? null : {}));
+    return { stage: "parsed", current: isCurrent(token), ok, status, data };
+  }
+
   // Full reset for a phase row: used when the harness changes. Keeps the
   // row's request tracker so in-flight fetches can be invalidated.
   function clearHarnessState(state) {
@@ -229,6 +247,7 @@
     authModeSelectState,
     piDetailApply,
     createRequestTracker,
+    fetchPiDetail,
     clearHarnessState,
     clearProviderState,
     buildPipelinePayload,
