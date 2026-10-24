@@ -16,6 +16,8 @@ const { messageText, InvocationCapture, appendTranscript, hasCriteria,
   buildIntegrationNotification } = require("./handoff");
 const { flushPendingValidationQueue, removePendingValidations,
   serializePendingValidations, restorePendingValidations } = require("./validation-queue");
+const { CHANGESET_LIMIT, collectChangeset, changesetWakeMessage,
+  changesetFields } = require("./changeset");
 const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests } = require("./planner-request");
@@ -517,7 +519,18 @@ git push -u origin HEAD
 Report the branch name with: git rev-parse --abbrev-ref HEAD`;
 }
 
-function workerBrief(name, lineName, prompt, persona, workerId, lineId, repo) {
+function changesetBlock(baseCommit) {
+  return `## Change-set limit
+The router measures your change set from base commit ${baseCommit || "unknown"}
+to your branch HEAD (git diff --numstat).
+The limit is ${CHANGESET_LIMIT} changed lines: additions plus deletions.
+The count covers code, tests, documentation, and configuration.
+Binary, dirty, or untracked work cannot enter validation.
+Keep your total at or below the limit. The router enforces this rule.
+`;
+}
+
+function workerBrief(name, lineName, prompt, persona, workerId, lineId, repo, baseCommit) {
   const repoUrl = repo && repo.url ? repo.url : null;
   return `You are implementor worker '${name}' (id ${workerId}) on factory line '${lineName}'.
 Your repository for this task: '${repo ? repo.name : "primary"}'${repoUrl ? ` (remote: ${repoUrl})` : " (no remote)"}.
@@ -529,7 +542,7 @@ checkout: every file you read or write must be inside your worktree.
 Commit your work with clear messages.
 Test scope: run UNIT TESTS only. Do NOT run integration tests. The CI
 pipelines of the repository run the integration tests.
-${containersBlock(workerId, lineId)}${remoteBlockImplementor(repoUrl)}
+${changesetBlock(baseCommit)}${containersBlock(workerId, lineId)}${remoteBlockImplementor(repoUrl)}
 
 ${IMPL_PERSONA[persona] || IMPL_PERSONA.backend}
 ${persona === "frontend" ? frontendToolsBlock(workerId, null, lineId) : ""}
@@ -718,6 +731,7 @@ function saveLine(line) {
           validationCriteria: w.validationCriteria || null,
           role: w.role, validates: w.validates, persona: w.persona || "backend",
           repo: w.repo || "primary", worktreePath: w.worktreePath,
+          ...changesetFields(w),
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
           kind: w.kind || "standard" })) }));
   } catch {}
@@ -796,7 +810,8 @@ function enqueue(line, text, source = null) {
 }
 
 const WAKE_PREFIXES = ["IMPLEMENTOR REPORT", "VALIDATION REPORT", "VALIDATOR FAILURE",
-  "VALIDATOR STOPPED", "WORKER FAILURE", "WORKER STOPPED", "PLAN APPROVED"];
+  "VALIDATOR STOPPED", "WORKER FAILURE", "WORKER STOPPED", "PLAN APPROVED",
+  "CHANGESET LIMIT EXCEEDED"];
 
 function isWake(text) {
   return typeof text === "string" && WAKE_PREFIXES.some((p) => text.startsWith(p));
@@ -1000,6 +1015,19 @@ function trySpawnValidator(line, source, criteria, deferred) {
     enqueue(line, missingCriteriaDiagnostic(worker.name));
     return;
   }
+  // Stale-state defense: recheck the change set immediately before the
+  // validator is created. State may have changed since the run ended.
+  if (worker.role === "implementor") {
+    const cs = collectChangeset(worker.worktreePath, worker.baseCommit);
+    worker.changeset = cs;
+    if (!cs.ok) {
+      saveLine(line);
+      slog("warn", "changeset.exceeded-at-validation", { lineId: line.id,
+        workerId: worker.id, reason: cs.reason, total: cs.total, limit: cs.limit });
+      enqueue(line, changesetWakeMessage(cs, worker));
+      return;
+    }
+  }
   if (runningCount(line) >= WORKER_CAP) {
     if (!line.pendingValidations) line.pendingValidations = [];
     line.pendingValidations.push(pendingValidationFor(source, criteria));
@@ -1129,9 +1157,22 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
       enqueue(line, `VALIDATOR STOPPED - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) was stopped. Decide how to proceed.` + runOutputNote(report, "validation run output"));
     }
   } else if (worker.status === "completed") {
-    const request = implementorReportRequest(
-      buildImplementorNotification(worker, report), worker, invocation, report);
-    enqueueRequest(line, request);
+    // Recalculate the change set after every successful implementor run.
+    // An oversized or uncountable result never reaches the validation
+    // handoff: the planner gets a CHANGESET LIMIT EXCEEDED wake instead,
+    // and the session and worktree stay intact for the continue endpoint.
+    const cs = collectChangeset(worker.worktreePath, worker.baseCommit);
+    worker.changeset = cs;
+    saveLine(line);
+    if (worker.role === "implementor" && !cs.ok) {
+      slog("warn", "changeset.exceeded", { lineId: line.id, workerId: worker.id,
+        reason: cs.reason, total: cs.total, limit: cs.limit });
+      enqueue(line, changesetWakeMessage(cs, worker));
+    } else {
+      const request = implementorReportRequest(
+        buildImplementorNotification(worker, report), worker, invocation, report);
+      enqueueRequest(line, request);
+    }
   } else if (timedOut) {
     enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: POST /api/protocol/workers/${worker.id}/continue with {"prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.` + runOutputNote(report, "implementor run output"));
   } else if (worker.status === "failed") {
@@ -1445,6 +1486,7 @@ const server = http.createServer((req, res) => {
         id: w.id, name: w.name, ...completionFields(w), sessionId: w.sessionId, branch: w.branch,
         role: w.role, validates: w.validates, persona: w.persona || "backend",
         kind: w.kind || "standard",
+        ...changesetFields(w),
       })) });
     }
     if (!line.planApproved) return json(res, 409, { error: "plan not approved" });
@@ -1490,13 +1532,19 @@ const server = http.createServer((req, res) => {
         { encoding: "utf8" });
       if (wt.error) return json(res, 500, { error: `git is not available: ${wt.error.message}` });
       if (wt.status !== 0) return json(res, 500, { error: "git worktree add failed", stderr: wt.stderr });
+      // The change-set baseline: the HEAD the worktree starts from. It
+      // stays fixed for every continued run of this implementor.
+      const baseHead = spawnSync("git", ["-C", worktreePath, "rev-parse", "HEAD"],
+        { encoding: "utf8" });
+      const baseCommit = baseHead.status === 0 ? baseHead.stdout.trim() : null;
       const worker = { id, lineId: line.id, name: body.name,
         role: "implementor", validates: null, persona, kind: "standard", repo: repo.name,
         runGeneration: 1,
         harness: body.harness || null, model: body.model || null,
         effort: body.effort || null,
-        prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo),
+        prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo, baseCommit),
         sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
+        baseCommit, changeset: null,
         child: null, transcript: [] };
       line.workers.set(id, worker);
       saveLine(line);
@@ -1827,6 +1875,7 @@ When done, reply with a report: what you changed, files changed, how you verifie
       workers: [...line.workers.values()].map((w) => ({
         id: w.id, name: w.name, ...completionFields(w), branch: w.branch, role: w.role,
         validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
+        ...changesetFields(w),
       })) });
     req.on("close", () => {
       line.clients.delete(res);
@@ -1901,7 +1950,8 @@ function loadLines() {
           stopRequested: false, child: null, transcript: [], lastRunText: w.lastRunText || "",
           runGeneration: Number.isInteger(w.runGeneration) ? w.runGeneration : 0,
           activeInvocationId: w.activeInvocationId || null,
-          lastCompletedInvocationId: w.lastCompletedInvocationId || null });
+          lastCompletedInvocationId: w.lastCompletedInvocationId || null,
+          baseCommit: w.baseCommit || null, changeset: w.changeset || null });
       }
       for (const w of meta.workers || []) {
         if (w.role !== "validator") continue;
@@ -1922,7 +1972,8 @@ function loadLines() {
           stopRequested: false, child: null, transcript: [], lastRunText: w.lastRunText || "",
           runGeneration: Number.isInteger(w.runGeneration) ? w.runGeneration : 0,
           activeInvocationId: w.activeInvocationId || null,
-          lastCompletedInvocationId: w.lastCompletedInvocationId || null });
+          lastCompletedInvocationId: w.lastCompletedInvocationId || null,
+          baseCommit: w.baseCommit || null, changeset: w.changeset || null });
       }
       const started = meta.started === true || !!meta.sessionId;
       const inventory = new Map();
