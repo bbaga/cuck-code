@@ -27,13 +27,20 @@ function parseNumstatLine(line) {
   return { path, binary: false, additions: Number(add), deletions: Number(del) };
 }
 
-// Parse full numstat output into a list of per-file rows.
+// Parse full numstat output into { rows, errors }. errors holds the raw
+// malformed non-empty lines: a non-empty output with any malformed row is
+// uncountable and must not pass as an empty change set.
 function parseNumstat(output) {
-  return String(output == null ? "" : output).split("\n")
-    .map((line) => line.replace(/\r$/, ""))
-    .filter((line) => line.trim().length > 0)
-    .map(parseNumstatLine)
-    .filter(Boolean);
+  const rows = [];
+  const errors = [];
+  for (const line of String(output == null ? "" : output).split("\n")) {
+    const trimmed = line.replace(/\r$/, "");
+    if (!trimmed.trim().length) continue;
+    const row = parseNumstatLine(trimmed);
+    if (row) rows.push(row);
+    else errors.push(trimmed);
+  }
+  return { rows, errors };
 }
 
 // Deterministic per-file totals: files sorted by path, additions plus
@@ -55,8 +62,8 @@ function runWith(worktreePath, run) {
   });
 }
 
-function uncountable(baseCommit, limit, error) {
-  return { ok: false, reason: "uncountable", error, limit,
+function uncountable(baseCommit, limit, error, parseErrors = []) {
+  return { ok: false, reason: "uncountable", error, limit, parseErrors,
     baseCommit: baseCommit || null, headCommit: null,
     additions: 0, deletions: 0, total: 0, files: [],
     binaryPaths: [], dirtyPaths: [], untrackedPaths: [] };
@@ -77,7 +84,13 @@ function collectChangeset(worktreePath, baseCommit, opts = {}) {
   const headCommit = head.stdout.trim();
   const diff = run(["diff", "--numstat", baseCommit]);
   if (diff.status !== 0) return uncountable(baseCommit, limit, "git diff failed");
-  const summary = summarizeChanges(parseNumstat(diff.stdout));
+  const { rows, errors } = parseNumstat(diff.stdout);
+  // Any malformed non-empty row makes the count unreliable: the change set
+  // is uncountable and escalates. Only the offending lines are reported.
+  if (errors.length) {
+    return uncountable(baseCommit, limit, "malformed numstat output", errors);
+  }
+  const summary = summarizeChanges(rows);
   const status = run(["status", "--porcelain"]);
   if (status.status !== 0) return uncountable(baseCommit, limit, "git status failed");
   const dirtyPaths = [];
@@ -108,6 +121,8 @@ function changesetWakeMessage(cs, worker) {
   return `CHANGESET LIMIT EXCEEDED - implementor '${worker.name}' (workerId ${worker.id}, `
     + `session ${worker.sessionId || "unknown"}, branch ${worker.branch}) produced a change set `
     + `that cannot enter validation (reason: ${cs.reason}). `
+    + `Error: ${cs.error || "none"}. `
+    + `Malformed lines: ${(cs.parseErrors || []).join(" | ") || "none"}. `
     + `Base commit ${cs.baseCommit || "unknown"}, head commit ${cs.headCommit || "unknown"}. `
     + `Additions ${cs.additions}, deletions ${cs.deletions}, total ${cs.total}, limit ${cs.limit}. `
     + `Binary paths: ${(cs.binaryPaths || []).join(", ") || "none"}. `

@@ -45,12 +45,29 @@ test("rejects malformed numstat lines", () => {
 });
 
 test("parses full numstat output and skips empty lines", () => {
-  const rows = parseNumstat("1\t2\ta.js\r\n\r\n-\t-\tb.png\n");
+  const { rows, errors } = parseNumstat("1\t2\ta.js\r\n\r\n-\t-\tb.png\n");
   assert.deepEqual(rows, [
     { path: "a.js", binary: false, additions: 1, deletions: 2 },
     { path: "b.png", binary: true, additions: 0, deletions: 0 },
   ]);
-  assert.deepEqual(parseNumstat(null), []);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(parseNumstat(null), { rows: [], errors: [] });
+});
+
+test("parses rename paths and paths with spaces", () => {
+  const { rows, errors } = parseNumstat(
+    "1\t2\told.js => new.js\n3\t0\tdocs/my file.md\n");
+  assert.deepEqual(rows, [
+    { path: "old.js => new.js", binary: false, additions: 1, deletions: 2 },
+    { path: "docs/my file.md", binary: false, additions: 3, deletions: 0 },
+  ]);
+  assert.deepEqual(errors, []);
+});
+
+test("collects malformed non-empty rows as errors", () => {
+  const { rows, errors } = parseNumstat("1\t2\tgood.js\nbroken line\nx\ty\tbad.js\n");
+  assert.deepEqual(rows, [{ path: "good.js", binary: false, additions: 1, deletions: 2 }]);
+  assert.deepEqual(errors, ["broken line", "x\ty\tbad.js"]);
 });
 
 test("summarizes additions plus deletions with sorted per-file rows", () => {
@@ -145,6 +162,39 @@ test("reports an uncountable change set when git fails", () => {
   const cs = collectChangeset("/wt", "base123", { run: fakeRun({ fail: ["diff"] }) });
   assert.equal(cs.ok, false);
   assert.equal(cs.reason, "uncountable");
+});
+
+test("only-malformed numstat output is uncountable, not zero lines", () => {
+  const cs = collectChangeset("/wt", "base123", {
+    run: fakeRun({ numstat: "garbage output\nanother bad row\n" }),
+  });
+  assert.equal(cs.ok, false);
+  assert.equal(cs.reason, "uncountable");
+  assert.equal(cs.error, "malformed numstat output");
+  assert.deepEqual(cs.parseErrors, ["garbage output", "another bad row"]);
+  assert.equal(cs.total, 0);
+});
+
+test("mixed valid and malformed numstat output is uncountable", () => {
+  const cs = collectChangeset("/wt", "base123", {
+    run: fakeRun({ numstat: `${numstatRow("a.js", 10, 5)}\nbroken row\n` }),
+  });
+  assert.equal(cs.ok, false);
+  assert.equal(cs.reason, "uncountable");
+  assert.deepEqual(cs.parseErrors, ["broken row"]);
+  assert.equal(cs.total, 0);
+});
+
+test("the wake message reports the parse error details", () => {
+  const cs = collectChangeset("/wt", "base123", {
+    run: fakeRun({ numstat: "broken row\n" }),
+  });
+  const msg = changesetWakeMessage(cs, { id: "w1", name: "impl-1",
+    sessionId: "s-77", branch: "br" });
+  assert.ok(msg.startsWith("CHANGESET LIMIT EXCEEDED"));
+  assert.ok(msg.includes("reason: uncountable"));
+  assert.ok(msg.includes("malformed numstat output"));
+  assert.ok(msg.includes("broken row"));
 });
 
 test("a custom limit overrides the default", () => {

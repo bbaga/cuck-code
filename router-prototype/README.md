@@ -229,13 +229,17 @@ created, as a stale-state defense — the router runs `git diff --numstat` from
 the base commit to the branch HEAD and counts additions plus deletions over
 code, tests, documentation, and configuration. Totals up to 500 pass; 501 or
 more are rejected. Binary files, dirty worktree changes, and untracked files
-cannot bypass the limit: they escalate too. An oversized or uncountable
+cannot bypass the limit: they escalate too. A malformed non-empty numstat
+row, a failed git command, or a missing commit makes the change set
+uncountable, which escalates as well; the result reports only the offending
+lines, never unrelated command output. An oversized or uncountable
 change set never reaches the validation handoff: the router does not request
 criteria and does not spawn a validator, and instead wakes the planner with
 `CHANGESET LIMIT EXCEEDED` (worker and session IDs, base and head commits,
 additions, deletions, total, binary/dirty/untracked paths, and per-file
 values). The implementor session and worktree are preserved for the continue
-endpoint. The base commit and the limit rule are part of the implementor
+endpoint: the planner can continue the original session to reduce or split
+the work. The base commit and the limit rule are part of the implementor
 brief; the latest result is persisted in `line.json` and exposed in the
 worker API responses (`baseCommit`, `changeset`). The limit applies to
 implementors only.

@@ -527,6 +527,9 @@ The limit is ${CHANGESET_LIMIT} changed lines: additions plus deletions.
 The count covers code, tests, documentation, and configuration.
 Binary, dirty, or untracked work cannot enter validation.
 Keep your total at or below the limit. The router enforces this rule.
+If the limit is exceeded, no validator starts.
+The router wakes the planner with CHANGESET LIMIT EXCEEDED.
+The planner can continue your session to reduce or split the work.
 `;
 }
 
