@@ -3,6 +3,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
+const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
+  probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
+const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
+  validateWorkerSpawnBody, lineSummary } = require("./spawn-plan");
 
 const PORT = Number(process.env.PORT || 7788);
 const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
@@ -11,8 +15,6 @@ const INDEX_HTML = path.join(__dirname, "web", "index.html");
 const WORKER_CAP = 8;
 const UI_PORT_BASE = Number(process.env.UI_PORT_BASE || 4100);
 const UI_TEST_SLOTS = Number(process.env.UI_TEST_SLOTS || 1);
-const PLANNER_TIME_LIMIT = Number(process.env.PLANNER_TIME_LIMIT || 1800);
-const WORKER_TIME_LIMIT = Number(process.env.WORKER_TIME_LIMIT || 3600);
 
 // ---- structured logging with size-based rotation ----
 const LOG_DIR = path.join(__dirname, "logs");
@@ -222,14 +224,22 @@ ${implId ? `- The implementor's app port: read ui.port at the repo root, or call
   unique ports, isolated containers or headless browsers, no shared
   fixtures.`;
 }
-const IMPL_MODEL = process.env.IMPLEMENTOR_MODEL || "glm-5-3-flash";
-const VAL_MODEL = process.env.VALIDATOR_MODEL || "glm-5-3";
 
 const lines = new Map();
 
 function plannerBrief(name, lineId, userPrompt, port) {
   return `You are the PLANNER of factory line '${name}' (id ${lineId}).
 ${userPrompt}
+
+## Harness readiness
+1. Call GET http://localhost:${port}/api/harnesses.
+2. Check each harness this line configures. Check each harness you want
+   to give to a worker.
+3. When a harness is not installed, or its auth state is missing, tell
+   the user. Give the login command from loginHint. Stop and wait.
+4. Do not spawn a worker with a harness that is not ready. After the
+   user logs in, call GET http://localhost:${port}/api/harnesses?refresh=1.
+   Check again.
 
 ## Factory protocol
 1. Write the plan to plan.md in your workdir (markdown, including a
@@ -663,6 +673,7 @@ function saveLine(line) {
     fs.writeFileSync(path.join(line.workdir, "line.json"),
       JSON.stringify({ id: line.id, name: line.name, sessionId: line.sessionId,
         repoUrl: line.repoUrl || null,
+        pipeline: line.pipeline || null,
         pendingValidations: line.pendingValidations || [],
         repos: [...(line.repos || new Map()).values()].map((r) => ({
           name: r.name, url: r.url, path: r.path })),
@@ -676,6 +687,7 @@ function saveLine(line) {
           id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch, status: w.status,
           role: w.role, validates: w.validates, persona: w.persona || "backend",
           repo: w.repo || "primary", worktreePath: w.worktreePath,
+          harness: w.harness || null, model: w.model || null, effort: w.effort || null,
           kind: w.kind || "standard", verdict: w.verdict || null })) }));
   } catch {}
 }
@@ -686,6 +698,56 @@ function readBody(req, cb) {
   req.on("end", () => {
     try { cb(null, JSON.parse(data || "{}")); } catch { cb(new Error("invalid JSON")); }
   });
+}
+
+// Run a probe command with a timeout. Resolves { code, stdout }, or null
+// when the command cannot start or times out.
+function runProbe(cmd, timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(cmd[0], cmd.slice(1), { stdio: ["ignore", "pipe", "pipe"] });
+    } catch {
+      return resolve(null);
+    }
+    let stdout = "";
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch {}
+      finish(null);
+    }, timeoutMs);
+    child.stdout.on("data", (c) => { stdout += c; });
+    child.on("error", () => finish(null));
+    child.on("close", (code) => finish({ code, stdout }));
+  });
+}
+
+// Probe a single harness and report whether it is installed.
+async function harnessInstalled(harnessId) {
+  const probe = HARNESS_PROBES.find((h) => h.id === harnessId);
+  if (!probe) return false;
+  const [result] = await probeHarnesses((cmd) => runProbe(cmd));
+  return !!(result && result.installed);
+}
+
+const HARNESS_CACHE_MS = 30000;
+let harnessCache = null; // { atIso, harnesses }
+
+// Reject the request when it configures a harness that is not installed.
+async function gateHarnesses(harnessIds, res) {
+  for (const id of harnessIds) {
+    if (!(await harnessInstalled(id))) {
+      json(res, 400, { error: `harness '${id}' is not installed on this system` });
+      return false;
+    }
+  }
+  return true;
 }
 
 function enqueue(line, text) {
@@ -719,13 +781,22 @@ function pump(line) {
   slog("info", "planner.run.start", { lineId: line.id, resume: !!line.sessionId,
     chars: text.length, prompt: preview(text, 400) });
 
-  const args = line.sessionId ? ["--resume", line.sessionId] : [];
-  args.push("--workdir", line.workdir, "--trust", "--agent", "accept-edits",
-    "--output", "streaming", "--time-limit", String(PLANNER_TIME_LIMIT));
-  if (AUTO_APPROVE) args.push("--auto-approve");
-  args.push("-p", text);
-  const child = spawn("vibe", args, { stdio: ["ignore", "pipe", "pipe"] });
+  const cfg = resolvePipeline(line).planner;
+  line.plannerHarness = cfg.harness;
+  const plan = planPlannerRun(cfg, { prompt: text, workdir: line.workdir,
+    sessionId: line.sessionId, autoApprove: AUTO_APPROVE });
+  const adapter = plan.adapter;
+  const child = spawn(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, ...plan.env },
+    ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
   line.child = child;
+
+  // Harnesses without a native time limit need the server to enforce it.
+  let killTimer = null;
+  if (!adapter.supportsNativeTimeLimit) {
+    killTimer = setTimeout(() => { try { child.kill("SIGTERM"); } catch {} },
+      cfg.timeLimit * 1000);
+  }
 
   let buf = "";
   child.stdout.setEncoding("utf8");
@@ -735,9 +806,10 @@ function pump(line) {
     while ((nl = buf.indexOf("\n")) !== -1) {
       const raw = buf.slice(0, nl);
       buf = buf.slice(nl + 1);
-      let entry;
-      try { entry = JSON.parse(raw); } catch { continue; }
-      if (!entry || typeof entry !== "object") continue;
+      let parsed;
+      try { parsed = JSON.parse(raw); } catch { continue; }
+      const entry = adapter.normalize(parsed);
+      if (!entry) continue;
       if (!line.sessionId && entry.sessionId) line.sessionId = entry.sessionId;
       if (typeof entry.at !== "number") entry.at = Date.now();
       line.transcript.push(entry);
@@ -752,15 +824,25 @@ function pump(line) {
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (c) => { stderr = (stderr + c).slice(-2000); });
 
-  child.on("close", (code) => {
+  child.on("close", (code, signal) => {
+    if (killTimer) clearTimeout(killTimer);
     line.child = null;
     if (line.deleted) return;
-    slog("info", "planner.run.end", { lineId: line.id, code, ms: Date.now() - t0,
-      stderr: code !== 0 ? preview(stderr, 300) : undefined });
+    const finished = adapter.finalize();
+    if (finished) {
+      if (typeof finished.at !== "number") finished.at = Date.now();
+      line.transcript.push(finished);
+      if (line.transcript.length > 500) line.transcript.shift();
+      broadcast(line, "entry", finished);
+    }
+    const result = adapter.outcome(code, signal);
+    slog("info", "planner.run.end", { lineId: line.id, code, result,
+      ms: Date.now() - t0,
+      stderr: result !== "ok" ? preview(stderr, 300) : undefined });
     cleanupStage(line, "planner");
     saveLine(line);
-    if (code !== 0) {
-      broadcast(line, "error", { message: stderr.slice(-500) || `vibe exited with code ${code}` });
+    if (result !== "ok") {
+      broadcast(line, "error", { message: stderr.slice(-500) || `${plan.cmd} exited with code ${code}` });
       if (isWake(line.lastRun)) {
         line.wakeRetries = line.wakeRetries || {};
         const attempts = (line.wakeRetries[line.lastRun] || 0);
@@ -777,7 +859,7 @@ function pump(line) {
         }
       }
     }
-    if (code === 0 && typeof line.lastRun === "string"
+    if (result === "ok" && typeof line.lastRun === "string"
       && line.lastRun.startsWith("IMPLEMENTOR REPORT")) {
       const m = line.lastRun.match(/workerId ([a-f0-9-]+)/);
       const implWorker = m ? line.workers.get(m[1]) : null;
@@ -844,18 +926,35 @@ function reportText(transcript) {
   return "";
 }
 
-function spawnWorker(line, worker, prompt, model, resume) {
+function spawnWorker(line, worker, prompt, resume) {
+  const phase = phaseForWorker(worker.role, worker.kind);
+  const cfg = resolvePipeline(line)[phase];
+  const effective = resolveWorkerOverrides(cfg, worker);
+  worker.harness = effective.harness;
+  worker.model = effective.model;
+  worker.effort = effective.effort;
+  const plan = planWorkerRun({ ...cfg, ...effective }, {
+    phase, prompt, workdir: worker.worktreePath,
+    sessionId: resume && worker.sessionId ? worker.sessionId : null,
+    autoApprove: AUTO_APPROVE,
+  });
+  const adapter = plan.adapter;
+  worker.adapter = adapter;
   slog("info", "worker.run.start", { lineId: line.id, workerId: worker.id,
-    name: worker.name, role: worker.role, model,
-    resume: !!(resume && worker.sessionId), chars: prompt.length });
-  const args = resume && worker.sessionId ? ["--resume", worker.sessionId] : [];
-  args.push("--workdir", worker.worktreePath, "--trust", "--agent", "accept-edits",
-    "--output", "streaming", "--time-limit", String(WORKER_TIME_LIMIT));
-  if (AUTO_APPROVE) args.push("--auto-approve");
-  args.push("-p", prompt);
-  const child = spawn("vibe", args, { stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, VIBE_ACTIVE_MODEL: model } });
+    name: worker.name, role: worker.role, phase, harness: worker.harness,
+    model: worker.model, resume: !!(resume && worker.sessionId),
+    chars: prompt.length });
+  const child = spawn(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, ...plan.env },
+    ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
   worker.child = child;
+
+  // Harnesses without a native time limit need the server to enforce it.
+  let killTimer = null;
+  if (!adapter.supportsNativeTimeLimit) {
+    killTimer = setTimeout(() => { try { child.kill("SIGTERM"); } catch {} },
+      cfg.timeLimit * 1000);
+  }
 
   let buf = "";
   child.stdout.setEncoding("utf8");
@@ -865,9 +964,10 @@ function spawnWorker(line, worker, prompt, model, resume) {
     while ((nl = buf.indexOf("\n")) !== -1) {
       const raw = buf.slice(0, nl);
       buf = buf.slice(nl + 1);
-      let entry;
-      try { entry = JSON.parse(raw); } catch { continue; }
-      if (!entry || typeof entry !== "object") continue;
+      let parsed;
+      try { parsed = JSON.parse(raw); } catch { continue; }
+      const entry = adapter.normalize(parsed);
+      if (!entry) continue;
       if (!worker.sessionId && entry.sessionId) worker.sessionId = entry.sessionId;
       if (typeof entry.at !== "number") entry.at = Date.now();
       worker.transcript.push(entry);
@@ -878,14 +978,26 @@ function spawnWorker(line, worker, prompt, model, resume) {
     }
   });
 
-  child.on("close", (code) => workerClosed(line, worker, code));
+  child.on("close", (code, signal) => {
+    if (killTimer) clearTimeout(killTimer);
+    const finished = adapter.finalize();
+    if (finished) {
+      if (typeof finished.at !== "number") finished.at = Date.now();
+      worker.transcript.push(finished);
+      broadcast(line, "worker_entry", { workerId: worker.id, entry: finished });
+    }
+    workerClosed(line, worker, code, signal);
+  });
 }
 
-function workerClosed(line, worker, code) {
+function workerClosed(line, worker, code, signal) {
   worker.child = null;
-  const timedOut = code === 3 && !worker.stopRequested;
+  const outcome = worker.adapter
+    ? worker.adapter.outcome(code, signal)
+    : (code === 0 ? "ok" : "fail");
+  const timedOut = outcome === "timeout" && !worker.stopRequested;
   if (worker.stopRequested) worker.status = "stopped";
-  else if (code === 0) worker.status = "completed";
+  else if (outcome === "ok") worker.status = "completed";
   else if (timedOut) worker.status = "stopped";
   else worker.status = "failed";
   cleanupStage(line, worker.id);
@@ -920,7 +1032,7 @@ function workerClosed(line, worker, code) {
     const implId = worker.validates || "unknown";
     const implSession = impl ? (impl.sessionId || "unknown") : "unknown";
     if (worker.status === "completed") {
-      enqueue(line, `VALIDATION REPORT - validator '${worker.name}' checked the work of implementor '${implName}' (workerId ${implId}, vibe session ${implSession}, branch ${worker.branch}): ${report}. Decide: accept the work, send follow-up instructions to the original implementor (POST /api/protocol/workers/${implId}/continue with {"prompt": ...}), or spawn a new implementor with a corrected prompt.`);
+      enqueue(line, `VALIDATION REPORT - validator '${worker.name}' checked the work of implementor '${implName}' (workerId ${implId}, ${(impl && impl.harness) || "vibe"} session ${implSession}, branch ${worker.branch}): ${report}. Decide: accept the work, send follow-up instructions to the original implementor (POST /api/protocol/workers/${implId}/continue with {"prompt": ...}), or spawn a new implementor with a corrected prompt.`);
     } else if (timedOut) {
       enqueue(line, `VALIDATOR TIMEOUT - the validator hit the run time limit and was interrupted. Validators are fresh sessions each time: the implementor work is unchanged, decide how to proceed (usually nothing - validation repeats after the next implementor completion).`);
     } else if (worker.status === "failed") {
@@ -929,14 +1041,14 @@ function workerClosed(line, worker, code) {
       enqueue(line, `VALIDATOR STOPPED - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) was stopped. Decide how to proceed.`);
     }
   } else if (worker.status === "completed") {
-    enqueue(line, `IMPLEMENTOR REPORT - '${worker.name}' (workerId ${worker.id}, vibe session ${sid}, branch ${worker.branch}) finished: ${report}.
+    enqueue(line, `IMPLEMENTOR REPORT - '${worker.name}' (workerId ${worker.id}, ${worker.harness || "vibe"} session ${sid}, branch ${worker.branch}) finished: ${report}.
 Now give the acceptance criteria for the validation of this work.
 Reply with a numbered list of criteria only. Use the imperative. If
 the work needs no validation, reply with SKIP VALIDATION.`);
   } else if (timedOut) {
     enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: POST /api/protocol/workers/${worker.id}/continue with {"prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.`);
   } else if (worker.status === "failed") {
-    enqueue(line, `WORKER FAILURE - '${worker.name}' (workerId ${worker.id}, session ${sid}): vibe exited non-zero. Decide whether to restart it with a corrected prompt (new name, e.g. ${worker.name}-2) or to proceed without it.`);
+    enqueue(line, `WORKER FAILURE - '${worker.name}' (workerId ${worker.id}, session ${sid}): ${worker.harness || "vibe"} exited non-zero. Decide whether to restart it with a corrected prompt (new name, e.g. ${worker.name}-2) or to proceed without it.`);
   } else {
     enqueue(line, `WORKER STOPPED - '${worker.name}' (workerId ${worker.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.`);
   }
@@ -967,7 +1079,7 @@ function spawnValidator(line, implWorker, criteria) {
   broadcast(line, "worker_spawned", { worker: { id, name, branch: worker.branch,
     status: worker.status, role: worker.role, validates: worker.validates,
     persona: worker.persona } });
-  spawnWorker(line, worker, worker.prompt, VAL_MODEL);
+  spawnWorker(line, worker, worker.prompt);
 }
 
 const server = http.createServer((req, res) => {
@@ -979,10 +1091,34 @@ const server = http.createServer((req, res) => {
     ms: Date.now() - t0,
   }));
 
+  if (req.method === "GET" && url.pathname === "/api/harnesses") {
+    const refresh = url.searchParams.get("refresh") === "1";
+    if (!refresh && harnessCache
+      && Date.now() - Date.parse(harnessCache.atIso) < HARNESS_CACHE_MS) {
+      return json(res, 200, { harnesses: harnessCache.harnesses, probedAt: harnessCache.atIso });
+    }
+    probeHarnesses((cmd) => runProbe(cmd)).then((harnesses) => {
+      harnessCache = { atIso: new Date().toISOString(), harnesses };
+      json(res, 200, { harnesses, probedAt: harnessCache.atIso });
+    }).catch(() => json(res, 500, { error: "harness probe failed" }));
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/lines") {
-    readBody(req, (err, body) => {
+    readBody(req, async (err, body) => {
       body = body || {};
       if (err) return json(res, 400, { error: "invalid JSON" });
+      const pipelineError = validatePipelineConfig(body.pipeline);
+      if (pipelineError) return json(res, 400, { error: pipelineError });
+      const wantedHarnesses = new Set();
+      if (body.pipeline) {
+        for (const phase of PHASES) {
+          if (body.pipeline[phase] && body.pipeline[phase].harness) {
+            wantedHarnesses.add(body.pipeline[phase].harness);
+          }
+        }
+      }
+      if (!await gateHarnesses([...wantedHarnesses], res)) return;
       const name = typeof body.name === "string" && body.name.trim()
         ? body.name.trim()
         : `Draft line ${[...lines.values()].filter((l) => /^Draft line/.test(l.name)).length + 1}`;
@@ -1009,6 +1145,7 @@ const server = http.createServer((req, res) => {
       const line = { id, name, sessionId: null, workdir, status: "standby",
         repoUrl, started: false, planApproved: false, workers: new Map(),
         repos: new Map(),
+        pipeline: body.pipeline || null,
         inventory: new Map(),
         queue: [], clients: new Set(), transcript: [] };
       lines.set(id, line);
@@ -1220,11 +1357,18 @@ const server = http.createServer((req, res) => {
       })) });
     }
     if (!line.planApproved) return json(res, 409, { error: "plan not approved" });
-    readBody(req, (err, body) => {
+    readBody(req, async (err, body) => {
       if (err || !body || typeof body.name !== "string" || !body.name
         || typeof body.prompt !== "string") {
         return json(res, 400, { error: "expected {name, prompt}" });
       }
+      if (body.harness !== undefined && body.harness !== null
+        && (typeof body.harness !== "string" || !HARNESS_IDS.includes(body.harness))) {
+        return json(res, 400, { error: `harness must be one of: ${HARNESS_IDS.join(", ")}` });
+      }
+      if (body.harness && !await gateHarnesses([body.harness], res)) return;
+      const spawnBodyError = validateWorkerSpawnBody(body);
+      if (spawnBodyError) return json(res, 400, { error: spawnBodyError });
       const persona = body.persona === undefined || body.persona === null
         ? "backend" : body.persona;
       if (!PERSONAS.includes(persona)) {
@@ -1257,6 +1401,8 @@ const server = http.createServer((req, res) => {
       if (wt.status !== 0) return json(res, 500, { error: "git worktree add failed", stderr: wt.stderr });
       const worker = { id, lineId: line.id, name: body.name,
         role: "implementor", validates: null, persona, kind: "standard", repo: repo.name,
+        harness: body.harness || null, model: body.model || null,
+        effort: body.effort || null,
         prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo),
         sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
         child: null, transcript: [] };
@@ -1264,7 +1410,7 @@ const server = http.createServer((req, res) => {
       saveLine(line);
       slog("info", "worker.spawned", { lineId: line.id, workerId: id,
         name: body.name, persona, branch, repo: repo.name, repoUrl: repo.url || undefined });
-      spawnWorker(line, worker, worker.prompt, IMPL_MODEL);
+      spawnWorker(line, worker, worker.prompt);
       broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona, repo: repo.name } });
       json(res, 201, { workerId: id, branch, worktree: worktreePath, repo: repo.name });
     });
@@ -1433,7 +1579,7 @@ const server = http.createServer((req, res) => {
         branches: branchEntries.map((e) => `${e.repo}:${e.branch}`) });
       broadcast(line, "worker_spawned", { worker: { id, name, branch, status: worker.status,
         role: worker.role, validates: null, persona: worker.persona, kind: "integration" } });
-      spawnWorker(line, worker, worker.prompt, VAL_MODEL);
+      spawnWorker(line, worker, worker.prompt);
       json(res, 201, { validatorId: id, branch,
         branches: branchEntries.map((e) => ({ repo: e.repo, branch: e.branch })),
         worktree: worktreePath });
@@ -1554,17 +1700,14 @@ When done, reply with a report: what you changed, files changed, how you verifie
       saveLine(line);
       slog("info", "worker.continued", { lineId: line.id, workerId: worker.id,
         chars: body.prompt.length, prompt: preview(body.prompt, 400) });
-      spawnWorker(line, worker, prompt, IMPL_MODEL, true);
+      spawnWorker(line, worker, prompt, true);
       json(res, 202, { queued: true });
     });
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/lines") {
-    return json(res, 200, { lines: [...lines.values()].map((l) => ({
-      id: l.id, name: l.name, status: l.status, queueDepth: l.queue.length,
-      sessionId: l.sessionId, started: l.started, workers: l.workers.size,
-    })) });
+    return json(res, 200, { lines: [...lines.values()].map(lineSummary) });
   }
 
   if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "events") {
@@ -1576,6 +1719,7 @@ When done, reply with a report: what you changed, files changed, how you verifie
     slog("info", "sse.open", { lineId: line.id, clients: line.clients.size });
     sseSend(res, "state", { id: line.id, name: line.name, status: line.status,
       sessionId: line.sessionId, started: line.started,
+      pipeline: resolvePipeline(line),
       transcript: line.transcript.slice(-50),
       planApproved: line.planApproved,
       workers: [...line.workers.values()].map((w) => ({
@@ -1594,6 +1738,16 @@ When done, reply with a report: what you changed, files changed, how you verifie
     try {
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(fs.readFileSync(INDEX_HTML));
+    } catch {
+      return json(res, 404, { error: "not found" });
+    }
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/pipeline-ui.js") {
+    try {
+      res.writeHead(200, { "Content-Type": "application/javascript" });
+      res.end(fs.readFileSync(path.join(__dirname, "web", "pipeline-ui.js")));
     } catch {
       return json(res, 404, { error: "not found" });
     }
@@ -1638,6 +1792,7 @@ function loadLines() {
           validates: null, prompt: null, kind: w.kind || "standard", verdict: w.verdict || null,
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           repo: w.repo || "primary",
+          harness: w.harness || null, model: w.model || null, effort: w.effort || null,
           sessionId: w.sessionId,
           worktreePath: w.worktreePath
             || path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name)),
@@ -1652,6 +1807,7 @@ function loadLines() {
           role: "validator", validates: w.validates, prompt: null, kind: w.kind || "standard", verdict: w.verdict || null,
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           repo: w.repo || (impl ? impl.repo : "primary"),
+          harness: w.harness || null, model: w.model || null, effort: w.effort || null,
           sessionId: w.sessionId,
           worktreePath: w.worktreePath
             || (impl ? impl.worktreePath
@@ -1668,6 +1824,7 @@ function loadLines() {
       }
       const line = { id: meta.id, name: meta.name, sessionId: meta.sessionId,
         repoUrl: meta.repoUrl || null,
+        pipeline: meta.pipeline || null,
         repos: new Map((meta.repos || []).map((r) => [r.name,
           { name: r.name, url: r.url, path: r.path }])),
         workdir: path.join(LINES_DIR, entry.name),
