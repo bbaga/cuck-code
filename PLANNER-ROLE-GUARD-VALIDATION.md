@@ -9,8 +9,9 @@ An interim validator that uses the older live router may still read this file as
 - Worktree: `/Users/bbagameri/github/cuck-code/router-prototype/lines/worktrees/7a3ffb86-4d6f-40c1-a624-ab5ce9aa9ad8/cuck-code/planner-role-guard`
 - Branch: `7a3ffb86/planner-role-guard`
 - Starting validated application commit: `23c9df9a6a1d58058e2aa2d67d567a179134aa11`
-- Handoff implementation commit: `7cd851b31b11edefcd1ceef30528499ff3163a17` (`Fix normalized planner and worker handoffs`).
-- This checklist update is committed after the implementation commit. The final branch commit is available from `git rev-parse HEAD`.
+- Handoff implementation commit: `d89fb5dc109b70fd34655482268ccb1d3197ab68` (`Fix normalized planner and worker handoffs`).
+- Deferred validation queue correction: `34940097d6f87813f1e77aba2ca372af3efb3904` (`Preserve deferred validation queue entries`).
+- Queue correction code commit: `34940097d6f87813f1e77aba2ca372af3efb3904`.
 - Do not use or change the shared checkout. Do not push `main` or `master`.
 
 ## Preserved planner-role acceptance criteria
@@ -38,7 +39,7 @@ An interim validator that uses the older live router may still read this file as
 3. Capture normalized output for each planner or worker invocation separately from the capped UI transcript. Never use historical output when the current planner run has no criteria.
 4. Forward the exact current criteria to the validator. Preserve explicit `SKIP VALIDATION`. Do not treat missing text as skip.
 5. If criteria are empty, emit a clear diagnostic and do not start a validator. If a report or verdict is missing, emit a clear diagnostic and keep the verdict unset.
-6. Preserve report and criteria association through continuation, deferred validation, saved state, and transcript limits.
+6. Preserve exact report and criteria association while deferred and saved. If a continuation supersedes the report's run before validation starts, explicitly cancel the stale item and require new criteria; never validate newer work with an older report.
 7. Parse only a complete, explicit, final `VERDICT: PASS` or `VERDICT: FAIL` line. Ignore quoted examples, code fences, and incomplete output.
 8. Set the worker status and verdict before state persistence, API results, completion events, or planner notifications. Keep those views consistent.
 9. Follow Pi JSONL framing. Process split records, CRLF, and a buffered EOF record. Use completed `message_end` messages as authoritative; use `text_end` as the completed block value; avoid duplicate deltas. If no completed Pi message arrives, use the adapter's supported final block flush.
@@ -66,7 +67,7 @@ Run from the repository root:
 
 - Unit tests: `node --test router-prototype/test/*.test.js` — **88 passed, 0 failed** after the queue correction.
 - Static build validation: `node router-prototype/scripts/validate-build.js` — **11 checks passed** after adding `validation-queue.js` to the production source list.
-- `git diff --check` — passed.
+- `git diff --check` — passed before commit `34940097d6f87813f1e77aba2ca372af3efb3904`.
 - No local integration, browser, live process, or API tests were run.
 
 This is a plain-JavaScript application. It has no transpilation or bundling build. Static validation parses production and browser JavaScript and inline scripts without executing them. It checks required and referenced local assets.
@@ -82,6 +83,6 @@ Required test evidence:
 
 ## CI and remaining validation
 
-Basic GitHub Actions push and pull-request checks are already approved. Both checks passed for implementation commit `7cd851b31b11edefcd1ceef30528499ff3163a17`: [push run](https://github.com/bbaga/cuck-code/actions/runs/40135602374) and [pull-request run](https://github.com/bbaga/cuck-code/actions/runs/40135605590). Inspect both checks again for the final checklist commit. Report their URLs and final states. A push alone is not a passing check.
+Basic GitHub Actions push and pull-request checks are approved. Both checks passed for queue correction commit `34940097d6f87813f1e77aba2ca372af3efb3904`: [push run](https://github.com/bbaga/cuck-code/actions/runs/40136231589) and [pull-request run](https://github.com/bbaga/cuck-code/actions/runs/40136234207). Each ran unit tests and static JavaScript/local asset validation. A push alone is not a passing check.
 
-The draft PR is <https://github.com/bbaga/cuck-code/pull/5>. Do not deploy, restart, or hot-patch the live router on port 7788. Do not start integration testing. Fresh integration and live process/API end-to-end checks belong to the separately authorized integration validator. This record is not an acceptance verdict. Independent validation must run after the implementation commit.
+The draft PR is <https://github.com/bbaga/cuck-code/pull/5>. Do not deploy, restart, or hot-patch the live router on port 7788. Do not start integration testing. Fresh integration and live process/API end-to-end checks belong to the separately authorized integration validator. This record is not an acceptance verdict. Independent validation must run against the pushed branch head, including the queue correction commit and this validation record.
