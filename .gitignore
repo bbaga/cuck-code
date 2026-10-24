@@ -7,3 +7,4 @@ router-prototype/logs/
 router-prototype/lines/
 router-prototype/*.png
 node_modules/
+sessions/
