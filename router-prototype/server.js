@@ -103,14 +103,6 @@ function removeContainers(filter, cb) {
   });
 }
 
-function cleanupWorkerContainers(workerId) {
-  removeContainers(`label=cuck.worker=${workerId}`);
-}
-
-function sweepWorkerContainers() {
-  removeContainers("label=cuck.worker");
-}
-
 // ---- line inventory: processes and containers started by stages ----
 
 function reconcileInventory(line, cb) {
@@ -161,7 +153,11 @@ function killItem(item) {
 }
 
 function cleanupStage(line, by) {
-  // containers belonging to this stage, unless the user kept them
+  // Remove only containers that carry the EXACT owner label. A container
+  // with the line label but NO worker label has unknown ownership - it
+  // belongs to nobody in particular and must not be reaped here (that
+  // misattribution killed worker dind containers after every planner
+  // turn). Unowned containers die with the line delete instead.
   dockerRun(["ps", "-aq", "--filter", `label=cuck.line=${line.id}`,
     "--format", "{{.ID}}\t{{.Label \"cuck.worker\"}}"], (out) => {
     if (!out) return;
@@ -169,8 +165,9 @@ function cleanupStage(line, by) {
       .filter((i) => i.keep && i.kind === "container").map((i) => i.ref));
     for (const row of out.split("\n").filter(Boolean)) {
       const [cid, cworker] = row.split("\t");
-      if ((cworker || "planner") !== by) continue;
+      if ((cworker || "") !== by) continue;
       if (kept.has(cid)) continue;
+      slog("info", "docker.reap", { lineId: line.id, by, container: cid.slice(0, 12) });
       dockerRun(["rm", "-fv", cid]);
     }
   });
@@ -327,11 +324,11 @@ ${userPrompt}
    On VERDICT: PASS, report completion to the user.
 
 ## Container and process hygiene
-If you start any docker container, always set this label on it:
---label cuck.line=${lineId}
+If you start any docker container, always set BOTH labels on it:
+--label cuck.line=${lineId} --label cuck.worker=planner
 If the project depends on docker itself, start a docker-in-docker
-container with the label and run your docker work inside it:
-docker run -d --privileged --label cuck.line=${lineId} --name <name>-dind docker:27-dind
+container with both labels and run your docker work inside it:
+docker run -d --privileged --label cuck.line=${lineId} --label cuck.worker=planner --name <name>-dind docker:27-dind
 Wait for the daemon before use: docker exec <name>-dind docker info
 Everything started inside the dind container dies with it when the
 router kills the labeled container. A --privileged container is not
@@ -344,8 +341,9 @@ curl -s -X POST http://localhost:${port}/api/protocol/lines/${lineId}/inventory 
   -H 'Content-Type: application/json' \\
   -d '{"kind":"process","pid":<pid>,"name":"<what it is>"}'
 The router kills registered processes and removes labeled containers
-when your run ends, when the factory line is deleted, and on router
-restart. Only an explicit user request keeps an item alive. Stop and
+when your run ends and when the factory line is deleted. A router
+restart does NOT kill them: they stay available. Only an explicit user
+request keeps an item alive beyond the end of your run. Stop and
 remove your containers yourself when you finish with them
 (docker rm -f <name>).
 
@@ -446,6 +444,9 @@ function containersBlock(workerId, lineId) {
 ## Container and process hygiene
 If you start any docker container, always set both labels on it:
 --label cuck.line=${lineId} --label cuck.worker=${workerId}
+A container WITHOUT the cuck.worker label is not attributed to you:
+no stage cleanup removes it and it stays until the line is deleted.
+Always include the worker label.
 If the project depends on docker itself (docker compose, image
 builds, nested containers), start a docker-in-docker container with
 both labels and run your docker work inside it:
@@ -464,8 +465,9 @@ curl -s -X POST http://localhost:${PORT}/api/protocol/lines/${lineId}/inventory 
   -H 'Content-Type: application/json' \\
   -d '{"kind":"process","pid":<pid>,"name":"<what it is>","worker":"${workerId}"}'
 The router kills registered processes and removes labeled containers
-when your run ends, when the factory line is deleted, and on router
-restart. Only an explicit user request keeps an item alive. Stop and
+when your run ends and when the factory line is deleted. A router
+restart does NOT kill them: they stay available. Only an explicit user
+request keeps an item alive beyond the end of your run. Stop and
 remove your containers yourself when you finish with them
 (docker rm -f <name>).`;
 }
@@ -1692,8 +1694,26 @@ function loadLines() {
 }
 
 loadLines();
-sweepWorkerContainers();
-removeContainers("label=cuck.line");
+// Boot sweep: remove ONLY orphans - containers labeled for lines that no
+// longer exist (deleted while the router was down). Containers of
+// restored lines are the factory's live inventory: they stay alive across
+// restarts, and the user keeps the explicit kill control. Never blanket-
+// purge by label=cuck.line: that kills every line's containers.
+(function bootCleanup() {
+  dockerRun(["ps", "-aq", "--filter", "label=cuck.line",
+    "--format", "{{.ID}}\t{{.Label \"cuck.line\"}}"], (out) => {
+    if (out == null) return;
+    const orphans = [];
+    for (const row of out.split("\n").filter(Boolean)) {
+      const [cid, cline] = row.split("\t");
+      if (!lines.has(cline)) orphans.push(cid);
+    }
+    if (!orphans.length) return;
+    slog("info", "docker.boot-reap", { count: orphans.length,
+      containers: orphans.map((c) => c.slice(0, 12)) });
+    dockerRun(["rm", "-fv", ...orphans]);
+  });
+})();
 slog("info", "server.boot", { lines: lines.size,
   workers: [...lines.values()].reduce((n, l) => n + l.workers.size, 0),
   port: PORT, logMaxBytes: LOG_MAX_BYTES, logKeep: LOG_KEEP });

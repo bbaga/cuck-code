@@ -124,9 +124,14 @@ line keeps an inventory of its processes and containers (containers are
 auto-discovered from the labels; the UI panel shows every item with a keep
 toggle and a Kill button, plus Kill-all). Worker close, planner run close,
 and line deletion kill their items — skipping only items the user marked
-keep, which survive stage end and line deletion. A router restart sweeps and
-removes every labeled container (including kept ones); registered processes
-are not swept on restart (a pid may have been reused).
+keep, which survive stage end and line deletion. Stage cleanup matches the
+EXACT `cuck.worker` owner label: a container carrying only `cuck.line` (no
+worker label) has unknown ownership and is never reaped by a stage — it dies
+with the line deletion. Every reap is logged (`docker.reap`). A router
+restart does NOT purge: it only removes orphans (containers labeled for
+lines that no longer exist); containers of restored lines stay alive and
+remain in the inventory. Registered processes are not swept on restart (a
+pid may have been reused).
 
 `DELETE /api/lines/:id` (two-step Delete button in the UI) kills the planner
 and all running workers, releases their UI test slots, closes their SSE
