@@ -19,6 +19,21 @@ model). The router pins each vibe session to its role's model via
 `VIBE_ACTIVE_MODEL` in the spawn environment; planner runs inherit the ambient
 config. Requires Node >= 18 and the `vibe` CLI on PATH.
 
+## Tests and static validation
+
+Run these commands from the repository root:
+
+```
+node --test router-prototype/test/*.test.js
+node router-prototype/scripts/validate-build.js
+```
+
+The first command runs the complete unit test suite. The second parses the
+production server and browser JavaScript, the inline scripts in `web/index.html`,
+and checks required and referenced local web assets. It does not execute scripts
+or start the router. This plain-JavaScript application has no transpilation or
+bundling build; static validation is not a compile or integration test.
+
 ## Production lines
 
 Clicking "Create new line" adds a standing-by "Draft line" (work directory under
