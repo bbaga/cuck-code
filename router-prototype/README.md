@@ -199,6 +199,51 @@ its report, and the planner decides what to do next: spawn follow-up workers,
 restart a failed task under a new name, or conclude. The user can prompt the
 planner at any time and stop any worker from the UI.
 
+## Harness configuration
+
+A line can configure, per phase (`planner`, `implementor`, `validator`,
+`integration`), which agent harness runs it and with which model, effort
+level, and time limit.
+
+Supported harnesses: `vibe`, `pi`, `codex`, `claude`. Effort levels:
+`low`, `medium`, `high`.
+
+Precedence, most specific wins:
+
+1. Code defaults: harness `vibe`; effort `medium`; models `glm-5-3-flash`
+   (implementor) and `glm-5-3` (validator, integration); time limits
+   `PLANNER_TIME_LIMIT` (planner) and `WORKER_TIME_LIMIT` (other phases).
+2. Environment variables, read at resolve time.
+3. The line's `pipeline` config (set at line creation, persisted in
+   `line.json`).
+4. A per-worker `harness` override (planned; not implemented yet).
+
+Environment variables per phase (`PLANNER_`, `IMPLEMENTOR_`, `VALIDATOR_`,
+`INTEGRATION_`): `<PHASE>_HARNESS`, `<PHASE>_MODEL`, `<PHASE>_EFFORT`.
+`IMPLEMENTOR_MODEL` and `VALIDATOR_MODEL` keep their existing meaning.
+
+Example pipeline config on `POST /api/lines`:
+
+```json
+{
+  "name": "my line",
+  "pipeline": {
+    "implementor": { "harness": "pi", "model": "glm-5-3-flash", "effort": "high" },
+    "validator": { "harness": "vibe", "timeLimit": 900 }
+  }
+}
+```
+
+`GET /api/harnesses` probes every harness (version and auth commands, 2 s
+timeout each) and returns `{ harnesses: [...], probedAt }`. Results are
+cached for 30 seconds; `?refresh=1` skips the cache. Per harness it reports
+`installed`, `auth` (`ok`, `missing`, or `unknown`), `version`, and
+`loginHint`. Creating a line or spawning a worker with a harness that is not
+installed fails with 400.
+
+Login hints per harness: `vibe --setup`; `pi /login` (in the pi TUI);
+`codex login`; `claude login`.
+
 ## Limitations
 
 Single user, no authentication, and prompts on a line execute strictly one at

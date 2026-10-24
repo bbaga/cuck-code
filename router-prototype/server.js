@@ -3,6 +3,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
+const { PHASES, HARNESS_IDS, validatePipelineConfig, probeHarnesses,
+  HARNESS_PROBES } = require("./pipeline-config");
 
 const PORT = Number(process.env.PORT || 7788);
 const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
@@ -230,6 +232,16 @@ const lines = new Map();
 function plannerBrief(name, lineId, userPrompt, port) {
   return `You are the PLANNER of factory line '${name}' (id ${lineId}).
 ${userPrompt}
+
+## Harness readiness
+1. Call GET http://localhost:${port}/api/harnesses.
+2. Check each harness this line configures. Check each harness you want
+   to give to a worker.
+3. When a harness is not installed, or its auth state is missing, tell
+   the user. Give the login command from loginHint. Stop and wait.
+4. Do not spawn a worker with a harness that is not ready. After the
+   user logs in, call GET http://localhost:${port}/api/harnesses?refresh=1.
+   Check again.
 
 ## Factory protocol
 1. Write the plan to plan.md in your workdir (markdown, including a
@@ -663,6 +675,7 @@ function saveLine(line) {
     fs.writeFileSync(path.join(line.workdir, "line.json"),
       JSON.stringify({ id: line.id, name: line.name, sessionId: line.sessionId,
         repoUrl: line.repoUrl || null,
+        pipeline: line.pipeline || null,
         pendingValidations: line.pendingValidations || [],
         repos: [...(line.repos || new Map()).values()].map((r) => ({
           name: r.name, url: r.url, path: r.path })),
@@ -686,6 +699,56 @@ function readBody(req, cb) {
   req.on("end", () => {
     try { cb(null, JSON.parse(data || "{}")); } catch { cb(new Error("invalid JSON")); }
   });
+}
+
+// Run a probe command with a timeout. Resolves { code, stdout }, or null
+// when the command cannot start or times out.
+function runProbe(cmd, timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(cmd[0], cmd.slice(1), { stdio: ["ignore", "pipe", "pipe"] });
+    } catch {
+      return resolve(null);
+    }
+    let stdout = "";
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch {}
+      finish(null);
+    }, timeoutMs);
+    child.stdout.on("data", (c) => { stdout += c; });
+    child.on("error", () => finish(null));
+    child.on("close", (code) => finish({ code, stdout }));
+  });
+}
+
+// Probe a single harness and report whether it is installed.
+async function harnessInstalled(harnessId) {
+  const probe = HARNESS_PROBES.find((h) => h.id === harnessId);
+  if (!probe) return false;
+  const [result] = await probeHarnesses((cmd) => runProbe(cmd));
+  return !!(result && result.installed);
+}
+
+const HARNESS_CACHE_MS = 30000;
+let harnessCache = null; // { atIso, harnesses }
+
+// Reject the request when it configures a harness that is not installed.
+async function gateHarnesses(harnessIds, res) {
+  for (const id of harnessIds) {
+    if (!(await harnessInstalled(id))) {
+      json(res, 400, { error: `harness '${id}' is not installed on this system` });
+      return false;
+    }
+  }
+  return true;
 }
 
 function enqueue(line, text) {
@@ -979,10 +1042,34 @@ const server = http.createServer((req, res) => {
     ms: Date.now() - t0,
   }));
 
+  if (req.method === "GET" && url.pathname === "/api/harnesses") {
+    const refresh = url.searchParams.get("refresh") === "1";
+    if (!refresh && harnessCache
+      && Date.now() - Date.parse(harnessCache.atIso) < HARNESS_CACHE_MS) {
+      return json(res, 200, { harnesses: harnessCache.harnesses, probedAt: harnessCache.atIso });
+    }
+    probeHarnesses((cmd) => runProbe(cmd)).then((harnesses) => {
+      harnessCache = { atIso: new Date().toISOString(), harnesses };
+      json(res, 200, { harnesses, probedAt: harnessCache.atIso });
+    }).catch(() => json(res, 500, { error: "harness probe failed" }));
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/lines") {
-    readBody(req, (err, body) => {
+    readBody(req, async (err, body) => {
       body = body || {};
       if (err) return json(res, 400, { error: "invalid JSON" });
+      const pipelineError = validatePipelineConfig(body.pipeline);
+      if (pipelineError) return json(res, 400, { error: pipelineError });
+      const wantedHarnesses = new Set();
+      if (body.pipeline) {
+        for (const phase of PHASES) {
+          if (body.pipeline[phase] && body.pipeline[phase].harness) {
+            wantedHarnesses.add(body.pipeline[phase].harness);
+          }
+        }
+      }
+      if (!await gateHarnesses([...wantedHarnesses], res)) return;
       const name = typeof body.name === "string" && body.name.trim()
         ? body.name.trim()
         : `Draft line ${[...lines.values()].filter((l) => /^Draft line/.test(l.name)).length + 1}`;
@@ -1009,6 +1096,7 @@ const server = http.createServer((req, res) => {
       const line = { id, name, sessionId: null, workdir, status: "standby",
         repoUrl, started: false, planApproved: false, workers: new Map(),
         repos: new Map(),
+        pipeline: body.pipeline || null,
         inventory: new Map(),
         queue: [], clients: new Set(), transcript: [] };
       lines.set(id, line);
@@ -1220,11 +1308,16 @@ const server = http.createServer((req, res) => {
       })) });
     }
     if (!line.planApproved) return json(res, 409, { error: "plan not approved" });
-    readBody(req, (err, body) => {
+    readBody(req, async (err, body) => {
       if (err || !body || typeof body.name !== "string" || !body.name
         || typeof body.prompt !== "string") {
         return json(res, 400, { error: "expected {name, prompt}" });
       }
+      if (body.harness !== undefined && body.harness !== null
+        && (typeof body.harness !== "string" || !HARNESS_IDS.includes(body.harness))) {
+        return json(res, 400, { error: `harness must be one of: ${HARNESS_IDS.join(", ")}` });
+      }
+      if (body.harness && !await gateHarnesses([body.harness], res)) return;
       const persona = body.persona === undefined || body.persona === null
         ? "backend" : body.persona;
       if (!PERSONAS.includes(persona)) {
