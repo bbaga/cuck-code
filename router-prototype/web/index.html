@@ -114,7 +114,11 @@
   .persona-chip.p-frontend { background: #1a2e2a; color: #5fd6b4; }
   .gnode .stopBtn { padding: 2px 8px; font-size: .7rem; margin-left: auto;
     background: #4d1420; color: #ff8095; }
-  .transcript { flex: 1; overflow-y: auto; padding: 12px 16px;
+  .transcriptWrap { position: relative; display: flex; flex: 1; min-height: 0; }
+  .scrollBottomBtn { position: absolute; right: 16px; bottom: 12px;
+    border: 1px solid #8fa3bd; border-radius: 16px; font-size: .75rem;
+    box-shadow: 0 2px 8px #0008; }
+  .transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px;
     font-family: ui-monospace, monospace; font-size: .8rem; white-space: pre-wrap;
     word-break: break-word; }
   .transcript > div { margin-bottom: 10px; }
@@ -374,6 +378,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function selectNode(st, id) {
+    if (st.selected !== id) st.followTranscript = true;
     st.selected = id;
     const w = id !== null ? st.workers.get(id) : null;
     const isValidator = w && (w.role || "implementor") === "validator";
@@ -382,15 +387,40 @@ window.addEventListener("DOMContentLoaded", () => {
     renderTranscript(st);
   }
 
+  function syncTranscriptScroll(st) {
+    // Hidden lines/tabs have no scroll geometry; retain their follow state.
+    if (!st.transcript.clientHeight) return;
+    if (st.followTranscript) st.transcript.scrollTop = st.transcript.scrollHeight;
+    st.scrollBottomBtn.hidden = st.followTranscript;
+  }
+
+  function setupTranscriptScroll(st) {
+    st.followTranscript = true;
+    st.transcript.addEventListener("scroll", () => {
+      if (!st.transcript.clientHeight) return;
+      const { scrollHeight, scrollTop, clientHeight } = st.transcript;
+      st.followTranscript = scrollHeight - scrollTop - clientHeight <= 4;
+      st.scrollBottomBtn.hidden = st.followTranscript;
+    });
+    st.scrollBottomBtn.addEventListener("click", () => {
+      st.followTranscript = true;
+      syncTranscriptScroll(st);
+    });
+    // Keep following when the viewport or surrounding panels change size.
+    st.transcriptResizeObserver = new ResizeObserver(() => syncTranscriptScroll(st));
+    st.transcriptResizeObserver.observe(st.transcript);
+  }
+
   function appendEntry(st, el) {
     st.transcript.appendChild(el);
-    st.transcript.scrollTop = st.transcript.scrollHeight;
+    syncTranscriptScroll(st);
   }
 
   function renderTranscript(st) {
+    const scrollTop = st.transcript.scrollTop;
     st.transcript.innerHTML = "";
     if (st.selected === null) {
-      for (const e of st.plannerTranscript) appendEntry(st, entryEl(e));
+      for (const e of st.plannerTranscript) st.transcript.appendChild(entryEl(e));
     } else {
       const w = st.workers.get(st.selected);
       const label = document.createElement("div");
@@ -399,10 +429,11 @@ window.addEventListener("DOMContentLoaded", () => {
         + "' - live view (since page load)";
       st.transcript.appendChild(label);
       for (const e of st.workerTranscripts.get(st.selected) || []) {
-        appendEntry(st, entryEl(e));
+        st.transcript.appendChild(entryEl(e));
       }
     }
-    st.transcript.scrollTop = st.transcript.scrollHeight;
+    if (!st.followTranscript) st.transcript.scrollTop = scrollTop;
+    syncTranscriptScroll(st);
   }
 
   function addCard(line) {
@@ -494,6 +525,14 @@ window.addEventListener("DOMContentLoaded", () => {
 
     const transcript = document.createElement("div");
     transcript.className = "transcript";
+    const transcriptWrap = document.createElement("div");
+    transcriptWrap.className = "transcriptWrap";
+    const scrollBottomBtn = document.createElement("button");
+    scrollBottomBtn.className = "scrollBottomBtn";
+    scrollBottomBtn.type = "button";
+    scrollBottomBtn.textContent = "↓ Scroll to bottom";
+    scrollBottomBtn.hidden = true;
+    transcriptWrap.append(transcript, scrollBottomBtn);
     const row = document.createElement("div");
     row.className = "row";
     const input = document.createElement("input");
@@ -507,10 +546,10 @@ window.addEventListener("DOMContentLoaded", () => {
     const evPane = document.createElement("div");
     evPane.className = "evPane";
     evPane.hidden = true;
-    card.append(head, pipeCfg, planDetails, banner, plan, graph, transcript, row, procPane, evPane);
+    card.append(head, pipeCfg, planDetails, banner, plan, graph, transcriptWrap, row, procPane, evPane);
     linesEl.appendChild(card);
 
-    const st = { id: line.id, dot, banner, transcript, input, send,
+    const st = { id: line.id, dot, banner, transcript, transcriptWrap, scrollBottomBtn, input, send,
       waiting, planBody, graph, approveBtn, badge, planDetails, planControls: controls,
       pipeCfg,
       tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, plan, row, procPane, evPane,
@@ -518,6 +557,7 @@ window.addEventListener("DOMContentLoaded", () => {
       planContent: undefined, approved: false,
       workers: new Map(), workerTranscripts: new Map(),
       plannerTranscript: [], selected: null };
+    setupTranscriptScroll(st);
 
     tabLineBtn.addEventListener("click", () => setLineTab(st, "line"));
     tabProcBtn.addEventListener("click", () => setLineTab(st, "processes"));
@@ -654,6 +694,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const st = cards.get(id);
     if (st) {
       if (st.es) st.es.close();
+      st.transcriptResizeObserver.disconnect();
       st.card.remove();
       st.entry.remove();
       cards.delete(id);
@@ -678,7 +719,7 @@ window.addEventListener("DOMContentLoaded", () => {
     st.tabLineBtn.classList.toggle("active", tab === "line");
     st.tabProcBtn.classList.toggle("active", tab === "processes");
     st.tabEvBtn.classList.toggle("active", tab === "evidence");
-    for (const el of [st.plan, st.planDetails, st.graph, st.transcript, st.row, st.pipeCfg]) {
+    for (const el of [st.plan, st.planDetails, st.graph, st.transcriptWrap, st.row, st.pipeCfg]) {
       el.hidden = tab !== "line";
     }
     st.procPane.hidden = tab !== "processes";
@@ -687,7 +728,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (tab === "evidence") pollEvidence();
     if (tab === "line") {
       renderGraph(st);
-      st.transcript.scrollTop = st.transcript.scrollHeight;
+      syncTranscriptScroll(st);
     }
   }
 
@@ -704,7 +745,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (st.tab === "processes") pollInventory();
     else {
       renderGraph(st);
-      st.transcript.scrollTop = st.transcript.scrollHeight;
+      syncTranscriptScroll(st);
     }
   }
 
