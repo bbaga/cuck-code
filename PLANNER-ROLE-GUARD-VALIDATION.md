@@ -1,38 +1,80 @@
-# Planner role guard: implementor checklist and evidence
+# Planner role guard and handoff validation record
 
-## Assigned worktree and revision
+## Interim validator note
+
+An interim validator that uses the older live router may still read this file as its criteria source. This is a temporary transition only. Server code and tests do not read or depend on this markdown file. Use executable tests and the corrected handoff behavior as evidence. The current requested scope includes the approved report and criteria delivery correction. The provider/model pipeline UI extension is not approved.
+
+## Worktree and branch
 
 - Worktree: `/Users/bbagameri/github/cuck-code/router-prototype/lines/worktrees/7a3ffb86-4d6f-40c1-a624-ab5ce9aa9ad8/cuck-code/planner-role-guard`
 - Branch: `7a3ffb86/planner-role-guard`
-- CI and static validation implementation commit: `85f31e828e75ca488ee6d05abff648944b31f96f` (`Add minimal CI and static build validation`).
-- Latest planner report-preservation fix commit: `4a1de655b110b5e0fce6449ef9e0b012817fb807` (`Preserve planner report marker content`).
-- Earlier planner prompt coverage commit: `dcc68f46a2d50c070735b05b5d44d62c1738c18c` (`Strengthen planner role guard coverage`).
-- This record is updated and committed after the CI implementation commit. See `git rev-parse HEAD` for the final branch commit ID.
-- Changed implementation files include `.github/workflows/ci.yml`, `router-prototype/scripts/validate-build.js`, and `router-prototype/test/validate-build.test.js`, in addition to the planner guard files above and this record. `router-prototype/README.md` documents validation. No shared checkout was used or changed.
+- Starting validated application commit: `23c9df9a6a1d58058e2aa2d67d567a179134aa11`
+- Handoff implementation commit: `7cd851b31b11edefcd1ceef30528499ff3163a17` (`Fix normalized planner and worker handoffs`).
+- This checklist update is committed after the implementation commit. The final branch commit is available from `git rev-parse HEAD`.
+- Do not use or change the shared checkout. Do not push `main` or `master`.
 
-## Acceptance checklist and evidence
+## Preserved planner-role acceptance criteria
 
-1. **Assigned branch and exact worktree.** Work was done only in the exact worktree and on branch above. This is implementor evidence only; the next independent validator must verify the same path, branch, and final commit.
-2. **Planner rules before task.** `wrapPlannerTurn()` prepends planner-only rules before each payload. The prompt test checks that `ROLE: PLANNER` occurs before an initial task.
-3. **Read-only inspection and planning-only file changes.** The wrapper allows read-only inspection and confines planning documents, including `plan.md`, to the line workdir. It prohibits edits to application files, tests, configuration, prompts, parent repositories, and shared checkouts.
-4. **No application edits or implementation checks.** The wrapper explicitly prohibits application edits and implementation checks. An approved planner must use workers and the router API for implementation.
-5. **Reminder on every invocation.** The server calls `wrapPlannerTurn()` in `pump()` for planner runs, including resumed runs. The wrapper names the line ID and current approval state every time. Tests verify that re-wrapping does not duplicate the outer context and refreshes the approval state.
-6. **Turn and event coverage.** The wrapper covers initial and later user tasks, feedback, authentication interruption, approval, implementor reports, and validation reports. Tests cover representative prompts and preservation of the approval event and report bodies.
-7. **Plan and stop; auth before plan exists.** Before approval, the wrapper directs the planner to write or revise `plan.md`, give a summary, and stop. If authentication interrupts before `plan.md` exists, it directs the planner to report the login action and stop. Prompt tests cover both.
-8. **Continue is not approval.** The wrapper says that an unapproved continue message does not approve the plan or change the role. The resumed-continue test verifies this rule.
-9. **Worker delegation and failures.** After approval, implementation must be delegated through router worker calls. If authentication or an API failure prevents delegation, the planner must report the blocker and stop; direct implementation is prohibited. The prompt test checks these rules.
-10. **Protocol and report preservation.** The wrapper requires preservation of event markers, full report bodies, session behavior, verdicts, criteria-only instructions, and integration approval. Fix: the previous `indexOf(START)` / `indexOf(END)` logic could delete report content when it contained quoted wrapper markers. The dispatch now adds a random owner token to its context and unwraps only a complete context that starts with that exact dispatch-owned token. It leaves all other input unchanged. It does not remove newlines from the payload. Regression tests assert exact preservation of a report prefix, embedded quoted START/END markers, and verdict suffix; repeated marker pairs; incomplete markers; leading quoted markers; and normal owned-wrapper rewrapping with updated approval state and unchanged underlying content.
-11. **Independent validation and existing behavior.** The wrapper preserves independent validation, corrections to the original implementor, integration approval, and existing cleanup and worker invocation behavior. It does not change report transport, event markers, server approval handling, cleanup, worker execution, or authentication detection.
-12. **Prompt test coverage.** Tests cover initial and resumed turns; approved and unapproved states; feedback and approval events; authentication interruption; implementor and validation reports; and duplicate-reminder prevention.
-13. **Unit tests.** Commands and results:
-    - `node --test router-prototype/test/planner-turn.test.js` — **10 passed, 0 failed** (planner prompt and marker-preservation tests, run before CI additions).
-    - `node --test router-prototype/test/*.test.js` — **66 passed, 0 failed** (complete unit suite, planner regression tests, and static validation helper tests).
-    No integration or browser acceptance tests were run.
-14. **CI and build validation.** Added `.github/workflows/ci.yml` for push and pull_request events. It uses `actions/checkout@v4`, Node.js 22 LTS through `actions/setup-node@v4`, `contents: read`, a 10-minute job limit, and cancellation of obsolete runs. It has separate test and static validation steps. The static checker uses Node built-ins only. It parses production and browser JavaScript and inline scripts without execution, checks required/referenced local web assets, and fails on invalid input. Its unit tests cover valid inputs, malformed production JavaScript, malformed inline JavaScript, and missing local assets. No dependencies, secrets, integration tests, browser automation, deployment, or framework were added. For commit `7d000308df19a9426203a997cca8f3e5346cec29`, both push and pull_request CI runs passed: [push run](https://github.com/bbaga/cuck-code/actions/runs/40134061196) and [PR run](https://github.com/bbaga/cuck-code/actions/runs/40134061734).
-15. **Plain-JavaScript build statement.** `router-prototype/README.md` documents exact commands. The app has no transpilation or bundling build. The Node checker is static validation, not compilation or integration testing.
-16. **Draft PR and checks.** Existing draft PR: <https://github.com/bbaga/cuck-code/pull/5>. Before the CI commit it was OPEN and draft, with head `7a3ffb86/planner-role-guard`, base `main`, and no checks. After the workflow push, both the push and pull_request runs passed for `7d000308df19a9426203a997cca8f3e5346cec29` (links in item 14). A successful push alone is not a passing check. Check the final documentation commit's runs too.
-17. **Unrelated changes and prohibited scope.** No shared-checkout, authentication-detection, report-transport, provider/model UI, or unrelated application changes were made. Existing untracked `sessions/` files were not changed or committed.
+1. Validate the assigned feature branch and exact worktree. Report the path and commit.
+2. Put explicit planner-only rules before the user task on every invocation, including resumed sessions. Include line ID and current approval state.
+3. Allow read-only inspection. Limit planner file changes to planning documents in the line workdir.
+4. Prohibit planner application edits, implementation checks, and shared checkout changes.
+5. Cover initial tasks, later user messages, feedback, approval events, implementor reports, and validation reports.
+6. Require a plan and stop before approval. Cover authentication interruption before `plan.md` exists.
+7. Do not treat unapproved `continue` as approval or a role change.
+8. Require worker delegation after approval. Stop after authentication or API failures; do not implement directly.
+9. Preserve event markers, report bodies, session behavior, verdicts, and criteria-only response instructions.
+10. Preserve independent validation, original-worker corrections, integration approval, cleanup rules, and worker invocation behavior.
+11. Test planner turn types, approval states, and duplicate-reminder prevention.
+12. Run unit tests only. Do not run local integration or browser acceptance tests.
+13. Keep unrelated shared-checkout changes and authentication detection unchanged.
+14. Preserve exact user input, including quoted, repeated, incomplete, and leading context markers. Strip only an owned dispatch wrapper. Test approval refresh and one current wrapper.
+15. Keep basic CI and static build validation. Report missing checks as unavailable, not pass. The approved CI addition does not approve the separate provider/model UI extension.
 
-## Remaining block and independent validation
+## Approved report and criteria handoff scope
 
-The embedded-marker report defect is fixed in `4a1de655b110b5e0fce6449ef9e0b012817fb807`. The CI workflow and static JavaScript/assets validation are in `85f31e828e75ca488ee6d05abff648944b31f96f`. Local unit tests pass: 66 passed, 0 failed. `node router-prototype/scripts/validate-build.js` passes 8 checks and states that no transpilation build exists. Push and pull_request CI both passed for commit `7d000308df19a9426203a997cca8f3e5346cec29`; see the run links in item 14. No integration tests ran locally. This is not an acceptance verdict. The next independent validator must validate the final branch commit and this exact worktree, explicitly run the embedded-marker content-preservation regression, review actual GitHub check results, and issue its own verdict.
+1. Define one canonical text contract. Use normalized message `text` first. Support legacy string `content` and arrays of valid text blocks. Include assistant messages only. Exclude thinking, tool calls, tool results, malformed blocks, and other roles.
+2. Preserve complete multiline text, Unicode, punctuation, numbered criteria, and verdicts. Do not truncate handoff payloads.
+3. Capture normalized output for each planner or worker invocation separately from the capped UI transcript. Never use historical output when the current planner run has no criteria.
+4. Forward the exact current criteria to the validator. Preserve explicit `SKIP VALIDATION`. Do not treat missing text as skip.
+5. If criteria are empty, emit a clear diagnostic and do not start a validator. If a report or verdict is missing, emit a clear diagnostic and keep the verdict unset.
+6. Preserve report and criteria association through continuation, deferred validation, saved state, and transcript limits.
+7. Parse only a complete, explicit, final `VERDICT: PASS` or `VERDICT: FAIL` line. Ignore quoted examples, code fences, and incomplete output.
+8. Set the worker status and verdict before state persistence, API results, completion events, or planner notifications. Keep those views consistent.
+9. Follow Pi JSONL framing. Process split records, CRLF, and a buffered EOF record. Use completed `message_end` messages as authoritative; use `text_end` as the completed block value; avoid duplicate deltas. If no completed Pi message arrives, use the adapter's supported final block flush.
+10. Keep Vibe, Pi, Codex, and Claude behavior covered by existing adapter fixtures. Do not require live providers.
+11. Add unit contract tests from adapter output through criteria forwarding, complete report notifications, and final status/verdict state. Include empty criteria and dot-only report regressions, malformed events, multiple assistant messages, legacy content, Unicode, continuation, deferred validation, and transcript limits.
+12. Run only unit tests and the authorized static build-validation command locally. Do not run live process/API end-to-end, integration, or browser acceptance tests.
+13. Keep CI limited to unit tests and static build validation. Do not change authentication detection, add deployment, or change provider/model UI controls.
+14. Document the root cause, text contract, invocation boundary, Pi framing, and diagnostics in `router-prototype/README.md`.
+
+## Root cause and correction evidence
+
+The old `reportText(transcript)` read `entry.content`, but normalized harness adapters emit `entry.text`. Therefore successful assistant messages became empty reports. `entryText()` did not handle legacy string content. Planner criteria were extracted from the capped, shared line transcript, so the router could use old output after an empty current turn. Pi stream parsing also discarded the final buffered JSONL record, and the Pi adapter could flush deltas after an empty authoritative `message_end`.
+
+The correction uses `handoff.js` as the shared text, criteria, report, and verdict contract. `InvocationCapture` records normalized entries for one process run. The server keeps that capture separate from the 500-entry UI transcript. Deferred validation stores criteria and its matching implementor report. `JsonlDecoder` frames LF/CRLF records and returns a remaining EOF record. The Pi adapter clears deltas when a completed message arrives, including an empty one. It replaces partial text with authoritative `text_end` block content and flushes pending blocks only when no completed message arrives. Completion state and final verdict are set before saving and broadcasting. Reports use explicit complete-body boundaries and do not append punctuation to report text.
+
+## Commands and evidence
+
+Run from the repository root:
+
+- Unit tests: `node --test router-prototype/test/*.test.js` — **80 passed, 0 failed** on implementation commit `7cd851b31b11edefcd1ceef30528499ff3163a17`.
+- Static build validation: `node router-prototype/scripts/validate-build.js` — **10 checks passed** on the same commit.
+- `git diff --check` — passed.
+- No local integration, browser, live process, or API tests were run.
+
+This is a plain-JavaScript application. It has no transpilation or bundling build. Static validation parses production and browser JavaScript and inline scripts without executing them. It checks required and referenced local assets.
+
+Required test evidence:
+
+- Existing planner-role and report-marker tests still pass.
+- Adapter/handoff tests cover normalized assistant messages, legacy string/block content, multiple assistant messages, malformed events, current-run isolation, transcript limits, full notifications, explicit and missing verdicts, and deferred/continued report association.
+- Pi and JSONL tests cover fragmented input, Unicode, CRLF, final buffered input, authoritative completed content, and no duplicate deltas.
+- Test outputs report exact totals and failures.
+- Static validation succeeds. Do not run integration or browser tests.
+
+## CI and remaining validation
+
+Basic GitHub Actions push and pull-request checks are already approved. Both checks passed for implementation commit `7cd851b31b11edefcd1ceef30528499ff3163a17`: [push run](https://github.com/bbaga/cuck-code/actions/runs/40135602374) and [pull-request run](https://github.com/bbaga/cuck-code/actions/runs/40135605590). Inspect both checks again for the final checklist commit. Report their URLs and final states. A push alone is not a passing check.
+
+The draft PR is <https://github.com/bbaga/cuck-code/pull/5>. Do not deploy, restart, or hot-patch the live router on port 7788. Do not start integration testing. Fresh integration and live process/API end-to-end checks belong to the separately authorized integration validator. This record is not an acceptance verdict. Independent validation must run after the implementation commit.
