@@ -1,0 +1,9 @@
+# macOS / IDE noise
+.DS_Store
+.idea/
+
+# router runtime artifacts
+router-prototype/logs/
+router-prototype/lines/
+router-prototype/*.png
+node_modules/
