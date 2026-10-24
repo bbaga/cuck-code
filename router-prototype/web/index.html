@@ -128,6 +128,29 @@
   .row { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #262b33; }
   .row input { flex: 1; padding: 8px; background: #0d1014; color: inherit;
     border: 1px solid #2c333d; border-radius: 4px; }
+  #createPanel { border: 1px solid #262b33; border-radius: 8px; background: #161a20;
+    padding: 16px; margin-bottom: 20px; max-width: 620px; }
+  #createPanel h2 { font-size: .95rem; margin: 0 0 10px; }
+  #createPanel label { display: block; font-size: .75rem; color: #8fa3bd; margin: 8px 0 2px; }
+  #createPanel input, #createPanel select { width: 100%; padding: 6px; background: #0d1014;
+    color: inherit; border: 1px solid #2c333d; border-radius: 4px; font-size: .8rem; }
+  .phaseRow { display: grid; grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1fr) 88px;
+    gap: 6px; align-items: center; margin-top: 6px; }
+  .phaseRow .phaseName { font-size: .75rem; color: #6c7a8c; }
+  .authHint { font-size: .7rem; color: #e5a04b; margin-top: 2px; min-height: 1em;
+    grid-column: 2 / -1; }
+  .authSummary { font-size: .7rem; color: #e5a04b; margin-top: 10px; white-space: pre-wrap; }
+  .createErr { margin-top: 8px; padding: 6px; border-radius: 4px; background: #4d1420;
+    color: #ff8095; font-size: .78rem; white-space: pre-wrap; }
+  .pipeCfg { padding: 6px 16px; border-bottom: 1px solid #262b33; font-size: .72rem;
+    color: #8fa3bd; }
+  .pipeCfg .pipeRow { padding: 1px 0; }
+  .wcfg { font-size: .62rem; color: #6c7a8c; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  @media (max-width: 640px) {
+    .phaseRow { grid-template-columns: 1fr 1fr; }
+    .phaseRow .phaseName { grid-column: 1 / -1; }
+  }
 </style>
 </head>
 <body>
@@ -139,8 +162,11 @@
 <main id="lines">
   <div id="empty">Select or create a production line.</div>
 </main>
+<script src="pipeline-ui.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
+  const { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge } =
+    window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
   const listEl = document.getElementById("linelist");
@@ -253,6 +279,14 @@ window.addEventListener("DOMContentLoaded", () => {
     tag.className = "persona-chip p-" + (w.persona || "backend");
     tag.textContent = validator ? "val" : (w.persona || "backend");
     n.append(tag, nm);
+    const cfg = [w.harness, w.model, w.effort].filter(Boolean).join(" · ");
+    if (cfg) {
+      const cfgEl = document.createElement("span");
+      cfgEl.className = "wcfg";
+      cfgEl.textContent = cfg;
+      cfgEl.title = cfg;
+      n.appendChild(cfgEl);
+    }
     const d = document.createElement("span");
     d.className = "dot " + w.status;
     n.append(d);
@@ -411,6 +445,22 @@ window.addEventListener("DOMContentLoaded", () => {
       removeCard(line.id);
     });
     head.append(name, dot, tabLineBtn, tabProcBtn, tabEvBtn, delBtn);
+    const pipeCfg = document.createElement("div");
+    pipeCfg.className = "pipeCfg";
+    pipeCfg.hidden = true;
+    if (line.pipeline && typeof line.pipeline === "object") {
+      for (const { key } of PHASE_ROWS) {
+        const p = line.pipeline[key];
+        if (!p || typeof p !== "object") continue;
+        const parts = [p.harness, p.model, p.effort].filter(Boolean);
+        if (p.timeLimit) parts.push(p.timeLimit + "s");
+        const row = document.createElement("div");
+        row.className = "pipeRow";
+        row.textContent = key + ": " + (parts.join(" · ") || "default");
+        pipeCfg.appendChild(row);
+      }
+      pipeCfg.hidden = !pipeCfg.children.length;
+    }
     const planDetails = document.createElement("details");
     planDetails.className = "planDetails";
     planDetails.hidden = true;
@@ -457,11 +507,12 @@ window.addEventListener("DOMContentLoaded", () => {
     const evPane = document.createElement("div");
     evPane.className = "evPane";
     evPane.hidden = true;
-    card.append(head, planDetails, banner, plan, graph, transcript, row, procPane, evPane);
+    card.append(head, pipeCfg, planDetails, banner, plan, graph, transcript, row, procPane, evPane);
     linesEl.appendChild(card);
 
     const st = { id: line.id, dot, banner, transcript, input, send,
       waiting, planBody, graph, approveBtn, badge, planDetails, planControls: controls,
+      pipeCfg,
       tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, plan, row, procPane, evPane,
       plannerStatus: line.status, started: line.started === true,
       planContent: undefined, approved: false,
@@ -627,7 +678,7 @@ window.addEventListener("DOMContentLoaded", () => {
     st.tabLineBtn.classList.toggle("active", tab === "line");
     st.tabProcBtn.classList.toggle("active", tab === "processes");
     st.tabEvBtn.classList.toggle("active", tab === "evidence");
-    for (const el of [st.plan, st.planDetails, st.graph, st.transcript, st.row]) {
+    for (const el of [st.plan, st.planDetails, st.graph, st.transcript, st.row, st.pipeCfg]) {
       el.hidden = tab !== "line";
     }
     st.procPane.hidden = tab !== "processes";
@@ -816,11 +867,196 @@ window.addEventListener("DOMContentLoaded", () => {
     } catch {}
   }
 
-  document.getElementById("create").addEventListener("click", async () => {
-    const res = await fetch("/api/lines", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
-    });
+  // --- creation panel ---
+  const createBtn = document.getElementById("create");
+  const linesMain = document.getElementById("lines");
+  const createPanel = document.createElement("div");
+  createPanel.id = "createPanel";
+  createPanel.hidden = true;
+  const cpTitle = document.createElement("h2");
+  cpTitle.textContent = "Create a production line";
+  createPanel.appendChild(cpTitle);
+
+  const mkLabel = (text, inputEl) => {
+    const l = document.createElement("label");
+    l.textContent = text;
+    l.htmlFor = inputEl.id;
+    return l;
+  };
+
+  const nameInput = document.createElement("input");
+  nameInput.id = "cp-name";
+  nameInput.placeholder = "optional";
+  createPanel.append(mkLabel("Name", nameInput), nameInput);
+
+  const repoInput = document.createElement("input");
+  repoInput.id = "cp-repo";
+  repoInput.placeholder = "optional";
+  repoInput.type = "url";
+  createPanel.append(mkLabel("Repo URL", repoInput), repoInput);
+
+  const harnessSelects = {}, modelInputs = {}, effortSelects = {}, authHints = {};
+  let installedHarnesses = [];
+  for (const { key } of PHASE_ROWS) {
+    const row = document.createElement("div");
+    row.className = "phaseRow";
+    const phaseName = document.createElement("span");
+    phaseName.className = "phaseName";
+    phaseName.textContent = key;
+    const hSel = document.createElement("select");
+    hSel.id = "cp-harness-" + key;
+    hSel.setAttribute("aria-label", key + " harness");
+    const hDef = document.createElement("option");
+    hDef.value = "";
+    hDef.textContent = "default";
+    hSel.appendChild(hDef);
+    hSel.addEventListener("change", () => updateAuthHint(key));
+    const mIn = document.createElement("input");
+    mIn.id = "cp-model-" + key;
+    mIn.placeholder = "model";
+    mIn.setAttribute("aria-label", key + " model");
+    const eSel = document.createElement("select");
+    eSel.id = "cp-effort-" + key;
+    eSel.setAttribute("aria-label", key + " effort");
+    const eDef = document.createElement("option");
+    eDef.value = "";
+    eDef.textContent = "default";
+    eSel.appendChild(eDef);
+    for (const level of EFFORT_LEVELS) {
+      const o = document.createElement("option");
+      o.value = level;
+      o.textContent = level;
+      eSel.appendChild(o);
+    }
+    const hint = document.createElement("div");
+    hint.className = "authHint";
+    row.append(phaseName, hSel, mIn, eSel, hint);
+    createPanel.appendChild(row);
+    harnessSelects[key] = hSel;
+    modelInputs[key] = mIn;
+    effortSelects[key] = eSel;
+    authHints[key] = hint;
+  }
+
+  function updateAuthHint(key) {
+    const id = harnessSelects[key].value;
+    const entry = installedHarnesses.find((h) => h.id === id);
+    if (!entry) { authHints[key].textContent = ""; return; }
+    const badge = authBadge(entry);
+    authHints[key].textContent = badge === "missing"
+      ? entry.id + ": auth missing - run " + (entry.loginHint || entry.id + " login")
+      : entry.id + ": " + badge;
+  }
+
+  const authSummary = document.createElement("div");
+  authSummary.className = "authSummary";
+  createPanel.appendChild(authSummary);
+
+  const createErr = document.createElement("div");
+  createErr.className = "createErr";
+  createErr.hidden = true;
+  const cpBtns = document.createElement("div");
+  cpBtns.className = "row";
+  cpBtns.style.borderTop = "0";
+  cpBtns.style.padding = "10px 0 0";
+  const cpCreate = document.createElement("button");
+  cpCreate.textContent = "Create line";
+  const cpCancel = document.createElement("button");
+  cpCancel.textContent = "Cancel";
+  cpCancel.style.background = "#262b33";
+  cpBtns.append(cpCreate, cpCancel);
+  createPanel.append(createErr, cpBtns);
+  linesMain.insertBefore(createPanel, linesMain.firstChild);
+
+  async function loadHarnesses() {
+    try {
+      const res = await fetch("/api/harnesses");
+      if (!res.ok) return;
+      const data = await res.json();
+      installedHarnesses = filterInstalled(data.harnesses);
+      for (const { key } of PHASE_ROWS) {
+        const sel = harnessSelects[key];
+        const current = sel.value;
+        for (const o of [...sel.options]) if (o.value !== "") o.remove();
+        for (const h of installedHarnesses) {
+          const o = document.createElement("option");
+          o.value = h.id;
+          o.textContent = h.id + (h.version ? " (" + h.version + ")" : "");
+          sel.appendChild(o);
+        }
+        sel.value = current;
+        updateAuthHint(key);
+      }
+      const missing = installedHarnesses.filter((h) => h.auth === "missing");
+      authSummary.textContent = missing.length
+        ? "Login needed: " + missing.map((h) =>
+            h.id + " (" + (h.loginHint || h.id + " login") + ")").join(", ")
+        : "";
+    } catch {}
+  }
+
+  function resetCreatePanel() {
+    nameInput.value = "";
+    repoInput.value = "";
+    for (const { key } of PHASE_ROWS) {
+      harnessSelects[key].value = "";
+      modelInputs[key].value = "";
+      effortSelects[key].value = "";
+      updateAuthHint(key);
+    }
+    createErr.hidden = true;
+  }
+
+  createBtn.addEventListener("click", () => {
+    createPanel.hidden = !createPanel.hidden;
+    if (!createPanel.hidden) {
+      loadHarnesses();
+      nameInput.focus();
+    }
+  });
+
+  cpCancel.addEventListener("click", () => {
+    createPanel.hidden = true;
+    resetCreatePanel();
+  });
+
+  cpCreate.addEventListener("click", async () => {
+    const body = {};
+    const name = nameInput.value.trim();
+    const repoUrl = repoInput.value.trim();
+    if (name) body.name = name;
+    if (repoUrl) body.repoUrl = repoUrl;
+    const rows = {};
+    for (const { key } of PHASE_ROWS) {
+      rows[key] = {
+        harness: harnessSelects[key].value,
+        model: modelInputs[key].value,
+        effort: effortSelects[key].value,
+      };
+    }
+    const pipeline = buildPipelinePayload(rows);
+    if (pipeline) body.pipeline = pipeline;
+    createErr.hidden = true;
+    let res;
+    try {
+      res = await fetch("/api/lines", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      createErr.textContent = String(err);
+      createErr.hidden = false;
+      return;
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      createErr.textContent = data.error || "Creation failed (HTTP " + res.status + ")";
+      createErr.hidden = false;
+      return;
+    }
     const { id } = await res.json().catch(() => ({}));
+    createPanel.hidden = true;
+    resetCreatePanel();
     await refresh();
     if (id) selectLine(id);
   });
