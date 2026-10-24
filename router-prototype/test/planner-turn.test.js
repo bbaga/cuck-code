@@ -15,8 +15,29 @@ test("wraps initial tasks with planner rules before the task", () => {
 
 test("keeps resumed plain continue at plan-and-wait when unapproved", () => {
   const result = wrapPlannerTurn("continue", context);
-  assert.match(result, /Write or revise plan\.md and wait/);
-  assert.match(result, /Never treat continue as approval/);
+  assert.match(result, /Write or revise plan\.md/);
+  assert.match(result, /An unapproved continue message does not approve the plan/);
+});
+
+test("covers initial tasks, later messages, feedback, and authentication interruption", () => {
+  for (const prompt of ["initial task", "later user message", "PLAN FEEDBACK: change scope"]) {
+    const result = wrapPlannerTurn(prompt, context);
+    assert.ok(result.indexOf("ROLE: PLANNER") < result.indexOf(prompt));
+    assert.match(result, /remain the planner/);
+    assert.match(result, /write or revise plan\.md/i);
+  }
+  const auth = wrapPlannerTurn("Authentication required", context);
+  assert.match(auth, /before plan\.md exists/);
+  assert.match(auth, /report the required login action and stop/);
+});
+
+test("states planner boundary, no implementation checks, and delegated failure behavior", () => {
+  const result = wrapPlannerTurn("task", { ...context, approved: true });
+  assert.match(result, /Read-only inspection is allowed/);
+  assert.match(result, /Never edit application code, tests, configuration/);
+  assert.match(result, /Never run implementation checks/);
+  assert.match(result, /If authentication or an API failure prevents delegation/);
+  assert.match(result, /Do not implement directly/);
 });
 
 test("preserves feedback and approval event with current state", () => {
@@ -31,11 +52,16 @@ test("preserves implementor reports and numbered-list-only criteria instructions
   const prompt = "IMPLEMENTOR REPORT: details\nReply with a numbered list of criteria only.";
   const result = wrapPlannerTurn(prompt, context);
   assert.ok(result.endsWith(prompt));
+  assert.match(result, /reply with numbered acceptance criteria only/i);
+  assert.match(result, /original implementor/);
 });
 
 test("preserves validation report body and verdict", () => {
   const prompt = "VALIDATION REPORT: body\nVERDICT: FAIL";
-  assert.ok(wrapPlannerTurn(prompt, context).endsWith(prompt));
+  const result = wrapPlannerTurn(prompt, context);
+  assert.ok(result.endsWith(prompt));
+  assert.match(result, /Preserve independent validation and integration approval/);
+  assert.match(result, /Do not claim acceptance without the required validator verdict/);
 });
 
 test("does not nest wrappers and refreshes approval state", () => {
