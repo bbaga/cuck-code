@@ -4,7 +4,22 @@ const assert = require("node:assert");
 const {
   PHASE_ROWS,
   EFFORT_LEVELS,
+  PI_HARNESS_ID,
+  VIBE_HARNESS_ID,
   filterInstalled,
+  findHarness,
+  normalizeOptions,
+  mergeModelOptions,
+  parseCommaSeparatedModels,
+  authModeOptions,
+  baseModelOptions,
+  piDetailModels,
+  modelOptionsForPhase,
+  piDetailUrl,
+  piAuthStatusText,
+  createRequestTracker,
+  clearHarnessState,
+  clearProviderState,
   buildPipelinePayload,
   authBadge,
 } = require("../web/pipeline-ui.js");
@@ -79,4 +94,207 @@ test("authBadge returns the four states", () => {
   assert.strictEqual(authBadge({ installed: true, auth: "unknown" }), "unknown");
   assert.strictEqual(authBadge({ installed: false, auth: "ok" }), "not installed");
   assert.strictEqual(authBadge(undefined), "not installed");
+});
+
+test("PI_HARNESS_ID and VIBE_HARNESS_ID are stable", () => {
+  assert.strictEqual(PI_HARNESS_ID, "pi");
+  assert.strictEqual(VIBE_HARNESS_ID, "vibe");
+});
+
+test("findHarness returns the matching entry or null", () => {
+  const harnesses = [{ id: "vibe", installed: true }, { id: "pi", installed: true }];
+  assert.strictEqual(findHarness(harnesses, "pi"), harnesses[1]);
+  assert.strictEqual(findHarness(harnesses, "codex"), null);
+  assert.strictEqual(findHarness(undefined, "pi"), null);
+  assert.strictEqual(findHarness(harnesses, undefined), null);
+});
+
+test("normalizeOptions keeps value and label pairs", () => {
+  assert.deepEqual(
+    normalizeOptions([{ value: "openai", label: "OpenAI" }, { value: "anthropic", label: "Anthropic" }]),
+    [{ value: "openai", label: "OpenAI" }, { value: "anthropic", label: "Anthropic" }],
+  );
+});
+
+test("normalizeOptions drops empty, malformed, and duplicate entries", () => {
+  assert.deepEqual(
+    normalizeOptions([
+      { value: "", label: "empty" },
+      { value: "  ", label: "blank" },
+      null,
+      { label: "no value" },
+      { value: "a" },
+      { value: "a", label: "again" },
+      { value: "b", label: "  " },
+    ]),
+    [{ value: "a", label: "a" }, { value: "b", label: "b" }],
+  );
+});
+
+test("normalizeOptions accepts plain strings and tolerates bad input", () => {
+  assert.deepEqual(normalizeOptions(["x", " y "]), [{ value: "x", label: "x" }, { value: "y", label: "y" }]);
+  assert.deepEqual(normalizeOptions(undefined), []);
+  assert.deepEqual(normalizeOptions("nope"), []);
+  assert.deepEqual(normalizeOptions([42]), []);
+});
+
+test("mergeModelOptions keeps the first occurrence of each value", () => {
+  assert.deepEqual(
+    mergeModelOptions(
+      [{ value: "vibe/m1", label: "m1" }],
+      [{ value: "vibe/m1", label: "dup" }, { value: "vibe/m2", label: "m2" }],
+    ),
+    [{ value: "vibe/m1", label: "m1" }, { value: "vibe/m2", label: "m2" }],
+  );
+});
+
+test("parseCommaSeparatedModels splits, trims, and drops empties", () => {
+  assert.deepEqual(
+    parseCommaSeparatedModels("vibe/m1, vibe/m2 ,,vibe/m3,"),
+    [
+      { value: "vibe/m1", label: "vibe/m1" },
+      { value: "vibe/m2", label: "vibe/m2" },
+      { value: "vibe/m3", label: "vibe/m3" },
+    ],
+  );
+  assert.deepEqual(parseCommaSeparatedModels(""), []);
+  assert.deepEqual(parseCommaSeparatedModels(undefined), []);
+  assert.deepEqual(parseCommaSeparatedModels(42), []);
+});
+
+test("authModeOptions reads the Pi authModes list", () => {
+  const harnesses = [
+    { id: "pi", installed: true, authModes: [{ value: "openai", label: "OpenAI" }] },
+    { id: "vibe", installed: true },
+  ];
+  assert.deepEqual(authModeOptions(harnesses, "pi"), [{ value: "openai", label: "OpenAI" }]);
+  assert.deepEqual(authModeOptions(harnesses, "vibe"), []);
+  assert.deepEqual(authModeOptions([], "pi"), []);
+  assert.deepEqual(authModeOptions(undefined, "pi"), []);
+});
+
+test("baseModelOptions reads models and merges modelsEnv extras", () => {
+  const harnesses = [
+    { id: "vibe", installed: true, models: [{ value: "vibe/m1", label: "m1" }], modelsEnv: "vibe/m2" },
+    { id: "pi", installed: true },
+  ];
+  assert.deepEqual(baseModelOptions(harnesses, "vibe"), [
+    { value: "vibe/m1", label: "m1" },
+    { value: "vibe/m2", label: "vibe/m2" },
+  ]);
+  assert.deepEqual(baseModelOptions(harnesses, "pi"), []);
+});
+
+test("piDetailModels normalizes the detail response models", () => {
+  assert.deepEqual(
+    piDetailModels({ id: "pi", authMode: "openai", models: [{ value: "openai/gpt-5", label: "gpt-5" }] }),
+    [{ value: "openai/gpt-5", label: "gpt-5" }],
+  );
+  assert.deepEqual(piDetailModels(null), []);
+  assert.deepEqual(piDetailModels({}), []);
+});
+
+test("modelOptionsForPhase returns Pi detail models only after a mode selection", () => {
+  const detail = { id: "pi", authMode: "openai", models: [{ value: "openai/gpt-5", label: "gpt-5" }] };
+  assert.deepEqual(
+    modelOptionsForPhase({ harnesses: [], harnessId: "pi", piDetail: detail }),
+    [{ value: "openai/gpt-5", label: "gpt-5" }],
+  );
+  assert.deepEqual(modelOptionsForPhase({ harnesses: [], harnessId: "pi", piDetail: null }), []);
+});
+
+test("modelOptionsForPhase returns Vibe base models and nothing for other harnesses", () => {
+  const harnesses = [
+    { id: "vibe", installed: true, models: [{ value: "vibe/m1", label: "m1" }] },
+  ];
+  assert.deepEqual(
+    modelOptionsForPhase({ harnesses, harnessId: "vibe", piDetail: null }),
+    [{ value: "vibe/m1", label: "m1" }],
+  );
+  assert.deepEqual(modelOptionsForPhase({ harnesses, harnessId: "codex", piDetail: null }), []);
+  assert.deepEqual(modelOptionsForPhase({ harnesses: [], harnessId: "vibe", piDetail: null }), []);
+});
+
+test("piDetailUrl encodes the provider query parameter", () => {
+  assert.strictEqual(piDetailUrl("openai"), "/api/harnesses/pi?provider=openai");
+  assert.strictEqual(piDetailUrl("a b&c"), "/api/harnesses/pi?provider=a%20b%26c");
+});
+
+test("piAuthStatusText describes auth state and login hint", () => {
+  assert.strictEqual(
+    piAuthStatusText({ auth: "ok", loginHint: "pi /login" }),
+    "pi auth ok - pi /login",
+  );
+  assert.strictEqual(
+    piAuthStatusText({ auth: "missing", loginHint: "pi /login (in the pi TUI)" }),
+    "pi auth missing - run pi /login (in the pi TUI)",
+  );
+  assert.strictEqual(piAuthStatusText({ auth: "missing" }), "pi auth missing - run pi /login");
+  assert.strictEqual(piAuthStatusText({ auth: "unknown", loginHint: "check pi" }), "pi auth unknown - check pi");
+  assert.strictEqual(piAuthStatusText(null), "");
+  assert.strictEqual(piAuthStatusText("nope"), "");
+});
+
+test("createRequestTracker invalidates older tokens", () => {
+  const tracker = createRequestTracker();
+  const first = tracker.next();
+  assert.ok(tracker.isCurrent(first));
+  const second = tracker.next();
+  assert.ok(!tracker.isCurrent(first));
+  assert.ok(tracker.isCurrent(second));
+});
+
+test("clearHarnessState resets everything but keeps the tracker", () => {
+  const tracker = createRequestTracker();
+  const state = clearHarnessState({
+    tracker,
+    authMode: "openai",
+    model: "openai/gpt-5",
+    models: [{ value: "openai/gpt-5", label: "gpt-5" }],
+    piDetail: { auth: "ok" },
+    statusText: "pi auth ok",
+  });
+  assert.strictEqual(state.tracker, tracker);
+  assert.strictEqual(state.authMode, "");
+  assert.strictEqual(state.model, "");
+  assert.deepEqual(state.models, []);
+  assert.strictEqual(state.piDetail, null);
+  assert.strictEqual(state.statusText, "");
+});
+
+test("clearHarnessState creates a tracker when none exists", () => {
+  const state = clearHarnessState(null);
+  assert.ok(state.tracker && typeof state.tracker.next === "function");
+  assert.strictEqual(state.authMode, "");
+});
+
+test("clearProviderState keeps the auth mode but drops provider state", () => {
+  const tracker = createRequestTracker();
+  const state = clearProviderState({
+    tracker,
+    authMode: "openai",
+    model: "openai/gpt-5",
+    models: [{ value: "openai/gpt-5", label: "gpt-5" }],
+    piDetail: { auth: "ok" },
+    statusText: "pi auth ok",
+  });
+  assert.strictEqual(state.tracker, tracker);
+  assert.strictEqual(state.authMode, "openai");
+  assert.strictEqual(state.model, "");
+  assert.deepEqual(state.models, []);
+  assert.strictEqual(state.piDetail, null);
+  assert.strictEqual(state.statusText, "");
+});
+
+test("buildPipelinePayload keeps model as a string and omits empty values", () => {
+  const rows = {
+    planner: { harness: "pi", model: "openai/gpt-5", effort: "" },
+    implementor: { harness: "vibe", model: "", effort: "high" },
+    validator: { harness: "", model: "", effort: "" },
+    integration: { harness: "", model: "", effort: "" },
+  };
+  assert.deepEqual(buildPipelinePayload(rows), {
+    planner: { harness: "pi", model: "openai/gpt-5" },
+    implementor: { harness: "vibe", effort: "high" },
+  });
 });

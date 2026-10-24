@@ -13,8 +13,137 @@
 
   const EFFORT_LEVELS = ["low", "medium", "high"];
 
+  const PI_HARNESS_ID = "pi";
+  const VIBE_HARNESS_ID = "vibe";
+
   function filterInstalled(harnesses) {
     return (harnesses || []).filter((h) => h && h.installed === true);
+  }
+
+  function findHarness(harnesses, id) {
+    if (!Array.isArray(harnesses) || typeof id !== "string") return null;
+    return harnesses.find((h) => h && h.id === id) || null;
+  }
+
+  // Normalize a {value,label} list (or plain strings) into clean options.
+  // Drops empty values, trims, dedupes by value, and defaults label to value.
+  function normalizeOptions(list) {
+    const out = [];
+    const seen = new Set();
+    for (const item of Array.isArray(list) ? list : []) {
+      if (item === null || item === undefined) continue;
+      const rawValue = typeof item === "string" ? item : item.value;
+      const rawLabel = typeof item === "string" ? item : item.label;
+      if (typeof rawValue !== "string" || rawValue.trim() === "") continue;
+      const value = rawValue.trim();
+      if (seen.has(value)) continue;
+      seen.add(value);
+      const label =
+        typeof rawLabel === "string" && rawLabel.trim() !== "" ? rawLabel.trim() : value;
+      out.push({ value, label });
+    }
+    return out;
+  }
+
+  // Merge option lists; first occurrence of a value wins.
+  function mergeModelOptions(...lists) {
+    return normalizeOptions(lists.flat());
+  }
+
+  // VIBE_MODELS is the documented comma-separated environment variable for
+  // extra Vibe model choices. The server may forward it as modelsEnv.
+  function parseCommaSeparatedModels(raw) {
+    if (typeof raw !== "string") return [];
+    return normalizeOptions(raw.split(","));
+  }
+
+  function authModeOptions(harnesses, harnessId) {
+    return normalizeOptions(
+      findHarness(harnesses, harnessId) &&
+        findHarness(harnesses, harnessId).authModes,
+    );
+  }
+
+  function baseModelOptions(harnesses, harnessId) {
+    const entry = findHarness(harnesses, harnessId);
+    return mergeModelOptions(
+      normalizeOptions(entry && entry.models),
+      parseCommaSeparatedModels(entry && entry.modelsEnv),
+    );
+  }
+
+  function piDetailModels(piDetail) {
+    return normalizeOptions(piDetail && piDetail.models);
+  }
+
+  // Model choices for one phase row. Pi shows only the selected provider's
+  // qualified models from its detail response; Vibe shows base metadata
+  // models; other harnesses contribute nothing beyond the default option.
+  function modelOptionsForPhase({ harnesses, harnessId, piDetail }) {
+    if (harnessId === PI_HARNESS_ID) {
+      return piDetail ? piDetailModels(piDetail) : [];
+    }
+    if (harnessId === VIBE_HARNESS_ID) {
+      return baseModelOptions(harnesses, VIBE_HARNESS_ID);
+    }
+    return [];
+  }
+
+  function piDetailUrl(provider) {
+    return "/api/harnesses/pi?provider=" + encodeURIComponent(provider);
+  }
+
+  // Human-readable auth state and login hint from a Pi detail response.
+  function piAuthStatusText(detail) {
+    if (!detail || typeof detail !== "object") return "";
+    const hint =
+      typeof detail.loginHint === "string" ? detail.loginHint.trim() : "";
+    const suffix = hint ? " - " + hint : "";
+    if (detail.auth === "ok") return "pi auth ok" + suffix;
+    if (detail.auth === "missing") return "pi auth missing - run " + (hint || "pi /login");
+    return "pi auth unknown" + suffix;
+  }
+
+  // Monotonic request tokens: a response may only touch the UI while its
+  // token is still current, so an older response cannot overwrite a newer
+  // selection.
+  function createRequestTracker() {
+    let current = 0;
+    return {
+      next() {
+        current += 1;
+        return current;
+      },
+      isCurrent(token) {
+        return token === current;
+      },
+    };
+  }
+
+  // Full reset for a phase row: used when the harness changes. Keeps the
+  // row's request tracker so in-flight fetches can be invalidated.
+  function clearHarnessState(state) {
+    return {
+      tracker: state && state.tracker ? state.tracker : createRequestTracker(),
+      authMode: "",
+      model: "",
+      models: [],
+      piDetail: null,
+      statusText: "",
+    };
+  }
+
+  // Provider-specific reset: used when the auth mode changes. Keeps the
+  // chosen auth mode but drops models, detail, and status text.
+  function clearProviderState(state) {
+    return {
+      tracker: state && state.tracker ? state.tracker : createRequestTracker(),
+      authMode: state && typeof state.authMode === "string" ? state.authMode : "",
+      model: "",
+      models: [],
+      piDetail: null,
+      statusText: "",
+    };
   }
 
   function buildPipelinePayload(rows) {
@@ -42,5 +171,26 @@
     return "unknown";
   }
 
-  return { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge };
+  return {
+    PHASE_ROWS,
+    EFFORT_LEVELS,
+    PI_HARNESS_ID,
+    VIBE_HARNESS_ID,
+    filterInstalled,
+    findHarness,
+    normalizeOptions,
+    mergeModelOptions,
+    parseCommaSeparatedModels,
+    authModeOptions,
+    baseModelOptions,
+    piDetailModels,
+    modelOptionsForPhase,
+    piDetailUrl,
+    piAuthStatusText,
+    createRequestTracker,
+    clearHarnessState,
+    clearProviderState,
+    buildPipelinePayload,
+    authBadge,
+  };
 });

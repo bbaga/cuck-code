@@ -138,7 +138,7 @@
   #createPanel label { display: block; font-size: .75rem; color: #8fa3bd; margin: 8px 0 2px; }
   #createPanel input, #createPanel select { width: 100%; padding: 6px; background: #0d1014;
     color: inherit; border: 1px solid #2c333d; border-radius: 4px; font-size: .8rem; }
-  .phaseRow { display: grid; grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1fr) 88px;
+  .phaseRow { display: grid; grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 88px;
     gap: 6px; align-items: center; margin-top: 6px; }
   .phaseRow .phaseName { font-size: .75rem; color: #6c7a8c; }
   .authHint { font-size: .7rem; color: #e5a04b; margin-top: 2px; min-height: 1em;
@@ -154,6 +154,7 @@
   @media (max-width: 640px) {
     .phaseRow { grid-template-columns: 1fr 1fr; }
     .phaseRow .phaseName { grid-column: 1 / -1; }
+    .authHint { grid-column: 1 / -1; }
   }
 </style>
 </head>
@@ -169,7 +170,9 @@
 <script src="pipeline-ui.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
-  const { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge } =
+  const { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge,
+    PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
+    piAuthStatusText, createRequestTracker, clearHarnessState, clearProviderState } =
     window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
@@ -936,7 +939,9 @@ window.addEventListener("DOMContentLoaded", () => {
   repoInput.type = "url";
   createPanel.append(mkLabel("Repo URL", repoInput), repoInput);
 
-  const harnessSelects = {}, modelInputs = {}, effortSelects = {}, authHints = {};
+  const harnessSelects = {}, authModeSelects = {}, modelSelects = {},
+    effortSelects = {}, authHints = {};
+  const phaseState = {};
   let installedHarnesses = [];
   for (const { key } of PHASE_ROWS) {
     const row = document.createElement("div");
@@ -951,11 +956,22 @@ window.addEventListener("DOMContentLoaded", () => {
     hDef.value = "";
     hDef.textContent = "default";
     hSel.appendChild(hDef);
-    hSel.addEventListener("change", () => updateAuthHint(key));
-    const mIn = document.createElement("input");
-    mIn.id = "cp-model-" + key;
-    mIn.placeholder = "model";
-    mIn.setAttribute("aria-label", key + " model");
+    const amSel = document.createElement("select");
+    amSel.id = "cp-authmode-" + key;
+    amSel.setAttribute("aria-label", key + " authentication mode");
+    const amDef = document.createElement("option");
+    amDef.value = "";
+    amDef.textContent = "default";
+    amSel.appendChild(amDef);
+    amSel.hidden = true;
+    amSel.disabled = true;
+    const mSel = document.createElement("select");
+    mSel.id = "cp-model-" + key;
+    mSel.setAttribute("aria-label", key + " model");
+    const mDef = document.createElement("option");
+    mDef.value = "";
+    mDef.textContent = "default";
+    mSel.appendChild(mDef);
     const eSel = document.createElement("select");
     eSel.id = "cp-effort-" + key;
     eSel.setAttribute("aria-label", key + " effort");
@@ -971,22 +987,112 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     const hint = document.createElement("div");
     hint.className = "authHint";
-    row.append(phaseName, hSel, mIn, eSel, hint);
+    row.append(phaseName, hSel, amSel, mSel, eSel, hint);
     createPanel.appendChild(row);
     harnessSelects[key] = hSel;
-    modelInputs[key] = mIn;
+    authModeSelects[key] = amSel;
+    modelSelects[key] = mSel;
     effortSelects[key] = eSel;
     authHints[key] = hint;
+    phaseState[key] = clearHarnessState(null);
+  }
+
+  // Rebuild the options of a select, keeping its default "" option and its
+  // current value when that value still exists.
+  function setSelectOptions(sel, options) {
+    const current = sel.value;
+    for (const o of [...sel.options]) if (o.value !== "") o.remove();
+    for (const opt of options) {
+      const o = document.createElement("option");
+      o.value = opt.value;
+      o.textContent = opt.label;
+      sel.appendChild(o);
+    }
+    sel.value = [...sel.options].some((o) => o.value === current) ? current : "";
+  }
+
+  function syncPhaseRow(key) {
+    const state = phaseState[key];
+    const harness = harnessSelects[key].value;
+    const isPi = harness === PI_HARNESS_ID;
+    const amSel = authModeSelects[key];
+    amSel.hidden = !isPi;
+    amSel.disabled = !isPi;
+    if (isPi) setSelectOptions(amSel, authModeOptions(installedHarnesses, PI_HARNESS_ID));
+    setSelectOptions(modelSelects[key], state.models);
+    authHints[key].textContent = state.statusText || baseAuthHintText(key);
+  }
+
+  function baseAuthHintText(key) {
+    const id = harnessSelects[key].value;
+    const entry = installedHarnesses.find((h) => h.id === id);
+    if (!entry) return "";
+    const badge = authBadge(entry);
+    return badge === "missing"
+      ? entry.id + ": auth missing - run " + (entry.loginHint || entry.id + " login")
+      : entry.id + ": " + badge;
   }
 
   function updateAuthHint(key) {
-    const id = harnessSelects[key].value;
-    const entry = installedHarnesses.find((h) => h.id === id);
-    if (!entry) { authHints[key].textContent = ""; return; }
-    const badge = authBadge(entry);
-    authHints[key].textContent = badge === "missing"
-      ? entry.id + ": auth missing - run " + (entry.loginHint || entry.id + " login")
-      : entry.id + ": " + badge;
+    authHints[key].textContent = phaseState[key].statusText || baseAuthHintText(key);
+  }
+
+  for (const { key } of PHASE_ROWS) {
+    harnessSelects[key].addEventListener("change", () => onHarnessChange(key));
+    authModeSelects[key].addEventListener("change", () => onAuthModeChange(key));
+  }
+
+  function onHarnessChange(key) {
+    // New harness: drop the auth mode, model, models, status, and hints, and
+    // invalidate any in-flight Pi detail fetch for this row.
+    const state = phaseState[key];
+    state.tracker.next();
+    const next = clearHarnessState(state);
+    next.models = modelOptionsForPhase({
+      harnesses: installedHarnesses,
+      harnessId: harnessSelects[key].value,
+      piDetail: null,
+    });
+    phaseState[key] = next;
+    syncPhaseRow(key);
+  }
+
+  async function onAuthModeChange(key) {
+    const state = phaseState[key];
+    const provider = authModeSelects[key].value;
+    // New mode: drop provider-specific state and invalidate older fetches.
+    state.tracker.next();
+    phaseState[key] = clearProviderState(state);
+    syncPhaseRow(key);
+    if (!provider) return;
+    const token = phaseState[key].tracker.next();
+    let res;
+    try {
+      res = await fetch(piDetailUrl(provider));
+    } catch (err) {
+      if (phaseState[key].tracker.isCurrent(token)) {
+        phaseState[key].statusText = String(err);
+        updateAuthHint(key);
+      }
+      return;
+    }
+    if (!phaseState[key].tracker.isCurrent(token)) return;
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      phaseState[key].statusText = data.error || "Pi detail failed (HTTP " + res.status + ")";
+      updateAuthHint(key);
+      return;
+    }
+    const detail = await res.json().catch(() => null);
+    if (!detail || !phaseState[key].tracker.isCurrent(token)) return;
+    phaseState[key].piDetail = detail;
+    phaseState[key].models = modelOptionsForPhase({
+      harnesses: installedHarnesses,
+      harnessId: PI_HARNESS_ID,
+      piDetail: detail,
+    });
+    phaseState[key].statusText = piAuthStatusText(detail);
+    syncPhaseRow(key);
   }
 
   const authSummary = document.createElement("div");
@@ -1026,7 +1132,16 @@ window.addEventListener("DOMContentLoaded", () => {
           sel.appendChild(o);
         }
         sel.value = current;
-        updateAuthHint(key);
+        // Base metadata arrived: refresh auth mode options and model choices
+        // (Vibe rows pick up their models here; Pi rows wait for a mode).
+        if (harnessSelects[key].value !== PI_HARNESS_ID) {
+          phaseState[key].models = modelOptionsForPhase({
+            harnesses: installedHarnesses,
+            harnessId: harnessSelects[key].value,
+            piDetail: null,
+          });
+        }
+        syncPhaseRow(key);
       }
       const missing = installedHarnesses.filter((h) => h.auth === "missing");
       authSummary.textContent = missing.length
@@ -1041,9 +1156,11 @@ window.addEventListener("DOMContentLoaded", () => {
     repoInput.value = "";
     for (const { key } of PHASE_ROWS) {
       harnessSelects[key].value = "";
-      modelInputs[key].value = "";
+      authModeSelects[key].value = "";
+      modelSelects[key].value = "";
       effortSelects[key].value = "";
-      updateAuthHint(key);
+      phaseState[key] = clearHarnessState(phaseState[key]);
+      syncPhaseRow(key);
     }
     createErr.hidden = true;
   }
@@ -1071,7 +1188,7 @@ window.addEventListener("DOMContentLoaded", () => {
     for (const { key } of PHASE_ROWS) {
       rows[key] = {
         harness: harnessSelects[key].value,
-        model: modelInputs[key].value,
+        model: modelSelects[key].value,
         effort: effortSelects[key].value,
       };
     }
