@@ -13,6 +13,7 @@ const PRODUCTION_SCRIPTS = [
   "spawn-plan.js",
   "handoff.js",
   "jsonl.js",
+  "validation-queue.js",
   "web/pipeline-ui.js",
 ];
 const REQUIRED_WEB_ASSETS = ["web/index.html", "web/pipeline-ui.js"];

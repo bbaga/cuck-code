@@ -54,12 +54,18 @@ The old `reportText(transcript)` read `entry.content`, but normalized harness ad
 
 The correction uses `handoff.js` as the shared text, criteria, report, and verdict contract. `InvocationCapture` records normalized entries for one process run. The server keeps that capture separate from the 500-entry UI transcript. Deferred validation stores criteria and its matching implementor report. `JsonlDecoder` frames LF/CRLF records and returns a remaining EOF record. The Pi adapter clears deltas when a completed message arrives, including an empty one. It replaces partial text with authoritative `text_end` block content and flushes pending blocks only when no completed message arrives. Completion state and final verdict are set before saving and broadcasting. Reports use explicit complete-body boundaries and do not append punctuation to report text.
 
+## Deferred validation queue correction
+
+The validator found that the old `flushPendingValidations()` shifted the first item, then skipped it if the implementor was running. That dropped the saved criteria and report. `validation-queue.js` now owns the actual production flush operation. It inspects at most the queue length at the start of the pass. It rotates running implementors to the queue tail, so ready work can use free slots. It launches no more validators than the available capacity. Missing workers are discarded with an explicit reason. Removing an implementor removes its pending items deliberately.
+
+Every pending item stores the implementor ID, exact criteria, matching report, and run generation. The server persists and restores those fields. A continuation advances the worker generation before saving state. A queued item remains while the worker runs. After the worker completes, a generation mismatch cancels the old item with an explicit `DEFERRED VALIDATION SUPERSEDED` notification. The old report and criteria are never used to check the newer worktree. The new run must receive new criteria. Repeated flushes cannot launch the same item twice because a successful launch removes it from the queue before the next pass.
+
 ## Commands and evidence
 
 Run from the repository root:
 
-- Unit tests: `node --test router-prototype/test/*.test.js` — **80 passed, 0 failed** on implementation commit `7cd851b31b11edefcd1ceef30528499ff3163a17`.
-- Static build validation: `node router-prototype/scripts/validate-build.js` — **10 checks passed** on the same commit.
+- Unit tests: `node --test router-prototype/test/*.test.js` — **88 passed, 0 failed** after the queue correction.
+- Static build validation: `node router-prototype/scripts/validate-build.js` — **11 checks passed** after adding `validation-queue.js` to the production source list.
 - `git diff --check` — passed.
 - No local integration, browser, live process, or API tests were run.
 
@@ -68,6 +74,7 @@ This is a plain-JavaScript application. It has no transpilation or bundling buil
 Required test evidence:
 
 - Existing planner-role and report-marker tests still pass.
+- Queue unit tests call the production `flushPendingValidationQueue()` module used by the server. They cover a running implementor with a free slot, mixed blocked and ready items, bounded scans, full capacity and later completion, repeat flushes, source-run supersession, deleted workers, and save/restore of exact criteria and report associations.
 - Adapter/handoff tests cover normalized assistant messages, legacy string/block content, multiple assistant messages, malformed events, current-run isolation, transcript limits, full notifications, explicit and missing verdicts, and deferred/continued report association.
 - Pi and JSONL tests cover fragmented input, Unicode, CRLF, final buffered input, authoritative completed content, and no duplicate deltas.
 - Test outputs report exact totals and failures.

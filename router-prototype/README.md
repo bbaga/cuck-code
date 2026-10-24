@@ -226,6 +226,16 @@ automatically when a worker closes, and survives restarts. The
 planner-driven spawns (workers, integration validator) get a 409 and
 the planner brief tells the planner to wait for completions and retry.
 
+A deferred validation stays queued while its implementor is running. Each flush
+checks at most the items that were queued at the start of that pass. It rotates
+blocked items so ready validations can use free capacity. Removing an
+implementor removes its pending validations and records that cancellation.
+Each queued item stores its criteria, report, and implementor run generation.
+A continuation advances that generation. If it changes the work before a
+queued validation starts, the router cancels the old item with a diagnostic.
+The new run needs new criteria. Queue data and run generations persist in
+`line.json`.
+
 ### Worktree discipline
 
 Every implementor works exclusively in its own git worktree of its assigned

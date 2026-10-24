@@ -14,6 +14,8 @@ const { messageText, InvocationCapture, appendTranscript, isSkipValidation, hasC
   applyCompletion, completionFields, missingCriteriaDiagnostic, runOutputNote,
   buildImplementorNotification, buildValidationNotification,
   buildIntegrationNotification } = require("./handoff");
+const { flushPendingValidationQueue, removePendingValidations,
+  serializePendingValidations, restorePendingValidations } = require("./validation-queue");
 
 const PORT = Number(process.env.PORT || 7788);
 const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
@@ -690,7 +692,7 @@ function saveLine(line) {
       JSON.stringify({ id: line.id, name: line.name, sessionId: line.sessionId,
         repoUrl: line.repoUrl || null,
         pipeline: line.pipeline || null,
-        pendingValidations: line.pendingValidations || [],
+        pendingValidations: serializePendingValidations(line.pendingValidations),
         repos: [...(line.repos || new Map()).values()].map((r) => ({
           name: r.name, url: r.url, path: r.path })),
         started: line.started, planApproved: line.planApproved,
@@ -702,6 +704,7 @@ function saveLine(line) {
         workers: [...line.workers.values()].map((w) => ({
           id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch,
           ...completionFields(w), lastRunText: w.lastRunText || null,
+          runGeneration: w.runGeneration || 0,
           role: w.role, validates: w.validates, persona: w.persona || "backend",
           repo: w.repo || "primary", worktreePath: w.worktreePath,
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
@@ -907,12 +910,26 @@ function runningCount(line) {
 
 function flushPendingValidations(line) {
   if (!line.pendingValidations || !line.pendingValidations.length) return;
-  while (line.pendingValidations.length && runningCount(line) < WORKER_CAP) {
-    const { implWorkerId, criteria, report } = line.pendingValidations.shift();
-    const implWorker = line.workers.get(implWorkerId);
-    if (!implWorker || implWorker.status === "running" || implWorker.deleted) continue;
-    trySpawnValidator(line, implWorker, criteria, true, report);
-    saveLine(line);
+  const result = flushPendingValidationQueue(line, {
+    capacity: WORKER_CAP,
+    runningCount: () => runningCount(line),
+    launch: (item, implWorker) => trySpawnValidator(line, implWorker,
+      item.criteria, true, item.report),
+    onDiscard: (item, implWorker, reason) => {
+      slog("warn", "validator.deferred-discarded", { lineId: line.id,
+        implementorId: item.implWorkerId, runId: item.runId, reason });
+      const name = implWorker ? implWorker.name : item.implWorkerId;
+      if (reason === "superseded") {
+        enqueue(line, `DEFERRED VALIDATION SUPERSEDED - implementor '${name}' continued after run ${item.runId}. The older criteria and report were not used against the newer worktree. Wait for the current run report and give new criteria.`);
+      } else {
+        enqueue(line, `DEFERRED VALIDATION CANCELLED - implementor '${name}' no longer exists. Its saved criteria and report were not used.`);
+      }
+    },
+  });
+  if (result.changed) saveLine(line);
+  if (result.launchError) {
+    slog("error", "validator.deferred-launch-failed", { lineId: line.id,
+      error: String(result.launchError) });
   }
 }
 
@@ -1074,7 +1091,7 @@ function spawnValidator(line, implWorker, criteria, report) {
     prompt: validatorBrief(implWorker.name, report, criteria,
       implWorker.persona || "backend", id, implWorker.id, line.id, repoName, repoUrl),
     sessionId: null, worktreePath: implWorker.worktreePath, branch: implWorker.branch,
-    status: "running", stopRequested: false, child: null, transcript: [] };
+    status: "running", stopRequested: false, runGeneration: 1, child: null, transcript: [] };
   line.workers.set(id, worker);
   saveLine(line);
   slog("info", "validator.spawned", { lineId: line.id, validatorId: id,
@@ -1404,6 +1421,7 @@ const server = http.createServer((req, res) => {
       if (wt.status !== 0) return json(res, 500, { error: "git worktree add failed", stderr: wt.stderr });
       const worker = { id, lineId: line.id, name: body.name,
         role: "implementor", validates: null, persona, kind: "standard", repo: repo.name,
+        runGeneration: 1,
         harness: body.harness || null, model: body.model || null,
         effort: body.effort || null,
         prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo),
@@ -1469,6 +1487,15 @@ const server = http.createServer((req, res) => {
       }
     }
     line.workers.delete(worker.id);
+    if (worker.role === "implementor") {
+      const cancelled = removePendingValidations(line.pendingValidations, worker.id);
+      if (cancelled.length) {
+        slog("info", "validator.deferred-cancelled", { lineId: line.id,
+          implementorId: worker.id, count: cancelled.length, reason: "implementor-removed" });
+        broadcast(line, "validation_queue_cancelled", { implementorId: worker.id,
+          count: cancelled.length, reason: "implementor-removed" });
+      }
+    }
     // Discard the local work of a removed implementor or integration
     // validator: drop its worktree and branch so the name and branch can
     // be reused. Standard validators share the implementor's worktree -
@@ -1575,7 +1602,7 @@ const server = http.createServer((req, res) => {
         role: "validator", validates: null, persona: "backend", repo: "primary",
         prompt: integrationValidatorBrief(line, branchEntries, body.prompt, id, repoList(line)),
         sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
-        child: null, transcript: [] };
+        runGeneration: 1, child: null, transcript: [] };
       line.workers.set(id, worker);
       saveLine(line);
       slog("info", "integration.spawned", { lineId: line.id, validatorId: id,
@@ -1699,6 +1726,7 @@ ${body.prompt}
 When done, reply with a report: what you changed, files changed, how you verified it, open issues. That report goes back to the planner verbatim.`;
       worker.status = "running";
       worker.stopRequested = false;
+      worker.runGeneration = (worker.runGeneration || 0) + 1;
       broadcast(line, "worker_status", { workerId: worker.id, status: "running" });
       saveLine(line);
       slog("info", "worker.continued", { lineId: line.id, workerId: worker.id,
@@ -1799,7 +1827,8 @@ function loadLines() {
           worktreePath: w.worktreePath
             || path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name)),
           branch: w.branch, status: w.status === "running" ? "stopped" : w.status,
-          stopRequested: false, child: null, transcript: [], lastRunText: w.lastRunText || "" });
+          stopRequested: false, child: null, transcript: [], lastRunText: w.lastRunText || "",
+          runGeneration: Number.isInteger(w.runGeneration) ? w.runGeneration : 0 });
       }
       for (const w of meta.workers || []) {
         if (w.role !== "validator") continue;
@@ -1816,7 +1845,8 @@ function loadLines() {
               : path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name))),
           branch: w.branch,
           status: w.status === "running" ? "stopped" : w.status,
-          stopRequested: false, child: null, transcript: [], lastRunText: w.lastRunText || "" });
+          stopRequested: false, child: null, transcript: [], lastRunText: w.lastRunText || "",
+          runGeneration: Number.isInteger(w.runGeneration) ? w.runGeneration : 0 });
       }
       const started = meta.started === true || !!meta.sessionId;
       const inventory = new Map();
@@ -1834,7 +1864,7 @@ function loadLines() {
         started,
         planApproved: meta.planApproved === true, workers, inventory,
         evidence: new Map((meta.evidence || []).map((e) => [e.id, e])),
-        pendingValidations: meta.pendingValidations || [],
+        pendingValidations: restorePendingValidations(meta.pendingValidations),
         clients: new Set(), transcript: [] };
       lines.set(meta.id, line);
       if (line.pendingValidations.length && line.planApproved) {

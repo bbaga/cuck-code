@@ -58,7 +58,8 @@ function validationCriteriaBlock(criteria) {
 }
 
 function pendingValidationFor(worker, criteria) {
-  return { implWorkerId: worker.id, criteria, report: worker.lastRunText || "" };
+  return { implWorkerId: worker.id, criteria, report: worker.lastRunText || "",
+    runId: worker.runGeneration ?? null };
 }
 
 function reportForValidation(worker, pendingReport) {
