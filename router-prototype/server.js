@@ -4,6 +4,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
 const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
+  resolvePipeline, probeResultFor,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   validateWorkerSpawnBody, lineSummary } = require("./spawn-plan");
