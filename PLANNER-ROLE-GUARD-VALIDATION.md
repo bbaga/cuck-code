@@ -12,6 +12,7 @@ An interim validator that uses the older live router may still read this file as
 - Handoff implementation commit: `d89fb5dc109b70fd34655482268ccb1d3197ab68` (`Fix normalized planner and worker handoffs`).
 - Deferred validation queue correction: `34940097d6f87813f1e77aba2ca372af3efb3904` (`Preserve deferred validation queue entries`).
 - Queue correction code commit: `34940097d6f87813f1e77aba2ca372af3efb3904`.
+- Criteria source-identity race correction commit: `989be9d7926897a7140cbb4ba8ca2823f4d1acf2`.
 - Do not use or change the shared checkout. Do not push `main` or `master`.
 
 ## Preserved planner-role acceptance criteria
@@ -86,6 +87,6 @@ Required test evidence:
 
 ## CI and remaining validation
 
-Basic GitHub Actions push and pull-request checks are approved. Both checks passed for queue correction commit `34940097d6f87813f1e77aba2ca372af3efb3904`: [push run](https://github.com/bbaga/cuck-code/actions/runs/40136231589) and [pull-request run](https://github.com/bbaga/cuck-code/actions/runs/40136234207). Each ran unit tests and static JavaScript/local asset validation. A push alone is not a passing check.
+Basic GitHub Actions push and pull-request checks are approved. Both checks passed for criteria source-identity correction commit `989be9d7926897a7140cbb4ba8ca2823f4d1acf2`: [push run](https://github.com/bbaga/cuck-code/actions/runs/40136946642) and [pull-request run](https://github.com/bbaga/cuck-code/actions/runs/40136950480). Each ran unit tests and static JavaScript/local asset validation. A push alone is not a passing check.
 
 The draft PR is <https://github.com/bbaga/cuck-code/pull/5>. Do not deploy, restart, or hot-patch the live router on port 7788. Do not start integration testing. Fresh integration and live process/API end-to-end checks belong to the separately authorized integration validator. This record is not an acceptance verdict. Independent validation must run against the pushed branch head, including the queue correction commit and this validation record.
