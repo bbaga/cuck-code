@@ -64,10 +64,36 @@ test("preserves validation report body and verdict", () => {
   assert.match(result, /Do not claim acceptance without the required validator verdict/);
 });
 
+test("preserves a report with quoted wrapper markers exactly", () => {
+  const start = "--- PLANNER TURN CONTEXT ---";
+  const end = "--- END PLANNER TURN CONTEXT ---";
+  const report = `VALIDATION REPORT: prefix\nQuoted text: ${start}\nquoted body\n${end}\nVERDICT: FAIL`;
+  const result = wrapPlannerTurn(report, context);
+  assert.ok(result.endsWith(report));
+  assert.equal(result.slice(result.indexOf("VALIDATION REPORT:")), report);
+});
+
+test("preserves repeated, incomplete, and leading marker pairs in payloads", () => {
+  const start = "--- PLANNER TURN CONTEXT ---";
+  const end = "--- END PLANNER TURN CONTEXT ---";
+  const payloads = [
+    `before ${start} one ${end} middle ${start} two ${end} after`,
+    `prefix ${start} incomplete pair`,
+    `${start} leading quoted marker ${end} trailing content`,
+  ];
+  for (const payload of payloads) {
+    const result = wrapPlannerTurn(payload, context);
+    assert.ok(result.endsWith(payload));
+    assert.equal(result.slice(result.indexOf(payload)), payload);
+  }
+});
+
 test("does not nest wrappers and refreshes approval state", () => {
   const first = wrapPlannerTurn("continue", context);
   const second = wrapPlannerTurn(first, { ...context, approved: true });
   assert.equal(second.split("--- PLANNER TURN CONTEXT ---").length - 1, 1);
   assert.match(second, /APPROVAL STATE: APPROVED/);
-  assert.ok(second.endsWith("continue"));
+  const contextEnd = second.indexOf("--- END PLANNER TURN CONTEXT ---\n");
+  assert.notEqual(contextEnd, -1);
+  assert.equal(second.slice(contextEnd + "--- END PLANNER TURN CONTEXT ---\n".length), "continue");
 });
