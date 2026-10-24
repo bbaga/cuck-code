@@ -172,7 +172,8 @@
 window.addEventListener("DOMContentLoaded", () => {
   const { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge,
     PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
-    piAuthStatusText, createRequestTracker, clearHarnessState, clearProviderState } =
+    authModeSelectState, piDetailApply, createRequestTracker,
+    clearHarnessState, clearProviderState } =
     window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
@@ -1014,11 +1015,20 @@ window.addEventListener("DOMContentLoaded", () => {
   function syncPhaseRow(key) {
     const state = phaseState[key];
     const harness = harnessSelects[key].value;
-    const isPi = harness === PI_HARNESS_ID;
     const amSel = authModeSelects[key];
-    amSel.hidden = !isPi;
-    amSel.disabled = !isPi;
-    if (isPi) setSelectOptions(amSel, authModeOptions(installedHarnesses, PI_HARNESS_ID));
+    // The pure state resets the value to "" for every non-Pi harness, so a
+    // stale selected mode cannot survive a harness change.
+    const amState = authModeSelectState({
+      harnessId: harness,
+      options: harness === PI_HARNESS_ID
+        ? authModeOptions(installedHarnesses, PI_HARNESS_ID)
+        : [],
+      currentValue: amSel.value,
+    });
+    setSelectOptions(amSel, amState.options);
+    amSel.value = amState.value;
+    amSel.hidden = amState.hidden;
+    amSel.disabled = amState.disabled;
     setSelectOptions(modelSelects[key], state.models);
     authHints[key].textContent = state.statusText || baseAuthHintText(key);
   }
@@ -1053,6 +1063,8 @@ window.addEventListener("DOMContentLoaded", () => {
       harnessId: harnessSelects[key].value,
       piDetail: null,
     });
+    // Explicitly reset the auth mode select before it is hidden or filled.
+    authModeSelects[key].value = "";
     phaseState[key] = next;
     syncPhaseRow(key);
   }
@@ -1076,22 +1088,32 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       return;
     }
-    if (!phaseState[key].tracker.isCurrent(token)) return;
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      phaseState[key].statusText = data.error || "Pi detail failed (HTTP " + res.status + ")";
+      // Recheck after the async json() step: a newer selection must win.
+      const outcome = piDetailApply({
+        isCurrent: phaseState[key].tracker.isCurrent(token),
+        ok: false,
+        status: res.status,
+        data,
+      });
+      if (!outcome.apply) return;
+      phaseState[key].statusText = outcome.statusText;
       updateAuthHint(key);
       return;
     }
-    const detail = await res.json().catch(() => null);
-    if (!detail || !phaseState[key].tracker.isCurrent(token)) return;
-    phaseState[key].piDetail = detail;
-    phaseState[key].models = modelOptionsForPhase({
-      harnesses: installedHarnesses,
-      harnessId: PI_HARNESS_ID,
-      piDetail: detail,
+    const data = await res.json().catch(() => null);
+    // Recheck after the async json() step: a newer selection must win.
+    const outcome = piDetailApply({
+      isCurrent: phaseState[key].tracker.isCurrent(token),
+      ok: true,
+      status: res.status,
+      data,
     });
-    phaseState[key].statusText = piAuthStatusText(detail);
+    if (!outcome.apply) return;
+    phaseState[key].piDetail = outcome.piDetail;
+    phaseState[key].models = outcome.models;
+    phaseState[key].statusText = outcome.statusText;
     syncPhaseRow(key);
   }
 

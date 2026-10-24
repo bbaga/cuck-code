@@ -104,6 +104,45 @@
     return "pi auth unknown" + suffix;
   }
 
+  // Pure decision for one phase row's auth mode select. A non-Pi harness
+  // always resets the select to the empty default, so a stale selected
+  // value cannot survive a harness change.
+  function authModeSelectState({ harnessId, options, currentValue }) {
+    if (harnessId !== PI_HARNESS_ID) {
+      return { hidden: true, disabled: true, options: [], value: "" };
+    }
+    const opts = normalizeOptions(options);
+    const value = opts.some((o) => o.value === currentValue) ? currentValue : "";
+    return { hidden: false, disabled: false, options: opts, value };
+  }
+
+  // Pure decision for applying a Pi detail response. Call it after every
+  // asynchronous boundary (fetch and response.json()) with a fresh
+  // isCurrent check, so a stale response never touches newer state.
+  function piDetailApply({ isCurrent, ok, status, data }) {
+    if (!isCurrent) return { apply: false };
+    if (!ok) {
+      const error =
+        data && typeof data.error === "string" && data.error.trim() !== ""
+          ? data.error
+          : null;
+      return {
+        apply: true,
+        statusText: error || "Pi detail failed (HTTP " + status + ")",
+        models: [],
+        piDetail: null,
+      };
+    }
+    const detail = data && typeof data === "object" ? data : null;
+    if (!detail) return { apply: false };
+    return {
+      apply: true,
+      statusText: piAuthStatusText(detail),
+      models: piDetailModels(detail),
+      piDetail: detail,
+    };
+  }
+
   // Monotonic request tokens: a response may only touch the UI while its
   // token is still current, so an older response cannot overwrite a newer
   // selection.
@@ -187,6 +226,8 @@
     modelOptionsForPhase,
     piDetailUrl,
     piAuthStatusText,
+    authModeSelectState,
+    piDetailApply,
     createRequestTracker,
     clearHarnessState,
     clearProviderState,

@@ -16,6 +16,8 @@ const {
   piDetailModels,
   modelOptionsForPhase,
   piDetailUrl,
+  authModeSelectState,
+  piDetailApply,
   piAuthStatusText,
   createRequestTracker,
   clearHarnessState,
@@ -297,4 +299,86 @@ test("buildPipelinePayload keeps model as a string and omits empty values", () =
     planner: { harness: "pi", model: "openai/gpt-5" },
     implementor: { harness: "vibe", effort: "high" },
   });
+});
+
+test("authModeSelectState resets a retained value on a non-Pi harness", () => {
+  const state = authModeSelectState({
+    harnessId: "vibe",
+    options: [{ value: "openai", label: "OpenAI" }],
+    currentValue: "openai",
+  });
+  assert.deepEqual(state, { hidden: true, disabled: true, options: [], value: "" });
+});
+
+test("authModeSelectState resets to the default for an empty harness", () => {
+  const state = authModeSelectState({ harnessId: "", options: [], currentValue: "openai" });
+  assert.deepEqual(state, { hidden: true, disabled: true, options: [], value: "" });
+});
+
+test("authModeSelectState keeps a valid Pi selection and drops an invalid one", () => {
+  const options = [{ value: "openai", label: "OpenAI" }, { value: "anthropic", label: "Anthropic" }];
+  assert.deepEqual(
+    authModeSelectState({ harnessId: "pi", options, currentValue: "anthropic" }),
+    { hidden: false, disabled: false, options, value: "anthropic" },
+  );
+  assert.deepEqual(
+    authModeSelectState({ harnessId: "pi", options, currentValue: "gone" }),
+    { hidden: false, disabled: false, options, value: "" },
+  );
+});
+
+test("piDetailApply drops a stale error response", () => {
+  const outcome = piDetailApply({
+    isCurrent: false,
+    ok: false,
+    status: 400,
+    data: { error: "unknown provider" },
+  });
+  assert.deepEqual(outcome, { apply: false });
+});
+
+test("piDetailApply drops a stale success response", () => {
+  const outcome = piDetailApply({
+    isCurrent: false,
+    ok: true,
+    status: 200,
+    data: { id: "pi", auth: "ok", models: [{ value: "openai/gpt-5", label: "gpt-5" }] },
+  });
+  assert.deepEqual(outcome, { apply: false });
+});
+
+test("piDetailApply applies a current error response with its message", () => {
+  const outcome = piDetailApply({
+    isCurrent: true,
+    ok: false,
+    status: 400,
+    data: { error: "unknown provider 'nope'" },
+  });
+  assert.deepEqual(outcome, {
+    apply: true,
+    statusText: "unknown provider 'nope'",
+    models: [],
+    piDetail: null,
+  });
+});
+
+test("piDetailApply falls back to a status message without an error body", () => {
+  const outcome = piDetailApply({ isCurrent: true, ok: false, status: 400, data: {} });
+  assert.equal(outcome.apply, true);
+  assert.equal(outcome.statusText, "Pi detail failed (HTTP 400)");
+});
+
+test("piDetailApply applies a current success response", () => {
+  const detail = { id: "pi", authMode: "openai", auth: "ok", loginHint: "pi /login",
+    models: [{ value: "openai/gpt-5", label: "gpt-5" }] };
+  const outcome = piDetailApply({ isCurrent: true, ok: true, status: 200, data: detail });
+  assert.equal(outcome.apply, true);
+  assert.equal(outcome.statusText, "pi auth ok - pi /login");
+  assert.deepEqual(outcome.models, [{ value: "openai/gpt-5", label: "gpt-5" }]);
+  assert.strictEqual(outcome.piDetail, detail);
+});
+
+test("piDetailApply ignores a malformed success body", () => {
+  assert.deepEqual(piDetailApply({ isCurrent: true, ok: true, status: 200, data: null }), { apply: false });
+  assert.deepEqual(piDetailApply({ isCurrent: true, ok: true, status: 200, data: "nope" }), { apply: false });
 });
