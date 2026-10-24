@@ -216,7 +216,9 @@ Precedence, most specific wins:
 2. Environment variables, read at resolve time.
 3. The line's `pipeline` config (set at line creation, persisted in
    `line.json`).
-4. A per-worker `harness` override (planned; not implemented yet).
+4. A per-worker override: `harness`, `model`, and `effort` fields on the
+   worker spawn body (they win over the phase config and are stored on
+   the worker record).
 
 Environment variables per phase (`PLANNER_`, `IMPLEMENTOR_`, `VALIDATOR_`,
 `INTEGRATION_`): `<PHASE>_HARNESS`, `<PHASE>_MODEL`, `<PHASE>_EFFORT`.
@@ -240,6 +242,19 @@ cached for 30 seconds; `?refresh=1` skips the cache. Per harness it reports
 `installed`, `auth` (`ok`, `missing`, or `unknown`), `version`, and
 `loginHint`. Creating a line or spawning a worker with a harness that is not
 installed fails with 400.
+
+### How the router starts a phase
+
+1. It resolves the phase config and creates one adapter per child process
+   with `createHarness(harness)`.
+2. `buildRun()` produces `{ cmd, args, env, cwd }`; `env` holds only extra
+   variables and is merged over `process.env`.
+3. Each stdout JSON line goes through `normalize()`; the returned entry
+   lands in the transcript and carries the captured session id.
+4. At close, `finalize()` flushes a partial message, then `outcome()`
+   maps the exit to `ok`, `timeout`, or `fail`.
+5. `vibe` enforces its time limit itself; for `pi`, `codex`, and `claude`
+   the router starts a kill timer that sends `SIGTERM`.
 
 Login hints per harness: `vibe --setup`; `pi /login` (in the pi TUI);
 `codex login`; `claude login`.
