@@ -10,6 +10,7 @@ const {
   resolvePipeline,
   HARNESS_PROBES,
   probeHarnesses,
+  probeResultFor,
 } = require("../pipeline-config");
 
 // ---- validatePipelineConfig ----
@@ -137,6 +138,23 @@ test("HARNESS_PROBES covers every harness id", () => {
     assert.strictEqual(typeof probe.loginHint, "string");
     assert.ok(probe.loginHint.length > 0);
   }
+});
+
+// ---- probeResultFor ----
+
+test("probeResultFor returns the entry with the matching id", () => {
+  const results = [{ id: "vibe", installed: true }, { id: "codex", installed: false }];
+  assert.deepStrictEqual(probeResultFor(results, "codex"), { id: "codex", installed: false });
+  assert.deepStrictEqual(probeResultFor(results, "vibe"), { id: "vibe", installed: true });
+});
+
+test("probeResultFor returns null for an unknown id", () => {
+  const results = [{ id: "vibe", installed: true }];
+  assert.strictEqual(probeResultFor(results, "gemini"), null);
+});
+
+test("probeResultFor returns null for an empty list", () => {
+  assert.strictEqual(probeResultFor([], "vibe"), null);
 });
 
 // ---- probeHarnesses ----

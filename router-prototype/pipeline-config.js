@@ -123,6 +123,13 @@ async function probeHarnesses(run) {
   }));
 }
 
+// Return the probe result entry whose id matches, or null when no entry
+// matches. Pure helper for callers that probe a single harness.
+function probeResultFor(results, id) {
+  if (!Array.isArray(results)) return null;
+  return results.find((r) => r && r.id === id) || null;
+}
+
 module.exports = {
   PHASES,
   HARNESS_IDS,
@@ -131,4 +138,5 @@ module.exports = {
   resolvePipeline,
   HARNESS_PROBES,
   probeHarnesses,
+  probeResultFor,
 };
