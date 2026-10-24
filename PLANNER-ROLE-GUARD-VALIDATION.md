@@ -39,7 +39,7 @@ An interim validator that uses the older live router may still read this file as
 3. Capture normalized output for each planner or worker invocation separately from the capped UI transcript. Never use historical output when the current planner run has no criteria.
 4. Forward the exact current criteria to the validator. Preserve explicit `SKIP VALIDATION`. Do not treat missing text as skip.
 5. If criteria are empty, emit a clear diagnostic and do not start a validator. If a report or verdict is missing, emit a clear diagnostic and keep the verdict unset.
-6. Preserve exact report and criteria association while deferred and saved. If a continuation supersedes the report's run before validation starts, explicitly cancel the stale item and require new criteria; never validate newer work with an older report.
+6. Bind criteria to immutable worker ID, invocation ID, run generation, and report metadata from the originating implementor notification. Carry it through planner dispatch, retries, criteria completion, deferral, persistence, and validator creation. If a continuation supersedes that source, cancel its criteria explicitly and preserve the newer report request.
 7. Parse only a complete, explicit, final `VERDICT: PASS` or `VERDICT: FAIL` line. Ignore quoted examples, code fences, and incomplete output.
 8. Set the worker status and verdict before state persistence, API results, completion events, or planner notifications. Keep those views consistent.
 9. Follow Pi JSONL framing. Process split records, CRLF, and a buffered EOF record. Use completed `message_end` messages as authoritative; use `text_end` as the completed block value; avoid duplicate deltas. If no completed Pi message arrives, use the adapter's supported final block flush.
@@ -59,15 +59,17 @@ The correction uses `handoff.js` as the shared text, criteria, report, and verdi
 
 The validator found that the old `flushPendingValidations()` shifted the first item, then skipped it if the implementor was running. That dropped the saved criteria and report. `validation-queue.js` now owns the actual production flush operation. It inspects at most the queue length at the start of the pass. It rotates running implementors to the queue tail, so ready work can use free slots. It launches no more validators than the available capacity. Missing workers are discarded with an explicit reason. Removing an implementor removes its pending items deliberately.
 
-Every pending item stores the implementor ID, exact criteria, matching report, and run generation. The server persists and restores those fields. A continuation advances the worker generation before saving state. A queued item remains while the worker runs. After the worker completes, a generation mismatch cancels the old item with an explicit `DEFERRED VALIDATION SUPERSEDED` notification. The old report and criteria are never used to check the newer worktree. The new run must receive new criteria. Repeated flushes cannot launch the same item twice because a successful launch removes it from the queue before the next pass.
+Each implementor report enters the planner queue with immutable internal metadata: worker ID, invocation ID, run generation, and exact report. The planner's active request and wake retries preserve that identity in memory and saved state. Planner completion uses only this metadata; it never parses worker IDs from prompt text or reads the mutable latest report. Incomplete source metadata produces a safe diagnostic and never falls back to a current report.
+
+Every pending validation stores the same source identity plus exact criteria. The server persists and restores planner requests, pending items, worker invocation IDs, and validator source metadata. A continuation advances the worker generation. If it starts or completes before old criteria return, the old response is explicitly superseded and does not spawn a validator. The newer report request stays queued and receives its own criteria. Deferred items are rechecked against both run generation and invocation ID. Repeated flushes cannot launch the same item twice.
 
 ## Commands and evidence
 
 Run from the repository root:
 
-- Unit tests: `node --test router-prototype/test/*.test.js` — **88 passed, 0 failed** after the queue correction.
-- Static build validation: `node router-prototype/scripts/validate-build.js` — **11 checks passed** after adding `validation-queue.js` to the production source list.
-- `git diff --check` — passed before commit `34940097d6f87813f1e77aba2ca372af3efb3904`.
+- Unit tests: `node --test router-prototype/test/*.test.js` — **94 passed, 0 failed** after the source-identity race correction.
+- Static build validation: `node router-prototype/scripts/validate-build.js` — **12 checks passed** after adding `planner-request.js` to the production source list.
+- `git diff --check` — passed before commit.
 - No local integration, browser, live process, or API tests were run.
 
 This is a plain-JavaScript application. It has no transpilation or bundling build. Static validation parses production and browser JavaScript and inline scripts without executing them. It checks required and referenced local assets.
@@ -75,7 +77,8 @@ This is a plain-JavaScript application. It has no transpilation or bundling buil
 Required test evidence:
 
 - Existing planner-role and report-marker tests still pass.
-- Queue unit tests call the production `flushPendingValidationQueue()` module used by the server. They cover a running implementor with a free slot, mixed blocked and ready items, bounded scans, full capacity and later completion, repeat flushes, source-run supersession, deleted workers, and save/restore of exact criteria and report associations.
+- Queue tests call the production `flushPendingValidationQueue()` module used by the server. They cover a running implementor with a free slot, mixed blocked and ready items, bounded scans, full capacity and later completion, repeat flushes, source-run supersession, deleted workers, and save/restore.
+- Planner request tests call the production implementor-report request, planner-completion, and retry functions. They reproduce run 1 completion and planner dispatch, run 2 continuation and completion before run 1 criteria return, then prove run 1 criteria cannot start a validator or pair with the run 2 report. They verify the run 2 request remains intact and can start its own validator. Additional tests cover a still-running continuation, unchanged runs, retries, missing metadata, and different workers.
 - Adapter/handoff tests cover normalized assistant messages, legacy string/block content, multiple assistant messages, malformed events, current-run isolation, transcript limits, full notifications, explicit and missing verdicts, and deferred/continued report association.
 - Pi and JSONL tests cover fragmented input, Unicode, CRLF, final buffered input, authoritative completed content, and no duplicate deltas.
 - Test outputs report exact totals and failures.

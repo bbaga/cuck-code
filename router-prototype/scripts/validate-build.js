@@ -14,6 +14,7 @@ const PRODUCTION_SCRIPTS = [
   "handoff.js",
   "jsonl.js",
   "validation-queue.js",
+  "planner-request.js",
   "web/pipeline-ui.js",
 ];
 const REQUIRED_WEB_ASSETS = ["web/index.html", "web/pipeline-ui.js"];

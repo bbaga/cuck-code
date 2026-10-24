@@ -119,12 +119,17 @@ test("uses an empty current invocation instead of old transcript output", () => 
 });
 
 test("keeps deferred criteria and report paired across a later implementor continuation", () => {
+  const source = { workerId: "impl-2", invocationId: "inv-1", runId: 1,
+    report: "first completed report ✓" };
   const worker = { id: "impl-2", lastRunText: "first completed report ✓" };
-  const pending = pendingValidationFor(worker, "1. Check first run.\n2. Verify ✓.");
+  const pending = pendingValidationFor(source, "1. Check first run.\n2. Verify ✓.");
   worker.lastRunText = "later continued run report";
   assert.equal(pending.criteria, "1. Check first run.\n2. Verify ✓.");
+  assert.equal(pending.invocationId, "inv-1");
+  assert.equal(pending.runId, 1);
   assert.equal(reportForValidation(worker, pending.report), "first completed report ✓");
-  assert.equal(reportForValidation(worker, undefined), "later continued run report");
+  assert.equal(reportForValidation(worker, undefined),
+    "[No assistant implementor report text was produced by this run.]");
   assert.equal(reportForValidation({ lastRunText: "" }, ""),
     "[No assistant implementor report text was produced by this run.]");
 });

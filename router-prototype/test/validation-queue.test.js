@@ -26,13 +26,14 @@ function runningCount(line) {
 }
 
 function pending(id, criteria = `criteria-${id}`, report = `report-${id}`, runId = 1) {
-  return { implWorkerId: id, criteria, report, runId };
+  return { implWorkerId: id, invocationId: `${id}-inv-${runId}`, criteria, report, runId };
 }
 
 test("builds a queued validation from the exact completed run and generation", () => {
-  const worker = { id: "impl", runGeneration: 12, lastRunText: "report\n✓" };
-  assert.deepEqual(pendingValidationFor(worker, "1. criteria\n2. criteria ✓"), {
-    implWorkerId: "impl", criteria: "1. criteria\n2. criteria ✓", report: "report\n✓", runId: 12,
+  const source = { workerId: "impl", invocationId: "inv-12", runId: 12, report: "report\n✓" };
+  assert.deepEqual(pendingValidationFor(source, "1. criteria\n2. criteria ✓"), {
+    implWorkerId: "impl", invocationId: "inv-12", runId: 12,
+    report: "report\n✓", criteria: "1. criteria\n2. criteria ✓",
   });
 });
 
@@ -56,7 +57,8 @@ test("launches eligible items and retains blocked items in a mixed queue", () =>
   const ready = pending("impl-ready", "ready criteria ✓", "ready report ✓", 3);
   const line = makeLine([blocked, ready], [
     { id: blocked.implWorkerId, status: "running", runGeneration: 2 },
-    { id: ready.implWorkerId, status: "completed", runGeneration: 3 },
+    { id: ready.implWorkerId, status: "completed", runGeneration: 3,
+      lastCompletedInvocationId: ready.invocationId },
   ]);
   const launched = [];
   const result = flushPendingValidationQueue(line, {
@@ -75,7 +77,8 @@ test("does not spin at full capacity and launches once when capacity becomes ava
   const workers = Array.from({ length: 4 }, (_, index) => ({
     id: `busy-${index}`, status: "running", runGeneration: 1,
   }));
-  workers.push({ id: item.implWorkerId, status: "completed", runGeneration: 1 });
+  workers.push({ id: item.implWorkerId, status: "completed", runGeneration: 1,
+    lastCompletedInvocationId: item.invocationId });
   const line = makeLine([item], workers);
   const launched = [];
   const options = { capacity: 4, runningCount: () => runningCount(line), launch: launchInto(line, launched) };
@@ -94,7 +97,8 @@ test("does not spin at full capacity and launches once when capacity becomes ava
 
 test("keeps item and run association while running, then reports explicit supersession", () => {
   const item = pending("impl", "criteria from run 5", "report from run 5", 5);
-  const worker = { id: "impl", status: "running", runGeneration: 6 };
+  const worker = { id: "impl", status: "running", runGeneration: 6,
+    lastCompletedInvocationId: "impl-inv-6" };
   const line = makeLine([item], [worker]);
   const launched = [];
   const discards = [];
@@ -122,7 +126,8 @@ test("scans one bounded pass so blocked entries do not starve ready entries", ()
   const line = makeLine([blockedA, blockedB, ready], [
     { id: "running-a", status: "running", runGeneration: 1 },
     { id: "running-b", status: "running", runGeneration: 1 },
-    { id: "ready", status: "completed", runGeneration: 1 },
+    { id: "ready", status: "completed", runGeneration: 1,
+      lastCompletedInvocationId: ready.invocationId },
   ]);
   const launched = [];
   const result = flushPendingValidationQueue(line, {
@@ -145,7 +150,8 @@ test("deliberately removes deleted workers and preserves queue data across save 
   const cancelled = removePendingValidations(queued, "deleted");
   assert.deepEqual(cancelled, [deleted]);
   assert.deepEqual(queued, [live]);
-  const line = makeLine(queued, [{ id: "live", status: "completed", runGeneration: 8 }]);
+  const line = makeLine(queued, [{ id: "live", status: "completed", runGeneration: 8,
+    lastCompletedInvocationId: live.invocationId }]);
   const launched = [];
   flushPendingValidationQueue(line, {
     capacity: 2,

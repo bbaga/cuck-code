@@ -9,13 +9,16 @@ const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   validateWorkerSpawnBody, lineSummary } = require("./spawn-plan");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
-const { messageText, InvocationCapture, appendTranscript, isSkipValidation, hasCriteria,
+const { messageText, InvocationCapture, appendTranscript, hasCriteria,
   validationCriteriaBlock, pendingValidationFor, reportForValidation,
   applyCompletion, completionFields, missingCriteriaDiagnostic, runOutputNote,
   buildImplementorNotification, buildValidationNotification,
   buildIntegrationNotification } = require("./handoff");
 const { flushPendingValidationQueue, removePendingValidations,
   serializePendingValidations, restorePendingValidations } = require("./validation-queue");
+const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
+  completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
+  restorePlannerRequests } = require("./planner-request");
 
 const PORT = Number(process.env.PORT || 7788);
 const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
@@ -693,6 +696,10 @@ function saveLine(line) {
         repoUrl: line.repoUrl || null,
         pipeline: line.pipeline || null,
         pendingValidations: serializePendingValidations(line.pendingValidations),
+        plannerQueue: serializePlannerRequests(line.queue),
+        activePlannerRequest: line.activePlannerRequest
+          ? { text: line.activePlannerRequest.text, source: line.activePlannerRequest.source || null }
+          : null,
         repos: [...(line.repos || new Map()).values()].map((r) => ({
           name: r.name, url: r.url, path: r.path })),
         started: line.started, planApproved: line.planApproved,
@@ -705,6 +712,10 @@ function saveLine(line) {
           id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch,
           ...completionFields(w), lastRunText: w.lastRunText || null,
           runGeneration: w.runGeneration || 0,
+          activeInvocationId: w.activeInvocationId || null,
+          lastCompletedInvocationId: w.lastCompletedInvocationId || null,
+          validationSource: w.validationSource || null,
+          validationCriteria: w.validationCriteria || null,
           role: w.role, validates: w.validates, persona: w.persona || "backend",
           repo: w.repo || "primary", worktreePath: w.worktreePath,
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
@@ -772,9 +783,16 @@ async function gateHarnesses(harnessIds, res) {
   return true;
 }
 
-function enqueue(line, text) {
-  line.queue.push({ text });
+function enqueueRequest(line, request) {
+  const trustedRequest = restorePlannerRequest(request);
+  if (!trustedRequest) return;
+  line.queue.push(trustedRequest);
+  saveLine(line);
   pump(line);
+}
+
+function enqueue(line, text, source = null) {
+  enqueueRequest(line, plannerRequest(text, source));
 }
 
 const WAKE_PREFIXES = ["IMPLEMENTOR REPORT", "VALIDATION REPORT", "VALIDATOR FAILURE",
@@ -791,10 +809,14 @@ function entryText(entry) {
 
 function pump(line) {
   if (line.deleted || line.status === "running" || line.queue.length === 0) return;
-  const { text } = line.queue.shift();
+  const request = restorePlannerRequest(line.queue.shift());
+  if (!request) return pump(line);
+  const { text } = request;
+  line.activePlannerRequest = request;
   const prompt = wrapPlannerTurn(text, { lineId: line.id, approved: line.planApproved,
     workdir: line.workdir });
   line.lastRun = text;
+  saveLine(line);
   line.status = "running";
   broadcast(line, "status", { status: line.status });
   const t0 = Date.now();
@@ -867,7 +889,10 @@ function pump(line) {
         const attempts = (line.wakeRetries[line.lastRun] || 0);
         if (attempts < 2) {
           line.wakeRetries[line.lastRun] = attempts + 1;
-          line.queue.unshift({ text: line.lastRun });
+          retryPlannerRequest(line.queue,
+            line.activePlannerRequest || plannerRequest(line.lastRun));
+          line.activePlannerRequest = null;
+          saveLine(line);
           slog("warn", "wake.retry", { lineId: line.id, attempt: attempts + 1,
             wake: preview(line.lastRun, 200) });
         } else {
@@ -878,27 +903,46 @@ function pump(line) {
         }
       }
     }
-    if (result === "ok" && typeof line.lastRun === "string"
-      && line.lastRun.startsWith("IMPLEMENTOR REPORT")) {
-      const m = line.lastRun.match(/workerId ([a-f0-9-]+)/);
-      const implWorker = m ? line.workers.get(m[1]) : null;
-      if (implWorker) {
+    if (result === "ok" && line.activePlannerRequest) {
+      const request = line.activePlannerRequest;
+      if (request.source) {
         const criteria = runOutput.text();
-        const skip = isSkipValidation(criteria);
-        const validCriteria = hasCriteria(criteria);
-        const decision = skip ? "skip-validation" : validCriteria ? "spawn-validator" : "missing-criteria";
-        slog(validCriteria || skip ? "info" : "warn", "planner.decision", {
-          lineId: line.id, decision, criteriaChars: criteria.length,
-          criteria: preview(criteria, 400) });
-        if (!skip && validCriteria) {
-          trySpawnValidator(line, implWorker, criteria);
-        } else if (!skip) {
-          enqueue(line, missingCriteriaDiagnostic(implWorker.name));
-        }
+        const decision = completePlannerCriteria(request, criteria, {
+          getWorker: (workerId) => line.workers.get(workerId),
+          onCriteria: (source, value) => {
+            slog("info", "planner.decision", { lineId: line.id, decision: "spawn-validator",
+              workerId: source.workerId, invocationId: source.invocationId, runId: source.runId,
+              criteriaChars: value.length, criteria: preview(value, 400) });
+            trySpawnValidator(line, source, value, false);
+          },
+          onSkip: (source) => slog("info", "planner.decision", { lineId: line.id,
+            decision: "skip-validation", workerId: source.workerId,
+            invocationId: source.invocationId, runId: source.runId }),
+          onMissing: (source, worker) => {
+            slog("warn", "planner.decision", { lineId: line.id, decision: "missing-criteria",
+              workerId: source.workerId, invocationId: source.invocationId, runId: source.runId });
+            enqueue(line, missingCriteriaDiagnostic(worker.name));
+          },
+          onSuperseded: (source) => {
+            slog("warn", "planner.criteria-superseded", { lineId: line.id,
+              workerId: source.workerId, invocationId: source.invocationId, runId: source.runId });
+            enqueue(line, `VALIDATION CRITERIA SUPERSEDED - criteria for implementor '${source.workerId}' run ${source.runId} (invocation ${source.invocationId}) arrived after that source run was superseded. No validator was started. The newer implementor report remains queued and requires its own criteria.`);
+          },
+          onIncompleteSource: () => {
+            slog("error", "planner.criteria-source-missing", { lineId: line.id });
+            enqueue(line, "VALIDATION NOT STARTED - the planner response has no trusted source report metadata. No current worker report was substituted. Request fresh criteria from the current implementor report.");
+          },
+        });
+        slog("info", "planner.criteria.completed", { lineId: line.id, decision: decision.decision });
+      } else if (request.text.startsWith("IMPLEMENTOR REPORT")) {
+        slog("error", "planner.criteria-source-missing", { lineId: line.id });
+        enqueue(line, "VALIDATION NOT STARTED - the implementor report request has no trusted source metadata. No current worker report was substituted. Request fresh criteria from the current implementor report.");
       }
     }
     line.lastRun = null;
+    line.activePlannerRequest = null;
     line.status = "idle";
+    saveLine(line);
     broadcast(line, "status", { status: line.status });
     pump(line);
   });
@@ -913,14 +957,18 @@ function flushPendingValidations(line) {
   const result = flushPendingValidationQueue(line, {
     capacity: WORKER_CAP,
     runningCount: () => runningCount(line),
-    launch: (item, implWorker) => trySpawnValidator(line, implWorker,
-      item.criteria, true, item.report),
+    launch: (item) => trySpawnValidator(line, sourceIdentity({
+      workerId: item.implWorkerId, invocationId: item.invocationId,
+      runId: item.runId, report: item.report,
+    }), item.criteria, true),
     onDiscard: (item, implWorker, reason) => {
       slog("warn", "validator.deferred-discarded", { lineId: line.id,
         implementorId: item.implWorkerId, runId: item.runId, reason });
-      const name = implWorker ? implWorker.name : item.implWorkerId;
+      const name = implWorker ? implWorker.name : (item && item.implWorkerId) || "unknown";
       if (reason === "superseded") {
-        enqueue(line, `DEFERRED VALIDATION SUPERSEDED - implementor '${name}' continued after run ${item.runId}. The older criteria and report were not used against the newer worktree. Wait for the current run report and give new criteria.`);
+        enqueue(line, `DEFERRED VALIDATION SUPERSEDED - implementor '${name}' continued after run ${item.runId} (invocation ${item.invocationId}). The older criteria and report were not used against newer work. Wait for the current run report and give new criteria.`);
+      } else if (reason === "incomplete-source") {
+        enqueue(line, `DEFERRED VALIDATION CANCELLED - queued criteria for implementor '${name}' have incomplete source metadata. No current report was substituted.`);
       } else {
         enqueue(line, `DEFERRED VALIDATION CANCELLED - implementor '${name}' no longer exists. Its saved criteria and report were not used.`);
       }
@@ -935,28 +983,43 @@ function flushPendingValidations(line) {
 
 // Spawn the validator for an implementor, or defer it when the line is at
 // the cap of concurrently running workers and validators.
-function trySpawnValidator(line, implWorker, criteria, deferred, report) {
+function trySpawnValidator(line, source, criteria, deferred) {
+  const worker = source ? line.workers.get(source.workerId) : null;
+  if (!source || !worker || worker.status === "running"
+    || worker.runGeneration !== source.runId
+    || worker.lastCompletedInvocationId !== source.invocationId) {
+    slog("warn", "validator.source-superseded", { lineId: line.id,
+      workerId: source && source.workerId, invocationId: source && source.invocationId,
+      runId: source && source.runId, workerFound: !!worker });
+    enqueue(line, `VALIDATION CRITERIA SUPERSEDED - the source report for implementor '${source ? source.workerId : "unknown"}' is no longer the current completed run. No validator was started and no current report was substituted.`);
+    return;
+  }
   if (!hasCriteria(criteria)) {
     slog("warn", "validator.not-spawned", { lineId: line.id,
-      implementorId: implWorker.id, reason: "missing-criteria" });
-    enqueue(line, missingCriteriaDiagnostic(implWorker.name));
+      implementorId: worker.id, invocationId: source.invocationId, reason: "missing-criteria" });
+    enqueue(line, missingCriteriaDiagnostic(worker.name));
     return;
   }
   if (runningCount(line) >= WORKER_CAP) {
     if (!line.pendingValidations) line.pendingValidations = [];
-    line.pendingValidations.push(pendingValidationFor(implWorker, criteria));
+    line.pendingValidations.push(pendingValidationFor(source, criteria));
     saveLine(line);
-    slog("info", "validator.deferred", { lineId: line.id, implementorId: implWorker.id,
-      queued: line.pendingValidations.length });
+    slog("info", "validator.deferred", { lineId: line.id, implementorId: worker.id,
+      invocationId: source.invocationId, queued: line.pendingValidations.length });
     if (!deferred) {
-      enqueue(line, `VALIDATION DEFERRED - the line is at the cap of ${WORKER_CAP} concurrently running workers and validators. The validation of implementor '${implWorker.name}' starts automatically when a slot frees. You do not need to act.`);
+      enqueue(line, `VALIDATION DEFERRED - the line is at the cap of ${WORKER_CAP} concurrently running workers and validators. The validation of implementor '${worker.name}' starts automatically when a slot frees. You do not need to act.`);
     }
     return;
   }
-  spawnValidator(line, implWorker, criteria, reportForValidation(implWorker, report));
+  spawnValidator(line, source, criteria, reportForValidation(null, source.report));
 }
 
 function spawnWorker(line, worker, prompt, resume) {
+  const invocationId = crypto.randomUUID();
+  const runId = worker.runGeneration || 1;
+  worker.runGeneration = runId;
+  worker.activeInvocationId = invocationId;
+  saveLine(line);
   const phase = phaseForWorker(worker.role, worker.kind);
   const cfg = resolvePipeline(line)[phase];
   const effective = resolveWorkerOverrides(cfg, worker);
@@ -1017,17 +1080,19 @@ function spawnWorker(line, worker, prompt, resume) {
       worker.transcript.push(finished);
       broadcast(line, "worker_entry", { workerId: worker.id, entry: finished });
     }
-    workerClosed(line, worker, code, signal, workerRunOutput);
+    workerClosed(line, worker, code, signal, workerRunOutput, { invocationId, runId });
   });
 }
 
-function workerClosed(line, worker, code, signal, workerRunOutput = new InvocationCapture()) {
+function workerClosed(line, worker, code, signal, workerRunOutput = new InvocationCapture(), invocation = {}) {
   worker.child = null;
   const outcome = worker.adapter
     ? worker.adapter.outcome(code, signal)
     : (code === 0 ? "ok" : "fail");
   const report = workerRunOutput.text();
   const statusEvent = applyCompletion(worker, outcome, worker.stopRequested, report);
+  if (invocation.invocationId) worker.lastCompletedInvocationId = invocation.invocationId;
+  worker.activeInvocationId = null;
   const timedOut = outcome === "timeout" && !worker.stopRequested;
   cleanupStage(line, worker.id);
   if (uiSlots.held.has(worker.id) || uiSlots.waiters.some((w) => w.workerId === worker.id)) {
@@ -1064,7 +1129,9 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
       enqueue(line, `VALIDATOR STOPPED - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) was stopped. Decide how to proceed.` + runOutputNote(report, "validation run output"));
     }
   } else if (worker.status === "completed") {
-    enqueue(line, buildImplementorNotification(worker, report));
+    const request = implementorReportRequest(
+      buildImplementorNotification(worker, report), worker, invocation, report);
+    enqueueRequest(line, request);
   } else if (timedOut) {
     enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: POST /api/protocol/workers/${worker.id}/continue with {"prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.` + runOutputNote(report, "implementor run output"));
   } else if (worker.status === "failed") {
@@ -1075,7 +1142,9 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
   flushPendingValidations(line);
 }
 
-function spawnValidator(line, implWorker, criteria, report) {
+function spawnValidator(line, source, criteria, report) {
+  const implWorker = line.workers.get(source.workerId);
+  if (!implWorker) return;
   let name = `validator-${implWorker.name}`;
   let n = 2;
   while ([...line.workers.values()].some((w) => w.name === name)) {
@@ -1087,6 +1156,7 @@ function spawnValidator(line, implWorker, criteria, report) {
   const repoUrl = repo ? repo.url : null;
   const worker = { id, lineId: line.id, name,
     role: "validator", validates: implWorker.id, persona: implWorker.persona || "backend",
+    validationSource: source, validationCriteria: criteria,
     kind: "standard", repo: repoName,
     prompt: validatorBrief(implWorker.name, report, criteria,
       implWorker.persona || "backend", id, implWorker.id, line.id, repoName, repoUrl),
@@ -1196,7 +1266,8 @@ const server = http.createServer((req, res) => {
           text = `PLAN FEEDBACK from the user: ${body.text}. Revise plan.md accordingly. Do not spawn workers yet.`;
         } catch {}
       }
-      line.queue.push({ text });
+      line.queue.push(plannerRequest(text));
+      saveLine(line);
       const position = line.queue.length;
       slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
         prompt: preview(body.text, 2000) });
@@ -1828,7 +1899,9 @@ function loadLines() {
             || path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name)),
           branch: w.branch, status: w.status === "running" ? "stopped" : w.status,
           stopRequested: false, child: null, transcript: [], lastRunText: w.lastRunText || "",
-          runGeneration: Number.isInteger(w.runGeneration) ? w.runGeneration : 0 });
+          runGeneration: Number.isInteger(w.runGeneration) ? w.runGeneration : 0,
+          activeInvocationId: w.activeInvocationId || null,
+          lastCompletedInvocationId: w.lastCompletedInvocationId || null });
       }
       for (const w of meta.workers || []) {
         if (w.role !== "validator") continue;
@@ -1836,6 +1909,7 @@ function loadLines() {
         if (!impl && w.kind !== "integration") continue;
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
           role: "validator", validates: w.validates, prompt: null, kind: w.kind || "standard", verdict: w.verdict || null,
+          validationSource: w.validationSource || null, validationCriteria: w.validationCriteria || null,
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           repo: w.repo || (impl ? impl.repo : "primary"),
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
@@ -1846,7 +1920,9 @@ function loadLines() {
           branch: w.branch,
           status: w.status === "running" ? "stopped" : w.status,
           stopRequested: false, child: null, transcript: [], lastRunText: w.lastRunText || "",
-          runGeneration: Number.isInteger(w.runGeneration) ? w.runGeneration : 0 });
+          runGeneration: Number.isInteger(w.runGeneration) ? w.runGeneration : 0,
+          activeInvocationId: w.activeInvocationId || null,
+          lastCompletedInvocationId: w.lastCompletedInvocationId || null });
       }
       const started = meta.started === true || !!meta.sessionId;
       const inventory = new Map();
@@ -1860,12 +1936,20 @@ function loadLines() {
         repos: new Map((meta.repos || []).map((r) => [r.name,
           { name: r.name, url: r.url, path: r.path }])),
         workdir: path.join(LINES_DIR, entry.name),
-        status: started ? "idle" : "standby", queue: [],
+        status: started ? "idle" : "standby",
+        queue: restorePlannerRequests(meta.plannerQueue), activePlannerRequest: null,
         started,
         planApproved: meta.planApproved === true, workers, inventory,
         evidence: new Map((meta.evidence || []).map((e) => [e.id, e])),
         pendingValidations: restorePendingValidations(meta.pendingValidations),
         clients: new Set(), transcript: [] };
+      const activeRequest = restorePlannerRequest(meta.activePlannerRequest);
+      if (activeRequest && !line.queue.some((request) => request.text === activeRequest.text
+        && ((!request.source && !activeRequest.source)
+          || (request.source && activeRequest.source
+            && request.source.invocationId === activeRequest.source.invocationId)))) {
+        line.queue.unshift(activeRequest);
+      }
       lines.set(meta.id, line);
       if (line.pendingValidations.length && line.planApproved) {
         slog("info", "boot.pending-validations", { lineId: meta.id,
@@ -1878,6 +1962,7 @@ function loadLines() {
           workers: (meta.workers || []).filter((w) => w.status === "running").map((w) => w.name) });
         saveLine(line);
       }
+      if (line.queue.length) pump(line);
     } catch {}
   }
 }

@@ -15,6 +15,13 @@ function flushPendingValidationQueue(line, {
   while (result.inspected < passLimit && pending.length > 0 && runningCount() < capacity) {
     const item = pending.shift();
     result.inspected += 1;
+    if (!item || typeof item.implWorkerId !== "string"
+      || typeof item.invocationId !== "string" || !item.invocationId
+      || !Number.isInteger(item.runId) || typeof item.report !== "string") {
+      result.discarded += 1;
+      onDiscard(item || null, null, "incomplete-source");
+      continue;
+    }
     const worker = line.workers.get(item.implWorkerId);
     if (!worker || worker.deleted) {
       result.discarded += 1;
@@ -26,8 +33,8 @@ function flushPendingValidationQueue(line, {
       result.retained += 1;
       continue;
     }
-    if (item.runId !== undefined && item.runId !== null
-      && item.runId !== worker.runGeneration) {
+    if (item.runId !== worker.runGeneration
+      || item.invocationId !== worker.lastCompletedInvocationId) {
       result.discarded += 1;
       onDiscard(item, worker, "superseded");
       continue;

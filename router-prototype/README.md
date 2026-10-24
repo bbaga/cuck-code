@@ -54,8 +54,15 @@ without LF. It does not split on Unicode line separators.
 The planner criteria for validation come only from the current planner run.
 Empty criteria produce a `VALIDATION NOT STARTED` diagnostic. They do not use
 old transcript text and do not start a validator. `SKIP VALIDATION` remains an
-explicit planner response. Deferred validation stores its criteria and matching
-implementor report together. Worker completion sets status and verdict before
+explicit planner response. Each implementor report enters the planner queue
+with trusted internal source metadata: worker ID, invocation ID, run generation,
+and the immutable report body. Planner dispatch and wake retries preserve that
+metadata. Criteria are accepted only for that exact source, never by parsing
+worker IDs from prompt text or reading the worker's mutable latest report. If a
+continuation supersedes the source before criteria return, the router reports
+cancellation and keeps the newer report request intact. Deferred validation
+stores its criteria, report, and invocation identity together. Worker
+completion sets status and verdict before
 saving state or sending the status event. A verdict requires the final non-empty
 report line to be exactly `VERDICT: PASS` or `VERDICT: FAIL`; a missing or
 incomplete verdict stays unset and produces a diagnostic. Report bodies are
@@ -230,11 +237,11 @@ A deferred validation stays queued while its implementor is running. Each flush
 checks at most the items that were queued at the start of that pass. It rotates
 blocked items so ready validations can use free capacity. Removing an
 implementor removes its pending validations and records that cancellation.
-Each queued item stores its criteria, report, and implementor run generation.
-A continuation advances that generation. If it changes the work before a
-queued validation starts, the router cancels the old item with a diagnostic.
-The new run needs new criteria. Queue data and run generations persist in
-`line.json`.
+Each queued item stores its criteria, report, worker ID, invocation ID, and
+run generation. A continuation advances that generation. If it changes the
+work before a queued validation starts, the router cancels the old item with a
+diagnostic. The new run needs new criteria. Planner request metadata, pending
+validation metadata, and run generations persist in `line.json`.
 
 ### Worktree discipline
 

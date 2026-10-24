@@ -57,13 +57,13 @@ function validationCriteriaBlock(criteria) {
   return `The planner gave these acceptance criteria:\n${criteria}`;
 }
 
-function pendingValidationFor(worker, criteria) {
-  return { implWorkerId: worker.id, criteria, report: worker.lastRunText || "",
-    runId: worker.runGeneration ?? null };
+function pendingValidationFor(source, criteria) {
+  return { implWorkerId: source.workerId, invocationId: source.invocationId,
+    runId: source.runId, report: source.report, criteria };
 }
 
-function reportForValidation(worker, pendingReport) {
-  const report = typeof pendingReport === "string" ? pendingReport : (worker.lastRunText || "");
+function reportForValidation(_worker, sourceReport) {
+  const report = typeof sourceReport === "string" ? sourceReport : "";
   return report || "[No assistant implementor report text was produced by this run.]";
 }
 
