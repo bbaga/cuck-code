@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"claude-session-1","tools":["Bash"],"cwd":"/tmp/work","model":"claude-model"}
+{"type":"assistant","session_id":"claude-session-1","message":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Hello from claude"}]}}
+{"type":"assistant","session_id":"claude-session-1","message":{"id":"msg_2","type":"message","role":"assistant","content":[{"type":"text","text":"Part "},{"type":"text","text":"two"}]}}
+{"type":"result","subtype":"success","session_id":"claude-session-1","is_error":false,"result":"Hello from claudePart two"}
