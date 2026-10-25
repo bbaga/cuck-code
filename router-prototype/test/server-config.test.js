@@ -19,9 +19,24 @@ test("per-worker override wins over the phase config", () => {
     resolveWorkerOverrides(cfg, { harness: "pi", model: "m1", effort: "high" }),
     { harness: "pi", model: "m1", effort: "high" });
   assert.deepEqual(resolveWorkerOverrides(cfg, {}), cfg);
+  // A worker on another harness never inherits the phase's Vibe model.
   assert.deepEqual(
-    resolveWorkerOverrides(cfg, { harness: "pi" }),
-    { harness: "pi", model: "glm-5-3-flash", effort: "medium" });
+    resolveWorkerOverrides(cfg, { harness: "pi" }, "implementor"),
+    { harness: "pi", model: null, effort: "medium" });
+  assert.deepEqual(
+    resolveWorkerOverrides(cfg, { harness: "claude", effort: "high" }, "implementor"),
+    { harness: "claude", model: null, effort: "high" });
+  // Naming the phase harness explicitly keeps the phase model.
+  assert.deepEqual(
+    resolveWorkerOverrides(cfg, { harness: "vibe" }, "implementor"),
+    { harness: "vibe", model: "glm-5-3-flash", effort: "medium" });
+});
+
+test("worker switching to vibe gets the vibe default for its phase", () => {
+  const cfg = { harness: "claude", model: "opus", effort: "medium" };
+  assert.deepEqual(
+    resolveWorkerOverrides(cfg, { harness: "vibe" }, "validator"),
+    { harness: "vibe", model: "glm-5-3", effort: "medium" });
 });
 
 test("worker record stores the effective values", () => {

@@ -66,8 +66,19 @@ function validatePipelineConfig(raw) {
   return null;
 }
 
+// A model id belongs to one harness. The code default models are Vibe
+// models, so every other harness defaults to null: its CLI then uses its
+// own configured default model.
+function defaultModelFor(harness, phase) {
+  return harness === DEFAULTS.harness ? DEFAULTS.model[phase] : null;
+}
+
 // Merge order, most specific wins: code defaults, then environment
 // variables, then line.pipeline[phase]. Env values are read at resolve time.
+// The env model (e.g. IMPLEMENTOR_MODEL) applies only while the phase runs
+// the env/default harness: a line that switches the phase to another
+// harness without naming a model gets that harness's default instead of a
+// model id meant for a different CLI.
 function resolvePipeline(line, env) {
   const e = env || process.env;
   const pipeline = line && line.pipeline ? line.pipeline : {};
@@ -78,9 +89,12 @@ function resolvePipeline(line, env) {
     const envTimeLimit = phase === "planner"
       ? Number(e.PLANNER_TIME_LIMIT || 1800)
       : Number(e.WORKER_TIME_LIMIT || 3600);
+    const baseHarness = e[`${prefix}_HARNESS`] || DEFAULTS.harness;
+    const harness = phaseCfg.harness || baseHarness;
+    const baseModel = harness === baseHarness ? e[`${prefix}_MODEL`] : null;
     result[phase] = {
-      harness: phaseCfg.harness || e[`${prefix}_HARNESS`] || DEFAULTS.harness,
-      model: phaseCfg.model || e[`${prefix}_MODEL`] || DEFAULTS.model[phase],
+      harness,
+      model: phaseCfg.model || baseModel || defaultModelFor(harness, phase),
       effort: phaseCfg.effort || e[`${prefix}_EFFORT`] || DEFAULTS.effort,
       timeLimit: phaseCfg.timeLimit || envTimeLimit,
     };
@@ -240,10 +254,28 @@ function vibeModelChoices(env) {
   return choices;
 }
 
+// The Claude Code CLI resolves these aliases to the latest model of each
+// family, so they stay valid across model releases.
+const CLAUDE_MODEL_ALIASES = ["opus", "sonnet", "haiku"];
+
+// Stable, deduplicated Claude model choices: the CLI aliases, then the
+// full model ids from CLAUDE_MODELS (comma-separated). Pure in `env`.
+function claudeModelChoices(env) {
+  const e = env || process.env;
+  const seen = new Set();
+  const choices = [];
+  for (const v of [...CLAUDE_MODEL_ALIASES, ...parseVibeModelsEnv(e.CLAUDE_MODELS)]) {
+    if (seen.has(v)) continue;
+    seen.add(v);
+    choices.push({ value: v, label: v });
+  }
+  return choices;
+}
+
 // run(cmdArray) returns a Promise of { code, stdout }, or null when the
 // command cannot start or times out. Returns one result per harness:
-// { id, installed, auth, loginHint, version } plus, for vibe, `models`
-// and, for pi, `authModes` and provider-qualified `models`.
+// { id, installed, auth, loginHint, version } plus, for vibe and claude,
+// `models` and, for pi, `authModes` and provider-qualified `models`.
 async function probeHarnesses(run, env) {
   return Promise.all(HARNESS_PROBES.map(async (probe) => {
     const versionRes = await run(probe.versionCmd);
@@ -263,6 +295,9 @@ async function probeHarnesses(run, env) {
     };
     if (probe.id === "vibe") {
       result.models = vibeModelChoices(env);
+    }
+    if (probe.id === "claude") {
+      result.models = claudeModelChoices(env);
     }
     if (probe.id === "pi" && probe.listModelsCmd) {
       const catalogRes = await run(probe.listModelsCmd);
@@ -329,6 +364,7 @@ module.exports = {
   HARNESS_IDS,
   EFFORT_LEVELS,
   validatePipelineConfig,
+  defaultModelFor,
   resolvePipeline,
   HARNESS_PROBES,
   probeHarnesses,
@@ -338,5 +374,6 @@ module.exports = {
   parsePiAuthCheck,
   parseVibeModelsEnv,
   vibeModelChoices,
+  claudeModelChoices,
   piProviderDetail,
 };

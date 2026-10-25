@@ -1066,7 +1066,7 @@ function spawnWorker(line, worker, prompt, resume) {
   saveLine(line);
   const phase = phaseForWorker(worker.role, worker.kind);
   const cfg = resolvePipeline(line)[phase];
-  const effective = resolveWorkerOverrides(cfg, worker);
+  const effective = resolveWorkerOverrides(cfg, worker, phase);
   worker.harness = effective.harness;
   worker.model = effective.model;
   worker.effort = effective.effort;

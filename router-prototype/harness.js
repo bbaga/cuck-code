@@ -224,8 +224,10 @@ class PiHarness extends BaseHarness {
     const args = ctx.sessionId
       ? ['--session-id', ctx.sessionId]
       : ['--session-dir', path.join(ctx.workdir, 'sessions')];
-    args.push('-p', ctx.prompt, '--mode', 'json', '--model', ctx.model,
-      '--thinking', PI_EFFORT_LEVELS.has(ctx.effort) ? ctx.effort : 'medium');
+    args.push('-p', ctx.prompt, '--mode', 'json');
+    // Without a model pi uses its own configured default.
+    if (ctx.model) args.push('--model', ctx.model);
+    args.push('--thinking', PI_EFFORT_LEVELS.has(ctx.effort) ? ctx.effort : 'medium');
     if (systemArgs) args.push(...systemArgs);
     return { cmd: 'pi', args, env: {}, cwd: ctx.workdir };
   }
@@ -278,8 +280,10 @@ class CodexHarness extends BaseHarness {
 
   buildRun(ctx) {
     const systemArgs = this.systemPromptArgs(ctx);
-    const flags = ['--json', '-C', ctx.workdir, '--model', ctx.model,
-      '-c', 'model_reasoning_effort=' + ctx.effort];
+    const flags = ['--json', '-C', ctx.workdir];
+    // Without a model codex uses its own configured default.
+    if (ctx.model) flags.push('--model', ctx.model);
+    flags.push('-c', 'model_reasoning_effort=' + ctx.effort);
     if (ctx.autoApprove) flags.push('--full-auto');
     // The developer_instructions assignment stays one argv element after its
     // own -c flag, so multiline text, quotes, and shell-like characters pass
@@ -311,19 +315,20 @@ class CodexHarness extends BaseHarness {
   }
 }
 
-const CLAUDE_THINKING_TOKENS = { low: 0, medium: 8192, high: 31999 };
+// Claude Code's --effort accepts the router levels verbatim; anything else
+// maps to "medium".
+const CLAUDE_EFFORT_LEVELS = new Set(['low', 'medium', 'high']);
 
 class ClaudeHarness extends BaseHarness {
   supportsNativeTimeLimit = false;
 
   buildRun(ctx) {
     const systemArgs = this.systemPromptArgs(ctx);
-    const tokens = Object.prototype.hasOwnProperty.call(CLAUDE_THINKING_TOKENS, ctx.effort)
-      ? CLAUDE_THINKING_TOKENS[ctx.effort]
-      : CLAUDE_THINKING_TOKENS.medium;
-    const args = ['-p', ctx.prompt, '--output-format', 'stream-json', '--verbose',
-      '--model', ctx.model, '--dangerously-skip-permissions',
-      '--max-thinking-tokens', String(tokens)];
+    const args = ['-p', ctx.prompt, '--output-format', 'stream-json', '--verbose'];
+    // Without a model the CLI uses its own configured default.
+    if (ctx.model) args.push('--model', ctx.model);
+    args.push('--dangerously-skip-permissions',
+      '--effort', CLAUDE_EFFORT_LEVELS.has(ctx.effort) ? ctx.effort : 'medium');
     if (ctx.sessionId) args.push('--resume', ctx.sessionId);
     if (systemArgs) args.push(...systemArgs);
     return { cmd: 'claude', args, env: {}, cwd: ctx.workdir };

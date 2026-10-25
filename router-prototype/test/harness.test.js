@@ -196,24 +196,25 @@ test('codex outcome and normalize on fixture lines', () => {
 
 // --- claude ---
 
-test('claude buildRun: fresh and resumed argv, cwd, token map', () => {
+test('claude buildRun: fresh and resumed argv, cwd, effort mapping', () => {
   const h = createHarness('claude');
   const run = h.buildRun(CTX);
   assert.strictEqual(run.cmd, 'claude');
   assert.deepStrictEqual(run.args, [
     '-p', 'Do the task', '--output-format', 'stream-json', '--verbose',
     '--model', 'model-x', '--dangerously-skip-permissions',
-    '--max-thinking-tokens', '8192',
+    '--effort', 'medium',
   ]);
   assert.deepStrictEqual(run.env, {});
   assert.strictEqual(run.cwd, '/tmp/work');
-  const tokens = (effort) => {
-    const args = h.buildRun({ ...CTX, effort }).args;
-    return args[args.indexOf('--max-thinking-tokens') + 1];
+  const effort = (value) => {
+    const args = h.buildRun({ ...CTX, effort: value }).args;
+    return args[args.indexOf('--effort') + 1];
   };
-  assert.strictEqual(tokens('low'), '0');
-  assert.strictEqual(tokens('medium'), '8192');
-  assert.strictEqual(tokens('high'), '31999');
+  assert.strictEqual(effort('low'), 'low');
+  assert.strictEqual(effort('medium'), 'medium');
+  assert.strictEqual(effort('high'), 'high');
+  assert.strictEqual(effort('bogus'), 'medium');
   assert.deepStrictEqual(
     h.buildRun({ ...CTX, sessionId: 's1' }).args.slice(-2),
     ['--resume', 's1']
@@ -231,6 +232,16 @@ test('claude outcome and normalize on fixture lines', () => {
   assertEntry(h.normalize(lines[2]), 'assistant', 'Part two', 'claude-session-1');
   assert.strictEqual(h.normalize(lines[3]), null);
   assert.strictEqual(h.finalize(), null);
+});
+
+test('pi, codex, claude omit --model when no model is set', () => {
+  for (const id of ['pi', 'codex', 'claude']) {
+    for (const model of [null, undefined, '']) {
+      const args = createHarness(id).buildRun({ ...CTX, model }).args;
+      assert.ok(!args.includes('--model'), `${id} with model ${model}`);
+      assert.ok(args.every((a) => typeof a === 'string'), `${id} argv must be strings`);
+    }
+  }
 });
 
 function schemaRecord(harness, role, text) {

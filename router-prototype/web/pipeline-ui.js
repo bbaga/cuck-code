@@ -15,6 +15,7 @@
 
   const PI_HARNESS_ID = "pi";
   const VIBE_HARNESS_ID = "vibe";
+  const CLAUDE_HARNESS_ID = "claude";
 
   function filterInstalled(harnesses) {
     return (harnesses || []).filter((h) => h && h.installed === true);
@@ -77,14 +78,15 @@
   }
 
   // Model choices for one phase row. Pi shows only the selected provider's
-  // qualified models from its detail response; Vibe shows base metadata
-  // models; other harnesses contribute nothing beyond the default option.
+  // qualified models from its detail response; Vibe and Claude show base
+  // metadata models; other harnesses contribute nothing beyond the default
+  // option.
   function modelOptionsForPhase({ harnesses, harnessId, piDetail }) {
     if (harnessId === PI_HARNESS_ID) {
       return piDetail ? piDetailModels(piDetail) : [];
     }
-    if (harnessId === VIBE_HARNESS_ID) {
-      return baseModelOptions(harnesses, VIBE_HARNESS_ID);
+    if (harnessId === VIBE_HARNESS_ID || harnessId === CLAUDE_HARNESS_ID) {
+      return baseModelOptions(harnesses, harnessId);
     }
     return [];
   }
@@ -250,6 +252,7 @@
     EFFORT_LEVELS,
     PI_HARNESS_ID,
     VIBE_HARNESS_ID,
+    CLAUDE_HARNESS_ID,
     filterInstalled,
     findHarness,
     normalizeOptions,

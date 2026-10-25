@@ -1166,7 +1166,8 @@ window.addEventListener("DOMContentLoaded", () => {
         }
         sel.value = current;
         // Base metadata arrived: refresh auth mode options and model choices
-        // (Vibe rows pick up their models here; Pi rows wait for a mode).
+        // (Vibe and Claude rows pick up their models here; Pi rows wait
+        // for a mode).
         if (harnessSelects[key].value !== PI_HARNESS_ID) {
           phaseState[key].models = modelOptionsForPhase({
             harnesses: installedHarnesses,
