@@ -438,6 +438,23 @@ repository into the line workdir. The pipeline then extends past validation:
 
 ## Integration validation and evidence
 
+From the merged repository root, run the registry acceptance check:
+
+```
+node router-prototype/scripts/registry-acceptance.js
+```
+
+The script selects a free port and creates a temporary `LINES_DIR`. It creates
+source and target lines, checks claim search and pages, opens and answers a
+request, checks a stale write, and verifies state after a router restart. It
+prints PASS or FAIL for each step and exits nonzero on failure. Do not use port
+7788 for a separate test server.
+
+For UI evidence, use a browser context with `recordVideo: { dir: "evidence" }`.
+Run the registry claim and request use case in the merged router UI. Close the
+browser context before you register its video. Then register it with
+`POST /api/protocol/workers/:workerId/evidence` and `{ "useCase": "registry claim and request", "file": "evidence/registry-routes.webm" }`.
+
 When all implementor validators report VERDICT: PASS, the planner starts the
 integration validator (`POST /api/protocol/lines/:id/integration` with the
 integration instructions; 409 at the concurrent-worker cap). The planner

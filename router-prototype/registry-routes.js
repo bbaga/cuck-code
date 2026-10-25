@@ -1,5 +1,6 @@
 "use strict";
 
+const { randomUUID } = require("node:crypto");
 const CLAIM_FIELDS = new Set(["repo", "branch", "commit", "title", "summary", "tags", "status"]);
 const STATUSES = new Set(["active", "blocked", "merged", "released", "abandoned"]);
 const PAGE_MAX = 100;
@@ -47,7 +48,7 @@ function handleRegistryRoute(req, res, url, parts, deps) {
       const item = id ? state.claims.find(x => x.id === id && x.ownerLineId === lineId) : null;
       if (id && (!item || item.revision !== data.expectedRevision)) throw Object.assign(new Error(`Stale claim revision: ${item ? item.revision : "missing"}`), { status: 409, currentRevision: item && item.revision });
       if (item) Object.assign(item, data.patch, { revision: item.revision + 1, updatedAt: new Date().toISOString() });
-      else { Object.assign(data.claim, { ownerLineId: lineId, revision: 1, status: data.claim.status || "active", updatedAt: new Date().toISOString() }); state.claims.push(data.claim); }
+      else { Object.assign(data.claim, { id: data.claim.id || randomUUID(), ownerLineId: lineId, revision: 1, status: data.claim.status || "active", updatedAt: new Date().toISOString() }); state.claims.push(data.claim); }
       return item || data.claim;
     });
     return stale(result);
