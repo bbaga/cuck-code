@@ -51,6 +51,9 @@
   .deleteBtn { margin-left: 8px; padding: 3px 10px; font-size: .7rem;
     background: #4d1420; color: #ff8095; }
   .deleteBtn.armed { background: #ff8095; color: #2a0810; }
+  .hideFailedToggle { font-size: .75rem; color: #8fa3bd; margin-left: 8px;
+    display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+    font-weight: 400; user-select: none; }
   .dot { width: 10px; height: 10px; border-radius: 50%; margin-left: auto; flex-shrink: 0; }
   .dot.idle { background: #35c46a; }
   .dot.running { background: #3d8bff; animation: pulse 1.2s infinite; }
@@ -173,7 +176,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge,
     PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
-    clearHarnessState, clearProviderState } =
+    clearHarnessState, clearProviderState, shouldHideValidator } =
     window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
@@ -315,8 +318,13 @@ window.addEventListener("DOMContentLoaded", () => {
   function renderGraph(st) {
     const isVal = (w) => (w.role || "implementor") === "validator";
     const impls = [...st.workers.values()].filter((w) => !isVal(w));
-    const vals = [...st.workers.values()].filter((w) => isVal(w) && w.kind !== "integration");
-    const ints = [...st.workers.values()].filter((w) => isVal(w) && w.kind === "integration");
+    const hideFailed = !!st.hideFailedValidators;
+    const vals = [...st.workers.values()]
+      .filter((w) => isVal(w) && w.kind !== "integration"
+        && !shouldHideValidator(w, hideFailed));
+    const ints = [...st.workers.values()]
+      .filter((w) => isVal(w) && w.kind === "integration"
+        && !shouldHideValidator(w, hideFailed));
     const rows = Math.max(impls.length, vals.length, ints.length, 1);
     const h = Math.max(140, 14 + (rows - 1) * 46 + 36 + 14);
     const graph = st.graph;
@@ -460,6 +468,13 @@ window.addEventListener("DOMContentLoaded", () => {
     tabEvBtn.className = "tabBtn";
     tabEvBtn.textContent = "Evidence";
     tabEvBtn.hidden = true;
+    const hideFailedToggle = document.createElement("label");
+    hideFailedToggle.className = "hideFailedToggle";
+    const hideFailedCheckbox = document.createElement("input");
+    hideFailedCheckbox.type = "checkbox";
+    hideFailedCheckbox.checked = true;
+    hideFailedToggle.append(hideFailedCheckbox,
+      document.createTextNode("Hide failed validators"));
     const delBtn = document.createElement("button");
     delBtn.className = "deleteBtn";
     delBtn.textContent = "Delete";
@@ -479,7 +494,7 @@ window.addEventListener("DOMContentLoaded", () => {
       await fetch("/api/lines/" + line.id, { method: "DELETE" });
       removeCard(line.id);
     });
-    head.append(name, dot, tabLineBtn, tabProcBtn, tabEvBtn, delBtn);
+    head.append(name, dot, tabLineBtn, tabProcBtn, tabEvBtn, hideFailedToggle, delBtn);
     const pipeCfg = document.createElement("div");
     pipeCfg.className = "pipeCfg";
     pipeCfg.hidden = true;
@@ -557,6 +572,7 @@ window.addEventListener("DOMContentLoaded", () => {
       waiting, planBody, graph, approveBtn, badge, planDetails, planControls: controls,
       pipeCfg,
       tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, plan, row, procPane, evPane,
+      hideFailedValidators: true,
       plannerStatus: line.status, started: line.started === true,
       planContent: undefined, approved: false,
       workers: new Map(), workerTranscripts: new Map(),
@@ -566,6 +582,10 @@ window.addEventListener("DOMContentLoaded", () => {
     tabLineBtn.addEventListener("click", () => setLineTab(st, "line"));
     tabProcBtn.addEventListener("click", () => setLineTab(st, "processes"));
     tabEvBtn.addEventListener("click", () => setLineTab(st, "evidence"));
+    hideFailedCheckbox.addEventListener("change", () => {
+      st.hideFailedValidators = hideFailedCheckbox.checked;
+      renderGraph(st);
+    });
 
     const setStatus = (status) => {
       st.plannerStatus = status;
