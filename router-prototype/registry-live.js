@@ -12,7 +12,6 @@ function send(res, event, data) {
 function createRegistryLive({ log = () => {}, heartbeatMs = 25000, maxClients = MAX_CLIENTS, coalesceMs = COALESCE_MS } = {}) {
   const clients = new Set();
   let latest = null;
-  let lastSent = 0;
   let timer = null;
 
   function flush() {
@@ -20,7 +19,6 @@ function createRegistryLive({ log = () => {}, heartbeatMs = 25000, maxClients = 
     if (!latest) return;
     const payload = { revision: latest.revision, eventCursor: latest.eventCursor };
     latest = null;
-    lastSent = Date.now();
     for (const res of clients) {
       try { send(res, 'registry', payload); } catch (error) { log('registry.live.send_failed', { error: String(error && error.message) }); }
     }
@@ -30,8 +28,7 @@ function createRegistryLive({ log = () => {}, heartbeatMs = 25000, maxClients = 
     if (!state) return;
     latest = { revision: state.revision, eventCursor: state.eventCursor };
     if (timer) return;
-    const wait = Math.max(0, lastSent + coalesceMs - Date.now());
-    timer = setTimeout(flush, wait);
+    timer = setTimeout(flush, coalesceMs);
     timer.unref();
   }
 
