@@ -42,10 +42,15 @@ function tmpPolicyFile(t) {
   return writeSystemPromptFile(POLICY, dir);
 }
 
-// The value that carries the user prompt in a plan: the -p value for vibe,
-// pi, and claude, the trailing positional for codex.
+// The value that carries the user prompt in a plan: the -p value for vibe
+// and pi, the trailing positional for codex, and the positional after "--"
+// for claude.
 function userPromptInPlan(plan) {
   if (plan.cmd === 'codex') return plan.args[plan.args.length - 1];
+  if (plan.cmd === 'claude') {
+    assert.equal(plan.args[plan.args.length - 2], '--', 'expected the prompt after "--"');
+    return plan.args[plan.args.length - 1];
+  }
   const i = plan.args.indexOf('-p');
   assert.notEqual(i, -1, 'expected a -p flag');
   return plan.args[i + 1];

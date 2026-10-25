@@ -201,9 +201,9 @@ test('claude buildRun: fresh and resumed argv, cwd, effort mapping', () => {
   const run = h.buildRun(CTX);
   assert.strictEqual(run.cmd, 'claude');
   assert.deepStrictEqual(run.args, [
-    '-p', 'Do the task', '--output-format', 'stream-json', '--verbose',
+    '-p', '--output-format', 'stream-json', '--verbose',
     '--model', 'model-x', '--dangerously-skip-permissions',
-    '--effort', 'medium',
+    '--effort', 'medium', '--', 'Do the task',
   ]);
   assert.deepStrictEqual(run.env, {});
   assert.strictEqual(run.cwd, '/tmp/work');
@@ -216,9 +216,18 @@ test('claude buildRun: fresh and resumed argv, cwd, effort mapping', () => {
   assert.strictEqual(effort('high'), 'high');
   assert.strictEqual(effort('bogus'), 'medium');
   assert.deepStrictEqual(
-    h.buildRun({ ...CTX, sessionId: 's1' }).args.slice(-2),
-    ['--resume', 's1']
+    h.buildRun({ ...CTX, sessionId: 's1' }).args.slice(-4),
+    ['--resume', 's1', '--', 'Do the task']
   );
+});
+
+test('claude buildRun keeps a dash-leading prompt after "--"', () => {
+  // The planner turn wrapper starts with "---"; before "--" the CLI
+  // rejected it as an unknown option.
+  const prompt = '--- PLANNER TURN CONTEXT ---\nDo the task';
+  const args = createHarness('claude').buildRun({ ...CTX, prompt }).args;
+  assert.deepStrictEqual(args.slice(-2), ['--', prompt]);
+  assert.strictEqual(args.indexOf(prompt), args.length - 1);
 });
 
 test('claude outcome and normalize on fixture lines', () => {

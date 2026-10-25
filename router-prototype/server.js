@@ -9,6 +9,7 @@ const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   validateWorkerSpawnBody, lineSummary } = require("./spawn-plan");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
+const { StderrCapture, describeFailure } = require("./run-failure");
 const { messageText, InvocationCapture, appendTranscript, hasCriteria,
   validationCriteriaBlock, pendingValidationFor, reportForValidation,
   applyCompletion, completionFields, missingCriteriaDiagnostic, runOutputNote,
@@ -747,6 +748,7 @@ function saveLine(line) {
           repo: w.repo || "primary", worktreePath: w.worktreePath,
           ...changesetFields(w),
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
+          lastError: w.lastError || null,
           kind: w.kind || "standard" })) }));
   } catch {}
 }
@@ -902,9 +904,13 @@ function pump(line) {
     for (const raw of stdoutRecords.push(chunk)) consumePlannerRecord(raw);
   });
 
-  let stderr = "";
+  const stderr = new StderrCapture();
   child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (c) => { stderr = (stderr + c).slice(-2000); });
+  child.stderr.on("data", (c) => stderr.push(c));
+  // A CLI that cannot start (e.g. not on PATH) emits "error" before
+  // "close"; without this listener the router process would crash.
+  let spawnError = null;
+  child.on("error", (err) => { spawnError = err; });
 
   child.on("close", (code, signal) => {
     if (killTimer) clearTimeout(killTimer);
@@ -918,14 +924,18 @@ function pump(line) {
       appendTranscript(line.transcript, finished);
       broadcast(line, "entry", finished);
     }
-    const result = adapter.outcome(code, signal);
+    const result = spawnError ? "fail" : adapter.outcome(code, signal);
+    const failure = result !== "ok"
+      ? describeFailure({ cmd: plan.cmd, code, signal, outcome: result, spawnError,
+        streamError: adapter.errorText(), stderr: stderr.text() })
+      : null;
     slog("info", "planner.run.end", { lineId: line.id, code, result,
       ms: Date.now() - t0,
-      stderr: result !== "ok" ? preview(stderr, 300) : undefined });
+      error: failure ? preview(failure, 500) : undefined });
     cleanupStage(line, "planner");
     saveLine(line);
     if (result !== "ok") {
-      broadcast(line, "error", { message: stderr.slice(-500) || `${plan.cmd} exited with code ${code}` });
+      broadcast(line, "error", { message: `Planner run failed. ${failure}` });
       if (isWake(line.lastRun)) {
         line.wakeRetries = line.wakeRetries || {};
         const attempts = (line.wakeRetries[line.lastRun] || 0);
@@ -1078,6 +1088,7 @@ function spawnWorker(line, worker, prompt, resume) {
   const phase = phaseForWorker(worker.role, worker.kind);
   const cfg = resolvePipeline(line)[phase];
   const effective = resolveWorkerOverrides(cfg, worker, phase);
+  worker.lastError = null;
   worker.harness = effective.harness;
   worker.model = effective.model;
   worker.effort = effective.effort;
@@ -1125,6 +1136,15 @@ function spawnWorker(line, worker, prompt, resume) {
     for (const raw of stdoutRecords.push(chunk)) consumeWorkerRecord(raw);
   });
 
+  // Drain stderr: an unread pipe can fill up and block the child.
+  const stderr = new StderrCapture();
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (c) => stderr.push(c));
+  // A CLI that cannot start emits "error" before "close"; without this
+  // listener the router process would crash.
+  let spawnError = null;
+  child.on("error", (err) => { spawnError = err; });
+
   child.on("close", (code, signal) => {
     if (killTimer) clearTimeout(killTimer);
     for (const raw of stdoutRecords.finish()) consumeWorkerRecord(raw);
@@ -1135,15 +1155,21 @@ function spawnWorker(line, worker, prompt, resume) {
       worker.transcript.push(finished);
       broadcast(line, "worker_entry", { workerId: worker.id, entry: finished });
     }
-    workerClosed(line, worker, code, signal, workerRunOutput, { invocationId, runId });
+    const outcome = spawnError ? "fail" : adapter.outcome(code, signal);
+    // A stop request is not a failure: it needs no error detail.
+    worker.lastError = outcome !== "ok" && !worker.stopRequested
+      ? describeFailure({ cmd: plan.cmd, code, signal, outcome, spawnError,
+        streamError: adapter.errorText(), stderr: stderr.text() })
+      : null;
+    workerClosed(line, worker, code, signal, workerRunOutput, { invocationId, runId, outcome });
   });
 }
 
 function workerClosed(line, worker, code, signal, workerRunOutput = new InvocationCapture(), invocation = {}) {
   worker.child = null;
-  const outcome = worker.adapter
+  const outcome = invocation.outcome || (worker.adapter
     ? worker.adapter.outcome(code, signal)
-    : (code === 0 ? "ok" : "fail");
+    : (code === 0 ? "ok" : "fail"));
   const report = workerRunOutput.text();
   const statusEvent = applyCompletion(worker, outcome, worker.stopRequested, report);
   if (invocation.invocationId) worker.lastCompletedInvocationId = invocation.invocationId;
@@ -1155,19 +1181,23 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
   }
   if (line.deleted) return;
   saveLine(line);
-  broadcast(line, "worker_status", statusEvent);
+  broadcast(line, "worker_status", { ...statusEvent, error: worker.lastError || null });
   const sid = worker.sessionId || "unknown";
   slog("info", "worker.closed", { lineId: line.id, workerId: worker.id, name: worker.name,
     role: worker.role, status: worker.status, verdict: worker.verdict || undefined,
     reportChars: report.length,
-    report: preview(report, 300) });
+    report: preview(report, 300),
+    error: worker.lastError ? preview(worker.lastError, 500) : undefined });
+  // The failure detail for the planner wake prompts; empty when the run
+  // left none (completed or stopped runs).
+  const failureNote = worker.lastError ? `\n\nFAILURE DETAIL:\n${worker.lastError}` : "";
   if (worker.role === "validator" && worker.kind === "integration") {
     if (worker.status === "completed") {
       enqueue(line, buildIntegrationNotification(worker, report));
     } else if (timedOut) {
-      enqueue(line, `INTEGRATION TIMEOUT - integration validator '${worker.name}' hit the run time limit. The merged work is on branch ${worker.branch}. Decide how to proceed.` + runOutputNote(report, "integration run output"));
+      enqueue(line, `INTEGRATION TIMEOUT - integration validator '${worker.name}' hit the run time limit. The merged work is on branch ${worker.branch}. Decide how to proceed.` + runOutputNote(report, "integration run output") + failureNote);
     } else {
-      enqueue(line, `INTEGRATION STOPPED/FAILED - integration validator '${worker.name}' did not complete. Its worktree may be partially merged. Decide how to proceed.` + runOutputNote(report, "integration run output"));
+      enqueue(line, `INTEGRATION STOPPED/FAILED - integration validator '${worker.name}' did not complete. Its worktree may be partially merged. Decide how to proceed.` + runOutputNote(report, "integration run output") + failureNote);
     }
   } else if (worker.role === "validator") {
     const impl = line.workers.get(worker.validates);
@@ -1177,11 +1207,11 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
     if (worker.status === "completed") {
       enqueue(line, buildValidationNotification(worker, impl, report));
     } else if (timedOut) {
-      enqueue(line, `VALIDATOR TIMEOUT - the validator hit the run time limit and was interrupted. Validators are fresh sessions each time: the implementor work is unchanged, decide how to proceed (usually nothing - validation repeats after the next implementor completion).` + runOutputNote(report, "validation run output"));
+      enqueue(line, `VALIDATOR TIMEOUT - the validator hit the run time limit and was interrupted. Validators are fresh sessions each time: the implementor work is unchanged, decide how to proceed (usually nothing - validation repeats after the next implementor completion).` + runOutputNote(report, "validation run output") + failureNote);
     } else if (worker.status === "failed") {
-      enqueue(line, `VALIDATOR FAILURE - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) exited non-zero. Decide how to proceed.` + runOutputNote(report, "validation run output"));
+      enqueue(line, `VALIDATOR FAILURE - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) failed (see FAILURE DETAIL). Decide how to proceed.` + runOutputNote(report, "validation run output") + failureNote);
     } else {
-      enqueue(line, `VALIDATOR STOPPED - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) was stopped. Decide how to proceed.` + runOutputNote(report, "validation run output"));
+      enqueue(line, `VALIDATOR STOPPED - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) was stopped. Decide how to proceed.` + runOutputNote(report, "validation run output") + failureNote);
     }
   } else if (worker.status === "completed") {
     // Recalculate the change set after every successful implementor run.
@@ -1201,11 +1231,11 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
       enqueueRequest(line, request);
     }
   } else if (timedOut) {
-    enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: POST /api/protocol/workers/${worker.id}/continue with {"prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.` + runOutputNote(report, "implementor run output"));
+    enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: POST /api/protocol/workers/${worker.id}/continue with {"prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.` + runOutputNote(report, "implementor run output") + failureNote);
   } else if (worker.status === "failed") {
-    enqueue(line, `WORKER FAILURE - '${worker.name}' (workerId ${worker.id}, session ${sid}): ${worker.harness || "vibe"} exited non-zero. Decide whether to restart it with a corrected prompt (new name, e.g. ${worker.name}-2) or to proceed without it.` + runOutputNote(report, "implementor run output"));
+    enqueue(line, `WORKER FAILURE - '${worker.name}' (workerId ${worker.id}, session ${sid}): ${worker.harness || "vibe"} failed (see FAILURE DETAIL). Decide whether to restart it with a corrected prompt (new name, e.g. ${worker.name}-2) or to proceed without it.` + runOutputNote(report, "implementor run output") + failureNote);
   } else {
-    enqueue(line, `WORKER STOPPED - '${worker.name}' (workerId ${worker.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.` + runOutputNote(report, "implementor run output"));
+    enqueue(line, `WORKER STOPPED - '${worker.name}' (workerId ${worker.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.` + runOutputNote(report, "implementor run output") + failureNote);
   }
   flushPendingValidations(line);
 }
@@ -1526,6 +1556,7 @@ const server = http.createServer((req, res) => {
         role: w.role, validates: w.validates, persona: w.persona || "backend",
         kind: w.kind || "standard",
         ...changesetFields(w),
+        lastError: w.lastError || null,
       })) });
     }
     if (!line.planApproved) return json(res, 409, { error: "plan not approved" });
@@ -1915,6 +1946,7 @@ When done, reply with a report: what you changed, files changed, how you verifie
         id: w.id, name: w.name, ...completionFields(w), branch: w.branch, role: w.role,
         validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
         ...changesetFields(w),
+        lastError: w.lastError || null,
       })) });
     req.on("close", () => {
       line.clients.delete(res);
@@ -1982,6 +2014,7 @@ function loadLines() {
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           repo: w.repo || "primary",
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
+          lastError: w.lastError || null,
           sessionId: w.sessionId,
           worktreePath: w.worktreePath
             || path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name)),
@@ -2002,6 +2035,7 @@ function loadLines() {
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           repo: w.repo || (impl ? impl.repo : "primary"),
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
+          lastError: w.lastError || null,
           sessionId: w.sessionId,
           worktreePath: w.worktreePath
             || (impl ? impl.worktreePath

@@ -147,6 +147,20 @@ class BaseHarness {
     return [this.systemPromptChannel.text, this.systemPromptChannel.textPrefix + text];
   }
 
+  // Errors the harness reported on its own output stream (API errors,
+  // failed results). Kept apart from assistant text: they never become a
+  // report. Deduplicated, in arrival order.
+  recordError(text) {
+    if (typeof text !== 'string' || !text.trim()) return;
+    if (!this.streamErrors) this.streamErrors = [];
+    const t = text.trim();
+    if (!this.streamErrors.includes(t) && this.streamErrors.length < 5) this.streamErrors.push(t);
+  }
+
+  errorText() {
+    return this.streamErrors && this.streamErrors.length ? this.streamErrors.join('\n') : null;
+  }
+
   // First session id seen on the stream wins.
   captureSessionId(id) {
     if (this.sessionId === null && typeof id === 'string' && id.length > 0) {
@@ -250,6 +264,10 @@ class PiHarness extends BaseHarness {
       }
     } else if (obj.type === 'message_end') {
       const message = obj.message || {};
+      if (message.stopReason === 'error') {
+        this.recordError(typeof message.errorMessage === 'string' && message.errorMessage
+          ? message.errorMessage : 'pi reported an error without a message');
+      }
       // message_end is authoritative, including when it contains no text.
       // Never flush the deltas again after a completed message.
       this.pendingTextBlocks.clear();
@@ -303,6 +321,10 @@ class CodexHarness extends BaseHarness {
       // The thread start event carries the session id: newer Codex builds
       // use "session_id", older ones "thread_id".
       this.captureSessionId(obj.session_id !== undefined ? obj.session_id : obj.thread_id);
+    } else if (obj.type === 'error') {
+      this.recordError(obj.message);
+    } else if (obj.type === 'turn.failed') {
+      this.recordError(obj.error && obj.error.message);
     } else if (obj.type === 'item.completed' && obj.item && obj.item.type === 'agent_message') {
       // Codex agent_message is an assistant event when the schema omits role.
       // Reject any explicit contradictory role instead of rewriting it.
@@ -324,13 +346,17 @@ class ClaudeHarness extends BaseHarness {
 
   buildRun(ctx) {
     const systemArgs = this.systemPromptArgs(ctx);
-    const args = ['-p', ctx.prompt, '--output-format', 'stream-json', '--verbose'];
+    const args = ['-p', '--output-format', 'stream-json', '--verbose'];
     // Without a model the CLI uses its own configured default.
     if (ctx.model) args.push('--model', ctx.model);
     args.push('--dangerously-skip-permissions',
       '--effort', CLAUDE_EFFORT_LEVELS.has(ctx.effort) ? ctx.effort : 'medium');
     if (ctx.sessionId) args.push('--resume', ctx.sessionId);
     if (systemArgs) args.push(...systemArgs);
+    // The prompt goes last, after "--": the CLI parses an argument that
+    // starts with "-" (the planner turn wrapper starts with "---") as an
+    // unknown option and exits.
+    args.push('--', ctx.prompt);
     return { cmd: 'claude', args, env: {}, cwd: ctx.workdir };
   }
 
@@ -339,6 +365,19 @@ class ClaudeHarness extends BaseHarness {
     if (obj.type === 'system' && obj.subtype === 'init') {
       // Init event: carries the session id, no message text.
       this.captureSessionId(obj.session_id);
+    } else if (obj.type === 'assistant' && obj.message
+      && (obj.is_api_error_message === true || (typeof obj.error === 'string' && obj.error))) {
+      // API errors (unknown model, auth, rate limit) arrive as a synthetic
+      // assistant message. Its text describes the error: record it, and
+      // never pass it on as assistant output.
+      this.captureSessionId(obj.session_id);
+      this.recordError(textFromContent(obj.message.content) || obj.error);
+    } else if (obj.type === 'result' && obj.is_error === true) {
+      // The final result marks the whole run failed.
+      this.resultIsError = true;
+      const errors = Array.isArray(obj.errors) ? obj.errors.filter((e) => typeof e === 'string') : [];
+      this.recordError(typeof obj.result === 'string' && obj.result ? obj.result
+        : errors.length ? errors.join('\n') : `claude result: ${obj.subtype || 'error'}`);
     } else if (obj.type === 'assistant' && obj.message) {
       // Claude's outer assistant event implies assistant only when the nested
       // message does not provide a contradictory role.
@@ -349,6 +388,12 @@ class ClaudeHarness extends BaseHarness {
       if (text) return this.entry('assistant', text);
     }
     return null;
+  }
+
+  // A result marked is_error fails the run even when the CLI exits 0.
+  outcome(code, signal) {
+    const base = super.outcome(code, signal);
+    return base === 'ok' && this.resultIsError ? 'fail' : base;
   }
 }
 
