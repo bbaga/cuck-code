@@ -9,7 +9,7 @@ const PRODUCTION_SCRIPTS = [
   "server.js",
   "harness.js",
   "pipeline-config.js",
-  "planner-turn.js",
+  "planner-policy.js",
   "spawn-plan.js",
   "handoff.js",
   "jsonl.js",

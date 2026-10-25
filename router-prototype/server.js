@@ -237,7 +237,9 @@ ${implId ? `- The implementor's app port: read ui.port at the repo root, or call
   fixtures.`;
 }
 
-const { wrapPlannerTurn } = require("./planner-turn");
+const { PLANNER_POLICY_VERSION, plannerSystemPrompt, plannerUserPrompt,
+  migratePlannerPolicy } = require("./planner-policy");
+const { trustedSystemChannel, writeSystemPromptFile } = require("./harness");
 
 const lines = new Map();
 
@@ -703,6 +705,7 @@ function saveLine(line) {
         repos: [...(line.repos || new Map()).values()].map((r) => ({
           name: r.name, url: r.url, path: r.path })),
         started: line.started, planApproved: line.planApproved,
+        plannerPolicyVersion: line.plannerPolicyVersion,
         inventory: [...(line.inventory || new Map()).values()].map((i) => ({
           id: i.id, kind: i.kind, name: i.name, by: i.by, ref: i.ref,
           keep: i.keep, status: i.status })),
@@ -807,14 +810,53 @@ function entryText(entry) {
   return messageText(entry);
 }
 
+// Build the planner child process plan. The trusted policy travels only
+// through the harness system channel; the user prompt stays byte-for-byte
+// unchanged. Fails closed before any launch when the harness has no
+// verified trusted channel (including vibe).
+function buildPlannerPlan(line, cfg, request) {
+  if (!trustedSystemChannel(cfg.harness)) {
+    throw new Error(`planner harness "${cfg.harness}" has no trusted system prompt channel; refusing to launch`);
+  }
+  const systemPrompt = plannerSystemPrompt({
+    lineId: line.id, approved: line.planApproved, workdir: line.workdir,
+    source: request.source,
+  });
+  // Router-owned policy directory inside the line workdir. The content-hash
+  // file name makes the refresh safe when approval or the trusted source
+  // state changes: a new state writes a new file, never a partial overwrite.
+  const systemPromptFile = writeSystemPromptFile(systemPrompt,
+    path.join(line.workdir, "router", "policy"));
+  return planPlannerRun(cfg, {
+    prompt: plannerUserPrompt(request.text),
+    workdir: line.workdir,
+    sessionId: line.sessionId,
+    autoApprove: AUTO_APPROVE,
+    systemPrompt,
+    systemPromptFile,
+  });
+}
+
+// Fail closed on a refused planner launch: report a clear error, drop the
+// request, and return the line to idle. Never falls back to prefixing the
+// policy onto the user prompt.
+function failPlannerLaunch(line, err) {
+  const message = err && err.message ? err.message : String(err);
+  slog("error", "planner.launch.refused", { lineId: line.id, error: message });
+  broadcast(line, "error", { message: `planner launch refused: ${message}` });
+  line.activePlannerRequest = null;
+  line.lastRun = null;
+  line.status = "idle";
+  saveLine(line);
+  broadcast(line, "status", { status: line.status });
+}
+
 function pump(line) {
   if (line.deleted || line.status === "running" || line.queue.length === 0) return;
   const request = restorePlannerRequest(line.queue.shift());
   if (!request) return pump(line);
   const { text } = request;
   line.activePlannerRequest = request;
-  const prompt = wrapPlannerTurn(text, { lineId: line.id, approved: line.planApproved,
-    workdir: line.workdir });
   line.lastRun = text;
   saveLine(line);
   line.status = "running";
@@ -825,8 +867,12 @@ function pump(line) {
 
   const cfg = resolvePipeline(line).planner;
   line.plannerHarness = cfg.harness;
-  const plan = planPlannerRun(cfg, { prompt, workdir: line.workdir,
-    sessionId: line.sessionId, autoApprove: AUTO_APPROVE });
+  let plan;
+  try {
+    plan = buildPlannerPlan(line, cfg, request);
+  } catch (err) {
+    return failPlannerLaunch(line, err);
+  }
   const adapter = plan.adapter;
   const child = spawn(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, ...plan.env },
@@ -1234,6 +1280,7 @@ const server = http.createServer((req, res) => {
       }
       const line = { id, name, sessionId: null, workdir, status: "standby",
         repoUrl, started: false, planApproved: false, workers: new Map(),
+        plannerPolicyVersion: PLANNER_POLICY_VERSION,
         repos: new Map(),
         pipeline: body.pipeline || null,
         inventory: new Map(),
@@ -1925,12 +1972,20 @@ function loadLines() {
           lastCompletedInvocationId: w.lastCompletedInvocationId || null });
       }
       const started = meta.started === true || !!meta.sessionId;
+      // One-time migration to the trusted planner policy: keep the line
+      // state and UI transcript, but clear the planner harness session id
+      // so the next invocation starts fresh with the system-channel policy.
+      const migration = migratePlannerPolicy(meta);
+      if (migration.migrated) {
+        slog("info", "planner.policy.migrated", { lineId: meta.id,
+          from: meta.plannerPolicyVersion || 0, to: PLANNER_POLICY_VERSION });
+      }
       const inventory = new Map();
       for (const i of meta.inventory || []) {
         inventory.set(i.id, { id: i.id, kind: i.kind, name: i.name, by: i.by,
           ref: i.ref, keep: !!i.keep, status: "stopped" });
       }
-      const line = { id: meta.id, name: meta.name, sessionId: meta.sessionId,
+      const line = { id: meta.id, name: meta.name, sessionId: migration.sessionId,
         repoUrl: meta.repoUrl || null,
         pipeline: meta.pipeline || null,
         repos: new Map((meta.repos || []).map((r) => [r.name,
@@ -1939,6 +1994,7 @@ function loadLines() {
         status: started ? "idle" : "standby",
         queue: restorePlannerRequests(meta.plannerQueue), activePlannerRequest: null,
         started,
+        plannerPolicyVersion: PLANNER_POLICY_VERSION,
         planApproved: meta.planApproved === true, workers, inventory,
         evidence: new Map((meta.evidence || []).map((e) => [e.id, e])),
         pendingValidations: restorePendingValidations(meta.pendingValidations),
