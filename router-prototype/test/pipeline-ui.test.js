@@ -27,6 +27,8 @@ const {
   clearProviderState,
   buildPipelinePayload,
   authBadge,
+  isFailedValidator,
+  shouldHideValidator,
 } = require("../web/pipeline-ui.js");
 const pipelineUiModule = require("../web/pipeline-ui.js");
 
@@ -480,6 +482,51 @@ test("fetchPiDetail reports a fetch error only when the token is current", async
   assert.equal(fresh.stage, "fetch-error");
   assert.equal(fresh.current, true);
   assert.match(fresh.error, /boom/);
+});
+
+test("isFailedValidator is true for status failed and verdict fail", () => {
+  assert.strictEqual(isFailedValidator({ status: "failed" }), true);
+  assert.strictEqual(isFailedValidator({ verdict: "fail" }), true);
+});
+
+test("isFailedValidator is false for other states and bad input", () => {
+  assert.strictEqual(isFailedValidator({ status: "completed" }), false);
+  assert.strictEqual(isFailedValidator({ status: "running" }), false);
+  assert.strictEqual(isFailedValidator({ status: "stopped" }), false);
+  assert.strictEqual(isFailedValidator({}), false);
+  assert.strictEqual(isFailedValidator(null), false);
+  assert.strictEqual(isFailedValidator(undefined), false);
+});
+
+test("shouldHideValidator hides only failed validators when the flag is on", () => {
+  assert.strictEqual(
+    shouldHideValidator({ role: "implementor", status: "failed" }, true),
+    false,
+  );
+  assert.strictEqual(
+    shouldHideValidator({ role: "validator", status: "failed" }, true),
+    true,
+  );
+  assert.strictEqual(
+    shouldHideValidator({ role: "validator", verdict: "fail", status: "completed" }, true),
+    true,
+  );
+  assert.strictEqual(
+    shouldHideValidator({ role: "validator", verdict: "fail", status: "completed" }, false),
+    false,
+  );
+  assert.strictEqual(
+    shouldHideValidator({ role: "validator", kind: "integration", status: "failed" }, true),
+    true,
+  );
+  assert.strictEqual(
+    shouldHideValidator({ role: "validator", status: "failed" }, undefined),
+    false,
+  );
+});
+
+test("shouldHideValidator defaults a missing role to implementor", () => {
+  assert.strictEqual(shouldHideValidator({ status: "failed" }, true), false);
 });
 
 test("pipeline-ui exports fetchPiDetail for the browser global and Node tests", () => {

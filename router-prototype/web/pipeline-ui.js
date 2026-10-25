@@ -221,6 +221,23 @@
     return any ? pipeline : null;
   }
 
+  // A validator counts as failed when its status is "failed" or its
+  // verdict is "fail". Non-objects are never failed.
+  function isFailedValidator(w) {
+    if (!w || typeof w !== "object") return false;
+    return w.status === "failed" || w.verdict === "fail";
+  }
+
+  // Pure decision for hiding a validator row. Only validators hide, and
+  // only when the hide-failed flag is on. Integration validators get the
+  // same treatment as other validators.
+  function shouldHideValidator(w, hideFailed) {
+    if (hideFailed !== true) return false;
+    if (!w || typeof w !== "object") return false;
+    if ((w.role || "implementor") !== "validator") return false;
+    return isFailedValidator(w);
+  }
+
   function authBadge(entry) {
     if (!entry || entry.installed !== true) return "not installed";
     if (entry.auth === "ok") return "ok";
@@ -252,5 +269,7 @@
     clearProviderState,
     buildPipelinePayload,
     authBadge,
+    isFailedValidator,
+    shouldHideValidator,
   };
 });
