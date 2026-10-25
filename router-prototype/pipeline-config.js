@@ -66,8 +66,19 @@ function validatePipelineConfig(raw) {
   return null;
 }
 
+// A model id belongs to one harness. The code default models are Vibe
+// models, so every other harness defaults to null: its CLI then uses its
+// own configured default model.
+function defaultModelFor(harness, phase) {
+  return harness === DEFAULTS.harness ? DEFAULTS.model[phase] : null;
+}
+
 // Merge order, most specific wins: code defaults, then environment
 // variables, then line.pipeline[phase]. Env values are read at resolve time.
+// The env model (e.g. IMPLEMENTOR_MODEL) applies only while the phase runs
+// the env/default harness: a line that switches the phase to another
+// harness without naming a model gets that harness's default instead of a
+// model id meant for a different CLI.
 function resolvePipeline(line, env) {
   const e = env || process.env;
   const pipeline = line && line.pipeline ? line.pipeline : {};
@@ -78,9 +89,12 @@ function resolvePipeline(line, env) {
     const envTimeLimit = phase === "planner"
       ? Number(e.PLANNER_TIME_LIMIT || 1800)
       : Number(e.WORKER_TIME_LIMIT || 3600);
+    const baseHarness = e[`${prefix}_HARNESS`] || DEFAULTS.harness;
+    const harness = phaseCfg.harness || baseHarness;
+    const baseModel = harness === baseHarness ? e[`${prefix}_MODEL`] : null;
     result[phase] = {
-      harness: phaseCfg.harness || e[`${prefix}_HARNESS`] || DEFAULTS.harness,
-      model: phaseCfg.model || e[`${prefix}_MODEL`] || DEFAULTS.model[phase],
+      harness,
+      model: phaseCfg.model || baseModel || defaultModelFor(harness, phase),
       effort: phaseCfg.effort || e[`${prefix}_EFFORT`] || DEFAULTS.effort,
       timeLimit: phaseCfg.timeLimit || envTimeLimit,
     };
@@ -116,19 +130,26 @@ function isValidCatalogToken(token) {
 // A model id in a catalog row must carry version-like structure (a digit
 // or a separator). Ordinary error prose ("Failed to load catalog",
 // "Command failed") does not, so prose lines never become catalog rows.
+// A slash is allowed: real catalog rows can carry a provider-qualified id
+// in the model column (for example "google/gemma-4-e4b").
 function looksLikeModelId(token) {
-  return isValidCatalogToken(token) && /[0-9._-]/.test(token.slice(1));
+  return typeof token === "string"
+    && /^[A-Za-z0-9][A-Za-z0-9._@+/-]*$/.test(token)
+    && /[0-9._-]/.test(token.slice(1));
 }
 
 // Parse the output of `pi --list-models` into unique provider choices and
 // provider-qualified model choices. Tolerates table headers, separator
 // rows, variable spacing, and "provider:" section headers with indented
 // model lines. Row structure is validated conservatively: a whitespace
-// row must have exactly two identifier-like cells, a pipe row takes its
-// first two cells, and a model cell must look like a model id. Error
-// prose therefore yields no providers and no models. Callers must parse
-// only after the command exited 0; a failed command never yields rows.
-// Never includes credentials: only provider and model names are read.
+// row takes its first two identifier-like cells, a wider row is data only
+// when a "provider model ..." header announced that exact column count
+// (real catalogs print metadata columns next to provider and model), a
+// pipe row takes its first two cells, and a model cell must look like a
+// model id. Error prose therefore yields no providers and no models.
+// Callers must parse only after the command exited 0; a failed command
+// never yields rows. Never includes credentials: only provider and
+// model names are read.
 function parsePiModelCatalog(stdout) {
   const models = [];
   const seenModels = new Set();
@@ -140,6 +161,10 @@ function parsePiModelCatalog(stdout) {
     models.push({ value: qualified, label: m });
   };
   let current = null;
+  // Column count announced by a "provider model ..." header row. Wider
+  // whitespace rows are catalog data only while they match this count;
+  // without a header, a row with more than two cells is prose, not data.
+  let headerColumns = null;
   for (const rawLine of String(stdout == null ? "" : stdout).split(/\r?\n/)) {
     if (!rawLine.trim()) continue;
     if (/^[\s|:+-=]+$/.test(rawLine)) continue; // table borders/separators
@@ -157,15 +182,22 @@ function parsePiModelCatalog(stdout) {
       }
       addModel(first, second);
       current = first;
-    } else if (!isPipeRow && cells.length === 2) {
+    } else if (!isPipeRow && cells.length >= 2) {
       const [first, second] = cells;
       if (/^provider$/i.test(first) && /^model$/i.test(second)) {
-        current = null; // header row
+        headerColumns = cells.length; // header row, any width
+        current = null;
         continue;
       }
-      // A whitespace row with more than two cells is prose, not a row.
-      addModel(first, second);
-      current = first;
+      // Two cells are always a candidate row; a wider row is data only
+      // when a header announced that exact column count. Real catalogs
+      // print metadata columns (context, max-out, ...) next to the
+      // provider and model; prose lines never match the header width.
+      if (cells.length === 2
+        || (headerColumns !== null && cells.length === headerColumns)) {
+        addModel(first, second);
+        current = first;
+      }
     } else if (!isPipeRow && cells.length === 1) {
       const token = cells[0];
       if (token.endsWith(":")) {
@@ -240,10 +272,28 @@ function vibeModelChoices(env) {
   return choices;
 }
 
+// The Claude Code CLI resolves these aliases to the latest model of each
+// family, so they stay valid across model releases.
+const CLAUDE_MODEL_ALIASES = ["opus", "sonnet", "haiku"];
+
+// Stable, deduplicated Claude model choices: the CLI aliases, then the
+// full model ids from CLAUDE_MODELS (comma-separated). Pure in `env`.
+function claudeModelChoices(env) {
+  const e = env || process.env;
+  const seen = new Set();
+  const choices = [];
+  for (const v of [...CLAUDE_MODEL_ALIASES, ...parseVibeModelsEnv(e.CLAUDE_MODELS)]) {
+    if (seen.has(v)) continue;
+    seen.add(v);
+    choices.push({ value: v, label: v });
+  }
+  return choices;
+}
+
 // run(cmdArray) returns a Promise of { code, stdout }, or null when the
 // command cannot start or times out. Returns one result per harness:
-// { id, installed, auth, loginHint, version } plus, for vibe, `models`
-// and, for pi, `authModes` and provider-qualified `models`.
+// { id, installed, auth, loginHint, version } plus, for vibe and claude,
+// `models` and, for pi, `authModes` and provider-qualified `models`.
 async function probeHarnesses(run, env) {
   return Promise.all(HARNESS_PROBES.map(async (probe) => {
     const versionRes = await run(probe.versionCmd);
@@ -263,6 +313,9 @@ async function probeHarnesses(run, env) {
     };
     if (probe.id === "vibe") {
       result.models = vibeModelChoices(env);
+    }
+    if (probe.id === "claude") {
+      result.models = claudeModelChoices(env);
     }
     if (probe.id === "pi" && probe.listModelsCmd) {
       const catalogRes = await run(probe.listModelsCmd);
@@ -329,6 +382,7 @@ module.exports = {
   HARNESS_IDS,
   EFFORT_LEVELS,
   validatePipelineConfig,
+  defaultModelFor,
   resolvePipeline,
   HARNESS_PROBES,
   probeHarnesses,
@@ -338,5 +392,6 @@ module.exports = {
   parsePiAuthCheck,
   parseVibeModelsEnv,
   vibeModelChoices,
+  claudeModelChoices,
   piProviderDetail,
 };
