@@ -1,92 +1,84 @@
 # Registry UI video guide
 
-Record one video for each of the six cases below. Use an isolated router and test data. Do not use port 7788 for this router.
+Record a separate video for each of the six cases below. Use an isolated router and test data. Do not use port 7788 for the isolated router.
 
 ## Use the integration validator worktree
 
-Run the tests and save the videos inside the dedicated integration validator worktree. Set `WORKTREE` to its top-level path. If the repository is a nested clone, set `REPO` to the path of the clone inside that worktree. All video paths in evidence requests must be relative to `WORKTREE`.
+Save videos inside the integration validator's dedicated worktree. In this setup, the repository clone directory is `cuck-code`. Set `WORKTREE` to the integration validator worktree root. Save videos in the absolute directory `$WORKTREE/cuck-code/evidence`.
 
 ```sh
-WORKTREE=/path/to/integration-validator-worktree
-REPO="$WORKTREE/router-prototype" # Use WORKTREE instead if the repo is at its root.
+WORKTREE=/absolute/path/to/integration-validator-worktree
+REPO="$WORKTREE/cuck-code"
+mkdir -p "$WORKTREE/cuck-code/evidence" /tmp/registry-ui-lines
 cd "$REPO"
-mkdir -p "$WORKTREE/evidence" /tmp/registry-ui-lines
 ```
 
-Start an isolated router with a free port other than 7788:
+Start an isolated router with an available port other than 7788:
 
 ```sh
-PORT=17788 LINES_DIR=/tmp/registry-ui-lines node server.js
+PORT=17788 LINES_DIR=/tmp/registry-ui-lines node router-prototype/server.js
 ```
 
 Open `http://localhost:17788` in the browser. Use only this router and its storage for test data.
 
-## Playwright prerequisite
+## Record with the Playwright MCP browser
 
-The Playwright package and its browser must be available in the environment that runs the recording script. Check before recording:
+Use the available Playwright MCP browser runtime. This option does not need a local Playwright package. Call `browser_run_code_unsafe` with a function that accepts `page`. The existing page provides a browser through `page.context().browser()`. Create a new context with `recordVideo` set to the absolute evidence directory before opening a page in that context.
 
-```sh
-node -e "console.log(require.resolve('playwright'))"
-npx playwright --version
-```
-
-If either check fails, do not assume that Playwright is installed locally. Use the Playwright runtime provided to the integration validator, or ask for that runtime to be made available. Do not add or install a package in this worktree just for recording.
-
-## Record a case
-
-Start a new context for each video. Set `recordVideo` before opening a page. Run this script from `WORKTREE`. Change `fileName` and the case actions for each recording.
+Run this code once per case. Replace `CASE_FILE` and the case actions each time. The browser runtime must be able to write to the validator worktree path.
 
 ```js
-const path = require('node:path');
-const { chromium } = require('playwright');
-
-(async () => {
-  const browser = await chromium.launch({ headless: true });
+async (page) => {
+  const browser = page.context().browser();
+  const evidenceDir = '/absolute/path/to/integration-validator-worktree/cuck-code/evidence';
   const context = await browser.newContext({
-    recordVideo: { dir: path.resolve('evidence') },
+    recordVideo: { dir: evidenceDir },
+    viewport: { width: 1280, height: 900 },
   });
-  const page = await context.newPage(); // Video recording is enabled before this call.
-  await page.goto('http://localhost:17788');
-  // Run one case here.
-  const video = page.video();
-  await context.close(); // Finalize the recording before using its path.
-  console.log(await video.path());
-  await browser.close();
-})();
+  const recordingPage = await context.newPage(); // Set recordVideo before this call.
+  await recordingPage.goto('http://localhost:17788');
+  // Run exactly one registry case here.
+  const video = recordingPage.video();
+  await context.close(); // Finish the recording before requesting its path.
+  const absoluteVideoPath = await video.path();
+  return { absoluteVideoPath };
+}
 ```
 
-The video is in `WORKTREE/evidence`. Use the path relative to `WORKTREE` when you register it. For a repository nested in the worktree, that path includes the clone directory, for example `router-prototype/evidence/registry-open.webm`. Close the context before registration. The completed path is available from `await video.path()` after close.
+Use the returned absolute path to confirm the completed video. Close each context before obtaining its video path. The file path for evidence registration is relative to `WORKTREE`; for this clone it is `cuck-code/evidence/<file>.webm`. Do not use a path relative to `REPO`.
+
+If you choose a local Playwright script instead, the `playwright` package and its browser must be available in that runtime. Check with `node -e "console.log(require.resolve('playwright'))"` and `npx playwright --version`. If either check fails, use the MCP option above. Do not assume that a local package is installed, and do not install one just for these recordings.
 
 ## Prepare the data
 
-Use two distinct line IDs, for example `registry-source` and `registry-target`. Create both lines in the isolated router. Keep them in the test storage directory. Use the source line for claims and the target line for requests.
+Use two different line IDs, for example `registry-source` and `registry-target`. Create both lines in the isolated router. Use the source line for claims and the target line for requests.
 
-Before the archive case, prepare a completed merge/archive record for the source line by using the normal line workflow. Confirm that the registry displays it before you record. The archive must be visible and must show the source line, merge reference, and status. Do not record an empty archive view as a passing case.
+Before recording the archive case, use the normal line workflow to create a completed merge/archive record for `registry-source`. Open the global registry and confirm that its archive row is visible. The row must show the source line, merge reference, and status. Do not record an empty archive view as a passing case.
 
-Before the request case, use the source line to open a request addressed to the target line. Use the target line to answer it. Record the request ID and its current revision. Enter that revision in the answer form.
+Before the request case, open a request from `registry-source` to `registry-target`. Record its request ID and current revision. Answer it from the target line with that revision.
 
 ## Six cases
 
 1. **Open the registry.** Open the global registry. Show the claims, requests, and archives sections.
 2. **Filter the registry.** Enter a search value or status. Show the filtered rows.
 3. **View an archive.** Show the prepared archive row, its source line, merge reference, and status.
-4. **Publish a claim.** Publish a claim from `registry-source`. Show the registry after the update.
-5. **Open and answer a request.** Open a request from `registry-source` to `registry-target`. Then answer it from the target line using the saved request revision. Show the updated registry.
-6. **Replay registry events.** Open the dashboard. Disconnect the browser from the network, then reconnect it. Show the registry refresh after replay.
+4. **Publish a claim.** Publish a claim from `registry-source`. Show the updated registry.
+5. **Open and answer a request.** Open a request from `registry-source` to `registry-target`. Answer it from the target line using the saved request revision. Show the updated registry.
+6. **Replay registry events.** Open the dashboard. Disconnect the browser from the network, then reconnect it. Show the registry refresh after event replay.
 
-Use a new context and a separate completed video for every case.
+Use one new recording context and one completed video for each case.
 
 ## Register each completed video
 
-Send evidence to the main router at `http://localhost:7788`. Do not send evidence to the isolated router on port 17788. Set `WORKER_ID` to the integration validator worker ID. Use the exact worker ID in the URL. The `useCase` and `file` fields are required. `file` is relative to `WORKTREE`, and must include the nested clone directory when present.
+Send evidence to the main router at `http://localhost:7788`. Do not send evidence to the isolated router on port 17788. Set `WORKER_ID` to the exact integration validator worker ID. The request must use that ID in the URL. Its `useCase` field must name the case. Its `file` field must be relative to the worker worktree and include the `cuck-code` clone directory.
 
-Run one request for each video. Check that each response has a successful HTTP status (201) and an `evidenceId`. Do not report success for a failed request.
+Evidence registration uses **POST**. A GET probe can return 404; that does not test registration. Send one POST for each completed video. Check each response. Success requires HTTP status 201 and an `evidenceId` in the response.
 
 ```sh
-WORKER_ID='<integration-validator-worker-id>'
+WORKER_ID='<exact-integration-validator-worker-id>'
 curl --fail-with-body -sS -X POST "http://localhost:7788/api/protocol/workers/$WORKER_ID/evidence" \
   -H 'Content-Type: application/json' \
-  -d '{"useCase":"View an archive","file":"router-prototype/evidence/registry-archive.webm"}'
+  -d '{"useCase":"View an archive","file":"cuck-code/evidence/registry-archive.webm"}'
 ```
 
-Use `"file":"evidence/registry-archive.webm"` instead when the repository is at the root of `WORKTREE`. Use a distinct `useCase` and file path for each of the six cases. Confirm the response for each registration before you continue.
+Use a distinct `useCase` and file path for each case. Confirm every registration response before you report the videos as evidence.
