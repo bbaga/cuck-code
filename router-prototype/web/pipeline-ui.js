@@ -240,6 +240,15 @@
     return isFailedValidator(w);
   }
 
+  // Read-only preview contract adapter. Unknown or stale data is never eligible.
+  function previewForIntegration(worker, preview) {
+    if (!worker || worker.kind !== "integration" || worker.status !== "completed"
+      || worker.verdict !== "pass" || !preview || typeof preview !== "object") return null;
+    if (preview.availability !== "available" || preview.stale === true
+      || preview.eligible !== true || !Array.isArray(preview.steps)) return null;
+    return preview;
+  }
+
   function authBadge(entry) {
     if (!entry || entry.installed !== true) return "not installed";
     if (entry.auth === "ok") return "ok";
@@ -272,6 +281,7 @@
     clearProviderState,
     buildPipelinePayload,
     authBadge,
+    previewForIntegration,
     isFailedValidator,
     shouldHideValidator,
   };

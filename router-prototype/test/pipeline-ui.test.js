@@ -32,6 +32,20 @@ const {
 } = require("../web/pipeline-ui.js");
 const pipelineUiModule = require("../web/pipeline-ui.js");
 
+test("preview eligibility accepts only available passing integration data", () => {
+  const passing = { kind: "integration", status: "completed", verdict: "pass" };
+  const preview = { eligible: true, availability: "available", steps: [{ command: "npm run dev" }] };
+  assert.strictEqual(pipelineUiModule.previewForIntegration(passing, preview), preview);
+  for (const worker of [
+    { ...passing, verdict: "fail" }, { ...passing, status: "failed" },
+    { ...passing, status: "stopped" }, { ...passing, status: "running" },
+    { ...passing, kind: "validator" },
+  ]) assert.strictEqual(pipelineUiModule.previewForIntegration(worker, preview), null);
+  assert.strictEqual(pipelineUiModule.previewForIntegration(passing, { ...preview, stale: true }), null);
+  assert.strictEqual(pipelineUiModule.previewForIntegration(passing, { ...preview, availability: "unsupported" }), null);
+  assert.strictEqual(pipelineUiModule.previewForIntegration(passing, { eligible: true, steps: [] }), null);
+});
+
 test("PHASE_ROWS lists the four pipeline phases", () => {
   assert.deepEqual(
     PHASE_ROWS.map((r) => r.key),
