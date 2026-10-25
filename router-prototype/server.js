@@ -642,6 +642,13 @@ You are the ONLY stage that runs integration tests locally: the
 implementors and the validators run unit tests only. Run the full
 acceptance and integration test suites here.
 
+Start the isolated router in the background. Redirect all standard
+streams, and use a free PORT other than 7788 and a private LINES_DIR.
+Capture the server PID and return from the start command before any
+other tool call. Wait for HTTP readiness with a bounded timeout.
+Register the PID with the router inventory under your integration
+worker ID. Stop the server PID after tests, including after failure.
+
 The feature branches to merge (one per implementor):
 ${branchEntries.map((e) => `- ${e.branch} (repo '${e.repo}')`).join("\n")}
 
@@ -649,36 +656,44 @@ Instructions from the planner:
 ${instructions}
 
 Procedure:
-1. For the 'primary' repo: merge each of its feature branches on top
+1. Start the isolated router in the background:
+   PORT=<free-port> LINES_DIR=<private-dir> node router-prototype/server.js >router.log 2>&1 & SERVER_PID=$!; echo "$SERVER_PID"
+   Return from this command before any other tool call. Poll the HTTP
+   endpoint with a bounded timeout until it responds. Register the PID
+   with POST /api/protocol/lines/$LINE_ID/inventory, using kind process,
+   name integration-router, pid $SERVER_PID, and worker ${workerId}.
+2. For the 'primary' repo: merge each of its feature branches on top
    of your integration branch, one by one:
    git merge <branch> --no-edit
    Resolve conflicts yourself, keeping both features where possible.
    If a conflict cannot be resolved sensibly, stop and report it.
-${extraRepos.length ? `2. For EVERY other repo in the list: make your own copy inside
+${extraRepos.length ? `3. For EVERY other repo in the list: make your own copy inside
    your workdir (git clone <remote or path> <repo-name>), create a
    local integration branch from its main branch, and merge its
    feature branches there the same way. Never push to their remotes.` : "2. No additional repositories are registered for this line."}
-3. When all branches are merged, run ALL acceptance tests and verify
+4. When all branches are merged, run ALL acceptance tests and verify
    everything works together. Build and run the project if needed.
-4. For EACH use case you test, record a video of the test case running.
+5. For EACH use case you test, record a video of the test case running.
    Use playwright with video recording enabled: in a playwright test use
    video: 'on' (or npx playwright test --video=on); in a raw playwright
    script enable recordVideo on the browser context, for example
    browser.newContext({ recordVideo: { dir: 'evidence' } }).
    Save each video as a separate file under evidence/ in your workdir
    (for example evidence/use-case-login.webm).
-5. IMPORTANT: close the browser context (or let the playwright
+6. IMPORTANT: close the browser context (or let the playwright
    test run finish) BEFORE you register the video file. A video that
    is still recording is not finalized: it has no duration and will
    not play. Register only files that are complete (usually larger
    than 10 KB).
-6. Register every evidence video with the router:
+7. Register every evidence video with the router:
    curl -s -X POST http://localhost:${PORT}/api/protocol/workers/${workerId}/evidence \
      -H 'Content-Type: application/json' \
      -d '{"useCase":"<one line describing the use case>","file":"evidence/<file>.webm"}'
    The file path is relative to your workdir. Register each use case
    as you complete it.
-7. Reply with an INTEGRATION REPORT: branches merged (per repo),
+8. Stop the server after all tests, including after failure:
+   kill "$SERVER_PID" || true
+9. Reply with an INTEGRATION REPORT: branches merged (per repo),
    conflicts resolved (per branch, one line), acceptance test results,
    the list of registered evidence use cases, then a final line
    "VERDICT: PASS" or "VERDICT: FAIL".
