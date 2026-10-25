@@ -22,7 +22,8 @@ const { CHANGESET_LIMIT, collectChangeset, changesetWakeMessage,
 const { BaseError, resolveSpawnBase, baseFields, baseNote } = require("./spawn-base");
 const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
-  restorePlannerRequests } = require("./planner-request");
+  restorePlannerRequests, serializePlannerRequest, restoreKnownNoticeIds,
+  writeFileDurable, enqueuePlannerRequest, submitPrompt } = require("./planner-request");
 const { previewForLine } = require("./preview-instructions");
 
 const PORT = Number(process.env.PORT || 7788);
@@ -725,16 +726,17 @@ function broadcast(line, event, data) {
 }
 
 function saveLine(line) {
-  if (line.deleted) return;
+  if (line.deleted) return false;
   try {
-    fs.writeFileSync(path.join(line.workdir, "line.json"),
+    writeFileDurable(path.join(line.workdir, "line.json"),
       JSON.stringify({ id: line.id, name: line.name, sessionId: line.sessionId,
         repoUrl: line.repoUrl || null,
         pipeline: line.pipeline || null,
         pendingValidations: serializePendingValidations(line.pendingValidations),
         plannerQueue: serializePlannerRequests(line.queue),
+        knownNoticeIds: restoreKnownNoticeIds(line.knownNoticeIds),
         activePlannerRequest: line.activePlannerRequest
-          ? { text: line.activePlannerRequest.text, source: line.activePlannerRequest.source || null }
+          ? serializePlannerRequest(line.activePlannerRequest)
           : null,
         repos: [...(line.repos || new Map()).values()].map((r) => ({
           name: r.name, url: r.url, path: r.path })),
@@ -758,7 +760,11 @@ function saveLine(line) {
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
           lastError: w.lastError || null,
           kind: w.kind || "standard", validatedCommit: w.validatedCommit || null })) }));
-  } catch {}
+    return true;
+  } catch (err) {
+    console.error(`saveLine failed for line ${line.id}: ${err && err.message}`);
+    return false;
+  }
 }
 
 function readBody(req, cb) {
@@ -835,15 +841,14 @@ async function gateHarnesses(harnessIds, res) {
 }
 
 function enqueueRequest(line, request) {
-  const trustedRequest = restorePlannerRequest(request);
-  if (!trustedRequest) return;
-  line.queue.push(trustedRequest);
-  saveLine(line);
-  pump(line);
+  const result = enqueuePlannerRequest(line, request, saveLine);
+  if (result.ok && !result.duplicate) pump(line);
+  else if (!result.ok) console.error(`enqueue failed for line ${line.id}: ${result.reason}`);
+  return result;
 }
 
 function enqueue(line, text, source = null) {
-  enqueueRequest(line, plannerRequest(text, source));
+  return enqueueRequest(line, plannerRequest(text, source));
 }
 
 const WAKE_PREFIXES = ["IMPLEMENTOR REPORT", "VALIDATION REPORT", "VALIDATOR FAILURE",
@@ -1380,6 +1385,7 @@ const server = http.createServer((req, res) => {
       }
       let text = body.text;
       let kind = "plain";
+      const wasStarted = line.started;
       if (!line.started) {
         line.started = true;
         kind = "initial";
@@ -1391,13 +1397,12 @@ const server = http.createServer((req, res) => {
           text = `PLAN FEEDBACK from the user: ${body.text}. Revise plan.md accordingly. Do not spawn workers yet.`;
         } catch {}
       }
-      line.queue.push(plannerRequest(text));
-      saveLine(line);
-      const position = line.queue.length;
-      slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
-        prompt: preview(body.text, 2000) });
-      pump(line);
-      json(res, 202, { queued: true, position });
+      const out = submitPrompt(line, plannerRequest(text), {
+        wasStarted, save: saveLine, pump,
+        onQueued: () => slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
+          prompt: preview(body.text, 2000) }) });
+      if (out.status !== 202) console.error(`prompt rejected for line ${line.id}: ${out.body.error}`);
+      json(res, out.status, out.body);
     });
     return;
   }
@@ -2109,6 +2114,7 @@ function loadLines() {
         workdir: path.join(LINES_DIR, entry.name),
         status: started ? "idle" : "standby",
         queue: restorePlannerRequests(meta.plannerQueue), activePlannerRequest: null,
+        knownNoticeIds: restoreKnownNoticeIds(meta.knownNoticeIds),
         started,
         planApproved: meta.planApproved === true, workers, inventory,
         evidence: new Map((meta.evidence || []).map((e) => [e.id, e])),
