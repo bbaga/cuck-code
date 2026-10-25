@@ -181,3 +181,33 @@ test('eventsAfter pages, caps limit and flags tooOld', () => {
   assert.deepEqual([end.items.length, end.hasMore, end.nextCursor], [0, false, 155]);
   assert.equal(eventsAfter({ events: [], eventCursor: 9 }, 3).tooOld, true);
 });
+
+test('verifyMerge never throws on bad argument, bad now or non-Error throw', async () => {
+  for (const arg of [null, undefined, 5, 'x']) assert.equal((await verifyMerge(arg)).reason, 'invalid_options');
+  assert.equal((await verifyMerge({ ...base(), now: undefined })).checkedAt, null);
+  for (const now of [NaN, 'x', Infinity, 8.64e15 + 1]) {
+    assert.deepEqual(await verifyMerge(base({ now })), { verified: false, reason: 'invalid_options', error: null, checkedAt: null });
+  }
+  assert.equal((await verifyMerge({ now: NOW })).reason, 'invalid_claim');
+  const thrown = await verifyMerge(base({ gitCommand: async () => { throw 'plain'; } }));
+  assert.deepEqual([thrown.reason, thrown.error], ['check_failed', 'plain']);
+  const nul = await verifyMerge(base({ gitCommand: async () => { throw null; } }));
+  assert.equal(nul.error, 'null');
+});
+
+test('recordCheck and applyMerge return refusals for bad input', async () => {
+  const { store } = await tempStore();
+  const s = await store.readSnapshot();
+  for (const now of [NaN, 'x', undefined]) {
+    assert.equal(recordCheck(s, cap, {}, now).reason, 'invalid_options');
+    assert.equal(applyMerge(s, cap, good, now).reason, 'invalid_options');
+  }
+  for (const bad of [null, undefined, 5]) {
+    assert.equal(recordCheck(bad, cap, {}, NOW).reason, 'invalid_options');
+    assert.equal(applyMerge(bad, cap, good, NOW).reason, 'invalid_options');
+    assert.equal(recordCheck(s, bad, {}, NOW).reason, 'invalid_options');
+    assert.equal(applyMerge(s, bad, good, NOW).reason, 'invalid_options');
+  }
+  assert.equal(applyMerge(s, cap, null, NOW).reason, 'unverified');
+  assert.equal(s.claims.length, 1);
+});

@@ -29,7 +29,13 @@ async function git(repoPath, args) {
 }
 
 // Never throws. Returns verified evidence or { verified:false, reason, error, checkedAt }.
-async function verifyMerge({ repoPath, repositoryUrl, commit, targetBranch, strategy = 'merge', pullRequest, checkPullRequest, gitCommand = git, now = Date.now() } = {}) {
+const errorText = error => String(error && error.message !== undefined ? error.message : error);
+const validNow = now => typeof now === 'number' && Number.isFinite(now) && Number.isFinite(new Date(now).getTime());
+
+async function verifyMerge(arg) {
+  const o = (arg && typeof arg === 'object') ? arg : {};
+  const { repoPath, repositoryUrl, commit, targetBranch, strategy = 'merge', pullRequest, checkPullRequest, gitCommand = git, now } = o;
+  if (!validNow(now)) return { verified: false, reason: 'invalid_options', error: null, checkedAt: null };
   const checkedAt = iso(now);
   const fail = (reason, error = null) => ({ verified: false, reason, error, checkedAt });
   if (!COMMIT.test(commit || '') || !/^[A-Za-z0-9._/-]+$/.test(targetBranch || '') || targetBranch.includes('..')) return fail('invalid_claim');
@@ -58,7 +64,7 @@ async function verifyMerge({ repoPath, repositoryUrl, commit, targetBranch, stra
     if (!pr || pr.verified !== true || pr.merged !== true || pr.base !== targetBranch || pr.repositoryUrl !== expected || pr.commit !== commit || !Number.isSafeInteger(pr.number)) return fail('pull_request_unverified');
     return { ...base, pullRequest: pr.number };
   } catch (error) {
-    return fail('check_failed', error.message);
+    return fail('check_failed', errorText(error));
   }
 }
 
@@ -70,7 +76,8 @@ function captureClaim(snapshot, id) {
 const matches = (claim, captured) => Boolean(claim) && claim.revision === captured.revision && claim.commit === captured.commit;
 
 // Records a failed check without bumping claim.revision (background check must not stale the owner).
-function recordCheck(snapshot, captured, result, now = Date.now()) {
+function recordCheck(snapshot, captured, result, now) {
+  if (!snapshot || !Array.isArray(snapshot.claims) || !captured || typeof captured !== 'object' || !validNow(now)) return { ok: false, reason: 'invalid_options' };
   const claim = snapshot.claims.find(item => item.id === captured.id);
   if (!matches(claim, captured)) return { ok: false, reason: 'stale_claim' };
   claim.mergeCheck = { verified: false, reason: result?.reason || 'unverified', error: result?.error ?? null, checkedAt: result?.checkedAt || iso(now) };
@@ -78,7 +85,8 @@ function recordCheck(snapshot, captured, result, now = Date.now()) {
   return { ok: true };
 }
 
-function applyMerge(snapshot, captured, evidence, now = Date.now()) {
+function applyMerge(snapshot, captured, evidence, now) {
+  if (!snapshot || !Array.isArray(snapshot.claims) || !captured || typeof captured !== 'object' || !validNow(now)) return { ok: false, reason: 'invalid_options' };
   const claim = snapshot.claims.find(item => item.id === captured.id);
   const eventId = stableId(`${captured.id}:${captured.revision}:${captured.commit}:merged`);
   const key = `${captured.id}:${captured.revision}:${captured.commit}`;
@@ -157,7 +165,7 @@ async function reconcile(store, claimId, options = {}) {
     }
     return { ok: false, reason: 'stale_snapshot' };
   } catch (error) {
-    return { ok: false, reason: 'store_error', error: error.message };
+    return { ok: false, reason: 'store_error', error: errorText(error) };
   }
 }
 
