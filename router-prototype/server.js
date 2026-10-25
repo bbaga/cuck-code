@@ -1385,6 +1385,7 @@ const server = http.createServer((req, res) => {
       }
       let text = body.text;
       let kind = "plain";
+      const wasStarted = line.started;
       if (!line.started) {
         line.started = true;
         kind = "initial";
@@ -1396,12 +1397,14 @@ const server = http.createServer((req, res) => {
           text = `PLAN FEEDBACK from the user: ${body.text}. Revise plan.md accordingly. Do not spawn workers yet.`;
         } catch {}
       }
-      line.queue.push(plannerRequest(text));
-      saveLine(line);
+      const result = enqueueRequest(line, plannerRequest(text));
+      if (!result.ok) {
+        line.started = wasStarted;
+        return json(res, 500, { error: `could not save prompt: ${result.reason}` });
+      }
       const position = line.queue.length;
       slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
         prompt: preview(body.text, 2000) });
-      pump(line);
       json(res, 202, { queued: true, position });
     });
     return;
