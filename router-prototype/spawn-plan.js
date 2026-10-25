@@ -40,7 +40,7 @@ function planRun(cfg, opts) {
     // them stay byte-for-byte unchanged. buildRun fails closed when the
     // harness has no verified trusted channel.
     systemPrompt: opts.systemPrompt,
-    systemPromptPath: opts.systemPromptPath,
+    systemPromptFile: opts.systemPromptFile,
   });
   return { ...run, adapter };
 }

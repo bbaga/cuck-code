@@ -14,7 +14,7 @@
 // role. Only the exact "assistant" role is trusted by report capture.
 //
 // buildRun() also carries an optional trusted system prompt (ctx.systemPrompt,
-// ctx.systemPromptPath) through each harness's verified native channel. See
+// ctx.systemPromptFile) through each harness's verified native channel. See
 // SYSTEM_PROMPT_CHANNELS below; harnesses without a verified channel refuse
 // the policy instead of falling back to user text.
 
@@ -38,11 +38,24 @@ const HARNESS_IDS = ['vibe', 'pi', 'codex', 'claude'];
 //   a file and appends it to the default prompt; `--append-system-prompt`
 //   appends inline text (Claude Code CLI reference, both valid headless).
 // - vibe and codex document no trusted system prompt flag for headless runs.
+// Verified system prompt channels per harness. `file` is the flag that takes
+// a router-owned policy file path (null when the harness has no file
+// channel); `text` is the flag that takes inline policy text, prefixed by
+// `textPrefix` when the flag expects a key=value assignment. All channels
+// are verified against the harness's own documentation:
+// - pi: `--append-system-prompt <file|text>` appends the policy to the
+//   system prompt (same flag for both forms).
+// - codex: `-c developer_instructions=<text>` adds developer instructions to
+//   the session (Codex config reference). The assignment is one argv element
+//   after -c. Codex has no file-based channel, so a file-only request fails
+//   closed instead of falling back to the user prompt.
+// - claude: `--append-system-prompt-file <file>` and
+//   `--append-system-prompt <text>` carry the policy in the system prompt.
 const SYSTEM_PROMPT_CHANNELS = {
   vibe: null,
-  pi: { file: '--append-system-prompt', text: '--append-system-prompt' },
-  codex: null,
-  claude: { file: '--append-system-prompt-file', text: '--append-system-prompt' },
+  pi: { file: '--append-system-prompt', text: '--append-system-prompt', textPrefix: '' },
+  codex: { file: null, text: '-c', textPrefix: 'developer_instructions=' },
+  claude: { file: '--append-system-prompt-file', text: '--append-system-prompt', textPrefix: '' },
 };
 
 // Capability lookup: the verified trusted channel for a harness id, or null
@@ -97,18 +110,18 @@ class BaseHarness {
 
   // The argv fragment that carries the trusted system prompt through the
   // harness's native channel, or null when ctx carries none. A router-owned
-  // file (ctx.systemPromptPath) is preferred over inline text
+  // file (ctx.systemPromptFile) is preferred over inline text
   // (ctx.systemPrompt). Throws when the harness has no verified trusted
   // channel: the policy must never fall back into the user prompt, and the
   // error message never contains the policy body.
   systemPromptArgs(ctx) {
     const text = ctx.systemPrompt;
-    const file = ctx.systemPromptPath;
+    const file = ctx.systemPromptFile;
     if (text !== undefined && text !== null && typeof text !== 'string') {
-      throw new TypeError('ctx.systemPrompt must be a string when set');
+      throw new TypeError('systemPrompt must be a string when set');
     }
     if (file !== undefined && file !== null && typeof file !== 'string') {
-      throw new TypeError('ctx.systemPromptPath must be a string when set');
+      throw new TypeError('systemPromptFile must be a string when set');
     }
     const hasText = typeof text === 'string' && text.length > 0;
     const hasFile = typeof file === 'string' && file.length > 0;
@@ -119,13 +132,19 @@ class BaseHarness {
     }
     // A router-owned file is preferred: it keeps the policy body off the
     // command line, out of process listings, and out of logs.
-    if (hasFile) {
+    if (hasFile && this.systemPromptChannel.file) {
       if (!fs.existsSync(file)) {
         throw new Error(`system prompt file does not exist: ${file}`);
       }
       return [this.systemPromptChannel.file, file];
     }
-    return [this.systemPromptChannel.text, text];
+    // A file without a file channel is refused, never silently dropped and
+    // never prefixed to the user prompt. With inline text available, the
+    // verified text channel carries the policy instead.
+    if (hasFile && !hasText) {
+      throw new Error(`harness "${this.id}" has no verified file channel for the system prompt; refusing systemPromptFile without systemPrompt text`);
+    }
+    return [this.systemPromptChannel.text, this.systemPromptChannel.textPrefix + text];
   }
 
   // First session id seen on the stream wins.
@@ -262,11 +281,14 @@ class CodexHarness extends BaseHarness {
     const flags = ['--json', '-C', ctx.workdir, '--model', ctx.model,
       '-c', 'model_reasoning_effort=' + ctx.effort];
     if (ctx.autoApprove) flags.push('--full-auto');
+    // The developer_instructions assignment stays one argv element after its
+    // own -c flag, so multiline text, quotes, and shell-like characters pass
+    // through verbatim: the child process is spawned without a shell.
+    if (systemArgs) flags.push(...systemArgs);
     const args = ctx.sessionId
       ? ['exec', 'resume', ctx.sessionId, ...flags]
       : ['exec', ...flags];
     args.push(ctx.prompt);
-    if (systemArgs) args.push(...systemArgs);
     // codex takes the work directory through -C, so no cwd.
     return { cmd: 'codex', args, env: {} };
   }

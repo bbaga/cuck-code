@@ -57,13 +57,23 @@ function flagValue(plan, flag) {
   return plan.args[i + 1];
 }
 
-test('capability: pi and claude have verified channels, vibe and codex have none', () => {
+// The developer_instructions assignment for codex: one argv element that
+// starts with the key, immediately after its own -c flag.
+function codexDeveloperInstructions(plan) {
+  const i = plan.args.findIndex((a) => a.startsWith('developer_instructions='));
+  assert.notEqual(i, -1, 'expected a developer_instructions assignment');
+  assert.equal(plan.args[i - 1], '-c', 'the assignment must follow its own -c flag');
+  return plan.args[i];
+}
+
+test('capability: pi, codex, and claude have verified channels, vibe has none', () => {
   assert.deepEqual(trustedSystemChannel('pi'),
-    { file: '--append-system-prompt', text: '--append-system-prompt' });
+    { file: '--append-system-prompt', text: '--append-system-prompt', textPrefix: '' });
+  assert.deepEqual(trustedSystemChannel('codex'),
+    { file: null, text: '-c', textPrefix: 'developer_instructions=' });
   assert.deepEqual(trustedSystemChannel('claude'),
-    { file: '--append-system-prompt-file', text: '--append-system-prompt' });
+    { file: '--append-system-prompt-file', text: '--append-system-prompt', textPrefix: '' });
   assert.equal(trustedSystemChannel('vibe'), null);
-  assert.equal(trustedSystemChannel('codex'), null);
   assert.throws(() => trustedSystemChannel('nope'), /unknown harness id/);
   for (const id of HARNESS_IDS) {
     const adapter = createHarness(id);
@@ -76,7 +86,7 @@ for (const sessionId of [null, 'sess-1']) {
 
   test(`pi ${mode} plan carries the policy through --append-system-prompt with the router-owned file`, (t) => {
     const file = tmpPolicyFile(t);
-    const plan = createHarness('pi').buildRun(ctxWith({ systemPrompt: POLICY, systemPromptPath: file, sessionId }));
+    const plan = createHarness('pi').buildRun(ctxWith({ systemPrompt: POLICY, systemPromptFile: file, sessionId }));
     assert.equal(flagValue(plan, '--append-system-prompt'), file);
     assert.equal(userPromptInPlan(plan), USER_PROMPT);
     assert.ok(!plan.args.includes(POLICY), 'policy body must not appear inline');
@@ -87,7 +97,7 @@ for (const sessionId of [null, 'sess-1']) {
 
   test(`claude ${mode} plan carries the policy through --append-system-prompt-file`, (t) => {
     const file = tmpPolicyFile(t);
-    const plan = createHarness('claude').buildRun(ctxWith({ systemPrompt: POLICY, systemPromptPath: file, sessionId }));
+    const plan = createHarness('claude').buildRun(ctxWith({ systemPrompt: POLICY, systemPromptFile: file, sessionId }));
     assert.equal(flagValue(plan, '--append-system-prompt-file'), file);
     assert.equal(userPromptInPlan(plan), USER_PROMPT);
     assert.ok(!plan.args.includes(POLICY), 'policy body must not appear inline');
@@ -108,55 +118,91 @@ for (const sessionId of [null, 'sess-1']) {
     assert.equal(userPromptInPlan(plan), USER_PROMPT);
   });
 
-  for (const id of ['vibe', 'codex']) {
-    test(`${id} ${mode} plan fails closed instead of using user text`, () => {
-      const adapter = createHarness(id);
-      assert.throws(() => adapter.buildRun(ctxWith({ systemPrompt: POLICY, sessionId })),
-        (err) => {
-          assert.match(err.message, /no verified trusted system channel/);
-          // The failure must not leak the policy body.
-          assert.ok(!err.message.includes(POLICY));
-          return true;
-        });
-      // The file-only form fails closed too.
-      assert.throws(() => adapter.buildRun(ctxWith({ systemPromptPath: '/tmp/policy.md', sessionId })),
-        /no verified trusted system channel/);
-    });
-  }
+  test(`codex ${mode} plan carries the policy through -c developer_instructions`, () => {
+    const plan = createHarness('codex').buildRun(ctxWith({ systemPrompt: POLICY, sessionId }));
+    assert.equal(codexDeveloperInstructions(plan), `developer_instructions=${POLICY}`);
+    assert.equal(userPromptInPlan(plan), USER_PROMPT);
+    for (const value of Object.values(plan.env)) {
+      assert.ok(!value.includes(POLICY), 'policy body must not appear in env');
+    }
+  });
+
+  test(`codex ${mode} plan fails closed on a file without inline text`, (t) => {
+    const file = tmpPolicyFile(t);
+    assert.throws(() => createHarness('codex').buildRun(ctxWith({ systemPromptFile: file, sessionId })),
+      (err) => {
+        assert.match(err.message, /no verified file channel for the system prompt/);
+        assert.match(err.message, /refusing systemPromptFile without systemPrompt text/);
+        // The failure must not leak the policy body.
+        assert.ok(!err.message.includes(POLICY));
+        return true;
+      });
+  });
+
+  test(`vibe ${mode} plan fails closed instead of using user text`, () => {
+    const adapter = createHarness('vibe');
+    assert.throws(() => adapter.buildRun(ctxWith({ systemPrompt: POLICY, sessionId })),
+      (err) => {
+        assert.match(err.message, /no verified trusted system channel/);
+        // The failure must not leak the policy body.
+        assert.ok(!err.message.includes(POLICY));
+        return true;
+      });
+    // The file-only form fails closed too.
+    assert.throws(() => adapter.buildRun(ctxWith({ systemPromptFile: '/tmp/policy.md', sessionId })),
+      /no verified trusted system channel/);
+  });
 }
+
+test('codex passes multiline and shell-like policy text as one argv element', () => {
+  const policy = 'first line\n"quoted" $HOME `cmd` ; rm -rf /tmp && echo done\n\ttabbed  spaced';
+  const plan = createHarness('codex').buildRun(ctxWith({ systemPrompt: policy }));
+  const assignment = codexDeveloperInstructions(plan);
+  // One argv element, byte-for-byte: no shell ran, so nothing is re-quoted,
+  // expanded, or split.
+  assert.equal(assignment, `developer_instructions=${policy}`);
+  assert.equal(userPromptInPlan(plan), USER_PROMPT);
+});
+
+test('codex keeps the model_reasoning_effort assignment beside the policy assignment', () => {
+  const plan = createHarness('codex').buildRun(ctxWith({ systemPrompt: POLICY }));
+  assert.equal(flagValue(plan, '-c'), 'model_reasoning_effort=medium');
+  assert.equal(codexDeveloperInstructions(plan), `developer_instructions=${POLICY}`);
+  assert.equal(userPromptInPlan(plan), USER_PROMPT);
+});
 
 test('plans without a system prompt stay byte-for-byte unchanged', (t) => {
   const file = tmpPolicyFile(t);
   for (const id of HARNESS_IDS) {
     const plain = createHarness(id).buildRun(ctxWith({}));
     const explicit = createHarness(id).buildRun(ctxWith({
-      systemPrompt: undefined, systemPromptPath: undefined,
+      systemPrompt: undefined, systemPromptFile: undefined,
     }));
-    const empty = createHarness(id).buildRun(ctxWith({ systemPrompt: '', systemPromptPath: '' }));
+    const empty = createHarness(id).buildRun(ctxWith({ systemPrompt: '', systemPromptFile: '' }));
     assert.deepEqual(explicit, plain);
     assert.deepEqual(empty, plain);
     assert.equal(userPromptInPlan(plain), USER_PROMPT);
     // The file path alone without policy text is still delivered: the file
     // is the policy. Only a fully absent pair changes nothing.
-    const fileOnly = createHarness('pi').buildRun(ctxWith({ systemPromptPath: file }));
+    const fileOnly = createHarness('pi').buildRun(ctxWith({ systemPromptFile: file }));
     assert.equal(flagValue(fileOnly, '--append-system-prompt'), file);
   }
 });
 
 test('a missing system prompt file fails the plan instead of dropping the policy', () => {
   assert.throws(() => createHarness('pi').buildRun(ctxWith({
-    systemPrompt: POLICY, systemPromptPath: '/nonexistent/policy.md',
+    systemPrompt: POLICY, systemPromptFile: '/nonexistent/policy.md',
   })), /system prompt file does not exist/);
   assert.throws(() => createHarness('claude').buildRun(ctxWith({
-    systemPrompt: POLICY, systemPromptPath: '/nonexistent/policy.md',
+    systemPrompt: POLICY, systemPromptFile: '/nonexistent/policy.md',
   })), /system prompt file does not exist/);
 });
 
 test('invalid system prompt types are rejected', () => {
   assert.throws(() => createHarness('pi').buildRun(ctxWith({ systemPrompt: 42 })),
     /systemPrompt must be a string/);
-  assert.throws(() => createHarness('pi').buildRun(ctxWith({ systemPrompt: POLICY, systemPromptPath: 42 })),
-    /systemPromptPath must be a string/);
+  assert.throws(() => createHarness('pi').buildRun(ctxWith({ systemPrompt: POLICY, systemPromptFile: 42 })),
+    /systemPromptFile must be a string/);
 });
 
 test('writeSystemPromptFile writes an owner-only file with a content-hash name', () => {
@@ -187,7 +233,7 @@ test('spawn plans pass the trusted channel through for planners and workers', (t
   const plannerCfg = { ...resolvePipeline({}, {}).planner, harness: 'pi' };
   const plan = planPlannerRun(plannerCfg, {
     prompt: USER_PROMPT, workdir: '/tmp/line', sessionId: null, autoApprove: true,
-    systemPrompt: POLICY, systemPromptPath: file,
+    systemPrompt: POLICY, systemPromptFile: file,
   });
   assert.equal(flagValue(plan, '--append-system-prompt'), file);
   assert.equal(userPromptInPlan(plan), USER_PROMPT);
@@ -195,7 +241,7 @@ test('spawn plans pass the trusted channel through for planners and workers', (t
   const workerCfg = { ...resolvePipeline({}, {}).implementor, harness: 'claude' };
   const workerPlan = planWorkerRun(workerCfg, {
     phase: 'implementor', prompt: USER_PROMPT, workdir: '/tmp/wt',
-    sessionId: 'sess-9', autoApprove: true, systemPrompt: POLICY, systemPromptPath: file,
+    sessionId: 'sess-9', autoApprove: true, systemPrompt: POLICY, systemPromptFile: file,
   });
   assert.equal(flagValue(workerPlan, '--append-system-prompt-file'), file);
   assert.equal(userPromptInPlan(workerPlan), USER_PROMPT);
@@ -206,4 +252,14 @@ test('spawn plans pass the trusted channel through for planners and workers', (t
     prompt: USER_PROMPT, workdir: '/tmp/line', sessionId: null, autoApprove: true,
     systemPrompt: POLICY,
   }), /no verified trusted system channel/);
+});
+
+test('spawn plans carry the codex developer_instructions channel through', () => {
+  const workerCfg = { ...resolvePipeline({}, {}).implementor, harness: 'codex' };
+  const plan = planWorkerRun(workerCfg, {
+    phase: 'implementor', prompt: USER_PROMPT, workdir: '/tmp/wt',
+    sessionId: null, autoApprove: true, systemPrompt: POLICY,
+  });
+  assert.equal(codexDeveloperInstructions(plan), `developer_instructions=${POLICY}`);
+  assert.equal(userPromptInPlan(plan), USER_PROMPT);
 });
