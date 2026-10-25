@@ -12,7 +12,9 @@ every Vibe output entry to the browser over SSE in real time.
 node server.js
 ```
 
-Then open http://localhost:7788. Configuration via env: `PORT` (default 7788),
+Then open http://localhost:7788. For an isolated test server, set both values:
+`PORT=7799 LINES_DIR=/tmp/router-test-lines node server.js`. Do not use a port
+that another router uses. Configuration via env: `PORT` (default 7788),
 `LINES_DIR` (default `./lines`), `IMPLEMENTOR_MODEL` (default `glm-5-3-flash`,
 the fast model) and `VALIDATOR_MODEL` (default `glm-5-3`, the full-effort
 model). The router pins each vibe session to its role's model via
