@@ -96,8 +96,14 @@ until approval.
 On approval the planner spawns workers by calling the router's protocol API
 (agents reach it with curl from bash):
 
-- `POST /api/protocol/lines/:id/workers {name, persona, repo, prompt}` — spawn a
-  worker (role implementor). Persona: `backend` (architecture, data, APIs,
+- `POST /api/protocol/lines/:id/workers {name, persona, repo, prompt, base?}` — spawn a
+  worker (role implementor). Optional `base` is a full 40-character commit SHA
+  or the name of a non-running implementor of the same line and repo (its
+  branch head, `origin/<branch>` first, is used). The worktree starts there;
+  the response and `GET .../workers` show `base` and `baseResolved`
+  (`{kind, sha, ref}`). Errors: 404 unknown, 400 malformed or other repo,
+  409 running. A stack child uses its parent's validated implementor name or
+  head SHA as `base`; its draft PR base is the parent's branch. Persona: `backend` (architecture, data, APIs,
   logic — the default) or `frontend` (UI, pages, interaction); the persona
   selects the worker's brief (priorities and verification approach), and the
   validator spawned after the implementor inherits the same persona with the
@@ -222,7 +228,9 @@ validation of the same implementor gets a deduplicated validator name
 ### Change-set limit (implementors)
 
 The router enforces a 500-line limit on every implementor change set. When a
-worker worktree is created, the router records its HEAD as the `baseCommit`;
+worker worktree is created, the router records its HEAD as the `baseCommit` (the
+resolved `base` when the spawn gave one, so a stacked child does not recount
+its parent's lines);
 the base stays fixed across continued runs and router restarts. After each
 successful implementor run — and again immediately before a validator is
 created, as a stale-state defense — the router runs `git diff --numstat` from
