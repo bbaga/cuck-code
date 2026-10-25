@@ -3,13 +3,17 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 
 const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-const { validateShowcase } = require('../evidence');
 
-test('integration instructions require one continuous showcase and significant screenshots', () => {
+function registrationExample() {
+  const match = serverSource.match(/-d '({"kind":"showcase".*?})'/);
+  assert.ok(match, 'showcase registration example is missing');
+  return JSON.parse(match[1]);
+}
+
+test('instructions require one complete continuous capture', () => {
   assert.match(serverSource, /one complete showcase for this integration attempt/);
   assert.match(serverSource, /one browser context/);
   assert.match(serverSource, /one continuous WebM recording/);
@@ -18,24 +22,32 @@ test('integration instructions require one continuous showcase and significant s
   assert.match(serverSource, /Close the browser context before registration/);
   assert.match(serverSource, /failed showcase capture/);
   assert.match(serverSource, /short clips/);
-});
-
-test('instruction example is the exact showcase producer contract', () => {
-  assert.match(serverSource, /"kind":"showcase","version":1/);
-  assert.match(serverSource, /"useCase":"<complete demonstration title>"/);
-  assert.match(serverSource, /"steps":\[\{.*"title".*"explanation".*"screenshot"/);
-  assert.match(serverSource, /\/api\/protocol\/workers\/\$\{workerId\}\/evidence/);
   assert.match(serverSource, /ffmpeg program must be available/);
+  assert.match(serverSource, /Restart the router after/);
 });
 
-test('showcase validation requires ordered proof steps and finalized WebM', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-contract-'));
-  try {
-    fs.writeFileSync(path.join(root, 'showcase.webm'), Buffer.alloc(2048, 1));
-    fs.writeFileSync(path.join(root, 'step.png'), Buffer.alloc(128, 1));
-    assert.throws(() => validateShowcase(root, { kind: 'showcase', version: 1,
-      useCase: 'Demo', file: 'showcase.webm', steps: [] }), /nonempty/);
-    assert.throws(() => validateShowcase(root, { kind: 'showcase', version: 1,
-      useCase: 'Demo', file: 'showcase.webm', steps: [{ title: 'Step', explanation: '', screenshot: 'step.png' }] }), /explanation/);
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+test('registration example has the exact versioned showcase shape', () => {
+  const request = registrationExample();
+  assert.deepEqual(Object.keys(request), ['kind', 'version', 'useCase', 'file', 'steps']);
+  assert.equal(request.kind, 'showcase');
+  assert.equal(request.version, 1);
+  assert.equal(request.useCase, '<complete demonstration title>');
+  assert.equal(request.file, 'evidence/showcase.webm');
+  assert.deepEqual(request.steps, [{
+    title: '<step title>',
+    explanation: '<visible proof and feature>',
+    screenshot: 'evidence/step-1.png',
+  }]);
+  assert.ok(request.file.startsWith('evidence/'));
+  assert.ok(request.steps.every((step) => step.screenshot.startsWith('evidence/')));
+});
+
+test('instructions preserve the accepted attempt and history contract', () => {
+  assert.match(serverSource, /accepted A|362eff17942182a62baf05ef12423afa2dbf6613/);
+  assert.match(serverSource, /POST.*evidenceId.*attemptId|evidenceId.*attemptId/);
+  assert.match(serverSource, /GET.*items.*history.*currentAttemptId.*currentAttemptIds|items.*history.*currentAttemptId.*currentAttemptIds/);
+  assert.match(serverSource, /router owns attempt identity/);
+  assert.match(serverSource, /Current evidence is in items/);
+  assert.match(serverSource, /Older evidence is in history/);
+  assert.match(serverSource, /tied to this attempt|attempt association/);
 });

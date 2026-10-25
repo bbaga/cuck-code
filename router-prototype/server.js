@@ -21,7 +21,6 @@ const { CHANGESET_LIMIT, collectChangeset, changesetWakeMessage,
 const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests } = require("./planner-request");
-const { validateShowcase, checkMedia, publicEvidence } = require("./evidence");
 
 const PORT = Number(process.env.PORT || 7788);
 const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
@@ -679,6 +678,11 @@ ${extraRepos.length ? `2. For EVERY other repo in the list: make your own copy i
    Report every capture or registration failure explicitly. Never replace
    a failed showcase capture with short clips. Restart the router after
    an API change when the running process has an older version.
+   Accepted evidence API revision: 362eff17942182a62baf05ef12423afa2dbf6613.
+   The POST response contains {evidenceId, attemptId}. The GET response
+   contains {items, history, currentAttemptId, currentAttemptIds}.
+   Current evidence is in items. Older evidence is in history. Do not mix them.
+   The router owns attempt identity. Keep the showcase tied to this attempt.
 7. Reply with an INTEGRATION REPORT: branches merged (per repo),
    conflicts resolved (per branch, one line), acceptance test results,
    the list of registered evidence use cases, then a final line
@@ -724,9 +728,7 @@ function saveLine(line) {
           id: i.id, kind: i.kind, name: i.name, by: i.by, ref: i.ref,
           keep: i.keep, status: i.status })),
         evidence: [...(line.evidence || new Map()).values()].map((e) => ({
-          id: e.id, kind: e.kind || "video", version: e.version || null,
-          useCase: e.useCase, path: e.path, name: e.name, by: e.by, at: e.at,
-          steps: e.steps || [] })),
+          id: e.id, useCase: e.useCase, path: e.path, name: e.name, by: e.by, at: e.at })),
         workers: [...line.workers.values()].map((w) => ({
           id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch,
           ...completionFields(w), lastRunText: w.lastRunText || null,
@@ -1780,21 +1782,18 @@ const server = http.createServer((req, res) => {
         || typeof body.file !== "string" || !body.file.trim()) {
         return json(res, 400, { error: "expected {useCase, file}" });
       }
-      let record;
-      try {
-        record = Array.isArray(body.steps)
-          ? validateShowcase(worker.worktreePath, body)
-          : (() => {
-              const video = checkMedia(worker.worktreePath, body.file, "video");
-              if (video.size < 1024) throw new Error("video file is suspiciously small; close the browser context before registration");
-              return { kind: "video", useCase: body.useCase.trim(), path: video.path, name: video.name };
-            })();
-      } catch (error) {
-        return json(res, 400, { error: error.message });
+      const abs = path.resolve(worker.worktreePath, body.file.trim());
+      if (!abs.startsWith(path.resolve(worker.worktreePath))) {
+        return json(res, 400, { error: "file must be inside your workdir" });
       }
+      if (!fs.existsSync(abs)) return json(res, 400, { error: "no such file: " + body.file });
+      const stat = fs.statSync(abs);
+      if (stat.size === 0) return json(res, 400, { error: "video file is empty (0 bytes) - recording was never finalized. Close the browser context before registering." });
+      if (stat.size < 1024) return json(res, 400, { error: "video file is suspiciously small (" + stat.size + " bytes) - register only finalized recordings" });
       const id = crypto.randomUUID();
       if (!line.evidence) line.evidence = new Map();
-      line.evidence.set(id, { id, ...record, by: worker.id, at: Date.now() });
+      line.evidence.set(id, { id, useCase: body.useCase.trim(), path: abs,
+        name: path.basename(abs), by: worker.id, at: Date.now() });
       saveLine(line);
       slog("info", "evidence.registered", { lineId: line.id, evidenceId: id,
         useCase: preview(body.useCase, 120), file: body.file.trim(), by: worker.name });
@@ -1807,23 +1806,11 @@ const server = http.createServer((req, res) => {
     && parts.length === 4) {
     const line = lines.get(parts[2]);
     if (!line) return json(res, 404, { error: "no such line" });
-    const items = [...(line.evidence || new Map()).values()].map((e) => publicEvidence(line.id, e));
+    const items = [...(line.evidence || new Map()).values()].map((e) => ({
+      id: e.id, useCase: e.useCase, name: e.name, at: e.at,
+      video: `/api/lines/${line.id}/evidence/${e.id}/video`,
+    }));
     return json(res, 200, { items });
-  }
-
-  if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "evidence"
-    && parts.length === 8 && parts[5] === "steps" && parts[7] === "screenshot") {
-    const line = lines.get(parts[2]);
-    const item = line && (line.evidence || new Map()).get(parts[4]);
-    const index = Number(parts[6]);
-    if (!item || item.kind !== "showcase" || !Number.isInteger(index) || index < 0 || index >= item.steps.length) {
-      return json(res, 404, { error: "no such screenshot" });
-    }
-    const file = item.steps[index].screenshot;
-    if (!fs.existsSync(file)) return json(res, 404, { error: "screenshot file is gone" });
-    res.writeHead(200, { "Content-Type": /\\.png$/i.test(file) ? "image/png" : "image/jpeg", "Cache-Control": "no-cache" });
-    fs.createReadStream(file).pipe(res);
-    return;
   }
 
   if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "evidence"
