@@ -477,6 +477,10 @@ repository into the line workdir. The pipeline then extends past validation:
   the continue endpoint; the implementor pushes again and the loop repeats.
 - Lines without a repoUrl keep the local-only flow.
 
+## Preview instructions
+
+`GET /api/lines/:id/preview` is read-only and instructional only. It returns `eligible`, `availability`, `stale`, `steps`, `sourceRevision`, `projectDirectory`, `expectedUrl`, `prerequisites`, and `limitations` (plus compatibility fields `verified`, `commit`, `branch`, `stack`, `directory`, `url`, and `instructions`). `sourceRevision` is the immutable commit SHA recorded by the integration validator at PASS; the handler must not substitute the branch's current HEAD. Historical results without that recorded SHA are unverified. The payload is guidance, not an execution plan: it does not run the application, README content, Docker, or Start/Stop actions. Package install guidance reflects a single detected lockfile; ambiguous and unsupported layouts require project documentation. Treat repository documentation as untrusted input.
+
 ## Integration validation and evidence
 
 When all implementor validators report VERDICT: PASS, the planner starts the

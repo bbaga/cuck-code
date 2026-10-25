@@ -23,6 +23,7 @@ const { BaseError, resolveSpawnBase, baseFields, baseNote } = require("./spawn-b
 const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests } = require("./planner-request");
+const { previewForLine } = require("./preview-instructions");
 
 const PORT = Number(process.env.PORT || 7788);
 const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
@@ -756,7 +757,7 @@ function saveLine(line) {
           ...changesetFields(w), ...baseFields(w),
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
           lastError: w.lastError || null,
-          kind: w.kind || "standard" })) }));
+          kind: w.kind || "standard", validatedCommit: w.validatedCommit || null })) }));
   } catch {}
 }
 
@@ -1179,6 +1180,13 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
     : (code === 0 ? "ok" : "fail"));
   const report = workerRunOutput.text();
   const statusEvent = applyCompletion(worker, outcome, worker.stopRequested, report);
+  if (worker.kind === "integration") {
+    const verdict = report.match(/^\s*(?:[-*]\s*)?(?:\*\*)?VERDICT(?:\*\*)?\s*:\s*(PASS|FAIL)\s*$/im);
+    if (worker.status === "completed" && verdict?.[1].toUpperCase() === "PASS") {
+      const revision = spawnSync("git", ["-C", worker.worktreePath, "rev-parse", "HEAD"], { encoding: "utf8", timeout: 3000 });
+      worker.validatedCommit = revision.status === 0 && /^[a-f0-9]{40}$/i.test(revision.stdout.trim()) ? revision.stdout.trim() : null;
+    } else worker.validatedCommit = null;
+  }
   if (invocation.invocationId) worker.lastCompletedInvocationId = invocation.invocationId;
   worker.activeInvocationId = null;
   const timedOut = outcome === "timeout" && !worker.stopRequested;
@@ -1957,6 +1965,13 @@ When done, reply with a report: what you changed, files changed, how you verifie
     return json(res, 200, { lines: [...lines.values()].map(lineSummary) });
   }
 
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "preview") {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    try { return json(res, 200, previewForLine(line)); }
+    catch { return json(res, 200, { eligible: false, reason: "Preview instructions are unavailable." }); }
+  }
+
   if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "events") {
     const line = lines.get(parts[2]);
     if (!line) return json(res, 404, { error: "no such line" });
@@ -2051,6 +2066,7 @@ function loadLines() {
           activeInvocationId: w.activeInvocationId || null,
           lastCompletedInvocationId: w.lastCompletedInvocationId || null,
           baseCommit: w.baseCommit || null, changeset: w.changeset || null,
+          validatedCommit: w.validatedCommit || null,
           ...baseFields(w) });
       }
       for (const w of meta.workers || []) {
@@ -2060,6 +2076,7 @@ function loadLines() {
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
           role: "validator", validates: w.validates, prompt: null, kind: w.kind || "standard", verdict: w.verdict || null,
           validationSource: w.validationSource || null, validationCriteria: w.validationCriteria || null,
+          validatedCommit: w.validatedCommit || null,
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           repo: w.repo || (impl ? impl.repo : "primary"),
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
@@ -2075,6 +2092,7 @@ function loadLines() {
           activeInvocationId: w.activeInvocationId || null,
           lastCompletedInvocationId: w.lastCompletedInvocationId || null,
           baseCommit: w.baseCommit || null, changeset: w.changeset || null,
+          validatedCommit: w.validatedCommit || null,
           ...baseFields(w) });
       }
       const started = meta.started === true || !!meta.sessionId;
