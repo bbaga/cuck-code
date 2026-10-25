@@ -287,6 +287,10 @@ Precedence, most specific wins:
 Environment variables per phase (`PLANNER_`, `IMPLEMENTOR_`, `VALIDATOR_`,
 `INTEGRATION_`): `<PHASE>_HARNESS`, `<PHASE>_MODEL`, `<PHASE>_EFFORT`.
 `IMPLEMENTOR_MODEL` and `VALIDATOR_MODEL` keep their existing meaning.
+`VIBE_MODELS` is a comma-separated list of extra Vibe model choices offered
+in the UI (empty values are ignored); it does not change the resolved
+`pipeline.<phase>.model`, which stays a plain string. `authMode` is never
+saved in the pipeline.
 
 Example pipeline config on `POST /api/lines`:
 
@@ -304,8 +308,28 @@ Example pipeline config on `POST /api/lines`:
 timeout each) and returns `{ harnesses: [...], probedAt }`. Results are
 cached for 30 seconds; `?refresh=1` skips the cache. Per harness it reports
 `installed`, `auth` (`ok`, `missing`, or `unknown`), `version`, and
-`loginHint`. Creating a line or spawning a worker with a harness that is not
+`loginHint`. The `vibe` entry also carries `models`: a deduplicated
+`[{value, label}]` list built from the code defaults, the per-phase
+`<PHASE>_MODEL` env values, `VIBE_ACTIVE_MODEL`, and `VIBE_MODELS`
+(a comma-separated list of extra model ids; empty values are ignored).
+The `pi` entry carries `authModes` (`[{value, label}]`, the providers
+discovered from `pi --list-models`) and provider-qualified `models`
+(`value` is `provider/model`). A failed `pi --list-models` command yields
+no providers and no models; error output never becomes a catalog row. pi
+has no provider-free auth check: its
+base `auth` stays `unknown` because the auth state depends on the
+provider. Creating a line or spawning a worker with a harness that is not
 installed fails with 400.
+
+`GET /api/harnesses/pi?provider=<provider>` returns the pi detail for one
+provider: `{ id: "pi", authMode, auth, loginHint, models }`, where `auth`
+is `ok`, `missing`, or `unknown`, and `models` are the provider-qualified
+choices (`provider/model`). The provider is validated against the
+discovered provider list; a missing or unknown provider returns 400 with a
+clear error. The auth check runs `pi auth check --provider <provider>
+--json` per request (never cached, one provider's result never serves
+another) and only the auth state, login hint, and model choices are
+returned — never credentials or raw command output.
 
 ### How the router starts a phase
 
