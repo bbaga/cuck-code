@@ -23,7 +23,7 @@ const { BaseError, resolveSpawnBase, baseFields, baseNote } = require("./spawn-b
 const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests, serializePlannerRequest, restoreKnownNoticeIds,
-  writeFileDurable, enqueuePlannerRequest } = require("./planner-request");
+  writeFileDurable, enqueuePlannerRequest, submitPrompt } = require("./planner-request");
 const { previewForLine } = require("./preview-instructions");
 
 const PORT = Number(process.env.PORT || 7788);
@@ -1397,15 +1397,12 @@ const server = http.createServer((req, res) => {
           text = `PLAN FEEDBACK from the user: ${body.text}. Revise plan.md accordingly. Do not spawn workers yet.`;
         } catch {}
       }
-      const result = enqueueRequest(line, plannerRequest(text));
-      if (!result.ok) {
-        line.started = wasStarted;
-        return json(res, 500, { error: `could not save prompt: ${result.reason}` });
-      }
-      const position = line.queue.length;
-      slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
-        prompt: preview(body.text, 2000) });
-      json(res, 202, { queued: true, position });
+      const out = submitPrompt(line, plannerRequest(text), {
+        wasStarted, save: saveLine, pump,
+        onQueued: () => slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
+          prompt: preview(body.text, 2000) }) });
+      if (out.status !== 202) console.error(`prompt rejected for line ${line.id}: ${out.body.error}`);
+      json(res, out.status, out.body);
     });
     return;
   }

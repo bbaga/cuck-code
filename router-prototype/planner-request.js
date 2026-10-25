@@ -151,7 +151,22 @@ function enqueuePlannerRequest(line, request, save) {
   return { ok: true, duplicate: false };
 }
 
+// Queue a user prompt. Position and log come before pump, so an idle line
+// reports the queue length the user saw before the pump took the request.
+function submitPrompt(line, request, { wasStarted, save, pump, onQueued }) {
+  const result = enqueuePlannerRequest(line, request, save);
+  if (!result.ok) {
+    line.started = wasStarted;
+    return { status: 500, body: { error: `could not save prompt: ${result.reason}` } };
+  }
+  const position = line.queue.length;
+  if (onQueued) onQueued();
+  if (!result.duplicate) pump(line);
+  return { status: 202, body: { queued: true, position } };
+}
+
 module.exports = {
+  submitPrompt,
   validNoticeId,
   MAX_KNOWN_NOTICES,
   serializePlannerRequest,

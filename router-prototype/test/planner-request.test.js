@@ -269,3 +269,32 @@ test("restore after reload keeps noticeId and the list", () => {
   assert.deepEqual(restoreKnownNoticeIds(json.knownNoticeIds), ["n1"]);
   assert.deepEqual(restoreKnownNoticeIds("junk"), []);
 });
+
+test("submitPrompt reports queue position before pump and pumps once", () => {
+  const order = [];
+  const line = { id: "l", started: true, queue: [] };
+  const pump = (l) => { order.push("pump"); l.queue.shift(); };
+  const out = require("../planner-request").submitPrompt(line, plannerRequest("a"),
+    { wasStarted: true, save: () => true, pump, onQueued: () => order.push("log") });
+  assert.deepEqual(out, { status: 202, body: { queued: true, position: 1 } });
+  assert.deepEqual(order, ["log", "pump"]);
+});
+
+test("submitPrompt reports position 2 on a busy line", () => {
+  const line = { id: "l", started: true, queue: [plannerRequest("x")] };
+  const out = require("../planner-request").submitPrompt(line, plannerRequest("b"),
+    { wasStarted: true, save: () => true, pump: () => {} });
+  assert.equal(out.body.position, 2);
+});
+
+test("submitPrompt failed save returns 500, restores started, skips pump", () => {
+  const line = { id: "l", started: true, queue: [] };
+  let pumped = false;
+  const out = require("../planner-request").submitPrompt(line, plannerRequest("c"),
+    { wasStarted: false, save: () => false, pump: () => { pumped = true; } });
+  assert.equal(out.status, 500);
+  assert.match(out.body.error, /could not save prompt/);
+  assert.equal(line.started, false);
+  assert.equal(pumped, false);
+  assert.equal(line.queue.length, 0);
+});
