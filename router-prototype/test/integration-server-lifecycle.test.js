@@ -16,6 +16,16 @@ test('integration brief requires a background server and rejects foreground star
   assert.match(brief, /all standard\s+streams/);
 });
 
+test('integration brief requires explicit merge and commit ancestry checks', () => {
+  assert.match(brief, /one explicit Git merge command/);
+  assert.match(brief, /Do not use a shell loop/);
+  assert.match(brief, /git merge <branch> --no-edit/);
+  assert.match(brief, /Check the exit status of each command/);
+  assert.match(brief, /Report the exact command, exit status, and stderr/);
+  assert.match(brief, /git merge-base --is-ancestor <expected-commit> HEAD/);
+  assert.match(brief, /Do not infer\s+success from silent output/);
+});
+
 test('integration brief requires isolated port, readiness, registration, and cleanup', () => {
   assert.match(brief, /free PORT other than 7788/);
   assert.match(brief, /private LINES_DIR/);
