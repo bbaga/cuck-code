@@ -446,8 +446,9 @@ main/master branch - merging is the integration validator's job:
   feature branches there the same way - never pushing to any remote.
 - It runs all acceptance tests, then records one complete showcase for the
   integration attempt. It uses one browser context and one continuous WebM.
-  It captures ordered PNG or JPEG screenshots for significant steps and
-  closes the context before registration. It registers the versioned request
+  It captures PNG or JPEG screenshots for significant steps in demonstration
+  order. Each screenshot stays paired with its matching title and
+  explanation. It closes the context before registration. It registers the versioned request
   `{kind: 'showcase', version: 1, useCase, file, steps: [{title,
   explanation, screenshot}]}` with the worker evidence endpoint. All media
   paths are relative to the worktree. Accepted API revision:

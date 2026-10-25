@@ -665,8 +665,10 @@ ${extraRepos.length ? `2. For EVERY other repo in the list: make your own copy i
    Keep one continuous WebM recording through every feature transition.
    Do not stop the recording between use cases. Use a readable pace.
    Show every implemented feature. Capture a PNG or JPEG screenshot
-   after each significant step. Give every step a title and an explanation
-   that identifies the visible proof and the feature it proves.
+   after each significant step. Capture the screenshots in demonstration
+   order. Keep each screenshot paired with its matching title and
+   explanation. Give every step a title and an explanation that identifies
+   the visible proof and the feature it proves.
    The ffmpeg program must be available for media validation.
 5. Close the browser context before registration. This finalizes the
    recording. Do not register an active or incomplete recording.

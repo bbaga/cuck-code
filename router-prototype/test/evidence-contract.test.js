@@ -19,6 +19,8 @@ test('instructions require one complete continuous capture', () => {
   assert.match(serverSource, /one continuous WebM recording/);
   assert.match(serverSource, /Do not stop the recording/);
   assert.match(serverSource, /significant step/);
+  assert.match(serverSource, /screenshots in demonstration\s+order/);
+  assert.match(serverSource, /each screenshot paired with its matching title/);
   assert.match(serverSource, /Close the browser context before registration/);
   assert.match(serverSource, /failed showcase capture/);
   assert.match(serverSource, /short clips/);
@@ -39,10 +41,19 @@ test('registration example has the exact versioned showcase shape', () => {
     screenshot: 'evidence/step-1.png',
   }]);
   assert.ok(request.file.startsWith('evidence/'));
-  assert.ok(request.steps.every((step) => step.screenshot.startsWith('evidence/')));
+  assert.ok(!path.isAbsolute(request.file));
+  assert.ok(!request.file.split('/').includes('..'));
+  for (const step of request.steps) {
+    assert.ok(step.screenshot.startsWith('evidence/'));
+    assert.ok(!path.isAbsolute(step.screenshot));
+    assert.ok(!step.screenshot.split('/').includes('..'));
+  }
 });
 
-test('instructions preserve the accepted attempt and history contract', () => {
+test('instructions use the worker evidence endpoint and preserve ordered steps', () => {
+  assert.match(serverSource, /POST http:\/\/localhost:\$\{PORT\}\/api\/protocol\/workers\/\$\{workerId\}\/evidence/);
+  assert.match(serverSource, /Use paths relative to your worktree/);
+  assert.match(serverSource, /screenshots in demonstration\s+order/);
   assert.match(serverSource, /accepted A|362eff17942182a62baf05ef12423afa2dbf6613/);
   assert.match(serverSource, /POST.*evidenceId.*attemptId|evidenceId.*attemptId/);
   assert.match(serverSource, /GET.*items.*history.*currentAttemptId.*currentAttemptIds|items.*history.*currentAttemptId.*currentAttemptIds/);
