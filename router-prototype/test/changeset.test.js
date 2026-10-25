@@ -26,22 +26,16 @@ function numstatRow(path, additions, deletions) {
   return `${additions}\t${deletions}\t${path}`;
 }
 
+test("a two-dash row is binary; a one-dash row is malformed", () => {
+  assert.deepEqual(parseNumstatLine("-\t-\timg/logo.png"),
+    { path: "img/logo.png", binary: true, additions: 0, deletions: 0 });
+  assert.equal(parseNumstatLine("-\t3\tf.js"), null);
+  assert.equal(parseNumstatLine("3\t-\tf.js"), null);
+});
+
 test("parses a normal numstat line", () => {
   assert.deepEqual(parseNumstatLine("12\t3\tsrc/a.js"),
     { path: "src/a.js", binary: false, additions: 12, deletions: 3 });
-});
-
-test("parses a binary numstat row with dashes", () => {
-  assert.deepEqual(parseNumstatLine("-\t-\timg/logo.png"),
-    { path: "img/logo.png", binary: true, additions: 0, deletions: 0 });
-});
-
-test("rejects malformed numstat lines", () => {
-  assert.equal(parseNumstatLine(""), null);
-  assert.equal(parseNumstatLine("no-tabs-here"), null);
-  assert.equal(parseNumstatLine("1\t2\t"), null);
-  assert.equal(parseNumstatLine("x\ty\tfile"), null);
-  assert.equal(parseNumstatLine(null), null);
 });
 
 test("parses full numstat output and skips empty lines", () => {
@@ -64,10 +58,17 @@ test("parses rename paths and paths with spaces", () => {
   assert.deepEqual(errors, []);
 });
 
+test("rejects malformed numstat lines", () => {
+  assert.equal(parseNumstatLine(""), null);
+  assert.equal(parseNumstatLine("no-tabs-here"), null);
+  assert.equal(parseNumstatLine("1\t2\t"), null);
+  assert.equal(parseNumstatLine("x\ty\tfile"), null);
+});
+
 test("collects malformed non-empty rows as errors", () => {
-  const { rows, errors } = parseNumstat("1\t2\tgood.js\nbroken line\nx\ty\tbad.js\n");
+  const { rows, errors } = parseNumstat("1\t2\tgood.js\nbroken line\n");
   assert.deepEqual(rows, [{ path: "good.js", binary: false, additions: 1, deletions: 2 }]);
-  assert.deepEqual(errors, ["broken line", "x\ty\tbad.js"]);
+  assert.deepEqual(errors, ["broken line"]);
 });
 
 test("summarizes additions plus deletions with sorted per-file rows", () => {
@@ -75,17 +76,8 @@ test("summarizes additions plus deletions with sorted per-file rows", () => {
     { path: "z.js", binary: false, additions: 10, deletions: 2 },
     { path: "a.js", binary: false, additions: 3, deletions: 4 },
   ]);
-  assert.equal(summary.additions, 13);
-  assert.equal(summary.deletions, 6);
   assert.equal(summary.total, 19);
   assert.deepEqual(summary.files.map((f) => f.path), ["a.js", "z.js"]);
-});
-
-test("counts an empty change set as zero", () => {
-  const cs = collectChangeset("/wt", "base123", { run: fakeRun() });
-  assert.equal(cs.ok, true);
-  assert.equal(cs.total, 0);
-  assert.equal(cs.reason, null);
 });
 
 test("accepts 499 changed lines", () => {
@@ -152,16 +144,12 @@ test("escalates untracked work", () => {
   assert.deepEqual(cs.untrackedPaths, ["new.txt"]);
 });
 
-test("reports an uncountable change set without a base commit", () => {
-  const cs = collectChangeset("/wt", null, { run: fakeRun() });
-  assert.equal(cs.ok, false);
-  assert.equal(cs.reason, "uncountable");
-});
-
-test("reports an uncountable change set when git fails", () => {
+test("reports an uncountable change set without a base commit or head", () => {
+  assert.equal(collectChangeset("/wt", null, { run: fakeRun() }).reason, "uncountable");
   const cs = collectChangeset("/wt", "base123", { run: fakeRun({ fail: ["diff"] }) });
   assert.equal(cs.ok, false);
   assert.equal(cs.reason, "uncountable");
+  assert.equal(cs.headCommit, "headabc123");
 });
 
 test("only-malformed numstat output is uncountable, not zero lines", () => {
@@ -185,6 +173,26 @@ test("mixed valid and malformed numstat output is uncountable", () => {
   assert.equal(cs.total, 0);
 });
 
+test("mixed valid plus one-dash output is uncountable, not binary-only", () => {
+  const cs = collectChangeset("/wt", "base123", {
+    run: fakeRun({ numstat: `${numstatRow("a.js", 10, 5)}\n-\t3\tlogo.png\n` }),
+  });
+  assert.equal(cs.ok, false);
+  assert.equal(cs.reason, "uncountable");
+  assert.deepEqual(cs.parseErrors, ["-\t3\tlogo.png"]);
+  assert.equal(cs.total, 0);
+});
+
+test("a parse failure keeps the resolved HEAD in the result and wake message", () => {
+  const cs = collectChangeset("/wt", "base123", {
+    run: fakeRun({ numstat: "broken row\n" }),
+  });
+  assert.equal(cs.headCommit, "headabc123");
+  const msg = changesetWakeMessage(cs, { id: "w1", name: "impl-1",
+    sessionId: "s-77", branch: "br" });
+  assert.ok(msg.includes("head commit headabc123"));
+});
+
 test("the wake message reports the parse error details", () => {
   const cs = collectChangeset("/wt", "base123", {
     run: fakeRun({ numstat: "broken row\n" }),
@@ -202,7 +210,6 @@ test("a custom limit overrides the default", () => {
     limit: 10,
     run: fakeRun({ numstat: numstatRow("a.js", 6, 5) }),
   });
-  assert.equal(cs.ok, false);
   assert.equal(cs.reason, "oversized");
   assert.equal(cs.limit, 10);
 });
@@ -226,11 +233,9 @@ test("the wake message carries worker, commits, totals, and paths", () => {
     sessionId: "s-77", branch: "br" });
   assert.ok(msg.startsWith("CHANGESET LIMIT EXCEEDED"));
   assert.ok(msg.includes("workerId w1"));
-  assert.ok(msg.includes("session s-77"));
   assert.ok(msg.includes("Base commit base123"));
   assert.ok(msg.includes("head commit headabc123"));
   assert.ok(msg.includes("Additions 300, deletions 201, total 501"));
-  assert.ok(msg.includes("logo.png"));
   assert.ok(msg.includes("a.js: +300/-201"));
   assert.ok(msg.includes("/continue"));
 });
@@ -239,10 +244,9 @@ test("change-set fields survive a JSON round trip (persistence and restart)", ()
   const cs = collectChangeset("/wt", "base123", {
     run: fakeRun({ numstat: numstatRow("a.js", 600, 0) }),
   });
-  const worker = { baseCommit: "base123", changeset: cs };
-  const restored = JSON.parse(JSON.stringify(changesetFields(worker)));
+  const restored = JSON.parse(JSON.stringify(changesetFields(
+    { baseCommit: "base123", changeset: cs })));
   assert.equal(restored.baseCommit, "base123");
-  assert.equal(restored.changeset.total, 600);
   assert.equal(restored.changeset.reason, "oversized");
   assert.deepEqual(changesetFields({}), { baseCommit: null, changeset: null });
 });

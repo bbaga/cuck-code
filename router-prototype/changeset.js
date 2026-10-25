@@ -1,10 +1,8 @@
 "use strict";
 
 // Change-set limit for implementors: pure helpers that parse
-// `git diff --numstat` output, compute deterministic per-file totals, and
-// evaluate the 500-line limit against a base commit. server.js calls
-// collectChangeset with the real git binary; the unit tests inject a fake
-// run function, so no git process is needed to test the logic.
+// `git diff --numstat` output, compute per-file totals, and evaluate the
+// 500-line limit. Tests inject a fake git runner via opts.run.
 
 const { spawnSync } = require("node:child_process");
 
@@ -20,7 +18,8 @@ function parseNumstatLine(line) {
   const path = parts.slice(2).join("\t");
   if (!path.trim()) return null;
   const [add, del] = parts;
-  if (add === "-" || del === "-") {
+  // Binary only when BOTH columns are dashes; one dash is malformed.
+  if (add === "-" && del === "-") {
     return { path, binary: true, additions: 0, deletions: 0 };
   }
   if (!/^\d+$/.test(add) || !/^\d+$/.test(del)) return null;
@@ -28,8 +27,7 @@ function parseNumstatLine(line) {
 }
 
 // Parse full numstat output into { rows, errors }. errors holds the raw
-// malformed non-empty lines: a non-empty output with any malformed row is
-// uncountable and must not pass as an empty change set.
+// malformed non-empty lines: any malformed row is uncountable.
 function parseNumstat(output) {
   const rows = [];
   const errors = [];
@@ -62,17 +60,16 @@ function runWith(worktreePath, run) {
   });
 }
 
-function uncountable(baseCommit, limit, error, parseErrors = []) {
+function uncountable(baseCommit, limit, error, parseErrors = [], headCommit = null) {
   return { ok: false, reason: "uncountable", error, limit, parseErrors,
-    baseCommit: baseCommit || null, headCommit: null,
+    baseCommit: baseCommit || null, headCommit: headCommit || null,
     additions: 0, deletions: 0, total: 0, files: [],
     binaryPaths: [], dirtyPaths: [], untrackedPaths: [] };
 }
 
 // Collect and evaluate the change set of an implementor worktree against
-// its base commit. opts.run injects a fake git runner
-// ((args) => { status, stdout }) for tests; opts.limit overrides the
-// default limit. Binary, dirty, or untracked work cannot enter validation.
+// its base commit. opts.run injects a fake git runner for tests; opts.limit
+// overrides the default. Binary, dirty, or untracked work escalates.
 function collectChangeset(worktreePath, baseCommit, opts = {}) {
   const run = runWith(worktreePath, opts.run);
   const limit = Number.isInteger(opts.limit) ? opts.limit : CHANGESET_LIMIT;
@@ -83,16 +80,20 @@ function collectChangeset(worktreePath, baseCommit, opts = {}) {
   }
   const headCommit = head.stdout.trim();
   const diff = run(["diff", "--numstat", baseCommit]);
-  if (diff.status !== 0) return uncountable(baseCommit, limit, "git diff failed");
+  if (diff.status !== 0) {
+    return uncountable(baseCommit, limit, "git diff failed", [], headCommit);
+  }
   const { rows, errors } = parseNumstat(diff.stdout);
-  // Any malformed non-empty row makes the count unreliable: the change set
-  // is uncountable and escalates. Only the offending lines are reported.
+  // Any malformed row is uncountable; only the offending lines are
+  // reported, and the resolved HEAD stays in the result.
   if (errors.length) {
-    return uncountable(baseCommit, limit, "malformed numstat output", errors);
+    return uncountable(baseCommit, limit, "malformed numstat output", errors, headCommit);
   }
   const summary = summarizeChanges(rows);
   const status = run(["status", "--porcelain"]);
-  if (status.status !== 0) return uncountable(baseCommit, limit, "git status failed");
+  if (status.status !== 0) {
+    return uncountable(baseCommit, limit, "git status failed", [], headCommit);
+  }
   const dirtyPaths = [];
   const untrackedPaths = [];
   for (const line of status.stdout.split("\n")) {
