@@ -1507,6 +1507,11 @@ const server = http.createServer((req, res) => {
     for (const res2 of line.clients) { try { res2.end(); } catch {} }
     line.clients.clear();
     lines.delete(line.id);
+    if (!registryUnavailable) {
+      registryRoutes.onLineDeleted(line.id).catch((err) => {
+        slog("error", "registry.line_deleted.failed", { lineId: line.id, error: String(err && err.message) });
+      });
+    }
     for (const p of [line.workdir, path.join(LINES_DIR, "worktrees", line.id)]) {
       try { fs.rmSync(p, { recursive: true, force: true }); } catch {}
     }
