@@ -55,7 +55,7 @@ function statusFilter(url) {
   return new Set(list);
 }
 
-function createRegistryRoutes({ store, lineExists = () => false, lineName = () => null, unavailable = null, now = Date.now, newId = randomUUID, onOutbox, refresh = null }) {
+function createRegistryRoutes({ store, lineExists = () => false, lineName = () => null, unavailable = null, now = Date.now, newId = randomUUID, onOutbox, refresh = null, live = null }) {
   const writer = createWriteRoutes({ store, lineExists, now, newId, onOutbox });
   const down = () => (typeof unavailable === 'function' ? unavailable() : unavailable);
   const withOwner = item => {
@@ -149,6 +149,12 @@ function createRegistryRoutes({ store, lineExists = () => false, lineName = () =
     const off = down();
     if (off || !store) {
       json(res, 503, { error: off?.error || 'Work registry unavailable', code: 'REGISTRY_UNAVAILABLE', file: off?.file || null });
+      return true;
+    }
+    if (live && req.method === 'GET' && parts.length === 3 && parts[2] === 'stream') {
+      store.readSnapshot()
+        .then(snap => live.attach(req, res, { revision: snap.revision, eventCursor: snap.eventCursor }))
+        .catch(() => { if (!res.headersSent) json(res, 503, { error: 'Work registry unavailable', code: 'REGISTRY_UNAVAILABLE', file: null }); });
       return true;
     }
     if (parts.slice(3).some(p => !ID_PATTERN.test(p))) { json(res, 404, { error: 'Registry route not found' }); return true; }

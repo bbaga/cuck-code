@@ -1319,7 +1319,8 @@ const { createStore: createRegistryStore } = require("./work-registry");
 const { createDelivery: createRegistryDelivery } = require("./registry-delivery");
 const { createRefresh: createRegistryRefresh, matchRepo: matchRegistryRepo, ghCheckPullRequest } = require("./registry-refresh");
 const REGISTRY_FILE = path.join(LINES_DIR, "work-coordination.json");
-const registryStore = createRegistryStore(REGISTRY_FILE);
+const registryLive = require("./registry-live").createRegistryLive({ log: (event, data) => slog("warn", event, data) });
+const registryStore = createRegistryStore(REGISTRY_FILE, { onCommit: (state) => registryLive.notify(state) });
 let registryUnavailable = null;
 let registryDelivery = null;
 const REGISTRY_DELIVERY_MS = 30000;
@@ -1341,6 +1342,7 @@ const registryRoutes = createRegistryRoutes({
   lineExists: (id) => lines.has(id),
   lineName: (id) => (lines.get(id) ? lines.get(id).name : null),
   unavailable: () => registryUnavailable,
+  live: registryLive,
   onOutbox: () => registryDeliver(),
 });
 // Not awaited by callers. Safe to call at any time, also after a merge refresh.
