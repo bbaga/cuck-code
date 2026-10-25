@@ -1,61 +1,92 @@
 # Registry UI video guide
 
-Use this guide to record the six registry UI cases. Use a router that is separate from the normal router. Do not use port 7788.
+Record one video for each of the six cases below. Use an isolated router and test data. Do not use port 7788 for this router.
 
-## Start an isolated router
+## Use the integration validator worktree
 
-Run these commands from the repository root. Use a port that is free on your machine.
+Run the tests and save the videos inside the dedicated integration validator worktree. Set `WORKTREE` to its top-level path. If the repository is a nested clone, set `REPO` to the path of the clone inside that worktree. All video paths in evidence requests must be relative to `WORKTREE`.
 
 ```sh
-mkdir -p /tmp/registry-ui-lines
-PORT=17788 LINES_DIR=/tmp/registry-ui-lines node router-prototype/server.js
+WORKTREE=/path/to/integration-validator-worktree
+REPO="$WORKTREE/router-prototype" # Use WORKTREE instead if the repo is at its root.
+cd "$REPO"
+mkdir -p "$WORKTREE/evidence" /tmp/registry-ui-lines
 ```
 
-Open `http://localhost:17788` in Playwright. Use test data in this router only. Do not point this router at your normal `lines` directory.
+Start an isolated router with a free port other than 7788:
 
-## Record one case
+```sh
+PORT=17788 LINES_DIR=/tmp/registry-ui-lines node server.js
+```
 
-Make one recording for each case below. Create the video directory before you start. Start a new browser context for each case. Set `recordVideo` before you open a page.
+Open `http://localhost:17788` in the browser. Use only this router and its storage for test data.
+
+## Playwright prerequisite
+
+The Playwright package and its browser must be available in the environment that runs the recording script. Check before recording:
+
+```sh
+node -e "console.log(require.resolve('playwright'))"
+npx playwright --version
+```
+
+If either check fails, do not assume that Playwright is installed locally. Use the Playwright runtime provided to the integration validator, or ask for that runtime to be made available. Do not add or install a package in this worktree just for recording.
+
+## Record a case
+
+Start a new context for each video. Set `recordVideo` before opening a page. Run this script from `WORKTREE`. Change `fileName` and the case actions for each recording.
 
 ```js
 const path = require('node:path');
 const { chromium } = require('playwright');
 
-const browser = await chromium.launch({ headless: true });
-const context = await browser.newContext({
-  recordVideo: { dir: path.resolve('evidence') },
-});
-const page = await context.newPage(); // Open the page only after recordVideo is set.
-await page.goto('http://localhost:17788');
-// Run one case here. Use a new context for the next case.
-const video = page.video();
-await context.close(); // This completes and saves the video.
-const videoPath = await video.path();
-console.log(videoPath);
-await browser.close();
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({
+    recordVideo: { dir: path.resolve('evidence') },
+  });
+  const page = await context.newPage(); // Video recording is enabled before this call.
+  await page.goto('http://localhost:17788');
+  // Run one case here.
+  const video = page.video();
+  await context.close(); // Finalize the recording before using its path.
+  console.log(await video.path());
+  await browser.close();
+})();
 ```
 
-Create the `evidence` directory first. Call `video.path()` after `context.close()`. The returned path is the completed video file. Keep each video under `evidence/` in the worker worktree. Use a clear file name, such as `evidence/registry-archive.webm`.
+The video is in `WORKTREE/evidence`. Use the path relative to `WORKTREE` when you register it. For a repository nested in the worktree, that path includes the clone directory, for example `router-prototype/evidence/registry-open.webm`. Close the context before registration. The completed path is available from `await video.path()` after close.
+
+## Prepare the data
+
+Use two distinct line IDs, for example `registry-source` and `registry-target`. Create both lines in the isolated router. Keep them in the test storage directory. Use the source line for claims and the target line for requests.
+
+Before the archive case, prepare a completed merge/archive record for the source line by using the normal line workflow. Confirm that the registry displays it before you record. The archive must be visible and must show the source line, merge reference, and status. Do not record an empty archive view as a passing case.
+
+Before the request case, use the source line to open a request addressed to the target line. Use the target line to answer it. Record the request ID and its current revision. Enter that revision in the answer form.
 
 ## Six cases
 
-1. **Open the registry.** Select the global registry view. Show its claims, requests, and archives.
-2. **Filter the registry.** Enter a search value or status filter. Show the filtered rows.
-3. **View an archive.** Show an archive row with its source line, merge reference, and status.
-4. **Publish a claim.** Submit a claim from a source line. Show the updated registry.
-5. **Open and answer a request.** Submit an inbound request, then answer it from its target line. Use the request revision in the answer form.
-6. **Replay registry events.** Open the dashboard, disconnect the browser from the network, then reconnect it. Show the registry refresh after event replay.
+1. **Open the registry.** Open the global registry. Show the claims, requests, and archives sections.
+2. **Filter the registry.** Enter a search value or status. Show the filtered rows.
+3. **View an archive.** Show the prepared archive row, its source line, merge reference, and status.
+4. **Publish a claim.** Publish a claim from `registry-source`. Show the registry after the update.
+5. **Open and answer a request.** Open a request from `registry-source` to `registry-target`. Then answer it from the target line using the saved request revision. Show the updated registry.
+6. **Replay registry events.** Open the dashboard. Disconnect the browser from the network, then reconnect it. Show the registry refresh after replay.
 
-Use valid line IDs and request revisions from the isolated router. Do not use real or shared line data.
+Use a new context and a separate completed video for every case.
 
-## Register each video
+## Register each completed video
 
-Set `WORKER_ID` to the ID of the worker that ran the case. Send one request for each completed video. The `useCase` field must name the case. The `file` field must be the path to that case's video, relative to the worker worktree.
+Send evidence to the main router at `http://localhost:7788`. Do not send evidence to the isolated router on port 17788. Set `WORKER_ID` to the integration validator worker ID. Use the exact worker ID in the URL. The `useCase` and `file` fields are required. `file` is relative to `WORKTREE`, and must include the nested clone directory when present.
+
+Run one request for each video. Check that each response has a successful HTTP status (201) and an `evidenceId`. Do not report success for a failed request.
 
 ```sh
-curl -s -X POST "http://localhost:17788/api/protocol/workers/$WORKER_ID/evidence" \
+WORKER_ID='<integration-validator-worker-id>'
+curl --fail-with-body -sS -X POST "http://localhost:7788/api/protocol/workers/$WORKER_ID/evidence" \
   -H 'Content-Type: application/json' \
-  -d '{"useCase":"Open the registry","file":"evidence/registry-open.webm"}'
+  -d '{"useCase":"View an archive","file":"router-prototype/evidence/registry-archive.webm"}'
 ```
 
-The required fields are `worker ID` in the URL, `useCase`, and `file`. Use a separate evidence request for each of the six cases. Register a video only after closing its browser context.
+Use `"file":"evidence/registry-archive.webm"` instead when the repository is at the root of `WORKTREE`. Use a distinct `useCase` and file path for each of the six cases. Confirm the response for each registration before you continue.
