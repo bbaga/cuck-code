@@ -157,7 +157,8 @@ function submitPrompt(line, request, { wasStarted, save, pump, onQueued }) {
   const result = enqueuePlannerRequest(line, request, save);
   if (!result.ok) {
     line.started = wasStarted;
-    return { status: 500, body: { error: `could not save prompt: ${result.reason}` } };
+    const status = result.reason === "invalid-request" ? 400 : result.reason === "line-deleted" ? 410 : 500;
+    return { status, body: { error: `could not save prompt: ${result.reason}` } };
   }
   const position = line.queue.length;
   if (onQueued) onQueued();

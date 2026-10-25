@@ -298,3 +298,11 @@ test("submitPrompt failed save returns 500, restores started, skips pump", () =>
   assert.equal(pumped, false);
   assert.equal(line.queue.length, 0);
 });
+
+test("submitPrompt maps invalid-request to 400, line-deleted to 410, save-failed to 500", () => {
+  const { submitPrompt } = require("../planner-request");
+  const opts = { wasStarted: true, save: () => true, pump: () => {} };
+  assert.equal(submitPrompt({ id: "l", queue: [] }, { text: 5 }, opts).status, 400);
+  assert.equal(submitPrompt({ id: "l", queue: [], deleted: true }, plannerRequest("a"), opts).status, 410);
+  assert.equal(submitPrompt({ id: "l", queue: [] }, plannerRequest("a"), { ...opts, save: () => false }).status, 500);
+});

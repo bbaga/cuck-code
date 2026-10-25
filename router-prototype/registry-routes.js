@@ -3,7 +3,9 @@
 const { CURRENT_STATUSES, STATUSES } = require('./work-claims');
 const { readableBy } = require('./work-requests');
 const { eventsAfter } = require('./work-merge');
+const { randomUUID } = require('node:crypto');
 const { ID_PATTERN } = require('./work-registry');
+const { createWriteRoutes } = require('./registry-write');
 
 const PAGE_SIZE_MAX = 100;
 const PAGE_SIZE_DEFAULT = 20;
@@ -53,7 +55,8 @@ function statusFilter(url) {
   return new Set(list);
 }
 
-function createRegistryRoutes({ store, lineExists = () => false, lineName = () => null, unavailable = null }) {
+function createRegistryRoutes({ store, lineExists = () => false, lineName = () => null, unavailable = null, now = Date.now, newId = randomUUID, onOutbox, refresh = null }) {
+  const writer = createWriteRoutes({ store, lineExists, now, newId, onOutbox });
   const down = () => (typeof unavailable === 'function' ? unavailable() : unavailable);
   const withOwner = item => {
     const name = lineName(item.ownerLineId);
@@ -91,7 +94,7 @@ function createRegistryRoutes({ store, lineExists = () => false, lineName = () =
     return out;
   }
 
-  // Extension point: later tasks add write routes in dispatch() by method.
+  // Read routes only; write routes are in registry-write.js.
   function dispatch(snapshot, method, url, parts) {
     if (method !== 'GET') throw new HttpError(404, 'Registry route not found');
     const [, , name, id] = parts;
@@ -149,6 +152,15 @@ function createRegistryRoutes({ store, lineExists = () => false, lineName = () =
       return true;
     }
     if (parts.slice(3).some(p => !ID_PATTERN.test(p))) { json(res, 404, { error: 'Registry route not found' }); return true; }
+    const refreshing = refresh && refresh.route(req, parts);
+    if (refreshing) {
+      refreshing.then(out => json(res, out.status, out.body));
+      return true;
+    }
+    if (req.method !== 'GET') {
+      writer.handle(req, parts).then(out => json(res, out.status, out.body));
+      return true;
+    }
     store.readSnapshot()
       .then(snapshot => json(res, 200, dispatch(snapshot, req.method, url, parts)))
       .catch(error => {
@@ -161,7 +173,7 @@ function createRegistryRoutes({ store, lineExists = () => false, lineName = () =
     return true;
   }
 
-  return { handle };
+  return { handle, onLineDeleted: writer.onLineDeleted };
 }
 
 module.exports = { createRegistryRoutes };

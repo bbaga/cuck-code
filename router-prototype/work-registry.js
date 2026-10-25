@@ -91,11 +91,13 @@ function createStore(filePath) {
   async function readSnapshot() {
     return load();
   }
+  // expectedSnapshotRevision null skips the snapshot revision check. The mutation still runs
+  // in the serialized queue on the freshly reloaded disk snapshot.
   function transact(expectedSnapshotRevision, mutation) {
     const queue = queues.get(key);
     const operation = queue.then(async () => {
       state = await readDisk();
-      if (expectedSnapshotRevision !== state.revision) return { ok: false, stale: true, revision: state.revision };
+      if (expectedSnapshotRevision !== null && expectedSnapshotRevision !== state.revision) return { ok: false, stale: true, revision: state.revision };
       if (typeof mutation !== 'function') throw new TypeError('mutation must be a function');
       const next = structuredClone(state);
       const result = await mutation(next);
