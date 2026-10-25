@@ -21,6 +21,7 @@ const { CHANGESET_LIMIT, collectChangeset, changesetWakeMessage,
 const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests } = require("./planner-request");
+const { validateShowcase, checkedFile, publicEvidence } = require("./evidence");
 
 const PORT = Number(process.env.PORT || 7788);
 const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
@@ -660,24 +661,21 @@ ${extraRepos.length ? `2. For EVERY other repo in the list: make your own copy i
    feature branches there the same way. Never push to their remotes.` : "2. No additional repositories are registered for this line."}
 3. When all branches are merged, run ALL acceptance tests and verify
    everything works together. Build and run the project if needed.
-4. For EACH use case you test, record a video of the test case running.
-   Use playwright with video recording enabled: in a playwright test use
-   video: 'on' (or npx playwright test --video=on); in a raw playwright
-   script enable recordVideo on the browser context, for example
-   browser.newContext({ recordVideo: { dir: 'evidence' } }).
-   Save each video as a separate file under evidence/ in your workdir
-   (for example evidence/use-case-login.webm).
-5. IMPORTANT: close the browser context (or let the playwright
-   test run finish) BEFORE you register the video file. A video that
-   is still recording is not finalized: it has no duration and will
-   not play. Register only files that are complete (usually larger
-   than 10 KB).
-6. Register every evidence video with the router:
+4. Record one complete showcase for this integration attempt.
+   Use one browser context for the complete demonstration.
+   Keep one continuous video through all feature transitions.
+   Capture one PNG or JPEG screenshot after each significant feature step.
+   Write a nonempty title and explanation for every screenshot.
+   The explanation must identify the visible result and feature it proves.
+   Include every implemented feature in the video and step list.
+5. Close the browser context before registration. Register only a finalized
+   WebM recording and screenshots from your worktree.
+6. Register the showcase with this exact request:
    curl -s -X POST http://localhost:${PORT}/api/protocol/workers/${workerId}/evidence \
      -H 'Content-Type: application/json' \
-     -d '{"useCase":"<one line describing the use case>","file":"evidence/<file>.webm"}'
-   The file path is relative to your workdir. Register each use case
-   as you complete it.
+     -d '{"useCase":"<complete demonstration title>","file":"evidence/showcase.webm","steps":[{"title":"<step title>","explanation":"<visible result and feature>","screenshot":"evidence/step-1.png"}]}'
+   All paths are relative to your worktree. Report any capture or
+   registration failure explicitly. Keep the result tied to this attempt.
 7. Reply with an INTEGRATION REPORT: branches merged (per repo),
    conflicts resolved (per branch, one line), acceptance test results,
    the list of registered evidence use cases, then a final line
@@ -723,7 +721,10 @@ function saveLine(line) {
           id: i.id, kind: i.kind, name: i.name, by: i.by, ref: i.ref,
           keep: i.keep, status: i.status })),
         evidence: [...(line.evidence || new Map()).values()].map((e) => ({
-          id: e.id, useCase: e.useCase, path: e.path, name: e.name, by: e.by, at: e.at })),
+          id: e.id, kind: e.kind || "video", version: e.version || null,
+          useCase: e.useCase, path: e.path, name: e.name, by: e.by, at: e.at,
+          attemptId: e.attemptId || null,
+          steps: e.steps || [] })),
         workers: [...line.workers.values()].map((w) => ({
           id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch,
           ...completionFields(w), lastRunText: w.lastRunText || null,
@@ -1777,18 +1778,25 @@ const server = http.createServer((req, res) => {
         || typeof body.file !== "string" || !body.file.trim()) {
         return json(res, 400, { error: "expected {useCase, file}" });
       }
-      const abs = path.resolve(worker.worktreePath, body.file.trim());
-      if (!abs.startsWith(path.resolve(worker.worktreePath))) {
-        return json(res, 400, { error: "file must be inside your workdir" });
+      let record;
+      try {
+        if (Array.isArray(body.steps)) {
+          record = validateShowcase(worker.worktreePath, body);
+        } else {
+          const video = checkedFile(worker.worktreePath, body.file, "video");
+          if (video.size < 1024) throw new Error("video file is suspiciously small - register only finalized recordings");
+          if (typeof body.useCase !== "string" || !body.useCase.trim()) throw new Error("expected {useCase, file}");
+          record = { kind: "video", useCase: body.useCase.trim(), path: video.path,
+            name: path.basename(video.path) };
+        }
+      } catch (error) {
+        return json(res, 400, { error: error.message });
       }
-      if (!fs.existsSync(abs)) return json(res, 400, { error: "no such file: " + body.file });
-      const stat = fs.statSync(abs);
-      if (stat.size === 0) return json(res, 400, { error: "video file is empty (0 bytes) - recording was never finalized. Close the browser context before registering." });
-      if (stat.size < 1024) return json(res, 400, { error: "video file is suspiciously small (" + stat.size + " bytes) - register only finalized recordings" });
       const id = crypto.randomUUID();
       if (!line.evidence) line.evidence = new Map();
-      line.evidence.set(id, { id, useCase: body.useCase.trim(), path: abs,
-        name: path.basename(abs), by: worker.id, at: Date.now() });
+      line.evidence.set(id, { id, ...record, by: worker.id, at: Date.now(),
+        attemptId: body.attemptId || worker.activeInvocationId || worker.lastCompletedInvocationId
+          || String(worker.runGeneration || "") });
       saveLine(line);
       slog("info", "evidence.registered", { lineId: line.id, evidenceId: id,
         useCase: preview(body.useCase, 120), file: body.file.trim(), by: worker.name });
@@ -1801,11 +1809,24 @@ const server = http.createServer((req, res) => {
     && parts.length === 4) {
     const line = lines.get(parts[2]);
     if (!line) return json(res, 404, { error: "no such line" });
-    const items = [...(line.evidence || new Map()).values()].map((e) => ({
-      id: e.id, useCase: e.useCase, name: e.name, at: e.at,
-      video: `/api/lines/${line.id}/evidence/${e.id}/video`,
-    }));
+    const items = [...(line.evidence || new Map()).values()].map((e) => publicEvidence(line.id, e));
     return json(res, 200, { items });
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "evidence"
+    && parts.length === 8 && parts[5] === "steps" && parts[7] === "screenshot") {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    const item = (line.evidence || new Map()).get(parts[4]);
+    const index = Number(parts[6]);
+    if (!item || item.kind !== "showcase" || !Number.isInteger(index)
+      || index < 0 || index >= item.steps.length) return json(res, 404, { error: "no such screenshot" });
+    const screenshot = item.steps[index].screenshot;
+    if (!fs.existsSync(screenshot)) return json(res, 404, { error: "screenshot file is gone" });
+    const contentType = /\\.png$/i.test(screenshot) ? "image/png" : "image/jpeg";
+    res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-cache" });
+    fs.createReadStream(screenshot).pipe(res);
+    return;
   }
 
   if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "evidence"
