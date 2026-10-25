@@ -453,7 +453,7 @@ main/master branch - merging is the integration validator's job:
   after failure. Example:
 
   ```sh
-  PORT=7789 LINES_DIR=/tmp/integration-lines node router-prototype/server.js \\
+  PORT=7789 LINES_DIR=/tmp/integration-lines node router-prototype/server.js \
     >router.log 2>&1 & SERVER_PID=$!; echo "$SERVER_PID"
   ```
 

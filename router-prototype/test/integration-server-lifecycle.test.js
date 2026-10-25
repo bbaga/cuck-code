@@ -8,6 +8,8 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
 const start = source.indexOf('function integrationValidatorBrief(');
 const end = source.indexOf('\nfunction sanitizeName', start);
+assert.ok(start >= 0, 'start marker "function integrationValidatorBrief(" not found in server.js');
+assert.ok(end > start, 'end marker "\\nfunction sanitizeName" not found after the brief function');
 const fnSource = source.slice(start, end);
 const brief = fnSource.replace(/\s+/g, ' ');
 
@@ -40,7 +42,7 @@ test('integration brief requires isolated port, readiness, registration, and cle
 
 test('integrationValidatorBrief renders lifecycle steps for sample inputs', () => {
   const text = integrationValidatorBrief(
-    { name: 'Demo' },
+    { id: 'line-42', name: 'Demo' },
     [{ branch: 'feat/a', repo: 'primary' }],
     'Merge it',
     'worker-1',
@@ -50,6 +52,9 @@ test('integrationValidatorBrief renders lifecycle steps for sample inputs', () =
   assert.match(text, /- feat\/a \(repo 'primary'\)/);
   assert.match(text, /remote git@x:api\.git/);
   assert.match(text, /worker worker-1\./);
+  assert.match(text, /lines\/line-42\/inventory/);
+  assert.doesNotMatch(text, /\$LINE_ID/);
+  assert.match(text, /expected commit SHAs come from the planner instructions/);
   assert.match(text, /3\. For every other repo/);
   const single = integrationValidatorBrief({ name: 'D' }, [], '', 'w', [{ name: 'primary', path: '/w' }]);
   assert.match(single, /3\. No additional repositories/);

@@ -659,9 +659,10 @@ Procedure:
    PORT=<free-port> LINES_DIR=<private-dir> node router-prototype/server.js >router.log 2>&1 & SERVER_PID=$!; echo "$SERVER_PID"
    Return from this command before any other tool call. Poll the HTTP
    endpoint with a bounded timeout until it responds. Register the PID
-   with POST /api/protocol/lines/$LINE_ID/inventory, using kind process,
+   with POST /api/protocol/lines/${line.id}/inventory, using kind process,
    name integration-router, pid $SERVER_PID, and worker ${workerId}.
-2. For each feature branch, use its matching expected commit.
+2. For each feature branch, use its matching expected commit. The
+   expected commit SHAs come from the planner instructions above.
    Keep each branch and expected commit together. Merge every feature
    branch with one explicit Git merge command. Do not use a shell loop.
    Use one command for each branch:
