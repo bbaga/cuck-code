@@ -29,6 +29,10 @@
     background: #161a20; flex-shrink: 0; }
   #sidebar h1 { font-size: 1.1rem; margin: 0 0 16px; }
   #sidebar button { width: 100%; }
+  #registry { padding: 20px; overflow: auto; }
+  #registry input, #registry select { padding: 7px; background: #0d1014; color: inherit; border: 1px solid #2c333d; }
+  .registry-row { padding: 10px; border-bottom: 1px solid #262b33; overflow-wrap: anywhere; }
+  #registryStatus { color: #8fa3bd; }
   button { padding: 8px 14px; background: #2d6cdf; color: #fff; border: 0;
     border-radius: 4px; cursor: pointer; }
   button:disabled { opacity: .4; cursor: default; }
@@ -165,9 +169,20 @@
 <aside id="sidebar">
   <h1>cuck-code</h1>
   <button id="create">+ Create new line</button>
+  <button id="registryToggle" type="button">Registry</button>
   <div id="linelist"></div>
 </aside>
 <main id="lines">
+  <section id="registry" hidden aria-label="Global registry">
+    <h2>Global registry</h2><p id="registryStatus" role="status"></p>
+    <label>Search <input id="registryQuery" type="search"></label>
+    <label>Status <input id="registryFilter" type="search"></label>
+    <button id="registryRefresh" type="button">Refresh registry</button>
+    <div id="registryContent"></div>
+    <form id="claimForm"><h3>Publish claim</h3><label>Line ID <input name="lineId" required></label><label>Claim <input name="claim" required></label><button>Publish</button></form>
+    <form id="requestForm"><h3>Open request</h3><label>Source line ID <input name="lineId" required></label><label>Target line ID <input name="targetLineId" required></label><label>Text <input name="text" required></label><button>Open request</button></form>
+    <form id="answerForm"><h3>Answer request</h3><label>Target line ID <input name="lineId" required></label><label>Request ID <input name="requestId" required></label><label>Request revision <input name="revision" type="number" min="0" required></label><label>Answer <input name="text" required></label><button>Answer</button></form>
+  </section>
   <div id="empty">Select or create a production line.</div>
 </main>
 <script src="pipeline-ui.js"></script>
@@ -1258,6 +1273,98 @@ window.addEventListener("DOMContentLoaded", () => {
   setInterval(pollInventory, 3000);
   setInterval(pollEvidence, 3000);
 });
+</script>
+<script>
+(() => {
+  const view = document.getElementById("registry"), content = document.getElementById("registryContent");
+  const status = document.getElementById("registryStatus");
+  const text = (tag, value) => { const el = document.createElement(tag); el.textContent = value == null ? "" : String(value); return el; };
+  async function allPages(path) {
+    const items = []; let page = 1, more = true;
+    while (more) {
+      const u = new URL(path, location.href); u.searchParams.set("page", page); u.searchParams.set("pageSize", 100);
+      const res = await fetch(u); if (!res.ok) throw Error("Registry load failed (HTTP " + res.status + ")");
+      const data = await res.json();
+      if (data.snapshotRevision != null) window.registryRevision = data.snapshotRevision;
+      items.push(...data.items); more = data.hasMore; page++;
+    }
+    return items;
+  }
+  async function load() {
+    status.textContent = "Loading registry…";
+    try {
+      const q = document.getElementById("registryQuery").value;
+      const statusFilter = document.getElementById("registryFilter").value;
+      const params = new URLSearchParams({ page: "1", pageSize: "100", q, status: statusFilter });
+      const [claims, archive, requests] = await Promise.all([
+        allPages("/api/registry/claims?" + params), allPages("/api/registry/archive?" + params),
+        allPages("/api/registry/requests?page=1")]);
+      content.replaceChildren(); let revision = "";
+      for (const [title, rows] of [["Claims", claims], ["Requests", requests], ["Archives", archive]]) {
+        content.appendChild(text("h3", title + " (" + rows.length + ")"));
+        if (!rows.length) content.appendChild(text("p", "No " + title.toLowerCase() + " retained."));
+        for (const item of rows) {
+          if (item.snapshotRevision != null) revision = item.snapshotRevision;
+          const row = text("article", [item.sourceLineId || item.lineId, item.repo, item.status, "revision " + (item.revision ?? item.snapshotRevision), item.age, item.commit, item.mergeReference || item.mergeEvidence, item.text || item.claim].filter(Boolean).join(" · "));
+          row.className = "registry-row"; content.appendChild(row);
+        }
+      }
+      status.textContent = "Snapshot revision " + revision + ". All pages loaded.";
+    } catch (err) { status.textContent = String(err); }
+  }
+  document.getElementById("registryToggle").addEventListener("click", () => {
+    view.hidden = !view.hidden; document.getElementById("empty").hidden = true;
+    for (const st of document.querySelectorAll(".card")) st.style.display = "none";
+    if (!view.hidden) load();
+  });
+  document.getElementById("registryRefresh").addEventListener("click", load);
+  const EVENT_POLL_MS = 5000;
+  let eventTimer = null, eventBusy = false;
+  async function checkRegistryEvents() {
+    if (eventBusy || document.hidden || !navigator.onLine) return;
+    eventBusy = true;
+    try {
+      let cursor = localStorage.getItem("registryCursor") || "", changed = false, more = true;
+      while (more) {
+        const res = await fetch("/api/registry/events?after=" + encodeURIComponent(cursor));
+        if (!res.ok) throw Error("Events load failed (HTTP " + res.status + ")");
+        const batch = await res.json();
+        if (batch.items && batch.items.length) changed = true;
+        if (batch.nextCursor != null) {
+          cursor = String(batch.nextCursor);
+          localStorage.setItem("registryCursor", cursor);
+          window.registryCursor = cursor;
+        }
+        more = batch.hasMore === true;
+        if (more && (batch.nextCursor == null || cursor === localStorage.getItem("registryCursor") && !(batch.items || []).length)) break;
+      }
+      if (changed && !view.hidden) await load();
+    } catch (err) { status.textContent = String(err) + ". Will retry."; }
+    finally { eventBusy = false; }
+  }
+  function scheduleRegistryEvents() {
+    if (eventTimer) clearTimeout(eventTimer);
+    eventTimer = null;
+    if (!document.hidden && navigator.onLine) eventTimer = setTimeout(async () => { await checkRegistryEvents(); scheduleRegistryEvents(); }, EVENT_POLL_MS);
+  }
+  window.addEventListener("online", () => { checkRegistryEvents(); scheduleRegistryEvents(); });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) checkRegistryEvents(); scheduleRegistryEvents(); });
+  scheduleRegistryEvents();
+  for (const id of ["registryQuery", "registryFilter"]) document.getElementById(id).addEventListener("change", load);
+  async function submit(form, route, body) {
+    const data = new FormData(form), line = data.get("lineId");
+    try {
+      const res = await fetch(route(line), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body(data)) });
+      if (res.status === 409) { status.textContent = "Registry changed. Refresh and try again."; return; }
+      if (!res.ok) throw Error("Action failed (HTTP " + res.status + ")");
+      form.reset(); await load();
+    } catch (err) { status.textContent = String(err); }
+  }
+  document.getElementById("claimForm").addEventListener("submit", e => { e.preventDefault(); submit(e.currentTarget, line => "/api/registry/lines/" + encodeURIComponent(line) + "/claims", d => ({ claim: d.get("claim"), expectedSnapshotRevision: Number(window.registryRevision || 0) })); });
+  document.getElementById("requestForm").addEventListener("submit", e => { e.preventDefault(); submit(e.currentTarget, line => "/api/registry/lines/" + encodeURIComponent(line) + "/requests", d => ({ targetLineId: d.get("targetLineId"), text: d.get("text"), idempotencyKey: crypto.randomUUID(), expectedSnapshotRevision: Number(window.registryRevision || 0) })); });
+  document.getElementById("answerForm").addEventListener("submit", e => { e.preventDefault(); const form = e.currentTarget; submit(form, line => "/api/registry/lines/" + encodeURIComponent(line) + "/requests/" + encodeURIComponent(new FormData(form).get("requestId")) + "/answer", d => ({ text: d.get("text"), expectedRequestRevision: Number(d.get("revision")) })); });
+  window.registryDashboard = { allPages, load, text };
+})();
 </script>
 </body>
 </html>
