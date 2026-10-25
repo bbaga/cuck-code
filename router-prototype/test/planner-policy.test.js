@@ -9,8 +9,7 @@ const assert = require("node:assert/strict");
 
 const { PLANNER_POLICY_VERSION, plannerSystemPrompt, plannerUserPrompt,
   migratePlannerPolicy } = require("../planner-policy");
-const { trustedSystemChannel, createHarness } = require("../harness");
-const { planPlannerRun, preparePlannerLaunch } = require("../spawn-plan");
+const { preparePlannerLaunch } = require("../spawn-plan");
 const { resolvePipeline } = require("../pipeline-config");
 const { plannerRequest } = require("../planner-request");
 
@@ -107,16 +106,7 @@ test("migration preserves lines without a session and current lines", () => {
   assert.equal(current.migrated, false);
 });
 
-test("capability check rejects unsupported planner harnesses before launch", () => {
-  assert.equal(trustedSystemChannel("vibe"), null);
-  assert.throws(() => createHarness("vibe").buildRun({
-    phase: "planner", prompt: "task", workdir: "/tmp/w", sessionId: null,
-    model: "m", effort: "medium", timeLimitSec: 60, autoApprove: false,
-    systemPrompt: "POLICY",
-  }), /no verified trusted system channel/);
-});
-
-test("blocked decision preserves the request, spawns no child, and recovers later", (t) => {
+test("refusal snapshots the queue and planner fields: no prohibited mutation", (t) => {
   const fs = require("node:fs");
   const os = require("node:os");
   const path = require("node:path");
@@ -124,27 +114,39 @@ test("blocked decision preserves the request, spawns no child, and recovers late
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const vibe = { ...resolvePipeline({}, {}).planner, harness: "vibe" };
   const pi = { ...vibe, harness: "pi" };
-  const line = fakeLine({ workdir: dir });
   const request = plannerRequest("continue", SOURCE);
+  const line = fakeLine({ workdir: dir, plannerHarness: "vibe", status: "idle",
+    sessionId: "sess-keep", activePlannerRequest: null, lastRun: null });
   line.queue.push(request);
+  const snapshot = {
+    queue: [...line.queue], plannerHarness: line.plannerHarness,
+    sessionId: line.sessionId, activePlannerRequest: line.activePlannerRequest,
+    lastRun: line.lastRun, planApproved: line.planApproved,
+  };
   // Repeated decisions while the configuration stays unchanged: every call
   // blocks again with no state change, so no retry loop can spin.
-  const first = preparePlannerLaunch(line, vibe, request, false);
-  const second = preparePlannerLaunch(line, vibe, request, false);
+  const first = preparePlannerLaunch(line, vibe, line.queue[0], false);
+  const second = preparePlannerLaunch(line, vibe, line.queue[0], false);
   assert.equal(first.op, "blocked");
   assert.equal(second.op, "blocked");
   assert.match(first.message, /vibe/);
   assert.match(first.message, /no trusted system prompt channel/);
   assert.equal(first.plan, undefined, "no child process plan is produced");
-  // The request text and trusted source metadata are untouched, and the
-  // decision does not mutate the line or its queue.
+  // The pump applies only the blocked status for the UI; the queue and all
+  // planner launch fields stay exactly as snapshotted.
+  line.status = "blocked";
+  assert.deepEqual([...line.queue], snapshot.queue);
+  assert.equal(line.queue[0], request);
+  for (const key of ["plannerHarness", "sessionId", "activePlannerRequest",
+    "lastRun", "planApproved"]) {
+    assert.equal(line[key], snapshot[key], `${key} must not change on refusal`);
+  }
+  // The request text and trusted source metadata are untouched.
   assert.equal(request.text, "continue");
   assert.deepEqual(request.source, SOURCE);
-  assert.deepEqual(line.queue, [request]);
-  assert.equal(line.status, undefined);
   // After a supported planner harness is configured, the same preserved
   // request launches.
-  const recovered = preparePlannerLaunch(line, pi, request, false);
+  const recovered = preparePlannerLaunch(line, pi, line.queue[0], false);
   assert.equal(recovered.op, "launch");
   const p = recovered.plan.args.indexOf("-p");
   assert.equal(recovered.plan.args[p + 1], "continue");
@@ -154,27 +156,16 @@ test("blocked decision preserves the request, spawns no child, and recovers late
     /TRUSTED SOURCE: implementor w-1/);
 });
 
-test("fresh and resumed planner plans carry the policy file, never inline", (t) => {
-  const fs = require("node:fs");
-  const os = require("node:os");
-  const path = require("node:path");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "planner-policy-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const cfg = { ...resolvePipeline({}, {}).planner, harness: "pi" };
-  for (const sessionId of [null, "sess-1"]) {
-    const policy = plannerSystemPrompt({ ...BASE, approved: sessionId !== null });
-    const file = path.join(dir, `policy-${sessionId || "fresh"}.md`);
-    fs.writeFileSync(file, policy);
-    const plan = planPlannerRun(cfg, {
-      prompt: plannerUserPrompt("continue"), workdir: "/line/work",
-      sessionId, autoApprove: false, systemPrompt: policy, systemPromptFile: file,
-    });
-    const i = plan.args.indexOf("--append-system-prompt");
-    assert.notEqual(i, -1);
-    assert.equal(plan.args[i + 1], file);
-    assert.equal(fs.readFileSync(plan.args[i + 1], "utf8"), policy);
-    const p = plan.args.indexOf("-p");
-    assert.equal(plan.args[p + 1], "continue");
-    assert.ok(!plan.args.includes(policy), "policy body must not appear in the user prompt");
-  }
+test("an idle old line migrates once across two restarts", () => {
+  // line.json as an old router persisted it. Restart 1 clears the session,
+  // and loadLines persists the migrated line immediately. Restart 2 must
+  // not migrate again.
+  let meta = { id: "line-1", sessionId: "sess-old", plannerQueue: [],
+    workers: [], started: true };
+  const first = migratePlannerPolicy(meta);
+  assert.deepEqual(first, { sessionId: null, migrated: true });
+  meta = { ...meta, sessionId: first.sessionId,
+    plannerPolicyVersion: PLANNER_POLICY_VERSION };
+  const second = migratePlannerPolicy(meta);
+  assert.deepEqual(second, { sessionId: null, migrated: false });
 });

@@ -808,10 +808,10 @@ function entryText(entry) {
   return messageText(entry);
 }
 
-// Surface a blocked planner state. The caller has put the exact request back
-// at the queue front, so nothing is lost: the queue is persisted with the
-// line, and pumping resumes only on an external trigger. No timer re-pumps,
-// so an unsupported configuration causes no busy retry.
+// Surface a blocked planner state. The queued request was never removed, so
+// nothing is lost: the queue is persisted with the line, and pumping resumes
+// only on an external trigger. No timer re-pumps, so an unsupported
+// configuration causes no busy retry.
 function blockPlanner(line, message) {
   slog("error", "planner.blocked", { lineId: line.id, error: message });
   broadcast(line, "error", { message });
@@ -824,24 +824,24 @@ function blockPlanner(line, message) {
 
 function pump(line) {
   if (line.deleted || line.status === "running" || line.queue.length === 0) return;
-  const request = restorePlannerRequest(line.queue.shift());
-  if (!request) return pump(line);
+  // Peek at the next request without removing it. Resolve the candidate
+  // configuration and build the launch plan before any line field changes:
+  // on a refusal the queue and all planner launch state stay unchanged.
+  const request = restorePlannerRequest(line.queue[0]);
+  if (!request) { line.queue.shift(); return pump(line); }
   const cfg = resolvePipeline(line).planner;
-  line.plannerHarness = cfg.harness;
-  // Decide the launch before any state change. On a capability refusal or a
-  // plan build error, the exact request (text and trusted source metadata)
-  // goes back to the queue front: nothing is lost and no child process starts.
   let prepared;
   try {
     prepared = preparePlannerLaunch(line, cfg, request, AUTO_APPROVE);
   } catch (err) {
-    line.queue.unshift(request);
     return blockPlanner(line, err && err.message ? err.message : String(err));
   }
   if (prepared.op === "blocked") {
-    line.queue.unshift(request);
     return blockPlanner(line, prepared.message);
   }
+  // Launch decided: now remove the exact request and apply the mutations once.
+  line.queue.shift();
+  line.plannerHarness = cfg.harness;
   const plan = prepared.plan;
   const { text } = request;
   line.activePlannerRequest = request;
@@ -1956,10 +1956,6 @@ function loadLines() {
       // state and UI transcript, but clear the planner harness session id
       // so the next invocation starts fresh with the system-channel policy.
       const migration = migratePlannerPolicy(meta);
-      if (migration.migrated) {
-        slog("info", "planner.policy.migrated", { lineId: meta.id,
-          from: meta.plannerPolicyVersion || 0, to: PLANNER_POLICY_VERSION });
-      }
       const inventory = new Map();
       for (const i of meta.inventory || []) {
         inventory.set(i.id, { id: i.id, kind: i.kind, name: i.name, by: i.by,
@@ -1987,6 +1983,18 @@ function loadLines() {
         line.queue.unshift(activeRequest);
       }
       lines.set(meta.id, line);
+      // Persist the migration immediately, even for an idle line with an
+      // empty queue: otherwise the old session id and version survive a
+      // restart and the line migrates again. The line object is complete.
+      if (migration.migrated
+        || (Number.isInteger(meta.plannerPolicyVersion)
+          ? meta.plannerPolicyVersion : 0) < PLANNER_POLICY_VERSION) {
+        if (migration.migrated) {
+          slog("info", "planner.policy.migrated", { lineId: meta.id,
+            from: meta.plannerPolicyVersion || 0, to: PLANNER_POLICY_VERSION });
+        }
+        saveLine(line);
+      }
       if (line.pendingValidations.length && line.planApproved) {
         slog("info", "boot.pending-validations", { lineId: meta.id,
           count: line.pendingValidations.length });
