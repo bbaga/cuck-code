@@ -34,6 +34,9 @@ and checks required and referenced local web assets. It does not execute scripts
 or start the router. This plain-JavaScript application has no transpilation or
 bundling build; static validation is not a compile or integration test.
 
+Evidence validation requires `ffmpeg` on `PATH` or `EVIDENCE_FFMPEG`; it uses
+fixed arguments, one decoded frame, a timeout, and bounded output. Tests generate real media in temporary folders and fail when `ffmpeg` is missing.
+
 ## Planner and worker text handoff
 
 The router uses one text contract for a completed message: normalized entries
