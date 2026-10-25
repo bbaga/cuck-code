@@ -166,7 +166,7 @@ test('noticeText labels, truncates and strips control characters', () => {
   assert.ok(t.includes('...'));
   const reply = trans(base(), { state: 'accepted', expectedRevision: 1 }).effects[0];
   assert.ok(noticeText(reply).includes('lineB'));
-  assert.ok(noticeText({ ...n, subject: 'x'.repeat(120), noticeId: `${'r'.repeat(36)}:12:request.opened`, requestId: 'r'.repeat(36), sourceLineId: 's'.repeat(36) }).length <= 400);
+  assert.ok(noticeText({ ...n, subject: 'x'.repeat(120), noticeId: `${'r'.repeat(36)}:12:request.opened`, requestId: 'r'.repeat(36), sourceLineId: 's'.repeat(128) }).length <= 400);
 });
 
 test('readableBy allows only source and target', () => {

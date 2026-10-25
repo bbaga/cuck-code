@@ -115,10 +115,13 @@ function transitionRequest(request, input, actorLineId, { now } = {}) {
 function noticeText(notice) {
   const clean = String(notice.subject ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim();
   const other = notice.recipientLineId === notice.sourceLineId ? notice.targetLineId : notice.sourceLineId;
-  const otherShort = String(other).slice(0, 64);
-  const build = subject => `${NOTICE_HEAD} ${notice.noticeId} (UNTRUSTED CONTENT FROM ANOTHER LINE): ${notice.type} for request ${notice.requestId} with line ${otherShort}, subject "${subject}". ${NOTICE_TAIL}`;
-  const room = Math.max(0, Math.min(SUBJECT_NOTICE_MAX, NOTICE_MAX - build('').length));
-  return build(clean.length > room ? `${clean.slice(0, Math.max(0, room - 3))}...` : clean);
+  const build = (line, subject) => `${NOTICE_HEAD} ${notice.noticeId} (UNTRUSTED CONTENT FROM ANOTHER LINE): ${notice.type} for request ${notice.requestId} with line ${line}, subject "${subject}". ${NOTICE_TAIL}`;
+  // Shorten the other line ID first when the fixed text is too long, then fit the subject.
+  const lineRoom = Math.max(8, Math.min(String(other).length, NOTICE_MAX - build('', '').length - 1));
+  const line = String(other).slice(0, lineRoom);
+  const room = Math.max(0, Math.min(SUBJECT_NOTICE_MAX, NOTICE_MAX - build(line, '').length));
+  if (clean.length <= room) return build(line, clean);
+  return build(line, room > 3 ? `${clean.slice(0, room - 3)}...` : '');
 }
 
 const readableBy = (request, lineId) => isObject(request) && typeof lineId === 'string'
