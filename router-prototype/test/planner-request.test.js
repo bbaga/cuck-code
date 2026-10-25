@@ -247,6 +247,7 @@ test("known notice list is bounded to 500", () => {
   }
   assert.equal(line.knownNoticeIds.length, MAX_KNOWN_NOTICES);
   assert.equal(line.knownNoticeIds[0], "n5");
+  line.queue.length = 0;
   assert.equal(enqueuePlannerRequest(line, plannerRequest("t", null, "n0"), okSave).duplicate, false);
 });
 
