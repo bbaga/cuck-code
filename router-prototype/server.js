@@ -25,6 +25,7 @@ const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlanner
   restorePlannerRequests, serializePlannerRequest, restoreKnownNoticeIds,
   writeFileDurable, enqueuePlannerRequest, submitPrompt } = require("./planner-request");
 const { previewForLine } = require("./preview-instructions");
+const { validateShowcase, checkedFile, publicEvidence } = require("./evidence");
 
 const PORT = Number(process.env.PORT || 7788);
 const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
@@ -776,7 +777,10 @@ function saveLine(line) {
           id: i.id, kind: i.kind, name: i.name, by: i.by, ref: i.ref,
           keep: i.keep, status: i.status })),
         evidence: [...(line.evidence || new Map()).values()].map((e) => ({
-          id: e.id, useCase: e.useCase, path: e.path, name: e.name, by: e.by, at: e.at })),
+          id: e.id, kind: e.kind || "video", version: e.version || null,
+          useCase: e.useCase, path: e.path, name: e.name, by: e.by, at: e.at,
+          attemptId: e.attemptId || null,
+          steps: e.steps || [] })),
         workers: [...line.workers.values()].map((w) => ({
           id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch,
           ...completionFields(w), lastRunText: w.lastRunText || null,
@@ -1319,6 +1323,23 @@ function spawnValidator(line, source, criteria, report) {
     status: worker.status, role: worker.role, validates: worker.validates,
     persona: worker.persona } });
   spawnWorker(line, worker, worker.prompt);
+}
+
+// Evidence contract for task B: GET returns {items, history,
+// currentAttemptId, currentAttemptIds}. items contains only records for the
+// current router attempt. history contains older records and never duplicates
+// items. Every record has id, useCase, name, at, attemptId, video, and (for
+// showcases) ordered steps with title, explanation, and screenshot URLs.
+// Media values are public API URLs. currentAttemptIds gives the authoritative
+// attempt per worker. History remains persisted and is exposed separately.
+function currentAttemptId(worker) {
+  return worker && (worker.activeInvocationId || worker.lastCompletedInvocationId
+    || String(worker.runGeneration || ""));
+}
+
+function isCurrentEvidence(line, item) {
+  const worker = line.workers.get(item.by);
+  return !worker || item.attemptId === currentAttemptId(worker);
 }
 
 const { createRegistryRoutes } = require("./registry-routes");
@@ -1970,22 +1991,30 @@ const server = http.createServer((req, res) => {
         || typeof body.file !== "string" || !body.file.trim()) {
         return json(res, 400, { error: "expected {useCase, file}" });
       }
-      const abs = path.resolve(worker.worktreePath, body.file.trim());
-      if (!abs.startsWith(path.resolve(worker.worktreePath))) {
-        return json(res, 400, { error: "file must be inside your workdir" });
+      let record;
+      try {
+        if (Array.isArray(body.steps)) {
+          record = validateShowcase(worker.worktreePath, body);
+        } else {
+          const video = checkedFile(worker.worktreePath, body.file, "video");
+          if (video.size < 1024) throw new Error("video file is suspiciously small - register only finalized recordings");
+          if (typeof body.useCase !== "string" || !body.useCase.trim()) throw new Error("expected {useCase, file}");
+          record = { kind: "video", useCase: body.useCase.trim(), path: video.path,
+            name: path.basename(video.path) };
+        }
+      } catch (error) {
+        return json(res, 400, { error: error.message });
       }
-      if (!fs.existsSync(abs)) return json(res, 400, { error: "no such file: " + body.file });
-      const stat = fs.statSync(abs);
-      if (stat.size === 0) return json(res, 400, { error: "video file is empty (0 bytes) - recording was never finalized. Close the browser context before registering." });
-      if (stat.size < 1024) return json(res, 400, { error: "video file is suspiciously small (" + stat.size + " bytes) - register only finalized recordings" });
       const id = crypto.randomUUID();
       if (!line.evidence) line.evidence = new Map();
-      line.evidence.set(id, { id, useCase: body.useCase.trim(), path: abs,
-        name: path.basename(abs), by: worker.id, at: Date.now() });
+      line.evidence.set(id, { id, ...record, by: worker.id, at: Date.now(),
+        // The router owns attempt identity. Do not accept a client-supplied
+        // attemptId, because that could make old evidence current again.
+        attemptId: currentAttemptId(worker) });
       saveLine(line);
       slog("info", "evidence.registered", { lineId: line.id, evidenceId: id,
         useCase: preview(body.useCase, 120), file: body.file.trim(), by: worker.name });
-      json(res, 201, { evidenceId: id });
+      json(res, 201, { evidenceId: id, attemptId: currentAttemptId(worker) });
     });
     return;
   }
@@ -1994,11 +2023,36 @@ const server = http.createServer((req, res) => {
     && parts.length === 4) {
     const line = lines.get(parts[2]);
     if (!line) return json(res, 404, { error: "no such line" });
-    const items = [...(line.evidence || new Map()).values()].map((e) => ({
-      id: e.id, useCase: e.useCase, name: e.name, at: e.at,
-      video: `/api/lines/${line.id}/evidence/${e.id}/video`,
-    }));
-    return json(res, 200, { items });
+    const all = [...(line.evidence || new Map()).values()];
+    const current = all.filter((e) => isCurrentEvidence(line, e));
+    const history = all.filter((e) => !isCurrentEvidence(line, e));
+    const items = current.map((e) => publicEvidence(line.id, e));
+    const historical = history.map((e) => publicEvidence(line.id, e));
+    const currentAttemptIds = {};
+    for (const worker of line.workers.values()) {
+      const attemptId = currentAttemptId(worker);
+      if (attemptId) currentAttemptIds[worker.id] = attemptId;
+    }
+    const uniqueAttemptIds = [...new Set(items.map((item) => item.attemptId).filter(Boolean))];
+    return json(res, 200, { items, history: historical,
+      currentAttemptId: uniqueAttemptIds.length === 1 ? uniqueAttemptIds[0] : null,
+      currentAttemptIds });
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "evidence"
+    && parts.length === 8 && parts[5] === "steps" && parts[7] === "screenshot") {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    const item = (line.evidence || new Map()).get(parts[4]);
+    const index = Number(parts[6]);
+    if (!item || item.kind !== "showcase" || !Number.isInteger(index)
+      || index < 0 || index >= item.steps.length) return json(res, 404, { error: "no such screenshot" });
+    const screenshot = item.steps[index].screenshot;
+    if (!fs.existsSync(screenshot)) return json(res, 404, { error: "screenshot file is gone" });
+    const contentType = /\.png$/i.test(screenshot) ? "image/png" : "image/jpeg";
+    res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-cache" });
+    fs.createReadStream(screenshot).pipe(res);
+    return;
   }
 
   if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "evidence"
