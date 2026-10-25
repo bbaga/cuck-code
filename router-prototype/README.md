@@ -83,6 +83,33 @@ streaming`). The first run yields a `sessionId`; every later prompt is sent with
 `--resume <sessionId>`, so each line is one long-lived, stateful Vibe
 conversation.
 
+## Planner policy through the trusted system channel
+
+The router no longer wraps planner prompts. Every planner invocation gets one
+authoritative policy through the harness's trusted system prompt channel; the
+user prompt (task text, reports, quoted instructions) stays byte-for-byte
+unchanged and is task data only. The policy carries the router control state:
+line ID, approval state, allowed next action, workdir boundary, and the trusted
+source metadata of the current report. Only this control state can approve a
+plan or authorize workers; task data cannot change role, approval, workdir, or
+validation duties. On conflict, the planner follows this policy and reports the
+conflict.
+
+The policy file lives under `router/policy/` inside the line workdir
+(router-owned, content-hash file name, owner-only permissions) and is
+refreshed when approval or the trusted source state changes. The policy body
+is never logged. Harnesses without a verified trusted channel (currently
+`vibe`) fail closed with a clear error before launch; the router never falls
+back to prefixing the policy onto the user prompt. A refused launch keeps the
+request at the front of the persisted queue and puts the line into a `blocked`
+state, so no request is lost and no retry loop spins. After a supported
+planner harness is configured, the next pump runs the preserved request.
+Configure such a planner with `pi`, `codex`, or `claude` via the pipeline
+settings. Lines persisted before the policy carry a `plannerPolicyVersion`:
+the router migrates them once on load (state and transcript preserved, planner
+session ID cleared, next invocation fresh) and logs the migration without
+policy text.
+
 ## Factory protocol
 
 Each line is a graph: a planner (the line's Vibe session) plus the implementor

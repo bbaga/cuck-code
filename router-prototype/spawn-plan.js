@@ -4,8 +4,10 @@
 // concrete child process plans. server.js calls these helpers; the unit
 // tests exercise them without starting the server or a CLI process.
 
-const { createHarness } = require("./harness");
+const path = require("path");
+const { createHarness, trustedSystemChannel, writeSystemPromptFile } = require("./harness");
 const { resolvePipeline, EFFORT_LEVELS } = require("./pipeline-config");
+const { plannerSystemPrompt, plannerUserPrompt } = require("./planner-policy");
 
 // Which pipeline phase a worker run belongs to.
 function phaseForWorker(role, kind) {
@@ -51,6 +53,34 @@ function planPlannerRun(cfg, opts) {
   return planRun(cfg, { ...opts, phase: "planner" });
 }
 
+// Decide the next planner launch without touching the line's queue. Returns
+// { op: "launch", plan } or { op: "blocked", message }. The request text and
+// trusted source metadata are never modified, and the policy never reaches
+// the user prompt. A harness without a verified trusted channel (including
+// vibe) blocks before any child process starts.
+function preparePlannerLaunch(line, cfg, request, autoApprove) {
+  if (!trustedSystemChannel(cfg.harness)) {
+    return { op: "blocked",
+      message: `planner harness "${cfg.harness}" has no trusted system prompt channel; configure a supported planner harness` };
+  }
+  const systemPrompt = plannerSystemPrompt({
+    lineId: line.id, approved: line.planApproved, workdir: line.workdir,
+    source: request.source,
+  });
+  // Router-owned policy directory inside the line workdir; the content-hash
+  // file name makes the refresh safe when approval or the source changes.
+  const systemPromptFile = writeSystemPromptFile(systemPrompt,
+    path.join(line.workdir, "router", "policy"));
+  return { op: "launch", plan: planPlannerRun(cfg, {
+    prompt: plannerUserPrompt(request.text),
+    workdir: line.workdir,
+    sessionId: line.sessionId,
+    autoApprove,
+    systemPrompt,
+    systemPromptFile,
+  }) };
+}
+
 // Build the child process plan for one worker run. cfg is the resolved
 // phase config with the per-worker overrides already applied.
 function planWorkerRun(cfg, opts) {
@@ -91,6 +121,7 @@ module.exports = {
   phaseForWorker,
   resolveWorkerOverrides,
   planPlannerRun,
+  preparePlannerLaunch,
   planWorkerRun,
   validateWorkerSpawnBody,
   lineSummary,

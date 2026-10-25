@@ -10,7 +10,7 @@ const { validateBuild } = require("../scripts/validate-build");
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cuck-build-check-"));
   for (const file of [
-    "server.js", "harness.js", "pipeline-config.js", "planner-turn.js", "spawn-plan.js",
+    "server.js", "harness.js", "pipeline-config.js", "planner-policy.js", "spawn-plan.js",
     "handoff.js", "jsonl.js", "validation-queue.js", "planner-request.js",
     "web/pipeline-ui.js", "web/index.html",
   ]) {
