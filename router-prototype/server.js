@@ -1232,6 +1232,16 @@ function spawnValidator(line, source, criteria, report) {
 
 let registryStore;
 function registryRoute(req, res, url, parts) {
+  return require("./registry-routes").handleRegistryRoute(req, res, url, parts, {
+    getStore: () => {
+      if (!registryStore) registryStore = require("./work-registry").createStore(path.join(LINES_DIR, "work-coordination.json"));
+      return registryStore;
+    }, lines, enqueue, json, readBody,
+  });
+}
+
+/* route implementation moved to registry-routes.js for isolated unit tests */
+function legacyRegistryRoute(req, res, url, parts) {
   try {
     if (!registryStore) registryStore = require("./work-registry").createStore(path.join(LINES_DIR, "work-coordination.json"));
   } catch (error) { json(res, 500, { error: `Registry modules are not available: ${error.message}` }); return; }
