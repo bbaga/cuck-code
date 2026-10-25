@@ -63,7 +63,7 @@ function instructionFor(root, sha, repoUrl) {
   const limitations = [];
   if (!manager) limitations.push(managers.length ? "Multiple package manager lockfiles exist; select the intended manager." : "No supported package manager lockfile exists; confirm the intended manager from project documentation.");
   if (stack === "unknown" || !pkg.scripts?.start) limitations.push("The framework or start command is not recognized; follow project documentation.");
-  const stepsOut = [...steps, { description: `Enter application directory ${directory}.`, command: `cd ${shellQuote(`${target}/${directory === "." ? "" : directory}`.replace(/\/$/, ""))}` }, ...(install ? [{ description: "Install the locked dependencies.", command: install }] : [{ description: "Confirm the package manager and install command from project documentation.", command: null }]), ...(pkg.scripts?.start && stack !== "unknown" ? [{ description: "Start the application.", command: "npm start" }] : [{ description: "Use the start command documented by the project.", command: null }]), { description: "Open the URL reported by the application. Stop it with Ctrl+C.", command: null }];
+  const stepsOut = [...steps, ...(cloneUrl ? [{ description: `Enter application directory ${directory}.`, command: `cd ${shellQuote(`${target}/${directory === "." ? "" : directory}`.replace(/\/$/, ""))}` }] : []), ...(cloneUrl ? (install ? [{ description: "Install the locked dependencies.", command: install }] : [{ description: "Confirm the package manager and install command from project documentation.", command: null }]) : []), ...(cloneUrl ? (pkg.scripts?.start && stack !== "unknown" ? [{ description: "Start the application.", command: "npm start" }] : [{ description: "Use the start command documented by the project.", command: null }]) : []), ...(cloneUrl ? [{ description: "Open the URL reported by the application. Stop it with Ctrl+C.", command: null }] : [])];
   return { stack, directory, url: null, packageManager: manager, steps: stepsOut, prerequisites: ["Required runtime and environment values from project documentation"], limitations, instructions: stepsOut };
 }
 function previewForLine(line) {
@@ -77,7 +77,8 @@ function previewForLine(line) {
   const repos = [line.repoUrl, pass.repoUrl].filter(Boolean);
   const configuredUrl = repos.length === 1 ? repos[0] : null;
   const result = instructionFor(workdir, source, configuredUrl);
-  result.instructions = result.instructions.map(s => safeText(s, 500));
+  result.steps = result.steps.map(step => ({ description: safeText(step.description, 500), command: step.command === null ? null : safeText(step.command, 500) }));
+  result.instructions = result.steps.map(step => ({ ...step }));
   return { eligible: true, availability: "available", stale: false, sourceRevision: source, projectDirectory: result.directory, expectedUrl: result.url, prerequisites: result.prerequisites, limitations: result.limitations, verified: true, commit: source, branch: safeText(pass.branch, 200), ...result };
 }
 module.exports = { previewForLine, instructionFor, safeText };
