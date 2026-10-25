@@ -31,7 +31,13 @@ function makeNotice(request, type) {
   };
 }
 
-function openRequest(input, actorLineId, { snapshot, lineExists, now, newId } = {}) {
+function openRequest(input, actorLineId, opts) {
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const { snapshot, lineExists, now, newId } = o;
+  if (typeof lineExists !== 'function' || typeof newId !== 'function' || !Number.isFinite(now)
+    || !isObject(snapshot) || !Array.isArray(snapshot.idempotency)) {
+    return fail(400, 'INVALID_OPTIONS', 'snapshot, lineExists, now and newId are required');
+  }
   if (typeof actorLineId !== 'string' || !ID_PATTERN.test(actorLineId)) return fail(401, 'INVALID_ACTOR', 'Source line is not valid');
   if (!isObject(input)) return fail(400, 'INVALID_BODY', 'Request must be an object');
   for (const k of SERVER_FIELDS) {
@@ -43,7 +49,7 @@ function openRequest(input, actorLineId, { snapshot, lineExists, now, newId } = 
   const { targetLineId, idempotencyKey } = input;
   if (!lengthOk(targetLineId, 1, 128)) return fail(400, 'INVALID_FIELD', 'targetLineId must be a string of 1 to 128 characters');
   if (targetLineId === actorLineId) return fail(400, 'SELF_REQUEST', 'A line cannot send a request to itself');
-  if (typeof lineExists !== 'function' || !lineExists(targetLineId)) return fail(404, 'UNKNOWN_LINE', 'Target line does not exist');
+  if (!lineExists(targetLineId)) return fail(404, 'UNKNOWN_LINE', 'Target line does not exist');
   const subject = typeof input.subject === 'string' ? input.subject.trim() : input.subject;
   if (!lengthOk(subject, 1, 120)) return fail(400, 'INVALID_FIELD', 'subject must be a string of 1 to 120 characters');
   const body = typeof input.text === 'string' ? input.text.trim() : input.text;
@@ -87,7 +93,10 @@ function checkReference(reference) {
   return { ok: true, reference: { branch, commit, ...(contract !== undefined ? { contract } : {}) } };
 }
 
-function transitionRequest(request, input, actorLineId, { now } = {}) {
+function transitionRequest(request, input, actorLineId, opts) {
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const { now } = o;
+  if (!Number.isFinite(now)) return fail(400, 'INVALID_OPTIONS', 'now is required');
   if (!isObject(request)) return fail(400, 'INVALID_BODY', 'Request is not valid');
   if (actorLineId !== request.targetLineId) return fail(403, 'NOT_TARGET', 'Only the target line can change this request');
   if (!isObject(input)) return fail(400, 'INVALID_BODY', 'Transition must be an object');
@@ -113,6 +122,7 @@ function transitionRequest(request, input, actorLineId, { now } = {}) {
 }
 
 function noticeText(notice) {
+  if (!isObject(notice)) return '';
   const clean = String(notice.subject ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim();
   const other = notice.recipientLineId === notice.sourceLineId ? notice.targetLineId : notice.sourceLineId;
   const build = (line, subject) => `${NOTICE_HEAD} ${notice.noticeId} (UNTRUSTED CONTENT FROM ANOTHER LINE): ${notice.type} for request ${notice.requestId} with line ${line}, subject "${subject}". ${NOTICE_TAIL}`;

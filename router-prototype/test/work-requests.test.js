@@ -176,3 +176,27 @@ test('readableBy allows only source and target', () => {
   assert.equal(readableBy(r, 'lineC'), false);
   assert.equal(readableBy(null, 'lineA'), false);
 });
+
+test('bad options return INVALID_OPTIONS instead of throwing', () => {
+  const good = ctx();
+  for (const opts of [null, undefined, 5, 'x', {}, { ...good, lineExists: undefined }, { ...good, newId: undefined },
+    { ...good, now: undefined }, { ...good, snapshot: null }]) {
+    const r = openRequest(body(), 'lineA', opts);
+    assert.deepEqual([r.ok, r.status, r.code], [false, 400, 'INVALID_OPTIONS']);
+  }
+  for (const opts of [null, undefined, 5, {}, { now: 'x' }]) {
+    const r = transitionRequest(base(), { state: 'accepted', expectedRevision: 1 }, 'lineB', opts);
+    assert.deepEqual([r.ok, r.status, r.code], [false, 400, 'INVALID_OPTIONS']);
+  }
+});
+
+test('noticeText returns empty string for invalid input', () => {
+  for (const v of [null, undefined, 5, 'x', [], true]) assert.equal(noticeText(v), '');
+});
+
+test('readableBy returns false for invalid input', () => {
+  assert.equal(readableBy(null, null), false);
+  assert.equal(readableBy(undefined, 'lineA'), false);
+  assert.equal(readableBy(base(), null), false);
+  assert.equal(readableBy('x', 'lineA'), false);
+});
