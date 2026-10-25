@@ -1341,7 +1341,7 @@ registryStore.load().then(() => {
   registryDelivery = createRegistryDelivery({
     store: registryStore,
     getLine: (id) => lines.get(id),
-    enqueueNotice: (line, text, noticeId) => enqueueRequest(line, plannerRequest(text, null, noticeId, "registry")),
+    enqueueNotice: (line, text, noticeId) => enqueueRequest(line, plannerRequest(text, null, noticeId)),
     now: Date.now,
     log: (event, data) => slog("warn", event, data),
   });
