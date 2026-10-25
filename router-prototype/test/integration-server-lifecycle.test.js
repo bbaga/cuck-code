@@ -8,7 +8,11 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
 const start = source.indexOf('function integrationValidatorBrief(');
 const end = source.indexOf('\nfunction sanitizeName', start);
-const brief = source.slice(start, end);
+const fnSource = source.slice(start, end);
+const brief = fnSource.replace(/\s+/g, ' ');
+
+// Build the real function from source; server.js starts a server when required.
+const integrationValidatorBrief = new Function(`${fnSource}\nreturn integrationValidatorBrief;`)();
 
 test('integration brief requires a background server and rejects foreground startup', () => {
   assert.match(brief, /node router-prototype\/server\.js >router\.log 2>&1 & SERVER_PID=\$!/);
@@ -32,4 +36,21 @@ test('integration brief requires isolated port, readiness, registration, and cle
   assert.match(brief, /bounded timeout/);
   assert.match(brief, /worker \$\{workerId\}/);
   assert.match(brief, /kill "\$SERVER_PID" \|\| true/);
+});
+
+test('integrationValidatorBrief renders lifecycle steps for sample inputs', () => {
+  const text = integrationValidatorBrief(
+    { name: 'Demo' },
+    [{ branch: 'feat/a', repo: 'primary' }],
+    'Merge it',
+    'worker-1',
+    [{ name: 'primary', path: '/w' }, { name: 'api', url: 'git@x:api.git' }]
+  ).replace(/\s+/g, ' ');
+  assert.match(text, /INTEGRATION VALIDATOR \(id worker-1\) for factory line 'Demo'/);
+  assert.match(text, /- feat\/a \(repo 'primary'\)/);
+  assert.match(text, /remote git@x:api\.git/);
+  assert.match(text, /worker worker-1\./);
+  assert.match(text, /3\. For every other repo/);
+  const single = integrationValidatorBrief({ name: 'D' }, [], '', 'w', [{ name: 'primary', path: '/w' }]);
+  assert.match(single, /3\. No additional repositories/);
 });

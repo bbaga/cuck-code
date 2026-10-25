@@ -629,7 +629,6 @@ idioms).`;
 
 
 function integrationValidatorBrief(line, branchEntries, instructions, workerId, repos) {
-  const primary = repos.find((r) => r.name === "primary") || { url: null };
   const extraRepos = repos.filter((r) => r.name !== "primary");
   return `You are the INTEGRATION VALIDATOR (id ${workerId}) for factory line '${line.name}'.
 This line works across ${repos.length} repositor${repos.length === 1 ? "y" : "ies"}:
