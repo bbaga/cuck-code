@@ -160,9 +160,13 @@ function createRefresh({ store, resolveRepo = () => null, gitCommand = defaultGi
         else summary.skipped++;
       }
       try {
-        const out = await store.transact(null, next => purgeExpired(next, now()));
-        const gone = out && out.result;
-        summary.purged = gone ? gone.archive + gone.events : 0;
+        // Dry run on a copy: write only when something expires.
+        const dry = purgeExpired(structuredClone(await store.readSnapshot()), now());
+        if (dry.archive + dry.events > 0) {
+          const out = await store.transact(null, next => purgeExpired(next, now()));
+          const gone = out && out.result;
+          summary.purged = gone ? gone.archive + gone.events : 0;
+        }
       } catch (error) { log('registry.refresh.purge_failed', { error: errorText(error) }); }
       if (summary.merged > 0) triggerDeliver();
     } catch (error) {

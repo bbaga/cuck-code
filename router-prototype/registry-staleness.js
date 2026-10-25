@@ -123,6 +123,8 @@ function createStalenessSweep({ store, getLine, resolveRepo = () => null, gitCom
       const old = snap.claims.filter(c => c.status === 'stale' && typeof c.staleAt === 'number' && at - c.staleAt > TOMBSTONE_RETENTION_MS);
       for (const claim of old) await retire(claim, at, summary);
       try {
+        const fresh = await store.readSnapshot();
+        if (!fresh.tombstones.some(t => at - t.retiredAt > TOMBSTONE_RETENTION_MS)) return summary;
         const out = await store.transact(null, next => {
           const kept = purgeTombstones(next.tombstones, at);
           const gone = next.tombstones.length - kept.length;

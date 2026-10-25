@@ -159,3 +159,25 @@ test('route: 200 with summary, 202 while running, null for other routes', async 
   assert.equal(out.status, 200);
   assert.equal(out.body.summary.checked, 0);
 });
+
+test('empty sweep keeps the snapshot revision; a purge raises it by 1', async () => {
+  const t = await setup([]);
+  const before = (await t.snap()).revision;
+  await t.sweeper.sweep();
+  assert.equal((await t.snap()).revision, before);
+  await t.store.transact(null, s => { s.tombstones.push({ claimId: 'a', ownerLineId: 'o', title: 't', status: 'stale', reason: 'expired', retiredAt: NOW - 31 * DAY }); });
+  await t.sweeper.sweep();
+  assert.equal((await t.snap()).revision, before + 2);
+});
+
+test('route returns 202 while a sweep runs', async () => {
+  let release;
+  const gate = new Promise(r => { release = r; });
+  const t = await setup([claim(1)], { gitCommand: async () => { await gate; return ''; } });
+  const first = t.sweeper.sweep();
+  await new Promise(r => setTimeout(r, 20));
+  const out = await t.sweeper.route({ method: 'POST', resume() {} }, ['api', 'registry', 'staleness', 'sweep']);
+  assert.equal(out.status, 202);
+  release();
+  await first;
+});
