@@ -14,25 +14,58 @@ function insideWorktree(worktree, candidate) {
   return relative === "" || (!relative.startsWith(".." + path.sep) && relative !== "..");
 }
 
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
 function hasWebmContent(buffer) {
   if (buffer.length < 12 || !buffer.subarray(0, 4).equals(WEBM_SIGNATURE)) return false;
-  // A WebM file is an EBML document with a WebM DocType in its header.
-  return buffer.includes(Buffer.from("webm", "ascii"));
+  // Require an EBML header, a WebM segment, a cluster, and a media block.
+  const segment = Buffer.from([0x18, 0x53, 0x80, 0x67]);
+  const cluster = Buffer.from([0x1f, 0x43, 0xb6, 0x75]);
+  const block = [Buffer.from([0xa3]), Buffer.from([0xa1])];
+  const doctype = buffer.indexOf(Buffer.from("webm", "ascii"));
+  const segmentAt = buffer.indexOf(segment, doctype + 4);
+  const clusterAt = buffer.indexOf(cluster, segmentAt + 4);
+  return doctype >= 0 && segmentAt >= 0 && clusterAt >= 0
+    && block.some((id) => buffer.indexOf(id, clusterAt + 4) >= 0);
 }
 
 function hasPngContent(buffer) {
   if (buffer.length < 33 || !buffer.subarray(0, 8).equals(PNG_SIGNATURE)) return false;
-  const length = buffer.readUInt32BE(8);
-  if (length !== 13 || buffer.toString("ascii", 12, 16) !== "IHDR") return false;
-  if (buffer.readUInt32BE(16) < 1 || buffer.readUInt32BE(20) < 1) return false;
-  return buffer.includes(Buffer.from([0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]));
+  let offset = 8, sawHeader = false, sawData = false, sawEnd = false;
+  while (offset + 12 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.toString("ascii", offset + 4, offset + 8);
+    const end = offset + 12 + length;
+    if (end > buffer.length) return false;
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    const expected = buffer.readUInt32BE(offset + 8 + length);
+    if (crc32(buffer.subarray(offset + 4, offset + 8 + length)) !== expected) return false;
+    if (type === "IHDR") {
+      if (sawHeader || length !== 13 || data.readUInt32BE(0) < 1 || data.readUInt32BE(4) < 1) return false;
+      sawHeader = true;
+    } else if (type === "IDAT" && length > 0) sawData = true;
+    else if (type === "IEND") {
+      if (length !== 0 || offset + 12 !== buffer.length) return false;
+      sawEnd = true;
+      break;
+    }
+    offset = end;
+  }
+  return sawHeader && sawData && sawEnd;
 }
 
 function hasJpegContent(buffer) {
   if (buffer.length < 4 || !buffer.subarray(0, 2).equals(JPEG_SIGNATURE)
     || !buffer.subarray(buffer.length - 2).equals(Buffer.from([255, 217]))) return false;
   // Walk markers far enough to reject arbitrary SOI/EOI wrappers.
-  let offset = 2, sawFrame = false;
+  let offset = 2, sawFrame = false, sawScan = false;
   while (offset < buffer.length - 2) {
     if (buffer[offset++] !== 255) return false;
     while (buffer[offset] === 255) offset++;
@@ -45,9 +78,12 @@ function hasJpegContent(buffer) {
     if (marker >= 192 && marker <= 195) sawFrame = true;
     offset += length;
     // The bytes after SOS are entropy-coded data, not marker segments.
-    if (marker === 218) return sawFrame && buffer.subarray(-2).equals(Buffer.from([255, 217]));
+    if (marker === 218) {
+      sawScan = true;
+      return sawFrame && sawScan && buffer.subarray(-2).equals(Buffer.from([255, 217]));
+    }
   }
-  return sawFrame;
+  return sawFrame && sawScan;
 }
 
 function validMediaContent(file, kind, extension) {

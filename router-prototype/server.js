@@ -1230,13 +1230,13 @@ function spawnValidator(line, source, criteria, report) {
   spawnWorker(line, worker, worker.prompt);
 }
 
-// Evidence contract for task B: GET returns only records for the current
-// router attempt of each registering worker. Each item has id, useCase, name,
-// at, attemptId, video, and (for showcases) ordered steps with title,
-// explanation, and screenshot URLs. currentAttemptId is the single current
-// attempt when all returned records have one owner; currentAttemptIds gives
-// the authoritative attempt per worker. History remains persisted, but is not
-// returned as current evidence.
+// Evidence contract for task B: GET returns {items, history,
+// currentAttemptId, currentAttemptIds}. items contains only records for the
+// current router attempt. history contains older records and never duplicates
+// items. Every record has id, useCase, name, at, attemptId, video, and (for
+// showcases) ordered steps with title, explanation, and screenshot URLs.
+// Media values are public API URLs. currentAttemptIds gives the authoritative
+// attempt per worker. History remains persisted and is exposed separately.
 function currentAttemptId(worker) {
   return worker && (worker.activeInvocationId || worker.lastCompletedInvocationId
     || String(worker.runGeneration || ""));
@@ -1827,16 +1827,18 @@ const server = http.createServer((req, res) => {
     && parts.length === 4) {
     const line = lines.get(parts[2]);
     if (!line) return json(res, 404, { error: "no such line" });
-    const current = [...(line.evidence || new Map()).values()]
-      .filter((e) => isCurrentEvidence(line, e));
+    const all = [...(line.evidence || new Map()).values()];
+    const current = all.filter((e) => isCurrentEvidence(line, e));
+    const history = all.filter((e) => !isCurrentEvidence(line, e));
     const items = current.map((e) => publicEvidence(line.id, e));
+    const historical = history.map((e) => publicEvidence(line.id, e));
     const currentAttemptIds = {};
     for (const worker of line.workers.values()) {
       const attemptId = currentAttemptId(worker);
       if (attemptId) currentAttemptIds[worker.id] = attemptId;
     }
     const uniqueAttemptIds = [...new Set(items.map((item) => item.attemptId).filter(Boolean))];
-    return json(res, 200, { items,
+    return json(res, 200, { items, history: historical,
       currentAttemptId: uniqueAttemptIds.length === 1 ? uniqueAttemptIds[0] : null,
       currentAttemptIds });
   }
@@ -1851,7 +1853,7 @@ const server = http.createServer((req, res) => {
       || index < 0 || index >= item.steps.length) return json(res, 404, { error: "no such screenshot" });
     const screenshot = item.steps[index].screenshot;
     if (!fs.existsSync(screenshot)) return json(res, 404, { error: "screenshot file is gone" });
-    const contentType = /\\.png$/i.test(screenshot) ? "image/png" : "image/jpeg";
+    const contentType = /\.png$/i.test(screenshot) ? "image/png" : "image/jpeg";
     res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-cache" });
     fs.createReadStream(screenshot).pipe(res);
     return;

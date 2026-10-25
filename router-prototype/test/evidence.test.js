@@ -10,11 +10,13 @@ function fixture() {
   const webm = Buffer.alloc(2048);
   Buffer.from([0x1a, 0x45, 0xdf, 0xa3]).copy(webm);
   Buffer.from("webm", "ascii").copy(webm, 16);
+  Buffer.from([0x18, 0x53, 0x80, 0x67, 0x1f, 0x43, 0xb6, 0x75, 0xa3, 0x81, 0x00]).copy(webm, 32);
   fs.writeFileSync(path.join(root, "demo.webm"), webm);
   fs.writeFileSync(path.join(root, "one.png"), Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"));
   fs.writeFileSync(path.join(root, "one.jpg"), Buffer.from([
-    255, 216, 255, 192, 0, 11, 8, 0, 1, 0, 1, 1, 1, 17, 0, 255, 217]));
+    255, 216, 255, 192, 0, 11, 8, 0, 1, 0, 1, 1, 1, 17, 0,
+    255, 218, 0, 8, 1, 1, 0, 0, 63, 0, 0, 255, 217]));
   return root;
 }
 
@@ -34,11 +36,23 @@ test("validates real PNG, JPEG, and WebM signatures", () => {
   assert.doesNotThrow(() => checkedFile(root, "one.png", "screenshot"));
   assert.doesNotThrow(() => checkedFile(root, "one.jpg", "screenshot"));
   fs.writeFileSync(path.join(root, "fake.webm"), Buffer.alloc(2048, 7));
+  fs.writeFileSync(path.join(root, "header-only.webm"), Buffer.from([
+    0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0x77, 0x65, 0x62, 0x6d]));
+  fs.writeFileSync(path.join(root, "header-only.png"), Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAS0lEQVR42mNk+A8AAQUBAScY42YAAAA=", "base64"));
   fs.writeFileSync(path.join(root, "fake.png"), Buffer.from("not png"));
   fs.writeFileSync(path.join(root, "fake.jpg"), Buffer.from([255, 216, 0, 0, 255, 217]));
+  fs.writeFileSync(path.join(root, "truncated.jpg"), Buffer.from([
+    255, 216, 255, 192, 0, 11, 8, 0, 1, 0, 1, 1, 1, 17, 0, 255, 218]));
+  fs.writeFileSync(path.join(root, "wrong.jpg"), fs.readFileSync(path.join(root, "one.png")));
   assert.throws(() => checkedFile(root, "fake.webm", "video"), /content/);
+  assert.throws(() => checkedFile(root, "header-only.webm", "video"), /content/);
   assert.throws(() => checkedFile(root, "fake.png", "screenshot"), /content/);
+  assert.throws(() => checkedFile(root, "header-only.png", "screenshot"), /content/);
   assert.throws(() => checkedFile(root, "fake.jpg", "screenshot"), /content/);
+  assert.throws(() => checkedFile(root, "truncated.jpg", "screenshot"), /content/);
+  assert.throws(() => checkedFile(root, "wrong.jpg", "screenshot"), /content/);
 });
 
 test("rejects incomplete steps and unsupported or escaped files", () => {
