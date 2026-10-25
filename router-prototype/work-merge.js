@@ -30,6 +30,9 @@ async function git(repoPath, args) {
 
 // Never throws. Returns verified evidence or { verified:false, reason, error, checkedAt }.
 const errorText = error => String(error && error.message !== undefined ? error.message : error);
+const LEDGER_ARRAYS = ['claims', 'archive', 'events', 'requests', 'outbox', 'idempotency'];
+const validLedger = snapshot => Boolean(snapshot) && typeof snapshot === 'object' && LEDGER_ARRAYS.every(name => Array.isArray(snapshot[name])) && Number.isSafeInteger(snapshot.eventCursor);
+const list = (snapshot, name) => (snapshot && Array.isArray(snapshot[name]) ? snapshot[name] : []);
 const validNow = now => typeof now === 'number' && Number.isFinite(now) && Number.isFinite(new Date(now).getTime());
 
 async function verifyMerge(arg) {
@@ -86,7 +89,7 @@ function recordCheck(snapshot, captured, result, now) {
 }
 
 function applyMerge(snapshot, captured, evidence, now) {
-  if (!snapshot || !Array.isArray(snapshot.claims) || !captured || typeof captured !== 'object' || !validNow(now)) return { ok: false, reason: 'invalid_options' };
+  if (!validLedger(snapshot) || !captured || typeof captured !== 'object' || !validNow(now)) return { ok: false, reason: 'invalid_options' };
   const claim = snapshot.claims.find(item => item.id === captured.id);
   const eventId = stableId(`${captured.id}:${captured.revision}:${captured.commit}:merged`);
   const key = `${captured.id}:${captured.revision}:${captured.commit}`;
@@ -115,6 +118,9 @@ function applyMerge(snapshot, captured, evidence, now) {
 }
 
 function purgeExpired(snapshot, now = Date.now()) {
+  if (!snapshot || typeof snapshot !== 'object') return { archive: 0, events: 0 };
+  snapshot.archive = list(snapshot, 'archive');
+  snapshot.events = list(snapshot, 'events');
   const cutoff = now - RETENTION_MS;
   const keep = field => item => Date.parse(item[field]) >= cutoff;
   const archive = snapshot.archive.length;
@@ -124,7 +130,8 @@ function purgeExpired(snapshot, now = Date.now()) {
   return { archive: archive - snapshot.archive.length, events: events - snapshot.events.length };
 }
 
-function eventsAfter(snapshot, cursor = 0, limit = PAGE_MAX) {
+function eventsAfter(arg, cursor = 0, limit = PAGE_MAX) {
+  const snapshot = { events: list(arg, 'events'), eventCursor: Number.isSafeInteger(arg?.eventCursor) ? arg.eventCursor : 0 };
   if (!Number.isSafeInteger(cursor) || cursor < 0) throw new RangeError('cursor must be a non-negative integer');
   const size = Math.min(Number.isSafeInteger(limit) && limit > 0 ? limit : PAGE_MAX, PAGE_MAX);
   const oldest = snapshot.events.length ? snapshot.events[0].cursor : snapshot.eventCursor + 1;
@@ -138,8 +145,9 @@ class Refusal extends Error {
   constructor(result) { super(result.reason); this.result = result; }
 }
 
-async function reconcile(store, claimId, options = {}) {
-  const attempts = Number.isSafeInteger(options.maxAttempts) && options.maxAttempts > 0 ? options.maxAttempts : 3;
+async function reconcile(store, claimId, options) {
+  const o = (options && typeof options === 'object') ? options : {};
+  const attempts = Number.isSafeInteger(o.maxAttempts) && o.maxAttempts > 0 ? o.maxAttempts : 3;
   try {
     for (let attempt = 0; attempt < attempts; attempt++) {
       const snapshot = await store.readSnapshot();
@@ -148,8 +156,8 @@ async function reconcile(store, claimId, options = {}) {
         const done = snapshot.archive.find(item => item.id === claimId && item.status === 'merged');
         return done ? { ok: true, merged: false, reason: 'already_merged' } : { ok: false, reason: 'claim_not_found' };
       }
-      const now = options.now ?? Date.now();
-      const evidence = await verifyMerge({ ...options, commit: captured.commit, now });
+      const now = o.now ?? Date.now();
+      const evidence = await verifyMerge({ ...o, commit: captured.commit, now });
       const outcome = await store.transact(snapshot.revision, next => {
         const applied = evidence.verified ? applyMerge(next, captured, evidence, now) : recordCheck(next, captured, evidence, now);
         if (!applied.ok) throw new Refusal(applied);

@@ -211,3 +211,33 @@ test('recordCheck and applyMerge return refusals for bad input', async () => {
   assert.equal(applyMerge(s, cap, null, NOW).reason, 'unverified');
   assert.equal(s.claims.length, 1);
 });
+
+test('applyMerge refuses a snapshot with missing arrays before any read', async () => {
+  const { store } = await tempStore();
+  for (const name of ['claims', 'archive', 'events', 'requests', 'outbox', 'idempotency']) {
+    const s = await store.readSnapshot();
+    delete s[name];
+    assert.equal(applyMerge(s, cap, good, NOW).reason, 'invalid_options');
+  }
+});
+
+test('reconcile accepts null or non-object options', async () => {
+  const { store } = await tempStore();
+  for (const options of [null, undefined, 5, 'x']) {
+    const res = await reconcile(store, 'c1', options);
+    assert.equal(res.ok, true);
+    assert.equal(res.merged, false);
+    assert.equal(res.reason, 'invalid_claim');
+  }
+  assert.equal((await reconcile(null, 'c1', null)).reason, 'store_error');
+});
+
+test('recordCheck, purgeExpired and eventsAfter tolerate bad snapshots', () => {
+  assert.equal(recordCheck(null, cap, {}, NOW).reason, 'invalid_options');
+  assert.equal(recordCheck({}, cap, {}, NOW).reason, 'invalid_options');
+  for (const bad of [null, undefined, 5, {}]) {
+    assert.deepEqual(purgeExpired(bad, NOW), { archive: 0, events: 0 });
+    assert.deepEqual(eventsAfter(bad, 0), { items: [], nextCursor: 0, hasMore: false, tooOld: false });
+  }
+  assert.throws(() => eventsAfter({}, -1), RangeError);
+});
