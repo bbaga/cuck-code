@@ -48,7 +48,7 @@ test('write failure before rename keeps the old snapshot', async t => {
   const store = createStore(file);
   await store.createClaim(0, { title: 'Kept' });
   await fs.chmod(path.dirname(file), 0o500);
-  t.after(() => fs.chmod(path.dirname(file), 0o700));
+  t.after(() => fs.chmod(path.dirname(file), 0o700).catch(() => {}));
   await assert.rejects(store.createClaim(1, { title: 'Lost' }), /Cannot write work registry/);
   await fs.chmod(path.dirname(file), 0o700);
   const snapshot = await store.readSnapshot();
