@@ -811,12 +811,11 @@ function entryText(entry) {
 // Surface a blocked planner state. The queued request was never removed, so
 // nothing is lost: the queue is persisted with the line, and pumping resumes
 // only on an external trigger. No timer re-pumps, so an unsupported
-// configuration causes no busy retry.
+// configuration causes no busy retry. Only the status and the error
+// notification change; all planner launch state stays as it was.
 function blockPlanner(line, message) {
   slog("error", "planner.blocked", { lineId: line.id, error: message });
   broadcast(line, "error", { message });
-  line.activePlannerRequest = null;
-  line.lastRun = null;
   line.status = "blocked";
   saveLine(line);
   broadcast(line, "status", { status: line.status });

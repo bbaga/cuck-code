@@ -115,8 +115,10 @@ test("refusal snapshots the queue and planner fields: no prohibited mutation", (
   const vibe = { ...resolvePipeline({}, {}).planner, harness: "vibe" };
   const pi = { ...vibe, harness: "pi" };
   const request = plannerRequest("continue", SOURCE);
+  const pending = plannerRequest("PLAN APPROVED by the user", null);
   const line = fakeLine({ workdir: dir, plannerHarness: "vibe", status: "idle",
-    sessionId: "sess-keep", activePlannerRequest: null, lastRun: null });
+    sessionId: "sess-keep", activePlannerRequest: pending,
+    lastRun: "IMPLEMENTOR REPORT: earlier run" });
   line.queue.push(request);
   const snapshot = {
     queue: [...line.queue], plannerHarness: line.plannerHarness,
@@ -124,7 +126,7 @@ test("refusal snapshots the queue and planner fields: no prohibited mutation", (
     lastRun: line.lastRun, planApproved: line.planApproved,
   };
   // Repeated decisions while the configuration stays unchanged: every call
-  // blocks again with no state change, so no retry loop can spin.
+  // blocks again, so no retry loop can spin.
   const first = preparePlannerLaunch(line, vibe, line.queue[0], false);
   const second = preparePlannerLaunch(line, vibe, line.queue[0], false);
   assert.equal(first.op, "blocked");
@@ -133,7 +135,8 @@ test("refusal snapshots the queue and planner fields: no prohibited mutation", (
   assert.match(first.message, /no trusted system prompt channel/);
   assert.equal(first.plan, undefined, "no child process plan is produced");
   // The pump applies only the blocked status for the UI; the queue and all
-  // planner launch fields stay exactly as snapshotted.
+  // planner launch fields, including non-empty activePlannerRequest and
+  // lastRun, stay exactly as snapshotted.
   line.status = "blocked";
   assert.deepEqual([...line.queue], snapshot.queue);
   assert.equal(line.queue[0], request);
@@ -141,11 +144,9 @@ test("refusal snapshots the queue and planner fields: no prohibited mutation", (
     "lastRun", "planApproved"]) {
     assert.equal(line[key], snapshot[key], `${key} must not change on refusal`);
   }
-  // The request text and trusted source metadata are untouched.
   assert.equal(request.text, "continue");
   assert.deepEqual(request.source, SOURCE);
-  // After a supported planner harness is configured, the same preserved
-  // request launches.
+  // After a supported planner harness is configured, the same request launches.
   const recovered = preparePlannerLaunch(line, pi, line.queue[0], false);
   assert.equal(recovered.op, "launch");
   const p = recovered.plan.args.indexOf("-p");
