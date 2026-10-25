@@ -511,10 +511,20 @@ main/master branch - merging is the integration validator's job:
     >router.log 2>&1 & SERVER_PID=$!; echo "$SERVER_PID"
   ```
 
-- It runs all acceptance tests, and for EVERY use case records a video of the
-  test running (playwright `video: 'on'`, files under `evidence/` in its
-  workdir), registering each one with
-  `POST /api/protocol/workers/:id/evidence {useCase, file}`.
+- It runs all acceptance tests, then records one complete showcase for the
+  integration attempt. It uses one browser context and one continuous WebM.
+  It captures PNG or JPEG screenshots for significant steps in demonstration
+  order. Each screenshot stays paired with its matching title and
+  explanation. It closes the context before registration. It registers the
+  versioned request `{kind: 'showcase', version: 1, useCase, file, steps:
+  [{title, explanation, screenshot}]}` with the worker evidence endpoint.
+  All media paths are relative to the worktree. Accepted API revision:
+  `362eff17942182a62baf05ef12423afa2dbf6613`. POST returns
+  `{evidenceId, attemptId}`. GET returns `{items, history, currentAttemptId,
+  currentAttemptIds}`. The router owns attempt identity.
+  It reports capture and registration failures. It does not replace a failed
+  showcase with short clips. It restarts the router after an API change.
+
 - Its INTEGRATION REPORT wakes the planner with the merged result branch, the
   per-branch conflict resolutions, and the verdict. On FAIL the planner routes
   fixes back to the ORIGINAL implementors and starts a fresh integration
@@ -534,9 +544,11 @@ main/master branch - merging is the integration validator's job:
   (`Accept-Ranges: bytes`, `206 Partial Content`, `416` for invalid ranges),
   which browsers require for video seeking and streaming.
 - The evidence registration endpoint rejects unfinalized recordings
-  (0-byte or <1 KB files) - a webm is only playable after the browser
-  context that recorded it is closed, so the integration brief instructs
-  the worker to close the context BEFORE registering each video.
+  (0-byte or <1 KB files). A WebM is only playable after the browser
+  context that recorded it is closed. The integration brief requires this.
+  It requires explicit capture and registration failure reports. It does
+  not replace a failed showcase with short clips. Restart the router after
+  an API change when the running process has an older version.
 - Integration workers, their branches, and evidence items persist across
   restarts.
 

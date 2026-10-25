@@ -704,18 +704,31 @@ ${extraRepos.length ? `3. For every other repo in the list: make your own copy i
    push to their remotes.` : "3. No additional repositories are registered for this line."}
 4. When all branches are merged, run ALL acceptance tests and verify
    everything works together. Build and run the project if needed.
-5. For EACH use case you test, record a video of the test case running.
-   Use playwright with video recording enabled. Close the browser context
-   before registration. Register only finalized WebM files.
-6. Capture one PNG or JPEG screenshot after each significant showcase step.
-   Use a nonempty title and explanation for every screenshot. The explanation
-   must identify the visible result and feature it proves.
-7. Register each evidence file with the router. For a showcase, use:
+5. Record one complete showcase for this integration attempt.
+   Use one browser context for the complete demonstration.
+   Keep one continuous WebM recording through every feature transition.
+   Do not stop the recording between use cases. Use a readable pace.
+   Show every implemented feature. Capture a PNG or JPEG screenshot
+   after each significant step. Capture the screenshots in demonstration
+   order. Keep each screenshot paired with its matching title and
+   explanation. Give every step a title and an explanation that identifies
+   the visible proof and the feature it proves.
+   The ffmpeg program must be available for media validation.
+6. Close the browser context before registration. This finalizes the
+   recording. Do not register an active or incomplete recording.
+7. Register the showcase with this exact request:
    curl -s -X POST http://localhost:${PORT}/api/protocol/workers/${workerId}/evidence \
      -H 'Content-Type: application/json' \
-     -d '{"useCase":"<complete demonstration title>","file":"evidence/showcase.webm","steps":[{"title":"<step title>","explanation":"<visible result and feature>","screenshot":"evidence/step-1.png"}]}'
-   All paths are relative to your workdir. Report capture or registration
-   failures explicitly. Keep every result tied to this attempt.
+     -d '{"kind":"showcase","version":1,"useCase":"<complete demonstration title>","file":"evidence/showcase.webm","steps":[{"title":"<step title>","explanation":"<visible proof and feature>","screenshot":"evidence/step-1.png"}]}'
+   Use paths relative to your worktree. Use this actual worker endpoint.
+   Report every capture or registration failure explicitly. Never replace
+   a failed showcase capture with short clips. Restart the router after
+   an API change when the running process has an older version.
+   Accepted evidence API revision: 362eff17942182a62baf05ef12423afa2dbf6613.
+   The POST response contains {evidenceId, attemptId}. The GET response
+   contains {items, history, currentAttemptId, currentAttemptIds}.
+   Current evidence is in items. Older evidence is in history. Do not mix them.
+   The router owns attempt identity. Keep the showcase tied to this attempt.
 8. Stop the server after all tests, including after failure:
    kill "$SERVER_PID" || true
 9. Reply with an INTEGRATION REPORT: branches merged (per repo),
