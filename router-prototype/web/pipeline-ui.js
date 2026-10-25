@@ -240,13 +240,32 @@
     return isFailedValidator(w);
   }
 
+  function previewSelectionKey(workerId) {
+    return "preview:" + String(workerId);
+  }
+
+  function previewSelectionExists(workers, selected) {
+    if (typeof selected !== "string" || !selected.startsWith("preview:")) return false;
+    return (workers || []).some((worker) => worker && worker.kind === "integration"
+      && previewSelectionKey(worker.id) === selected);
+  }
+
   // Read-only preview contract adapter. Unknown or stale data is never eligible.
   function previewForIntegration(worker, preview) {
-    if (!worker || worker.kind !== "integration" || worker.status !== "completed"
-      || worker.verdict !== "pass" || !preview || typeof preview !== "object") return null;
-    if (preview.availability !== "available" || preview.stale === true
-      || preview.eligible !== true || !Array.isArray(preview.steps)) return null;
-    return preview;
+    if (!worker || worker.kind !== "integration" || !preview || typeof preview !== "object") return null;
+    const passing = worker.status === "completed" && worker.verdict === "pass";
+    if (!passing) return null;
+    const eligible = passing && preview.availability === "available" && preview.stale !== true
+      && preview.eligible === true && Array.isArray(preview.steps);
+    return { ...preview, eligible, steps: Array.isArray(preview.steps) ? preview.steps : [] };
+  }
+
+  function sanitizePreviewCommand(value) {
+    if (typeof value !== "string") return "";
+    let text = value.replace(/\r/g, "").split("\n").filter((line) => !/^\s*(?:\$|#|> )\s*/.test(line)).join("\n");
+    text = text.replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY)[A-Z0-9_]*)\s*=\s*\S+/gi, "$1=[REDACTED]")
+      .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,})\b/g, "[REDACTED]");
+    return text;
   }
 
   function authBadge(entry) {
@@ -282,6 +301,9 @@
     buildPipelinePayload,
     authBadge,
     previewForIntegration,
+    previewSelectionKey,
+    previewSelectionExists,
+    sanitizePreviewCommand,
     isFailedValidator,
     shouldHideValidator,
   };

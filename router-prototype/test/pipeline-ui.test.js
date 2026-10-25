@@ -35,15 +35,27 @@ const pipelineUiModule = require("../web/pipeline-ui.js");
 test("preview eligibility accepts only available passing integration data", () => {
   const passing = { kind: "integration", status: "completed", verdict: "pass" };
   const preview = { eligible: true, availability: "available", steps: [{ command: "npm run dev" }] };
-  assert.strictEqual(pipelineUiModule.previewForIntegration(passing, preview), preview);
+  assert.deepEqual(pipelineUiModule.previewForIntegration(passing, preview), preview);
   for (const worker of [
     { ...passing, verdict: "fail" }, { ...passing, status: "failed" },
     { ...passing, status: "stopped" }, { ...passing, status: "running" },
     { ...passing, kind: "validator" },
-  ]) assert.strictEqual(pipelineUiModule.previewForIntegration(worker, preview), null);
-  assert.strictEqual(pipelineUiModule.previewForIntegration(passing, { ...preview, stale: true }), null);
-  assert.strictEqual(pipelineUiModule.previewForIntegration(passing, { ...preview, availability: "unsupported" }), null);
-  assert.strictEqual(pipelineUiModule.previewForIntegration(passing, { eligible: true, steps: [] }), null);
+  ]) assert.equal(pipelineUiModule.previewForIntegration(worker, preview), null);
+  assert.equal(pipelineUiModule.previewForIntegration(passing, { ...preview, stale: true }).eligible, false);
+  assert.equal(pipelineUiModule.previewForIntegration(passing, { ...preview, availability: "unsupported" }).eligible, false);
+  assert.equal(pipelineUiModule.previewForIntegration(passing, { eligible: true, availability: "available", steps: [] }).eligible, true);
+  const staleWorker = { ...passing, status: "running" };
+  assert.equal(pipelineUiModule.previewForIntegration(staleWorker, preview), null);
+});
+
+test("preview selection survives refreshed worker instances and copy strips shell prompts and likely secrets", () => {
+  const old = [{ id: "i1", kind: "integration" }];
+  const selected = pipelineUiModule.previewSelectionKey("i1");
+  assert.equal(pipelineUiModule.previewSelectionExists([{ ...old[0] }], selected), true);
+  assert.equal(pipelineUiModule.previewSelectionExists([{ id: "i2", kind: "integration" }], selected), false);
+  const safe = pipelineUiModule.sanitizePreviewCommand("npm run dev\n$ API_KEY=abc SECRET=xyz\necho hello");
+  assert.equal(safe, "npm run dev\necho hello");
+  assert.equal(pipelineUiModule.sanitizePreviewCommand("<img src=x onerror=alert(1)>"), "<img src=x onerror=alert(1)>");
 });
 
 test("PHASE_ROWS lists the four pipeline phases", () => {
