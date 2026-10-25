@@ -16,7 +16,19 @@ function appDirectory(root) {
   const nested = fs.readdirSync(root, { withFileTypes: true }).filter(e => e.isDirectory() && !e.name.startsWith(".") && fs.existsSync(path.join(root, e.name, "package.json"))).map(e => path.join(root, e.name));
   return nested.length === 1 ? nested[0] : null;
 }
-function instructionFor(root, sha) {
+function shellQuote(value) { return `'${String(value).replace(/'/g, "'\\''")}'`; }
+function safeCloneUrl(value) {
+  if (typeof value !== "string" || !value.trim() || /[\x00-\x20\x7f]/.test(value)) return null;
+  const url = value.trim();
+  if (url.startsWith("git@")) return /^git@[^:]+:[^/]+\/[^/]+(?:\.git)?$/.test(url) ? url : null;
+  try {
+    const parsed = new URL(url);
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname.split("/").filter(Boolean).length !== 2) return null;
+    return url;
+  } catch { return null; }
+  return url;
+}
+function instructionFor(root, sha, repoUrl) {
   const filesAt = (dir) => git(root, ["ls-tree", "-z", sha, "--", dir]);
   function exists(file) { return git(root, ["cat-file", "-e", `${sha}:${file}`]) !== null; }
   function read(file) {
@@ -32,9 +44,11 @@ function instructionFor(root, sha) {
   }
   const dir = relative === null ? null : (relative ? path.join(root, relative) : root);
   const directory = relative || ".";
-  const steps = [`Obtain the repository and check out the validated commit ${sha}.`];
+  const cloneUrl = safeCloneUrl(repoUrl);
+  const target = `cuck-code-${sha.slice(0, 8)}`;
+  const steps = cloneUrl ? [{ description: "Clone the repository and check out the validated revision.", command: `git clone ${shellQuote(cloneUrl)} ${shellQuote(target)} && git -C ${shellQuote(target)} checkout --detach ${shellQuote(sha)}` }] : [{ description: "Obtain the repository and check out the validated revision manually. No safe repository URL is available.", command: null }];
   if (!dir) {
-    const guidance = [...steps, "Review project documentation to identify the application directory, package manager, setup, and start commands."];
+    const guidance = [...steps, { description: "Review project documentation to identify the application directory, package manager, setup, and start commands.", command: null }];
     return { stack: "unknown", directory, url: null, packageManager: null, steps: guidance, prerequisites: ["Project documentation"], limitations: ["The application directory or package manager is ambiguous."], instructions: guidance };
   }
   let pkg;
@@ -49,7 +63,7 @@ function instructionFor(root, sha) {
   const limitations = [];
   if (!manager) limitations.push(managers.length ? "Multiple package manager lockfiles exist; select the intended manager." : "No supported package manager lockfile exists; confirm the intended manager from project documentation.");
   if (stack === "unknown" || !pkg.scripts?.start) limitations.push("The framework or start command is not recognized; follow project documentation.");
-  const stepsOut = [...steps, `Enter application directory ${directory}.`, ...(install ? [`Install dependencies with ${install}.`] : ["Confirm the package manager and install command from project documentation."]), ...(pkg.scripts?.start ? ["Start with the documented npm start script."] : ["Use the start command documented by the project."]), "Open the URL reported by the application. Stop it with Ctrl+C."];
+  const stepsOut = [...steps, { description: `Enter application directory ${directory}.`, command: `cd ${shellQuote(`${target}/${directory === "." ? "" : directory}`.replace(/\/$/, ""))}` }, ...(install ? [{ description: "Install the locked dependencies.", command: install }] : [{ description: "Confirm the package manager and install command from project documentation.", command: null }]), ...(pkg.scripts?.start && stack !== "unknown" ? [{ description: "Start the application.", command: "npm start" }] : [{ description: "Use the start command documented by the project.", command: null }]), { description: "Open the URL reported by the application. Stop it with Ctrl+C.", command: null }];
   return { stack, directory, url: null, packageManager: manager, steps: stepsOut, prerequisites: ["Required runtime and environment values from project documentation"], limitations, instructions: stepsOut };
 }
 function previewForLine(line) {
@@ -60,7 +74,9 @@ function previewForLine(line) {
   if (!source || !/^[a-f0-9]{40}$/i.test(source)) return { ...base, eligible: true, stale: true, reason: "The validated commit was not recorded; source is unavailable or unverified." };
   const workdir = path.resolve(pass.worktreePath || "");
   if (!fs.existsSync(workdir) || git(workdir, ["cat-file", "-e", `${source}^{commit}`]) === null) return { ...base, eligible: true, stale: true, reason: "The recorded validated source is unavailable." };
-  const result = instructionFor(workdir, source);
+  const repos = [line.repoUrl, pass.repoUrl].filter(Boolean);
+  const configuredUrl = repos.length === 1 ? repos[0] : null;
+  const result = instructionFor(workdir, source, configuredUrl);
   result.instructions = result.instructions.map(s => safeText(s, 500));
   return { eligible: true, availability: "available", stale: false, sourceRevision: source, projectDirectory: result.directory, expectedUrl: result.url, prerequisites: result.prerequisites, limitations: result.limitations, verified: true, commit: source, branch: safeText(pass.branch, 200), ...result };
 }

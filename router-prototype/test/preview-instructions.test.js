@@ -30,10 +30,14 @@ test("recognized nested Node app pins source and emits safe numbered steps", () 
     require("node:child_process").execFileSync("git", ["-C", root, "-c", "user.email=a@b", "-c", "user.name=test", "add", "."]);
     require("node:child_process").execFileSync("git", ["-C", root, "-c", "user.email=a@b", "-c", "user.name=test", "commit", "-qm", "test"]);
     const commit = require("node:child_process").execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    const result = previewForLine(line({ id: "x", role: "validator", kind: "integration", status: "completed", verdict: "pass", worktreePath: root, branch: "integration/x", validatedCommit: commit }));
+    const result = previewForLine({ repoUrl: "https://example.com/team/project.git", workers: new Map([["x", { id: "x", role: "validator", kind: "integration", status: "completed", verdict: "pass", worktreePath: root, branch: "integration/x", validatedCommit: commit }]]) });
     assert.equal(previewForLine(line({ id: "x", role: "validator", kind: "integration", status: "completed", verdict: "pass", worktreePath: root, branch: "integration/x", validatedCommit: commit })).sourceRevision, commit);
     assert.equal(result.sourceRevision, commit); assert.equal(result.stack, "vite"); assert.equal(result.directory, "app");
-    assert.ok(result.instructions.some((s) => s.includes("npm ci")));
+    assert.ok(result.steps.some(s => s.command === "npm ci"));
+    assert.equal(result.steps[0].command.includes(commit), true);
+    assert.match(result.steps[0].command, /git clone .* && git -C .* checkout --detach/);
+    assert.ok(result.steps.every(s => s.description && Object.hasOwn(s, "command")));
+    assert.equal(result.steps.at(-1).command, null);
     const { execFileSync } = require("node:child_process");
     execFileSync("git", ["-C", root, "checkout", "-qb", "advance"]);
     execFileSync("git", ["-C", root, "-c", "user.email=a@b", "-c", "user.name=test", "commit", "--allow-empty", "-qm", "advance"]);
@@ -41,7 +45,7 @@ test("recognized nested Node app pins source and emits safe numbered steps", () 
     const again = previewForLine(line({ id: "x", role: "validator", kind: "integration", status: "completed", verdict: "pass", worktreePath: root, branch: "integration/x", validatedCommit: commit }));
     assert.notEqual(advanced, commit);
     assert.equal(again.sourceRevision, commit);
-    assert.deepEqual(again.steps, result.steps);
+    assert.deepEqual(again.steps.slice(1), result.steps.slice(1));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 test("validated revision survives line-state JSON save and restore; old records stay unverified", () => {
@@ -67,6 +71,17 @@ test("unknown and ambiguous pinned project layouts give cautious guidance", () =
     const result = previewForLine(line({ id: "x", role: "validator", kind: "integration", status: "completed", verdict: "pass", worktreePath: root, validatedCommit: commit }));
     assert.equal(result.stack, "unknown");
     assert.ok(result.limitations.some(text => text.includes("ambiguous")));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+test("missing or unsafe repository URL disables copy command", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "preview-url-"));
+  try {
+    const { execFileSync } = require("node:child_process");
+    execFileSync("git", ["init", "-q", root]);
+    execFileSync("git", ["-C", root, "-c", "user.email=a@b", "-c", "user.name=test", "commit", "--allow-empty", "-qm", "test"]);
+    const sha = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const result = previewForLine({ workers: new Map([["x", { id: "x", role: "validator", kind: "integration", status: "completed", verdict: "pass", worktreePath: root, validatedCommit: sha }]]) });
+    assert.equal(result.steps[0].command, null);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 test("sanitizer removes control characters and bounds content", () => {
