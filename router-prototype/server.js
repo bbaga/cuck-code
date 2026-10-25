@@ -1230,6 +1230,23 @@ function spawnValidator(line, source, criteria, report) {
   spawnWorker(line, worker, worker.prompt);
 }
 
+// Evidence contract for task B: GET returns only records for the current
+// router attempt of each registering worker. Each item has id, useCase, name,
+// at, attemptId, video, and (for showcases) ordered steps with title,
+// explanation, and screenshot URLs. currentAttemptId is the single current
+// attempt when all returned records have one owner; currentAttemptIds gives
+// the authoritative attempt per worker. History remains persisted, but is not
+// returned as current evidence.
+function currentAttemptId(worker) {
+  return worker && (worker.activeInvocationId || worker.lastCompletedInvocationId
+    || String(worker.runGeneration || ""));
+}
+
+function isCurrentEvidence(line, item) {
+  const worker = line.workers.get(item.by);
+  return !worker || item.attemptId === currentAttemptId(worker);
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://localhost");
   const parts = url.pathname.split("/").filter(Boolean);
@@ -1795,12 +1812,13 @@ const server = http.createServer((req, res) => {
       const id = crypto.randomUUID();
       if (!line.evidence) line.evidence = new Map();
       line.evidence.set(id, { id, ...record, by: worker.id, at: Date.now(),
-        attemptId: body.attemptId || worker.activeInvocationId || worker.lastCompletedInvocationId
-          || String(worker.runGeneration || "") });
+        // The router owns attempt identity. Do not accept a client-supplied
+        // attemptId, because that could make old evidence current again.
+        attemptId: currentAttemptId(worker) });
       saveLine(line);
       slog("info", "evidence.registered", { lineId: line.id, evidenceId: id,
         useCase: preview(body.useCase, 120), file: body.file.trim(), by: worker.name });
-      json(res, 201, { evidenceId: id });
+      json(res, 201, { evidenceId: id, attemptId: currentAttemptId(worker) });
     });
     return;
   }
@@ -1809,8 +1827,18 @@ const server = http.createServer((req, res) => {
     && parts.length === 4) {
     const line = lines.get(parts[2]);
     if (!line) return json(res, 404, { error: "no such line" });
-    const items = [...(line.evidence || new Map()).values()].map((e) => publicEvidence(line.id, e));
-    return json(res, 200, { items });
+    const current = [...(line.evidence || new Map()).values()]
+      .filter((e) => isCurrentEvidence(line, e));
+    const items = current.map((e) => publicEvidence(line.id, e));
+    const currentAttemptIds = {};
+    for (const worker of line.workers.values()) {
+      const attemptId = currentAttemptId(worker);
+      if (attemptId) currentAttemptIds[worker.id] = attemptId;
+    }
+    const uniqueAttemptIds = [...new Set(items.map((item) => item.attemptId).filter(Boolean))];
+    return json(res, 200, { items,
+      currentAttemptId: uniqueAttemptIds.length === 1 ? uniqueAttemptIds[0] : null,
+      currentAttemptIds });
   }
 
   if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "evidence"

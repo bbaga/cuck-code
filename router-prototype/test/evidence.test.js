@@ -7,8 +7,14 @@ const { checkedFile, validateShowcase, publicEvidence } = require("../evidence")
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "evidence-"));
-  fs.writeFileSync(path.join(root, "demo.webm"), Buffer.alloc(2048));
-  fs.writeFileSync(path.join(root, "one.png"), Buffer.from([137, 80, 78, 71]));
+  const webm = Buffer.alloc(2048);
+  Buffer.from([0x1a, 0x45, 0xdf, 0xa3]).copy(webm);
+  Buffer.from("webm", "ascii").copy(webm, 16);
+  fs.writeFileSync(path.join(root, "demo.webm"), webm);
+  fs.writeFileSync(path.join(root, "one.png"), Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"));
+  fs.writeFileSync(path.join(root, "one.jpg"), Buffer.from([
+    255, 216, 255, 192, 0, 11, 8, 0, 1, 0, 1, 1, 1, 17, 0, 255, 217]));
   return root;
 }
 
@@ -20,6 +26,19 @@ test("validates a showcase and keeps ordered step metadata", () => {
   assert.equal(record.version, 1);
   assert.equal(record.steps[0].title, "First");
   assert.match(record.steps[0].screenshot, /one\.png$/);
+});
+
+test("validates real PNG, JPEG, and WebM signatures", () => {
+  const root = fixture();
+  assert.doesNotThrow(() => checkedFile(root, "demo.webm", "video"));
+  assert.doesNotThrow(() => checkedFile(root, "one.png", "screenshot"));
+  assert.doesNotThrow(() => checkedFile(root, "one.jpg", "screenshot"));
+  fs.writeFileSync(path.join(root, "fake.webm"), Buffer.alloc(2048, 7));
+  fs.writeFileSync(path.join(root, "fake.png"), Buffer.from("not png"));
+  fs.writeFileSync(path.join(root, "fake.jpg"), Buffer.from([255, 216, 0, 0, 255, 217]));
+  assert.throws(() => checkedFile(root, "fake.webm", "video"), /content/);
+  assert.throws(() => checkedFile(root, "fake.png", "screenshot"), /content/);
+  assert.throws(() => checkedFile(root, "fake.jpg", "screenshot"), /content/);
 });
 
 test("rejects incomplete steps and unsupported or escaped files", () => {

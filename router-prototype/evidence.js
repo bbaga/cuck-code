@@ -3,12 +3,58 @@ const path = require("node:path");
 
 const VIDEO_EXTENSIONS = new Set([".webm"]);
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg"]);
+const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+const JPEG_SIGNATURE = Buffer.from([255, 216]);
+const WEBM_SIGNATURE = Buffer.from([26, 69, 223, 163]);
 
 function insideWorktree(worktree, candidate) {
   const root = fs.realpathSync(worktree);
   const resolved = path.resolve(root, candidate);
   const relative = path.relative(root, resolved);
   return relative === "" || (!relative.startsWith(".." + path.sep) && relative !== "..");
+}
+
+function hasWebmContent(buffer) {
+  if (buffer.length < 12 || !buffer.subarray(0, 4).equals(WEBM_SIGNATURE)) return false;
+  // A WebM file is an EBML document with a WebM DocType in its header.
+  return buffer.includes(Buffer.from("webm", "ascii"));
+}
+
+function hasPngContent(buffer) {
+  if (buffer.length < 33 || !buffer.subarray(0, 8).equals(PNG_SIGNATURE)) return false;
+  const length = buffer.readUInt32BE(8);
+  if (length !== 13 || buffer.toString("ascii", 12, 16) !== "IHDR") return false;
+  if (buffer.readUInt32BE(16) < 1 || buffer.readUInt32BE(20) < 1) return false;
+  return buffer.includes(Buffer.from([0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]));
+}
+
+function hasJpegContent(buffer) {
+  if (buffer.length < 4 || !buffer.subarray(0, 2).equals(JPEG_SIGNATURE)
+    || !buffer.subarray(buffer.length - 2).equals(Buffer.from([255, 217]))) return false;
+  // Walk markers far enough to reject arbitrary SOI/EOI wrappers.
+  let offset = 2, sawFrame = false;
+  while (offset < buffer.length - 2) {
+    if (buffer[offset++] !== 255) return false;
+    while (buffer[offset] === 255) offset++;
+    const marker = buffer[offset++];
+    if (marker === 217) break;
+    if (marker === 216 || (marker >= 208 && marker <= 215)) continue;
+    if (offset + 2 > buffer.length) return false;
+    const length = buffer.readUInt16BE(offset);
+    if (length < 2 || offset + length > buffer.length) return false;
+    if (marker >= 192 && marker <= 195) sawFrame = true;
+    offset += length;
+    // The bytes after SOS are entropy-coded data, not marker segments.
+    if (marker === 218) return sawFrame && buffer.subarray(-2).equals(Buffer.from([255, 217]));
+  }
+  return sawFrame;
+}
+
+function validMediaContent(file, kind, extension) {
+  const buffer = fs.readFileSync(file);
+  if (kind === "video") return hasWebmContent(buffer);
+  if (extension === ".png") return hasPngContent(buffer);
+  return hasJpegContent(buffer);
 }
 
 function checkedFile(worktree, value, kind) {
@@ -26,6 +72,9 @@ function checkedFile(worktree, value, kind) {
   const extension = path.extname(real).toLowerCase();
   const allowed = kind === "video" ? VIDEO_EXTENSIONS : IMAGE_EXTENSIONS;
   if (!allowed.has(extension)) throw new Error(`${kind} file has an unsupported type`);
+  if (!validMediaContent(real, kind, extension)) {
+    throw new Error(`${kind} file content does not match its type`);
+  }
   return { path: real, relative: path.relative(root, real), size: stat.size };
 }
 
@@ -61,6 +110,7 @@ function validateShowcase(worktree, body) {
 
 function publicEvidence(lineId, item) {
   const result = { id: item.id, useCase: item.useCase, name: item.name, at: item.at,
+    attemptId: item.attemptId || null,
     video: `/api/lines/${lineId}/evidence/${item.id}/video` };
   if (item.kind === "showcase" && item.version === 1) {
     result.kind = item.kind;
