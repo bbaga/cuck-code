@@ -63,7 +63,8 @@
   .dot.standby { background: #6c7a8c; }
   @keyframes pulse { 50% { opacity: .3; } }
   .banner { margin: 8px 16px 0; padding: 8px; border-radius: 4px;
-    background: #4d1420; color: #ff8095; font-size: .85rem; white-space: pre-wrap; }
+    background: #4d1420; color: #ff8095; font-size: .85rem; white-space: pre-wrap;
+    cursor: pointer; }
   .planDetails { border-bottom: 1px solid #262b33; }
   .planDetails summary { cursor: pointer; padding: 6px 16px; color: #6c7a8c;
     font-size: .75rem; user-select: none; }
@@ -127,6 +128,8 @@
   .transcript > div { margin-bottom: 10px; }
   .user { color: #8fa3bd; }
   .assistant { color: #d8dee6; }
+  .runError { padding: 8px; border-radius: 4px; background: #4d1420; color: #ff8095;
+    font-size: .85rem; white-space: pre-wrap; }
   .ts { color: #5a6675; font-size: .7rem; margin-right: 6px; }
   .transcript details { border-left: 2px solid #333c48; padding-left: 8px; }
   .transcript summary { cursor: pointer; color: #6c7a8c; font-size: .75rem; }
@@ -311,6 +314,7 @@ window.addEventListener("DOMContentLoaded", () => {
       });
       n.appendChild(stop);
     }
+    if (w.lastError) n.title = w.lastError;
     n.addEventListener("click", () => selectNode(st, w.id));
     return n;
   }
@@ -443,6 +447,12 @@ window.addEventListener("DOMContentLoaded", () => {
       for (const e of st.workerTranscripts.get(st.selected) || []) {
         st.transcript.appendChild(entryEl(e));
       }
+      if (w && w.lastError) {
+        const err = document.createElement("div");
+        err.className = "runError";
+        err.textContent = w.lastError;
+        st.transcript.appendChild(err);
+      }
     }
     if (!st.followTranscript) st.transcript.scrollTop = scrollTop;
     syncTranscriptScroll(st);
@@ -520,6 +530,8 @@ window.addEventListener("DOMContentLoaded", () => {
     const banner = document.createElement("div");
     banner.className = "banner";
     banner.hidden = true;
+    banner.title = "Click to dismiss";
+    banner.addEventListener("click", () => { banner.hidden = true; });
 
     const plan = document.createElement("div");
     plan.className = "plan";
@@ -654,9 +666,15 @@ window.addEventListener("DOMContentLoaded", () => {
       updateListEntry(st);
     });
     es.addEventListener("worker_status", (e) => {
-      const { workerId, status, verdict } = JSON.parse(e.data);
+      const { workerId, status, verdict, error } = JSON.parse(e.data);
       const w = st.workers.get(workerId);
-      if (w) { w.status = status; if (verdict) w.verdict = verdict; }
+      if (w) {
+        w.status = status;
+        if (verdict) w.verdict = verdict;
+        w.lastError = error || null;
+        if (error) showError("Worker '" + w.name + "' failed. " + error);
+        if (st.selected === workerId) renderTranscript(st);
+      }
       renderGraph(st);
       updateListEntry(st);
     });
@@ -1058,9 +1076,12 @@ window.addEventListener("DOMContentLoaded", () => {
     const entry = installedHarnesses.find((h) => h.id === id);
     if (!entry) return "";
     const badge = authBadge(entry);
-    return badge === "missing"
-      ? entry.id + ": auth missing - run " + (entry.loginHint || entry.id + " login")
-      : entry.id + ": " + badge;
+    if (badge === "missing")
+      return entry.id + ": auth missing - run " + (entry.loginHint || entry.id + " login");
+    // vibe and pi have no provider-free auth probe, so their base state is
+    // honestly "not probed"; pi shows the real state after a mode is chosen.
+    if (badge === "unknown") return entry.id + ": installed (auth not probed)";
+    return entry.id + ": " + badge;
   }
 
   function updateAuthHint(key) {
@@ -1166,7 +1187,8 @@ window.addEventListener("DOMContentLoaded", () => {
         }
         sel.value = current;
         // Base metadata arrived: refresh auth mode options and model choices
-        // (Vibe rows pick up their models here; Pi rows wait for a mode).
+        // (Vibe and Claude rows pick up their models here; Pi rows wait
+        // for a mode).
         if (harnessSelects[key].value !== PI_HARNESS_ID) {
           phaseState[key].models = modelOptionsForPhase({
             harnesses: installedHarnesses,

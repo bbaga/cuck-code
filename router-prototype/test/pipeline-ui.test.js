@@ -211,13 +211,18 @@ test("modelOptionsForPhase returns Pi detail models only after a mode selection"
   assert.deepEqual(modelOptionsForPhase({ harnesses: [], harnessId: "pi", piDetail: null }), []);
 });
 
-test("modelOptionsForPhase returns Vibe base models and nothing for other harnesses", () => {
+test("modelOptionsForPhase returns Vibe and Claude base models and nothing for other harnesses", () => {
   const harnesses = [
     { id: "vibe", installed: true, models: [{ value: "vibe/m1", label: "m1" }] },
+    { id: "claude", installed: true, models: [{ value: "opus", label: "opus" }] },
   ];
   assert.deepEqual(
     modelOptionsForPhase({ harnesses, harnessId: "vibe", piDetail: null }),
     [{ value: "vibe/m1", label: "m1" }],
+  );
+  assert.deepEqual(
+    modelOptionsForPhase({ harnesses, harnessId: "claude", piDetail: null }),
+    [{ value: "opus", label: "opus" }],
   );
   assert.deepEqual(modelOptionsForPhase({ harnesses, harnessId: "codex", piDetail: null }), []);
   assert.deepEqual(modelOptionsForPhase({ harnesses: [], harnessId: "vibe", piDetail: null }), []);

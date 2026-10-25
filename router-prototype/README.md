@@ -311,6 +311,8 @@ Precedence, most specific wins:
 1. Code defaults: harness `vibe`; effort `medium`; models `glm-5-3-flash`
    (implementor) and `glm-5-3` (validator, integration); time limits
    `PLANNER_TIME_LIMIT` (planner) and `WORKER_TIME_LIMIT` (other phases).
+   The default models are Vibe models: every other harness defaults to no
+   model, and the router omits `--model` so the CLI uses its own default.
 2. Environment variables, read at resolve time.
 3. The line's `pipeline` config (set at line creation, persisted in
    `line.json`).
@@ -321,6 +323,10 @@ Precedence, most specific wins:
 Environment variables per phase (`PLANNER_`, `IMPLEMENTOR_`, `VALIDATOR_`,
 `INTEGRATION_`): `<PHASE>_HARNESS`, `<PHASE>_MODEL`, `<PHASE>_EFFORT`.
 `IMPLEMENTOR_MODEL` and `VALIDATOR_MODEL` keep their existing meaning.
+A model id belongs to one harness: `<PHASE>_MODEL` applies only while the
+phase runs the env/default harness. A line or worker that switches the
+phase to another harness without naming a model gets that harness's
+default, never a model id meant for a different CLI.
 `VIBE_MODELS` is a comma-separated list of extra Vibe model choices offered
 in the UI (empty values are ignored); it does not change the resolved
 `pipeline.<phase>.model`, which stays a plain string. `authMode` is never
@@ -346,6 +352,10 @@ cached for 30 seconds; `?refresh=1` skips the cache. Per harness it reports
 `[{value, label}]` list built from the code defaults, the per-phase
 `<PHASE>_MODEL` env values, `VIBE_ACTIVE_MODEL`, and `VIBE_MODELS`
 (a comma-separated list of extra model ids; empty values are ignored).
+The `claude` entry also carries `models`: the CLI aliases `opus`,
+`sonnet`, `haiku` (each resolves to the latest model of its family), then
+the full model ids from `CLAUDE_MODELS` (comma-separated). Its `auth` comes
+from `claude auth status`.
 The `pi` entry carries `authModes` (`[{value, label}]`, the providers
 discovered from `pi --list-models`) and provider-qualified `models`
 (`value` is `provider/model`). A failed `pi --list-models` command yields
@@ -378,8 +388,37 @@ returned — never credentials or raw command output.
 5. `vibe` enforces its time limit itself; for `pi`, `codex`, and `claude`
    the router starts a kill timer that sends `SIGTERM`.
 
+`claude` runs headless as `claude -p --output-format stream-json --verbose
+[--model <model>] --dangerously-skip-permissions --effort <level> --
+<prompt>` in the stage workdir, with `--resume <sessionId>` on later turns
+and the planner policy through `--append-system-prompt-file`. The prompt
+comes last, after `--`: the planner turn wrapper starts with `---`, which
+the CLI would otherwise reject as an unknown option. The router effort
+levels map 1:1 to Claude Code's `--effort`. The session runs with the
+user's own Claude Code settings, so MCP servers (for example playwright for
+frontend validators) come from that configuration.
+
 Login hints per harness: `vibe --setup`; `pi /login` (in the pi TUI);
 `codex login`; `claude login`.
+
+### Failure reporting
+
+Planner and worker runs report a failure the same way for every harness
+(`run-failure.js`). The message names the command and how it ended (not
+found on PATH, time limit, signal, or exit code), then the error the
+harness reported on its own stream, then stderr. Stream errors are
+collected by the adapters and never become assistant text or a report:
+claude API error messages (`is_api_error_message`) and results with
+`is_error` (which also fail a run that exits 0), pi `message_end` with
+`stopReason: "error"`, and codex `error` / `turn.failed` events. vibe
+reports failures through its exit code and stderr. stderr keeps its first
+and last part, so an echoed argument cannot push the error out.
+
+A planner failure goes to the line's error banner (click to dismiss). A
+worker failure is stored on the worker as `lastError` (persisted, and
+listed by the workers API), shown in the banner, the worker node tooltip,
+and the worker view, and appended to the planner wake prompt as
+`FAILURE DETAIL`. Runs that cannot start no longer crash the router.
 
 ## Limitations
 
