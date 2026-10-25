@@ -477,6 +477,21 @@ curl -s -X POST http://localhost:<PORT>/api/protocol/workers/<workerId>/evidence
 Register each case with its own `useCase` and `file` values. Do not register a
 video before the browser context closes.
 
+### Integration setup
+
+The integration validator works only in its dedicated integration worktree.
+It clones every registered repository into a new directory inside that worktree.
+It does not use or change a shared clone.
+
+1. Clone each registered repository into a new directory in the integration worktree.
+2. Enter the clone for the repository that contains the feature branch.
+3. Run `git status --short` before each merge.
+4. Stop if the clone has changes that do not belong to the current merge.
+5. Merge one feature branch at a time in that clone.
+6. Run `git status --short` after the merge. Resolve only merge conflicts.
+7. Stop and report the problem if unrelated changes appear.
+8. Never discard, reset, clean, or overwrite changes in a shared clone.
+
 When all implementor validators report VERDICT: PASS, the planner starts the
 integration validator (`POST /api/protocol/lines/:id/integration` with the
 integration instructions; 409 at the concurrent-worker cap). The planner
@@ -484,11 +499,10 @@ itself NEVER commits to or pushes the
 main/master branch - merging is the integration validator's job:
 
 - The integration validator gets its own worktree on a fresh
-  `integration/<name>-<id>` branch created from main. It merges every feature
-  branch there (resolving conflicts), never touching main or the remote.
-  When the line works across several repositories, it makes its own local
-  copies of the non-primary repos inside its workdir and merges their
-  feature branches there the same way - never pushing to any remote.
+  `integration/<name>-<id>` branch created from main. It clones every
+  registered repository into a new directory inside that worktree. It merges
+  feature branches only in those clones. It does not change shared clones,
+  main, or any remote.
 - It runs all acceptance tests, and for EVERY use case records a video of the
   test running (playwright `video: 'on'`, files under `evidence/` in its
   workdir), registering each one with

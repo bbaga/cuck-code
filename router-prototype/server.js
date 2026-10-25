@@ -650,36 +650,38 @@ Instructions from the planner:
 ${instructions}
 
 Procedure:
-1. For the 'primary' repo: merge each of its feature branches on top
-   of your integration branch, one by one:
-   git merge <branch> --no-edit
-   Resolve conflicts yourself, keeping both features where possible.
-   If a conflict cannot be resolved sensibly, stop and report it.
-${extraRepos.length ? `2. For EVERY other repo in the list: make your own copy inside
-   your workdir (git clone <remote or path> <repo-name>), create a
-   local integration branch from its main branch, and merge its
-   feature branches there the same way. Never push to their remotes.` : "2. No additional repositories are registered for this line."}
-3. When all branches are merged, run ALL acceptance tests and verify
+1. Clone EVERY registered repository into a new directory inside your
+   dedicated integration worktree. Use its registered remote or source path.
+   Do not use or change a shared clone.
+2. Enter the new clone for the repository that owns each feature branch.
+3. Before EACH merge, run: git status --short
+   Stop if you see changes that do not belong to the current merge.
+4. Merge one feature branch at a time inside its new clone. Never merge in
+   the source repository or in a shared clone.
+5. After each merge, run: git status --short
+   Resolve only merge conflicts. Stop if unrelated changes appear.
+   Never discard, reset, clean, or overwrite shared clone changes.
+6. When all branches are merged, run ALL acceptance tests and verify
    everything works together. Build and run the project if needed.
-4. For EACH use case you test, record a video of the test case running.
+7. For EACH use case you test, record a video of the test case running.
    Use playwright with video recording enabled: in a playwright test use
    video: 'on' (or npx playwright test --video=on); in a raw playwright
    script enable recordVideo on the browser context, for example
    browser.newContext({ recordVideo: { dir: 'evidence' } }).
    Save each video as a separate file under evidence/ in your workdir
    (for example evidence/use-case-login.webm).
-5. IMPORTANT: close the browser context (or let the playwright
+8. IMPORTANT: close the browser context (or let the playwright
    test run finish) BEFORE you register the video file. A video that
    is still recording is not finalized: it has no duration and will
    not play. Register only files that are complete (usually larger
    than 10 KB).
-6. Register every evidence video with the router:
+9. Register every evidence video with the router:
    curl -s -X POST http://localhost:${PORT}/api/protocol/workers/${workerId}/evidence \
      -H 'Content-Type: application/json' \
      -d '{"useCase":"<one line describing the use case>","file":"evidence/<file>.webm"}'
    The file path is relative to your workdir. Register each use case
    as you complete it.
-7. Reply with an INTEGRATION REPORT: branches merged (per repo),
+10. Reply with an INTEGRATION REPORT: branches merged (per repo),
    conflicts resolved (per branch, one line), acceptance test results,
    the list of registered evidence use cases, then a final line
    "VERDICT: PASS" or "VERDICT: FAIL".
