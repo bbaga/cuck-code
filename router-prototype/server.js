@@ -1317,12 +1317,26 @@ function spawnValidator(line, source, criteria, report) {
 const { createRegistryRoutes } = require("./registry-routes");
 const { createStore: createRegistryStore } = require("./work-registry");
 const { createDelivery: createRegistryDelivery } = require("./registry-delivery");
+const { createRefresh: createRegistryRefresh, matchRepo: matchRegistryRepo, ghCheckPullRequest } = require("./registry-refresh");
 const REGISTRY_FILE = path.join(LINES_DIR, "work-coordination.json");
 const registryStore = createRegistryStore(REGISTRY_FILE);
 let registryUnavailable = null;
 let registryDelivery = null;
 const REGISTRY_DELIVERY_MS = 30000;
+const REGISTRY_SWEEP_MS = 10 * 60 * 1000;
+const REGISTRY_FIRST_SWEEP_MS = 60 * 1000;
+const registryRefresh = createRegistryRefresh({
+  store: registryStore,
+  resolveRepo: (claim) => {
+    const line = lines.get(claim.ownerLineId);
+    return line ? matchRegistryRepo(repoList(line), claim.repo) : null;
+  },
+  checkPullRequest: ghCheckPullRequest,
+  deliver: () => registryDeliver(),
+  log: (event, data) => slog("warn", event, data),
+});
 const registryRoutes = createRegistryRoutes({
+  refresh: registryRefresh,
   store: registryStore,
   lineExists: (id) => lines.has(id),
   lineName: (id) => (lines.get(id) ? lines.get(id).name : null),
@@ -1347,6 +1361,8 @@ registryStore.load().then(() => {
   });
   registryDeliver();
   setInterval(registryDeliver, REGISTRY_DELIVERY_MS).unref();
+  setInterval(() => registryRefresh.sweep(), REGISTRY_SWEEP_MS).unref();
+  setTimeout(() => registryRefresh.sweep(), REGISTRY_FIRST_SWEEP_MS).unref();
 }).catch((err) => {
   if (err && err.code === "REGISTRY_CORRUPT") {
     registryUnavailable = { error: "Work registry is corrupt: " + err.message, file: REGISTRY_FILE };
