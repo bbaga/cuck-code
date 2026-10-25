@@ -72,9 +72,10 @@ function cleanClaim(input) {
   return { title: title.trim(), summary, tags: [...new Set(tags.map(t => t.trim()))] };
 }
 
-function createStore(filePath) {
+function createStore(filePath, { onCommit } = {}) {
   if (typeof filePath !== 'string' || !filePath) throw new TypeError('filePath is required');
   let state;
+  const listeners = onCommit ? [onCommit] : [];
   const key = path.resolve(filePath);
   if (!queues.has(key)) queues.set(key, Promise.resolve());
   async function readDisk() {
@@ -120,6 +121,12 @@ function createStore(filePath) {
         throw new Error(`Cannot write work registry at ${filePath}: ${error.message}`, { cause: error });
       }
       state = next;
+      for (const fn of listeners) {
+        try {
+          const out = fn({ revision: next.revision, eventCursor: next.eventCursor });
+          if (out && typeof out.catch === 'function') out.catch((err) => console.error('registry onCommit listener rejected:', err && err.message));
+        } catch { /* a listener never affects the commit */ }
+      }
       return { ok: true, revision: state.revision, result };
     });
     queues.set(key, operation.catch(() => {}));
@@ -166,7 +173,11 @@ function createStore(filePath) {
     const start = (page - 1) * pageSize;
     return { items: claims.slice(start, start + pageSize), page, pageSize, total: claims.length, hasMore: start + pageSize < claims.length };
   }
-  return { load, readSnapshot, transact, createClaim, updateClaim, listClaims, searchClaims };
+  function addCommitListener(fn) {
+    if (typeof fn !== 'function') throw new TypeError('listener must be a function');
+    listeners.push(fn);
+  }
+  return { load, readSnapshot, transact, onCommit: addCommitListener, createClaim, updateClaim, listClaims, searchClaims };
 }
 
 module.exports = { createStore, rememberIdempotent, lookupIdempotent, ID_PATTERN, IDEMPOTENCY_MAX };
