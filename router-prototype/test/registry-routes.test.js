@@ -68,7 +68,7 @@ test('claims q searches visible fields only', async () => {
   const { routes } = await setup();
   assert.deepEqual((await call(routes, '/api/registry/claims?q=ALPHA')).body.items.map(c => c.id), ['c1']);
   assert.deepEqual((await call(routes, '/api/registry/claims?q=api-x')).body.items.map(c => c.id), ['c3']);
-  for (const hidden of ['secretkey', 'hiddenev', 'c1', 'active']) {
+  for (const hidden of ['secretkey', 'hiddenev', 'active', 'L1']) {
     assert.equal((await call(routes, `/api/registry/claims?status=all&q=${hidden}`)).body.total, 0, hidden);
   }
 });
