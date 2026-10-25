@@ -40,6 +40,22 @@ test('onCommit: once per commit; not on stale, abort or write failure; throw ign
   assert.equal(calls.length, 1);
 });
 
+test('onCommit: a rejected promise from a listener is caught and the commit succeeds', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'registry-reject-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const logged = t.mock.method(console, 'error', () => {});
+  const unhandled = [];
+  const onUnhandled = e => unhandled.push(e);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  const store = createStore(path.join(dir, 'r.json'), { onCommit: async () => { throw new Error('async boom'); } });
+  const out = await store.createClaim(0, { title: 'A' });
+  assert.equal(out.ok, true);
+  await sleep(20);
+  assert.equal(logged.mock.callCount(), 1);
+  assert.deepEqual(unhandled, []);
+});
+
 test('attach writes headers and hello; close removes client and heartbeat', async t => {
   const { live } = await setup(t, { heartbeatMs: 10 });
   const c = client();

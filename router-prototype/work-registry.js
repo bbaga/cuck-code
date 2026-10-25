@@ -122,7 +122,10 @@ function createStore(filePath, { onCommit } = {}) {
       }
       state = next;
       for (const fn of listeners) {
-        try { fn({ revision: next.revision, eventCursor: next.eventCursor }); } catch { /* a listener never affects the commit */ }
+        try {
+          const out = fn({ revision: next.revision, eventCursor: next.eventCursor });
+          if (out && typeof out.catch === 'function') out.catch((err) => console.error('registry onCommit listener rejected:', err && err.message));
+        } catch { /* a listener never affects the commit */ }
       }
       return { ok: true, revision: state.revision, result };
     });
