@@ -495,6 +495,19 @@ main/master branch - merging is the integration validator's job:
   When the line works across several repositories, it makes its own local
   copies of the non-primary repos inside its workdir and merges their
   feature branches there the same way - never pushing to any remote.
+- It starts the isolated router in the background with all standard streams
+  redirected. It uses a free `PORT` other than `7788` and a private `LINES_DIR`.
+  It captures the server PID and returns from the start command before other
+  tool calls. It waits for HTTP readiness with a bounded timeout. It registers
+  the PID at `POST /api/protocol/lines/:id/inventory` with kind `process`, the
+  integration worker ID, and the PID. It stops the PID after tests, including
+  after failure. Example:
+
+  ```sh
+  PORT=7789 LINES_DIR=/tmp/integration-lines node router-prototype/server.js \
+    >router.log 2>&1 & SERVER_PID=$!; echo "$SERVER_PID"
+  ```
+
 - It runs all acceptance tests, and for EVERY use case records a video of the
   test running (playwright `video: 'on'`, files under `evidence/` in its
   workdir), registering each one with
