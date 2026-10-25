@@ -34,6 +34,15 @@ and checks required and referenced local web assets. It does not execute scripts
 or start the router. This plain-JavaScript application has no transpilation or
 bundling build; static validation is not a compile or integration test.
 
+Evidence media validation requires `ffmpeg` on `PATH` (or the path in
+`EVIDENCE_FFMPEG`). The router calls it with fixed arguments, a video-frame
+limit, a five-second timeout, and a bounded output buffer. Images must decode.
+WebM files must produce one video frame. If `ffmpeg` is missing or rejects the
+media, registration fails before the record is saved. The evidence unit tests generate genuine PNG, JPEG, and WebM media in temporary
+folders with `ffmpeg`. The files are removed with the test folders. The tests do
+not skip positive media checks. Missing `ffmpeg` is a test failure and a clear
+runtime blocker.
+
 ## Planner and worker text handoff
 
 The router uses one text contract for a completed message: normalized entries
