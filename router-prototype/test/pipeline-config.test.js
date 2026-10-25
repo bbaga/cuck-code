@@ -127,6 +127,28 @@ test("resolvePipeline applies line pipeline overrides over env", () => {
   assert.strictEqual(r.implementor.model, "line-m");
 });
 
+test("resolvePipeline does not carry a model across harnesses", () => {
+  const line = { pipeline: {
+    planner: { harness: "claude" },
+    implementor: { harness: "claude" },
+    validator: { harness: "pi" },
+  } };
+  const r = resolvePipeline(line, { IMPLEMENTOR_MODEL: "env-m" });
+  assert.strictEqual(r.planner.model, null);
+  assert.strictEqual(r.implementor.model, null);
+  assert.strictEqual(r.validator.model, null);
+  assert.strictEqual(r.integration.model, "glm-5-3");
+  // Env harness and env model stay paired; the vibe default does not leak.
+  const e = resolvePipeline({}, { IMPLEMENTOR_HARNESS: "claude", IMPLEMENTOR_MODEL: "sonnet",
+    VALIDATOR_HARNESS: "claude" });
+  assert.strictEqual(e.implementor.model, "sonnet");
+  assert.strictEqual(e.validator.model, null);
+  // A line that names the env harness explicitly keeps the env model.
+  const same = resolvePipeline({ pipeline: { implementor: { harness: "vibe" } } },
+    { IMPLEMENTOR_MODEL: "env-m" });
+  assert.strictEqual(same.implementor.model, "env-m");
+});
+
 test("resolvePipeline merges per field: pipeline sets only model", () => {
   const line = { pipeline: { validator: { model: "only-model" } } };
   const r = resolvePipeline(line, {});
@@ -255,6 +277,15 @@ test("probeHarnesses attaches vibe models from env and defaults", async () => {
   ]);
 });
 
+test("probeHarnesses attaches claude aliases and CLAUDE_MODELS", async () => {
+  const results = await probeHarnesses(async () => null, {
+    CLAUDE_MODELS: "claude-opus-5-5, sonnet,,claude-haiku-5-5",
+  });
+  const claude = results.find((r) => r.id === "claude");
+  assert.deepStrictEqual(claude.models.map((m) => m.value),
+    ["opus", "sonnet", "haiku", "claude-opus-5-5", "claude-haiku-5-5"]);
+});
+
 // ---- parsePiModelCatalog ----
 
 test("parsePiModelCatalog parses a table with header and variable spacing", () => {
@@ -316,7 +347,42 @@ test("parsePiModelCatalog ignores junk lines without a model column", () => {
   assert.deepStrictEqual(parsed.models, [{ value: "p1/m1", label: "m1" }]);
 });
 
-// ---- regression: error prose must never become a catalog row ----
+// ---- regression: the real six-column catalog must parse ----
+
+test("parsePiModelCatalog parses the real pi catalog table with metadata columns", () => {
+  // Byte-for-byte shape of `pi --list-models` on a real install: the model
+  // id can itself be provider-qualified and the table carries context,
+  // max-out, thinking, and images columns after the model.
+  const out = [
+    "provider      model               context  max-out  thinking  images",
+    "lmstudio      google/gemma-4-e4b  50K      131.1K   yes       yes   ",
+    "openai-codex  gpt-5.6-luna        272K     128K     yes       yes   ",
+    "openai-codex  gpt-5.6-sol         272K     128K     yes       yes   ",
+  ].join("\n");
+  assert.deepStrictEqual(parsePiModelCatalog(out), {
+    providers: [
+      { value: "lmstudio", label: "lmstudio" },
+      { value: "openai-codex", label: "openai-codex" },
+    ],
+    models: [
+      { value: "lmstudio/google/gemma-4-e4b", label: "google/gemma-4-e4b" },
+      { value: "openai-codex/gpt-5.6-luna", label: "gpt-5.6-luna" },
+      { value: "openai-codex/gpt-5.6-sol", label: "gpt-5.6-sol" },
+    ],
+  });
+});
+
+test("parsePiModelCatalog ignores a wider row that misses the header width", () => {
+  const out = [
+    "provider  model",
+    "p1  m1  extra",
+    "p2  m2",
+  ].join("\n");
+  const parsed = parsePiModelCatalog(out);
+  assert.deepStrictEqual(parsed.providers, [{ value: "p2", label: "p2" }]);
+  assert.deepStrictEqual(parsed.models, [{ value: "p2/m2", label: "m2" }]);
+});
+
 
 test("parsePiModelCatalog rejects error prose passed directly", () => {
   for (const prose of [

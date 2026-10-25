@@ -15,6 +15,7 @@
 
   const PI_HARNESS_ID = "pi";
   const VIBE_HARNESS_ID = "vibe";
+  const CLAUDE_HARNESS_ID = "claude";
 
   function filterInstalled(harnesses) {
     return (harnesses || []).filter((h) => h && h.installed === true);
@@ -77,14 +78,15 @@
   }
 
   // Model choices for one phase row. Pi shows only the selected provider's
-  // qualified models from its detail response; Vibe shows base metadata
-  // models; other harnesses contribute nothing beyond the default option.
+  // qualified models from its detail response; Vibe and Claude show base
+  // metadata models; other harnesses contribute nothing beyond the default
+  // option.
   function modelOptionsForPhase({ harnesses, harnessId, piDetail }) {
     if (harnessId === PI_HARNESS_ID) {
       return piDetail ? piDetailModels(piDetail) : [];
     }
-    if (harnessId === VIBE_HARNESS_ID) {
-      return baseModelOptions(harnesses, VIBE_HARNESS_ID);
+    if (harnessId === VIBE_HARNESS_ID || harnessId === CLAUDE_HARNESS_ID) {
+      return baseModelOptions(harnesses, harnessId);
     }
     return [];
   }
@@ -238,6 +240,71 @@
     return isFailedValidator(w);
   }
 
+  function previewSelectionKey(workerId) {
+    return "preview:" + String(workerId);
+  }
+
+  function isPassingIntegration(worker) {
+    return !!worker && worker.kind === "integration" && worker.role === "validator"
+      && worker.status === "completed" && String(worker.verdict || "").toLowerCase() === "pass";
+  }
+
+  function previewSelectionExists(workers, selected) {
+    if (typeof selected !== "string" || !selected.startsWith("preview:")) return false;
+    return (workers || []).some((worker) => worker && worker.kind === "integration"
+      && previewSelectionKey(worker.id) === selected);
+  }
+
+  // Read-only preview contract adapter. Unknown or stale data is never eligible.
+  function previewForIntegration(worker, preview) {
+    if (!worker || worker.kind !== "integration" || !preview || typeof preview !== "object") return null;
+    const passing = worker.status === "completed" && String(worker.verdict || "").toLowerCase() === "pass";
+    const eligible = passing && preview.availability === "available" && preview.stale !== true
+      && preview.eligible === true && Array.isArray(preview.steps);
+    return { ...preview, eligible, steps: Array.isArray(preview.steps) ? preview.steps : [] };
+  }
+
+  function mapPreviewPayload(payload, worker) {
+    if (!payload || typeof payload !== "object" || !isPassingIntegration(worker)) return null;
+    const steps = Array.isArray(payload.steps) ? payload.steps
+      : Array.isArray(payload.instructions) ? payload.instructions : [];
+    const preview = {
+      ...payload,
+      sourceRevision: payload.sourceRevision || payload.source_revision || payload.revision || null,
+      projectDirectory: payload.projectDirectory || payload.project_directory || null,
+      expectedUrl: payload.expectedUrl || payload.expected_url || payload.url || null,
+      availability: payload.availability || (payload.available === false ? "unavailable"
+        : payload.stale === true ? "unavailable" : payload.eligible === true ? "available" : "unavailable"),
+      stale: payload.stale === true,
+      eligible: payload.eligible === true,
+      steps: steps.map((step) => typeof step === "string" ? { text: step } : step),
+    };
+    return previewForIntegration(worker, preview);
+  }
+
+  async function fetchLinePreview({ lineId, fetchImpl, isCurrent = () => true }) {
+    let response;
+    try { response = await fetchImpl("/api/lines/" + encodeURIComponent(lineId) + "/preview"); }
+    catch (error) { return isCurrent() ? { ok: false, availability: "unavailable", message: "Preview request failed." } : { stale: true }; }
+    if (!isCurrent()) return { stale: true };
+    if (response.status === 404) return { ok: false, availability: "unavailable", message: "No preview data is available for this line (HTTP 404)." };
+    if (!response.ok) return { ok: false, availability: "unavailable", message: "Preview request failed (HTTP " + response.status + ")." };
+    let payload;
+    try { payload = await response.json(); } catch { payload = null; }
+    if (!isCurrent()) return { stale: true };
+    return payload && typeof payload === "object"
+      ? { ok: true, payload }
+      : { ok: false, availability: "unavailable", message: "Preview response was invalid." };
+  }
+
+  function sanitizePreviewCommand(value) {
+    if (typeof value !== "string") return "";
+    let text = value.replace(/\r/g, "").split("\n").filter((line) => !/^\s*(?:\$|#|> )\s*/.test(line)).join("\n");
+    text = text.replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY)[A-Z0-9_]*)\s*=\s*\S+/gi, "$1=[REDACTED]")
+      .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,})\b/g, "[REDACTED]");
+    return text;
+  }
+
   function authBadge(entry) {
     if (!entry || entry.installed !== true) return "not installed";
     if (entry.auth === "ok") return "ok";
@@ -250,6 +317,7 @@
     EFFORT_LEVELS,
     PI_HARNESS_ID,
     VIBE_HARNESS_ID,
+    CLAUDE_HARNESS_ID,
     filterInstalled,
     findHarness,
     normalizeOptions,
@@ -269,6 +337,13 @@
     clearProviderState,
     buildPipelinePayload,
     authBadge,
+    previewForIntegration,
+    isPassingIntegration,
+    previewSelectionKey,
+    previewSelectionExists,
+    mapPreviewPayload,
+    fetchLinePreview,
+    sanitizePreviewCommand,
     isFailedValidator,
     shouldHideValidator,
   };

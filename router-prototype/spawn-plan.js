@@ -5,7 +5,7 @@
 // tests exercise them without starting the server or a CLI process.
 
 const { createHarness } = require("./harness");
-const { resolvePipeline, EFFORT_LEVELS } = require("./pipeline-config");
+const { resolvePipeline, defaultModelFor, EFFORT_LEVELS } = require("./pipeline-config");
 
 // Which pipeline phase a worker run belongs to.
 function phaseForWorker(role, kind) {
@@ -15,11 +15,15 @@ function phaseForWorker(role, kind) {
   return "implementor";
 }
 
-// Per-worker overrides win over the phase config when set.
-function resolveWorkerOverrides(cfg, worker) {
+// Per-worker overrides win over the phase config when set. A worker that
+// switches to another harness without naming a model gets that harness's
+// default model, never the phase model meant for a different CLI.
+function resolveWorkerOverrides(cfg, worker, phase) {
+  const harness = worker.harness || cfg.harness;
+  const fallbackModel = harness === cfg.harness ? cfg.model : defaultModelFor(harness, phase);
   return {
-    harness: worker.harness || cfg.harness,
-    model: worker.model || cfg.model,
+    harness,
+    model: worker.model || fallbackModel,
     effort: worker.effort || cfg.effort,
   };
 }

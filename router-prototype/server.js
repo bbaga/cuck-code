@@ -9,6 +9,7 @@ const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   validateWorkerSpawnBody, lineSummary } = require("./spawn-plan");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
+const { StderrCapture, describeFailure } = require("./run-failure");
 const { messageText, InvocationCapture, appendTranscript, hasCriteria,
   validationCriteriaBlock, pendingValidationFor, reportForValidation,
   applyCompletion, completionFields, missingCriteriaDiagnostic, runOutputNote,
@@ -18,9 +19,12 @@ const { flushPendingValidationQueue, removePendingValidations,
   serializePendingValidations, restorePendingValidations } = require("./validation-queue");
 const { CHANGESET_LIMIT, collectChangeset, changesetWakeMessage,
   changesetFields } = require("./changeset");
+const { BaseError, resolveSpawnBase, baseFields, baseNote } = require("./spawn-base");
 const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
-  restorePlannerRequests } = require("./planner-request");
+  restorePlannerRequests, serializePlannerRequest, restoreKnownNoticeIds,
+  writeFileDurable, enqueuePlannerRequest, submitPrompt } = require("./planner-request");
+const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence } = require("./evidence");
 
 const PORT = Number(process.env.PORT || 7788);
@@ -258,13 +262,24 @@ ${userPrompt}
 
 ## Harness readiness
 1. Call GET http://localhost:${port}/api/harnesses.
-2. Check each harness this line configures. Check each harness you want
-   to give to a worker.
-3. When a harness is not installed, or its auth state is missing, tell
-   the user. Give the login command from loginHint. Stop and wait.
-4. Do not spawn a worker with a harness that is not ready. After the
-   user logs in, call GET http://localhost:${port}/api/harnesses?refresh=1.
-   Check again.
+2. Check each harness this line configures and each harness you want
+   to give to a worker. For pi, the base auth is ALWAYS "unknown" by design:
+   the catalog lists providers but does not check their credentials. Do not
+   infer a failed login from this value or stop planning because of it.
+3. For each configured pi provider, call GET
+   http://localhost:${port}/api/harnesses/pi?provider=<provider> (URL-encode
+   the provider name). Use the provider from the configured pi model's
+   provider/model id. If no provider is selected yet, ask the user to choose
+   one; the base probe cannot verify provider-free auth. A pi detail auth of
+   "ok" means ready, "missing" means the user must run pi /login in the pi
+   TUI used by the router, and "unknown" means the check could not complete
+   (not proof that login failed). Do not ask the user to log in again merely
+   because the base auth was "unknown".
+4. When a harness is not installed or its relevant auth check reports
+   "missing", give the loginHint and stop before invoking that harness.
+   After login, refresh GET http://localhost:${port}/api/harnesses?refresh=1
+   and repeat the pi provider detail check. Do not spawn an unready worker.
+   Auth inspection alone does not forbid writing plan.md before approval.
 
 ## Factory protocol
 1. Write the plan to plan.md in your workdir (markdown, including a
@@ -279,6 +294,12 @@ ${userPrompt}
    curl -s -X POST http://localhost:${port}/api/protocol/lines/${lineId}/workers \\
      -H 'Content-Type: application/json' \\
      -d '{"name":"<worker-name>","persona":"backend|frontend","repo":"<repo-name>","prompt":"<full instructions>"}'
+   Optional "base" sets the start point of the worktree: a full 40-character
+   commit SHA, or the name of a finished implementor of the same line and
+   repo (its branch head is used). The 500-line limit counts from it. For a
+   stack of dependent PRs, give the child the parent's validated implementor
+   name or head SHA as "base"; the child's draft PR base is the parent's
+   branch. Rejections: 404 unknown, 400 malformed/other repo, 409 running.
    The "repo" field is optional and selects the repository the worker
    works in (default "primary" - your workdir). A line can work across
    several repositories: register additional ones with
@@ -520,11 +541,11 @@ git push -u origin HEAD
 Report the branch name with: git rev-parse --abbrev-ref HEAD`;
 }
 
-function changesetBlock(baseCommit) {
+function changesetBlock(baseCommit, baseNoteText) {
   return `## Change-set limit
 The router measures your change set from base commit ${baseCommit || "unknown"}
 to your branch HEAD (git diff --numstat).
-The limit is ${CHANGESET_LIMIT} changed lines: additions plus deletions.
+${baseNoteText || ""}The limit is ${CHANGESET_LIMIT} changed lines: additions plus deletions.
 The count covers code, tests, documentation, and configuration.
 Binary, dirty, or untracked work cannot enter validation.
 Keep your total at or below the limit. The router enforces this rule.
@@ -534,7 +555,7 @@ The planner can continue your session to reduce or split the work.
 `;
 }
 
-function workerBrief(name, lineName, prompt, persona, workerId, lineId, repo, baseCommit) {
+function workerBrief(name, lineName, prompt, persona, workerId, lineId, repo, baseCommit, baseNoteText) {
   const repoUrl = repo && repo.url ? repo.url : null;
   return `You are implementor worker '${name}' (id ${workerId}) on factory line '${lineName}'.
 Your repository for this task: '${repo ? repo.name : "primary"}'${repoUrl ? ` (remote: ${repoUrl})` : " (no remote)"}.
@@ -546,7 +567,7 @@ checkout: every file you read or write must be inside your worktree.
 Commit your work with clear messages.
 Test scope: run UNIT TESTS only. Do NOT run integration tests. The CI
 pipelines of the repository run the integration tests.
-${changesetBlock(baseCommit)}${containersBlock(workerId, lineId)}${remoteBlockImplementor(repoUrl)}
+${changesetBlock(baseCommit, baseNoteText)}${containersBlock(workerId, lineId)}${remoteBlockImplementor(repoUrl)}
 
 ${IMPL_PERSONA[persona] || IMPL_PERSONA.backend}
 ${persona === "frontend" ? frontendToolsBlock(workerId, null, lineId) : ""}
@@ -630,7 +651,6 @@ idioms).`;
 
 
 function integrationValidatorBrief(line, branchEntries, instructions, workerId, repos) {
-  const primary = repos.find((r) => r.name === "primary") || { url: null };
   const extraRepos = repos.filter((r) => r.name !== "primary");
   return `You are the INTEGRATION VALIDATOR (id ${workerId}) for factory line '${line.name}'.
 This line works across ${repos.length} repositor${repos.length === 1 ? "y" : "ies"}:
@@ -643,6 +663,13 @@ You are the ONLY stage that runs integration tests locally: the
 implementors and the validators run unit tests only. Run the full
 acceptance and integration test suites here.
 
+Start the isolated router in the background. Redirect all standard
+streams, and use a free PORT other than 7788 and a private LINES_DIR.
+Capture the server PID and return from the start command before any
+other tool call. Wait for HTTP readiness with a bounded timeout.
+Register the PID with the router inventory under your integration
+worker ID. Stop the server PID after tests, including after failure.
+
 The feature branches to merge (one per implementor):
 ${branchEntries.map((e) => `- ${e.branch} (repo '${e.repo}')`).join("\n")}
 
@@ -650,33 +677,48 @@ Instructions from the planner:
 ${instructions}
 
 Procedure:
-1. For the 'primary' repo: merge each of its feature branches on top
-   of your integration branch, one by one:
+1. Start the isolated router in the background:
+   PORT=<free-port> LINES_DIR=<private-dir> node router-prototype/server.js >router.log 2>&1 & SERVER_PID=$!; echo "$SERVER_PID"
+   Return from this command before any other tool call. Poll the HTTP
+   endpoint with a bounded timeout until it responds. Register the PID
+   with POST /api/protocol/lines/${line.id}/inventory, using kind process,
+   name integration-router, pid $SERVER_PID, and worker ${workerId}.
+2. For each feature branch, use its matching expected commit. The
+   expected commit SHAs come from the planner instructions above.
+   Keep each branch and expected commit together. Merge every feature
+   branch with one explicit Git merge command. Do not use a shell loop.
+   Use one command for each branch:
    git merge <branch> --no-edit
+   Check the exit status of each command. If a command fails, stop.
+   Report the exact command, exit status, and stderr. Do not infer
+   success from silent output. After each successful merge, run:
+   git merge-base --is-ancestor <expected-commit> HEAD
+   Check its exit status. If it is not zero, stop and report the
+   expected commit and the command failure.
    Resolve conflicts yourself, keeping both features where possible.
    If a conflict cannot be resolved sensibly, stop and report it.
-${extraRepos.length ? `2. For EVERY other repo in the list: make your own copy inside
-   your workdir (git clone <remote or path> <repo-name>), create a
-   local integration branch from its main branch, and merge its
-   feature branches there the same way. Never push to their remotes.` : "2. No additional repositories are registered for this line."}
-3. When all branches are merged, run ALL acceptance tests and verify
+${extraRepos.length ? `3. For every other repo in the list: make your own copy inside
+   your workdir (git clone <remote or path> <repo-name>). Create a
+   local integration branch from its main branch. Apply the same
+   explicit merge and ancestry checks to each feature branch. Never
+   push to their remotes.` : "3. No additional repositories are registered for this line."}
+4. When all branches are merged, run ALL acceptance tests and verify
    everything works together. Build and run the project if needed.
-4. Record one complete showcase for this integration attempt.
-   Use one browser context for the complete demonstration.
-   Keep one continuous video through all feature transitions.
-   Capture one PNG or JPEG screenshot after each significant feature step.
-   Write a nonempty title and explanation for every screenshot.
-   The explanation must identify the visible result and feature it proves.
-   Include every implemented feature in the video and step list.
-5. Close the browser context before registration. Register only a finalized
-   WebM recording and screenshots from your worktree.
-6. Register the showcase with this exact request:
+5. For EACH use case you test, record a video of the test case running.
+   Use playwright with video recording enabled. Close the browser context
+   before registration. Register only finalized WebM files.
+6. Capture one PNG or JPEG screenshot after each significant showcase step.
+   Use a nonempty title and explanation for every screenshot. The explanation
+   must identify the visible result and feature it proves.
+7. Register each evidence file with the router. For a showcase, use:
    curl -s -X POST http://localhost:${PORT}/api/protocol/workers/${workerId}/evidence \
      -H 'Content-Type: application/json' \
      -d '{"useCase":"<complete demonstration title>","file":"evidence/showcase.webm","steps":[{"title":"<step title>","explanation":"<visible result and feature>","screenshot":"evidence/step-1.png"}]}'
-   All paths are relative to your worktree. Report any capture or
-   registration failure explicitly. Keep the result tied to this attempt.
-7. Reply with an INTEGRATION REPORT: branches merged (per repo),
+   All paths are relative to your workdir. Report capture or registration
+   failures explicitly. Keep every result tied to this attempt.
+8. Stop the server after all tests, including after failure:
+   kill "$SERVER_PID" || true
+9. Reply with an INTEGRATION REPORT: branches merged (per repo),
    conflicts resolved (per branch, one line), acceptance test results,
    the list of registered evidence use cases, then a final line
    "VERDICT: PASS" or "VERDICT: FAIL".
@@ -703,16 +745,17 @@ function broadcast(line, event, data) {
 }
 
 function saveLine(line) {
-  if (line.deleted) return;
+  if (line.deleted) return false;
   try {
-    fs.writeFileSync(path.join(line.workdir, "line.json"),
+    writeFileDurable(path.join(line.workdir, "line.json"),
       JSON.stringify({ id: line.id, name: line.name, sessionId: line.sessionId,
         repoUrl: line.repoUrl || null,
         pipeline: line.pipeline || null,
         pendingValidations: serializePendingValidations(line.pendingValidations),
         plannerQueue: serializePlannerRequests(line.queue),
+        knownNoticeIds: restoreKnownNoticeIds(line.knownNoticeIds),
         activePlannerRequest: line.activePlannerRequest
-          ? { text: line.activePlannerRequest.text, source: line.activePlannerRequest.source || null }
+          ? serializePlannerRequest(line.activePlannerRequest)
           : null,
         repos: [...(line.repos || new Map()).values()].map((r) => ({
           name: r.name, url: r.url, path: r.path })),
@@ -735,10 +778,15 @@ function saveLine(line) {
           validationCriteria: w.validationCriteria || null,
           role: w.role, validates: w.validates, persona: w.persona || "backend",
           repo: w.repo || "primary", worktreePath: w.worktreePath,
-          ...changesetFields(w),
+          ...changesetFields(w), ...baseFields(w),
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
-          kind: w.kind || "standard" })) }));
-  } catch {}
+          lastError: w.lastError || null,
+          kind: w.kind || "standard", validatedCommit: w.validatedCommit || null })) }));
+    return true;
+  } catch (err) {
+    console.error(`saveLine failed for line ${line.id}: ${err && err.message}`);
+    return false;
+  }
 }
 
 function readBody(req, cb) {
@@ -815,15 +863,14 @@ async function gateHarnesses(harnessIds, res) {
 }
 
 function enqueueRequest(line, request) {
-  const trustedRequest = restorePlannerRequest(request);
-  if (!trustedRequest) return;
-  line.queue.push(trustedRequest);
-  saveLine(line);
-  pump(line);
+  const result = enqueuePlannerRequest(line, request, saveLine);
+  if (result.ok && !result.duplicate) pump(line);
+  else if (!result.ok) console.error(`enqueue failed for line ${line.id}: ${result.reason}`);
+  return result;
 }
 
 function enqueue(line, text, source = null) {
-  enqueueRequest(line, plannerRequest(text, source));
+  return enqueueRequest(line, plannerRequest(text, source));
 }
 
 const WAKE_PREFIXES = ["IMPLEMENTOR REPORT", "VALIDATION REPORT", "VALIDATOR FAILURE",
@@ -892,9 +939,13 @@ function pump(line) {
     for (const raw of stdoutRecords.push(chunk)) consumePlannerRecord(raw);
   });
 
-  let stderr = "";
+  const stderr = new StderrCapture();
   child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (c) => { stderr = (stderr + c).slice(-2000); });
+  child.stderr.on("data", (c) => stderr.push(c));
+  // A CLI that cannot start (e.g. not on PATH) emits "error" before
+  // "close"; without this listener the router process would crash.
+  let spawnError = null;
+  child.on("error", (err) => { spawnError = err; });
 
   child.on("close", (code, signal) => {
     if (killTimer) clearTimeout(killTimer);
@@ -908,14 +959,18 @@ function pump(line) {
       appendTranscript(line.transcript, finished);
       broadcast(line, "entry", finished);
     }
-    const result = adapter.outcome(code, signal);
+    const result = spawnError ? "fail" : adapter.outcome(code, signal);
+    const failure = result !== "ok"
+      ? describeFailure({ cmd: plan.cmd, code, signal, outcome: result, spawnError,
+        streamError: adapter.errorText(), stderr: stderr.text() })
+      : null;
     slog("info", "planner.run.end", { lineId: line.id, code, result,
       ms: Date.now() - t0,
-      stderr: result !== "ok" ? preview(stderr, 300) : undefined });
+      error: failure ? preview(failure, 500) : undefined });
     cleanupStage(line, "planner");
     saveLine(line);
     if (result !== "ok") {
-      broadcast(line, "error", { message: stderr.slice(-500) || `${plan.cmd} exited with code ${code}` });
+      broadcast(line, "error", { message: `Planner run failed. ${failure}` });
       if (isWake(line.lastRun)) {
         line.wakeRetries = line.wakeRetries || {};
         const attempts = (line.wakeRetries[line.lastRun] || 0);
@@ -1067,7 +1122,8 @@ function spawnWorker(line, worker, prompt, resume) {
   saveLine(line);
   const phase = phaseForWorker(worker.role, worker.kind);
   const cfg = resolvePipeline(line)[phase];
-  const effective = resolveWorkerOverrides(cfg, worker);
+  const effective = resolveWorkerOverrides(cfg, worker, phase);
+  worker.lastError = null;
   worker.harness = effective.harness;
   worker.model = effective.model;
   worker.effort = effective.effort;
@@ -1115,6 +1171,15 @@ function spawnWorker(line, worker, prompt, resume) {
     for (const raw of stdoutRecords.push(chunk)) consumeWorkerRecord(raw);
   });
 
+  // Drain stderr: an unread pipe can fill up and block the child.
+  const stderr = new StderrCapture();
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (c) => stderr.push(c));
+  // A CLI that cannot start emits "error" before "close"; without this
+  // listener the router process would crash.
+  let spawnError = null;
+  child.on("error", (err) => { spawnError = err; });
+
   child.on("close", (code, signal) => {
     if (killTimer) clearTimeout(killTimer);
     for (const raw of stdoutRecords.finish()) consumeWorkerRecord(raw);
@@ -1125,17 +1190,30 @@ function spawnWorker(line, worker, prompt, resume) {
       worker.transcript.push(finished);
       broadcast(line, "worker_entry", { workerId: worker.id, entry: finished });
     }
-    workerClosed(line, worker, code, signal, workerRunOutput, { invocationId, runId });
+    const outcome = spawnError ? "fail" : adapter.outcome(code, signal);
+    // A stop request is not a failure: it needs no error detail.
+    worker.lastError = outcome !== "ok" && !worker.stopRequested
+      ? describeFailure({ cmd: plan.cmd, code, signal, outcome, spawnError,
+        streamError: adapter.errorText(), stderr: stderr.text() })
+      : null;
+    workerClosed(line, worker, code, signal, workerRunOutput, { invocationId, runId, outcome });
   });
 }
 
 function workerClosed(line, worker, code, signal, workerRunOutput = new InvocationCapture(), invocation = {}) {
   worker.child = null;
-  const outcome = worker.adapter
+  const outcome = invocation.outcome || (worker.adapter
     ? worker.adapter.outcome(code, signal)
-    : (code === 0 ? "ok" : "fail");
+    : (code === 0 ? "ok" : "fail"));
   const report = workerRunOutput.text();
   const statusEvent = applyCompletion(worker, outcome, worker.stopRequested, report);
+  if (worker.kind === "integration") {
+    const verdict = report.match(/^\s*(?:[-*]\s*)?(?:\*\*)?VERDICT(?:\*\*)?\s*:\s*(PASS|FAIL)\s*$/im);
+    if (worker.status === "completed" && verdict?.[1].toUpperCase() === "PASS") {
+      const revision = spawnSync("git", ["-C", worker.worktreePath, "rev-parse", "HEAD"], { encoding: "utf8", timeout: 3000 });
+      worker.validatedCommit = revision.status === 0 && /^[a-f0-9]{40}$/i.test(revision.stdout.trim()) ? revision.stdout.trim() : null;
+    } else worker.validatedCommit = null;
+  }
   if (invocation.invocationId) worker.lastCompletedInvocationId = invocation.invocationId;
   worker.activeInvocationId = null;
   const timedOut = outcome === "timeout" && !worker.stopRequested;
@@ -1145,19 +1223,23 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
   }
   if (line.deleted) return;
   saveLine(line);
-  broadcast(line, "worker_status", statusEvent);
+  broadcast(line, "worker_status", { ...statusEvent, error: worker.lastError || null });
   const sid = worker.sessionId || "unknown";
   slog("info", "worker.closed", { lineId: line.id, workerId: worker.id, name: worker.name,
     role: worker.role, status: worker.status, verdict: worker.verdict || undefined,
     reportChars: report.length,
-    report: preview(report, 300) });
+    report: preview(report, 300),
+    error: worker.lastError ? preview(worker.lastError, 500) : undefined });
+  // The failure detail for the planner wake prompts; empty when the run
+  // left none (completed or stopped runs).
+  const failureNote = worker.lastError ? `\n\nFAILURE DETAIL:\n${worker.lastError}` : "";
   if (worker.role === "validator" && worker.kind === "integration") {
     if (worker.status === "completed") {
       enqueue(line, buildIntegrationNotification(worker, report));
     } else if (timedOut) {
-      enqueue(line, `INTEGRATION TIMEOUT - integration validator '${worker.name}' hit the run time limit. The merged work is on branch ${worker.branch}. Decide how to proceed.` + runOutputNote(report, "integration run output"));
+      enqueue(line, `INTEGRATION TIMEOUT - integration validator '${worker.name}' hit the run time limit. The merged work is on branch ${worker.branch}. Decide how to proceed.` + runOutputNote(report, "integration run output") + failureNote);
     } else {
-      enqueue(line, `INTEGRATION STOPPED/FAILED - integration validator '${worker.name}' did not complete. Its worktree may be partially merged. Decide how to proceed.` + runOutputNote(report, "integration run output"));
+      enqueue(line, `INTEGRATION STOPPED/FAILED - integration validator '${worker.name}' did not complete. Its worktree may be partially merged. Decide how to proceed.` + runOutputNote(report, "integration run output") + failureNote);
     }
   } else if (worker.role === "validator") {
     const impl = line.workers.get(worker.validates);
@@ -1167,11 +1249,11 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
     if (worker.status === "completed") {
       enqueue(line, buildValidationNotification(worker, impl, report));
     } else if (timedOut) {
-      enqueue(line, `VALIDATOR TIMEOUT - the validator hit the run time limit and was interrupted. Validators are fresh sessions each time: the implementor work is unchanged, decide how to proceed (usually nothing - validation repeats after the next implementor completion).` + runOutputNote(report, "validation run output"));
+      enqueue(line, `VALIDATOR TIMEOUT - the validator hit the run time limit and was interrupted. Validators are fresh sessions each time: the implementor work is unchanged, decide how to proceed (usually nothing - validation repeats after the next implementor completion).` + runOutputNote(report, "validation run output") + failureNote);
     } else if (worker.status === "failed") {
-      enqueue(line, `VALIDATOR FAILURE - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) exited non-zero. Decide how to proceed.` + runOutputNote(report, "validation run output"));
+      enqueue(line, `VALIDATOR FAILURE - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) failed (see FAILURE DETAIL). Decide how to proceed.` + runOutputNote(report, "validation run output") + failureNote);
     } else {
-      enqueue(line, `VALIDATOR STOPPED - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) was stopped. Decide how to proceed.` + runOutputNote(report, "validation run output"));
+      enqueue(line, `VALIDATOR STOPPED - validator '${worker.name}' (checking implementor '${implName}', workerId ${implId}) was stopped. Decide how to proceed.` + runOutputNote(report, "validation run output") + failureNote);
     }
   } else if (worker.status === "completed") {
     // Recalculate the change set after every successful implementor run.
@@ -1191,11 +1273,11 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
       enqueueRequest(line, request);
     }
   } else if (timedOut) {
-    enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: POST /api/protocol/workers/${worker.id}/continue with {"prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.` + runOutputNote(report, "implementor run output"));
+    enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: POST /api/protocol/workers/${worker.id}/continue with {"prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.` + runOutputNote(report, "implementor run output") + failureNote);
   } else if (worker.status === "failed") {
-    enqueue(line, `WORKER FAILURE - '${worker.name}' (workerId ${worker.id}, session ${sid}): ${worker.harness || "vibe"} exited non-zero. Decide whether to restart it with a corrected prompt (new name, e.g. ${worker.name}-2) or to proceed without it.` + runOutputNote(report, "implementor run output"));
+    enqueue(line, `WORKER FAILURE - '${worker.name}' (workerId ${worker.id}, session ${sid}): ${worker.harness || "vibe"} failed (see FAILURE DETAIL). Decide whether to restart it with a corrected prompt (new name, e.g. ${worker.name}-2) or to proceed without it.` + runOutputNote(report, "implementor run output") + failureNote);
   } else {
-    enqueue(line, `WORKER STOPPED - '${worker.name}' (workerId ${worker.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.` + runOutputNote(report, "implementor run output"));
+    enqueue(line, `WORKER STOPPED - '${worker.name}' (workerId ${worker.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.` + runOutputNote(report, "implementor run output") + failureNote);
   }
   flushPendingValidations(line);
 }
@@ -1246,6 +1328,82 @@ function isCurrentEvidence(line, item) {
   const worker = line.workers.get(item.by);
   return !worker || item.attemptId === currentAttemptId(worker);
 }
+
+const { createRegistryRoutes } = require("./registry-routes");
+const { createStore: createRegistryStore } = require("./work-registry");
+const { createDelivery: createRegistryDelivery } = require("./registry-delivery");
+const { createRefresh: createRegistryRefresh, matchRepo: matchRegistryRepo, ghCheckPullRequest } = require("./registry-refresh");
+const { createStalenessSweep } = require("./registry-staleness");
+const REGISTRY_FILE = path.join(LINES_DIR, "work-coordination.json");
+const registryStore = createRegistryStore(REGISTRY_FILE);
+let registryUnavailable = null;
+let registryDelivery = null;
+const REGISTRY_DELIVERY_MS = 30000;
+const REGISTRY_SWEEP_MS = 10 * 60 * 1000;
+const REGISTRY_FIRST_SWEEP_MS = 60 * 1000;
+const registryRefresh = createRegistryRefresh({
+  store: registryStore,
+  resolveRepo: (claim) => {
+    const line = lines.get(claim.ownerLineId);
+    return line ? matchRegistryRepo(repoList(line), claim.repo) : null;
+  },
+  checkPullRequest: ghCheckPullRequest,
+  deliver: () => registryDeliver(),
+  log: (event, data) => slog("warn", event, data),
+});
+const registryStaleness = createStalenessSweep({
+  store: registryStore,
+  getLine: (id) => lines.get(id),
+  resolveRepo: (claim) => {
+    const line = lines.get(claim.ownerLineId);
+    return line ? matchRegistryRepo(repoList(line), claim.repo) : null;
+  },
+  log: (event, data) => slog("warn", event, data),
+});
+// Merge refresh first, then the staleness sweep. Each is caught on its own.
+async function registrySweepAll() {
+  await registryRefresh.sweep().catch((err) => slog("error", "registry.refresh.sweep_failed", { error: String(err && err.message) }));
+  await registryStaleness.sweep().catch((err) => slog("error", "registry.staleness.sweep_failed", { error: String(err && err.message) }));
+}
+const registryRoutes = createRegistryRoutes({
+  refresh: registryRefresh,
+  staleness: registryStaleness,
+  store: registryStore,
+  lineExists: (id) => lines.has(id),
+  lineName: (id) => (lines.get(id) ? lines.get(id).name : null),
+  unavailable: () => registryUnavailable,
+  onOutbox: () => registryDeliver(),
+});
+// Not awaited by callers. Safe to call at any time, also after a merge refresh.
+function registryDeliver() {
+  if (!registryDelivery) return Promise.resolve(null);
+  return registryDelivery.deliver().catch((err) => {
+    slog("error", "registry.delivery.failed", { error: String(err && err.message) });
+    return null;
+  });
+}
+registryStore.load().then(() => {
+  registryDelivery = createRegistryDelivery({
+    store: registryStore,
+    getLine: (id) => lines.get(id),
+    enqueueNotice: (line, text, noticeId) => enqueueRequest(line, plannerRequest(text, null, noticeId)),
+    now: Date.now,
+    log: (event, data) => slog("warn", event, data),
+  });
+  registryDeliver();
+  setInterval(registryDeliver, REGISTRY_DELIVERY_MS).unref();
+  setInterval(registrySweepAll, REGISTRY_SWEEP_MS).unref();
+  setTimeout(registrySweepAll, REGISTRY_FIRST_SWEEP_MS).unref();
+}).catch((err) => {
+  if (err && err.code === "REGISTRY_CORRUPT") {
+    registryUnavailable = { error: "Work registry is corrupt: " + err.message, file: REGISTRY_FILE };
+    slog("error", "registry.corrupt", { file: REGISTRY_FILE, error: err.message });
+    console.error(`work registry corrupt, registry routes disabled: ${REGISTRY_FILE}: ${err.message}`);
+  } else {
+    slog("error", "registry.load.failed", { file: REGISTRY_FILE, error: String(err && err.message) });
+    console.error(`work registry load failed: ${REGISTRY_FILE}: ${err && err.message}`);
+  }
+});
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://localhost");
@@ -1342,6 +1500,7 @@ const server = http.createServer((req, res) => {
       }
       let text = body.text;
       let kind = "plain";
+      const wasStarted = line.started;
       if (!line.started) {
         line.started = true;
         kind = "initial";
@@ -1353,13 +1512,12 @@ const server = http.createServer((req, res) => {
           text = `PLAN FEEDBACK from the user: ${body.text}. Revise plan.md accordingly. Do not spawn workers yet.`;
         } catch {}
       }
-      line.queue.push(plannerRequest(text));
-      saveLine(line);
-      const position = line.queue.length;
-      slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
-        prompt: preview(body.text, 2000) });
-      pump(line);
-      json(res, 202, { queued: true, position });
+      const out = submitPrompt(line, plannerRequest(text), {
+        wasStarted, save: saveLine, pump,
+        onQueued: () => slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
+          prompt: preview(body.text, 2000) }) });
+      if (out.status !== 202) console.error(`prompt rejected for line ${line.id}: ${out.body.error}`);
+      json(res, out.status, out.body);
     });
     return;
   }
@@ -1418,6 +1576,11 @@ const server = http.createServer((req, res) => {
     for (const res2 of line.clients) { try { res2.end(); } catch {} }
     line.clients.clear();
     lines.delete(line.id);
+    if (!registryUnavailable) {
+      registryRoutes.onLineDeleted(line.id).catch((err) => {
+        slog("error", "registry.line_deleted.failed", { lineId: line.id, error: String(err && err.message) });
+      });
+    }
     for (const p of [line.workdir, path.join(LINES_DIR, "worktrees", line.id)]) {
       try { fs.rmSync(p, { recursive: true, force: true }); } catch {}
     }
@@ -1532,7 +1695,8 @@ const server = http.createServer((req, res) => {
         id: w.id, name: w.name, ...completionFields(w), sessionId: w.sessionId, branch: w.branch,
         role: w.role, validates: w.validates, persona: w.persona || "backend",
         kind: w.kind || "standard",
-        ...changesetFields(w),
+        ...changesetFields(w), ...baseFields(w),
+        lastError: w.lastError || null,
       })) });
     }
     if (!line.planApproved) return json(res, 409, { error: "plan not approved" });
@@ -1573,8 +1737,19 @@ const server = http.createServer((req, res) => {
       const worktreePath = repo.name === "primary"
         ? path.join(LINES_DIR, "worktrees", line.id, sName)
         : path.join(LINES_DIR, "worktrees", line.id, repo.name, sName);
+      // Validate the base BEFORE any branch or worktree exists.
+      let baseResolved = null;
+      try {
+        baseResolved = resolveSpawnBase(body.base, { workers: line.workers.values(),
+          repoName: repo.name,
+          run: (args) => spawnSync("git", ["-C", repo.path, ...args], { encoding: "utf8" }) });
+      } catch (e) {
+        if (e instanceof BaseError) return json(res, e.status, { error: e.message });
+        return json(res, 500, { error: `base resolution failed: ${e.message}` });
+      }
       fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
-      const wt = spawnSync("git", ["-C", repo.path, "worktree", "add", "-b", branch, worktreePath],
+      const wt = spawnSync("git", ["-C", repo.path, "worktree", "add", "-b", branch, worktreePath,
+        ...(baseResolved ? [baseResolved.sha] : [])],
         { encoding: "utf8" });
       if (wt.error) return json(res, 500, { error: `git is not available: ${wt.error.message}` });
       if (wt.status !== 0) return json(res, 500, { error: "git worktree add failed", stderr: wt.stderr });
@@ -1583,14 +1758,21 @@ const server = http.createServer((req, res) => {
       const baseHead = spawnSync("git", ["-C", worktreePath, "rev-parse", "HEAD"],
         { encoding: "utf8" });
       const baseCommit = baseHead.status === 0 ? baseHead.stdout.trim() : null;
+      if (baseResolved && baseCommit !== baseResolved.sha) {
+        spawnSync("git", ["-C", repo.path, "worktree", "remove", "--force", worktreePath]);
+        spawnSync("git", ["-C", repo.path, "branch", "-D", branch]);
+        return json(res, 500, { error: "worktree HEAD does not match the resolved base", expected: baseResolved.sha, actual: baseCommit });
+      }
+      const base = baseResolved ? body.base : null;
       const worker = { id, lineId: line.id, name: body.name,
         role: "implementor", validates: null, persona, kind: "standard", repo: repo.name,
         runGeneration: 1,
         harness: body.harness || null, model: body.model || null,
         effort: body.effort || null,
-        prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo, baseCommit),
+        prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo, baseCommit,
+          baseNote(base, baseResolved)),
         sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
-        baseCommit, changeset: null,
+        baseCommit, changeset: null, base, baseResolved,
         child: null, transcript: [] };
       line.workers.set(id, worker);
       saveLine(line);
@@ -1598,7 +1780,8 @@ const server = http.createServer((req, res) => {
         name: body.name, persona, branch, repo: repo.name, repoUrl: repo.url || undefined });
       spawnWorker(line, worker, worker.prompt);
       broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona, repo: repo.name } });
-      json(res, 201, { workerId: id, branch, worktree: worktreePath, repo: repo.name });
+      json(res, 201, { workerId: id, branch, worktree: worktreePath, repo: repo.name,
+        baseCommit, ...baseFields(worker) });
     });
     return;
   }
@@ -1939,6 +2122,13 @@ When done, reply with a report: what you changed, files changed, how you verifie
     return json(res, 200, { lines: [...lines.values()].map(lineSummary) });
   }
 
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "preview") {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    try { return json(res, 200, previewForLine(line)); }
+    catch { return json(res, 200, { eligible: false, reason: "Preview instructions are unavailable." }); }
+  }
+
   if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "events") {
     const line = lines.get(parts[2]);
     if (!line) return json(res, 404, { error: "no such line" });
@@ -1955,6 +2145,7 @@ When done, reply with a report: what you changed, files changed, how you verifie
         id: w.id, name: w.name, ...completionFields(w), branch: w.branch, role: w.role,
         validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
         ...changesetFields(w),
+        lastError: w.lastError || null,
       })) });
     req.on("close", () => {
       line.clients.delete(res);
@@ -1982,6 +2173,8 @@ When done, reply with a report: what you changed, files changed, how you verifie
     }
     return;
   }
+
+  if (registryRoutes.handle(req, res, url, parts, json)) return;
 
   json(res, 404, { error: "not found" });
 });
@@ -2022,6 +2215,7 @@ function loadLines() {
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           repo: w.repo || "primary",
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
+          lastError: w.lastError || null,
           sessionId: w.sessionId,
           worktreePath: w.worktreePath
             || path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name)),
@@ -2030,7 +2224,9 @@ function loadLines() {
           runGeneration: Number.isInteger(w.runGeneration) ? w.runGeneration : 0,
           activeInvocationId: w.activeInvocationId || null,
           lastCompletedInvocationId: w.lastCompletedInvocationId || null,
-          baseCommit: w.baseCommit || null, changeset: w.changeset || null });
+          baseCommit: w.baseCommit || null, changeset: w.changeset || null,
+          validatedCommit: w.validatedCommit || null,
+          ...baseFields(w) });
       }
       for (const w of meta.workers || []) {
         if (w.role !== "validator") continue;
@@ -2039,9 +2235,11 @@ function loadLines() {
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
           role: "validator", validates: w.validates, prompt: null, kind: w.kind || "standard", verdict: w.verdict || null,
           validationSource: w.validationSource || null, validationCriteria: w.validationCriteria || null,
+          validatedCommit: w.validatedCommit || null,
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           repo: w.repo || (impl ? impl.repo : "primary"),
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
+          lastError: w.lastError || null,
           sessionId: w.sessionId,
           worktreePath: w.worktreePath
             || (impl ? impl.worktreePath
@@ -2052,7 +2250,9 @@ function loadLines() {
           runGeneration: Number.isInteger(w.runGeneration) ? w.runGeneration : 0,
           activeInvocationId: w.activeInvocationId || null,
           lastCompletedInvocationId: w.lastCompletedInvocationId || null,
-          baseCommit: w.baseCommit || null, changeset: w.changeset || null });
+          baseCommit: w.baseCommit || null, changeset: w.changeset || null,
+          validatedCommit: w.validatedCommit || null,
+          ...baseFields(w) });
       }
       const started = meta.started === true || !!meta.sessionId;
       const inventory = new Map();
@@ -2068,6 +2268,7 @@ function loadLines() {
         workdir: path.join(LINES_DIR, entry.name),
         status: started ? "idle" : "standby",
         queue: restorePlannerRequests(meta.plannerQueue), activePlannerRequest: null,
+        knownNoticeIds: restoreKnownNoticeIds(meta.knownNoticeIds),
         started,
         planApproved: meta.planApproved === true, workers, inventory,
         evidence: new Map((meta.evidence || []).map((e) => [e.id, e])),

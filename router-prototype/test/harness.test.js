@@ -79,6 +79,20 @@ test('vibe buildRun: fresh and resumed argv, env, cwd, effort ignored', () => {
   );
 });
 
+test('vibe buildRun: a leading-dash prompt rides the = form of --prompt', () => {
+  const h = createHarness('vibe');
+  // A prompt that starts with '-' would be parsed as an unknown flag in the
+  // two-argument form, so the adapter must keep it in one argv element.
+  const dash = h.buildRun({ ...CTX, prompt: '--- PLANNER TURN CONTEXT ---\nDo the task' });
+  assert.ok(dash.args.includes('--- PLANNER TURN CONTEXT ---\nDo the task') === false,
+    'the dash-leading prompt must not ride as its own argv element');
+  assert.deepStrictEqual(dash.args.slice(-1),
+    ['--prompt=--- PLANNER TURN CONTEXT ---\nDo the task']);
+  // A prompt without a leading dash keeps the historical argv byte for byte.
+  const plain = h.buildRun({ ...CTX });
+  assert.deepStrictEqual(plain.args.slice(-2), ['-p', 'Do the task']);
+});
+
 test('vibe outcome and normalize on fixture lines', () => {
   const h = createHarness('vibe');
   assert.strictEqual(h.supportsNativeTimeLimit, true);
@@ -196,28 +210,38 @@ test('codex outcome and normalize on fixture lines', () => {
 
 // --- claude ---
 
-test('claude buildRun: fresh and resumed argv, cwd, token map', () => {
+test('claude buildRun: fresh and resumed argv, cwd, effort mapping', () => {
   const h = createHarness('claude');
   const run = h.buildRun(CTX);
   assert.strictEqual(run.cmd, 'claude');
   assert.deepStrictEqual(run.args, [
-    '-p', 'Do the task', '--output-format', 'stream-json', '--verbose',
+    '-p', '--output-format', 'stream-json', '--verbose',
     '--model', 'model-x', '--dangerously-skip-permissions',
-    '--max-thinking-tokens', '8192',
+    '--effort', 'medium', '--', 'Do the task',
   ]);
   assert.deepStrictEqual(run.env, {});
   assert.strictEqual(run.cwd, '/tmp/work');
-  const tokens = (effort) => {
-    const args = h.buildRun({ ...CTX, effort }).args;
-    return args[args.indexOf('--max-thinking-tokens') + 1];
+  const effort = (value) => {
+    const args = h.buildRun({ ...CTX, effort: value }).args;
+    return args[args.indexOf('--effort') + 1];
   };
-  assert.strictEqual(tokens('low'), '0');
-  assert.strictEqual(tokens('medium'), '8192');
-  assert.strictEqual(tokens('high'), '31999');
+  assert.strictEqual(effort('low'), 'low');
+  assert.strictEqual(effort('medium'), 'medium');
+  assert.strictEqual(effort('high'), 'high');
+  assert.strictEqual(effort('bogus'), 'medium');
   assert.deepStrictEqual(
-    h.buildRun({ ...CTX, sessionId: 's1' }).args.slice(-2),
-    ['--resume', 's1']
+    h.buildRun({ ...CTX, sessionId: 's1' }).args.slice(-4),
+    ['--resume', 's1', '--', 'Do the task']
   );
+});
+
+test('claude buildRun keeps a dash-leading prompt after "--"', () => {
+  // The planner turn wrapper starts with "---"; before "--" the CLI
+  // rejected it as an unknown option.
+  const prompt = '--- PLANNER TURN CONTEXT ---\nDo the task';
+  const args = createHarness('claude').buildRun({ ...CTX, prompt }).args;
+  assert.deepStrictEqual(args.slice(-2), ['--', prompt]);
+  assert.strictEqual(args.indexOf(prompt), args.length - 1);
 });
 
 test('claude outcome and normalize on fixture lines', () => {
@@ -231,6 +255,16 @@ test('claude outcome and normalize on fixture lines', () => {
   assertEntry(h.normalize(lines[2]), 'assistant', 'Part two', 'claude-session-1');
   assert.strictEqual(h.normalize(lines[3]), null);
   assert.strictEqual(h.finalize(), null);
+});
+
+test('pi, codex, claude omit --model when no model is set', () => {
+  for (const id of ['pi', 'codex', 'claude']) {
+    for (const model of [null, undefined, '']) {
+      const args = createHarness(id).buildRun({ ...CTX, model }).args;
+      assert.ok(!args.includes('--model'), `${id} with model ${model}`);
+      assert.ok(args.every((a) => typeof a === 'string'), `${id} argv must be strings`);
+    }
+  }
 });
 
 function schemaRecord(harness, role, text) {
