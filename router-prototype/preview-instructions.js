@@ -17,13 +17,30 @@ function appDirectory(root) {
   return nested.length === 1 ? nested[0] : null;
 }
 function instructionFor(root, sha) {
-  const dir = appDirectory(root);
-  const directory = dir ? path.relative(root, dir) || "." : ".";
+  const filesAt = (dir) => git(root, ["ls-tree", "-z", sha, "--", dir]);
+  function exists(file) { return git(root, ["cat-file", "-e", `${sha}:${file}`]) !== null; }
+  function read(file) {
+    const result = spawnSync("git", ["-C", root, "show", `${sha}:${file}`], { encoding: "utf8", timeout: 3000 });
+    return result.status === 0 ? result.stdout : null;
+  }
+  const rootPackage = exists("package.json");
+  let relative = rootPackage ? "" : null;
+  if (!rootPackage) {
+    const entries = git(root, ["ls-tree", "-z", sha]);
+    const candidates = entries ? entries.split("\0").map(v => v.split("\t")[1]).filter(Boolean).filter(name => exists(`${name}/package.json`)) : [];
+    if (candidates.length === 1) relative = candidates[0];
+  }
+  const dir = relative === null ? null : (relative ? path.join(root, relative) : root);
+  const directory = relative || ".";
   const steps = [`Obtain the repository and check out the validated commit ${sha}.`];
-  if (!dir) return { stack: "unknown", directory, url: null, packageManager: null, steps: [...steps, "Review the project documentation to identify the application directory, package manager, setup, and start commands."], prerequisites: ["Project documentation"], limitations: ["The application directory or package manager is ambiguous."], instructions: steps };
+  if (!dir) {
+    const guidance = [...steps, "Review project documentation to identify the application directory, package manager, setup, and start commands."];
+    return { stack: "unknown", directory, url: null, packageManager: null, steps: guidance, prerequisites: ["Project documentation"], limitations: ["The application directory or package manager is ambiguous."], instructions: guidance };
+  }
   let pkg;
-  try { pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")); } catch { pkg = {}; }
-  const files = fs.readdirSync(dir);
+  try { pkg = JSON.parse(read(relative ? `${relative}/package.json` : "package.json")); } catch { pkg = {}; }
+  const has = (name) => exists(relative ? `${relative}/${name}` : name);
+  const files = ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb"].filter(has);
   const managers = [files.includes("package-lock.json") || files.includes("npm-shrinkwrap.json") ? "npm" : null, files.includes("yarn.lock") ? "yarn" : null, files.includes("pnpm-lock.yaml") ? "pnpm" : null, files.includes("bun.lock") || files.includes("bun.lockb") ? "bun" : null].filter(Boolean);
   const manager = managers.length === 1 ? managers[0] : null;
   const install = manager === "npm" ? (files.includes("package-lock.json") || files.includes("npm-shrinkwrap.json") ? "npm ci" : "npm install") : manager === "yarn" ? "yarn install --frozen-lockfile" : manager === "pnpm" ? "pnpm install --frozen-lockfile" : manager === "bun" ? "bun install --frozen-lockfile" : null;

@@ -44,6 +44,31 @@ test("recognized nested Node app pins source and emits safe numbered steps", () 
     assert.deepEqual(again.steps, result.steps);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+test("validated revision survives line-state JSON save and restore; old records stay unverified", () => {
+  const worker = { id: "v", role: "validator", kind: "integration", status: "completed", verdict: "pass", validatedCommit: "b".repeat(40) };
+  const saved = JSON.parse(JSON.stringify({ workers: [...line(worker).workers.values()].map(({ id, role, kind, status, verdict, validatedCommit }) => ({ id, role, kind, status, verdict, validatedCommit })) }));
+  const restored = new Map(saved.workers.map(w => [w.id, w]));
+  assert.equal(restored.get("v").validatedCommit, worker.validatedCommit);
+  const old = { id: "old", role: "validator", kind: "integration", status: "completed", verdict: "pass" };
+  assert.equal(previewForLine(line(old)).verified, undefined);
+  assert.equal(previewForLine(line(old)).stale, true);
+});
+test("unknown and ambiguous pinned project layouts give cautious guidance", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "preview-unknown-"));
+  try {
+    const { execFileSync } = require("node:child_process");
+    execFileSync("git", ["init", "-q", root]);
+    execFileSync("git", ["-C", root, "-c", "user.email=a@b", "-c", "user.name=test", "commit", "--allow-empty", "-qm", "empty"]);
+    let commit = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    assert.equal(previewForLine(line({ id: "x", role: "validator", kind: "integration", status: "completed", verdict: "pass", worktreePath: root, validatedCommit: commit })).stack, "unknown");
+    for (const name of ["one", "two"]) { fs.mkdirSync(path.join(root, name)); fs.writeFileSync(path.join(root, name, "package.json"), "{}"); }
+    execFileSync("git", ["-C", root, "add", "."]); execFileSync("git", ["-C", root, "-c", "user.email=a@b", "-c", "user.name=test", "commit", "-qm", "ambiguous"]);
+    commit = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const result = previewForLine(line({ id: "x", role: "validator", kind: "integration", status: "completed", verdict: "pass", worktreePath: root, validatedCommit: commit }));
+    assert.equal(result.stack, "unknown");
+    assert.ok(result.limitations.some(text => text.includes("ambiguous")));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 test("sanitizer removes control characters and bounds content", () => {
   assert.equal(safeText("a\0b", 2), "ab");
 });
