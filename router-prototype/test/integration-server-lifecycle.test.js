@@ -12,7 +12,7 @@ const fnSource = source.slice(start, end);
 const brief = fnSource.replace(/\s+/g, ' ');
 
 // Build the real function from source; server.js starts a server when required.
-const integrationValidatorBrief = new Function(`${fnSource}\nreturn integrationValidatorBrief;`)();
+const integrationValidatorBrief = new Function('PORT', `${fnSource}\nreturn integrationValidatorBrief;`)(7788);
 
 test('integration brief requires a background server and rejects foreground startup', () => {
   assert.match(brief, /node router-prototype\/server\.js >router\.log 2>&1 & SERVER_PID=\$!/);
