@@ -238,6 +238,15 @@
     return isFailedValidator(w);
   }
 
+  // Integration graph nodes remain visible while running and after stopping.
+  // A failed node follows the existing hide-failed toggle.
+  function shouldShowIntegrationValidator(w, hideFailed) {
+    if (!w || typeof w !== "object") return false;
+    return w.kind === "integration"
+      && (w.role || "implementor") === "validator"
+      && !shouldHideValidator(w, hideFailed);
+  }
+
   function authBadge(entry) {
     if (!entry || entry.installed !== true) return "not installed";
     if (entry.auth === "ok") return "ok";
@@ -271,5 +280,6 @@
     authBadge,
     isFailedValidator,
     shouldHideValidator,
+    shouldShowIntegrationValidator,
   };
 });
