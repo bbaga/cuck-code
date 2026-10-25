@@ -40,7 +40,7 @@ function readJson(req) {
   });
 }
 
-function createWriteRoutes({ store, lineExists, now, newId }) {
+function createWriteRoutes({ store, lineExists, now, newId, onOutbox = () => {} }) {
   const eventId = () => newId();
 
   // Append a rule event with a unique id and the next cursor.
@@ -53,6 +53,12 @@ function createWriteRoutes({ store, lineExists, now, newId }) {
   // Run mutation(draft) in a serialized transaction. Item-level revisions guard the writes,
   // so the snapshot revision check is skipped (null).
   const run = mutation => store.transact(null, mutation);
+  // Run a mutation that appends outbox entries, then ask for delivery (not awaited).
+  const runNotifying = async mutation => {
+    const out = await run(mutation);
+    try { onOutbox(); } catch (error) { console.error(`registry delivery trigger failed: ${error && error.message}`); }
+    return out;
+  };
 
   const findClaim = (snapshot, id) => {
     const claim = snapshot.claims.find(c => c.id === id);
@@ -119,7 +125,7 @@ function createWriteRoutes({ store, lineExists, now, newId }) {
       (claim, rest) => claimRules.renewClaim(claim, lineId, now(), rest)),
     supersedeClaim: (lineId, claimId, body) => claimUpdate(lineId, claimId, body,
       (claim, rest) => claimRules.supersedeClaim(claim, lineId, now(), rest)),
-    openRequest: (lineId, body) => run(snapshot => {
+    openRequest: (lineId, body) => runNotifying(snapshot => {
       const t = now();
       const r = requestRules.openRequest(body, lineId, { snapshot, lineExists, now: t, newId });
       if (!r.ok) abortRule(r);
@@ -129,7 +135,7 @@ function createWriteRoutes({ store, lineExists, now, newId }) {
       for (const notice of r.effects) snapshot.outbox.push({ ...notice, createdAt: t, deliveredAt: null });
       return { status: 201, body: { request: r.request, snapshotRevision: snapshot.revision + 1 } };
     }),
-    transitionRequest: (lineId, requestId, body) => run(snapshot => {
+    transitionRequest: (lineId, requestId, body) => runNotifying(snapshot => {
       const request = snapshot.requests.find(r => r.id === requestId);
       if (!request) throw new Abort(404, { error: 'Request not found', code: 'NOT_FOUND' });
       const t = now();
@@ -185,6 +191,7 @@ function createWriteRoutes({ store, lineExists, now, newId }) {
       if (!u.events.length) throw new Abort(200, {});
       for (const e of u.events) appendEvent(snapshot, e);
     }).catch(error => { if (!(error instanceof Abort && error.status === 200)) throw error; });
+    try { onOutbox(); } catch (error) { console.error(`registry delivery trigger failed: ${error && error.message}`); }
   }
 
   return { handle, onLineDeleted, appendEvent };

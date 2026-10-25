@@ -55,8 +55,8 @@ function statusFilter(url) {
   return new Set(list);
 }
 
-function createRegistryRoutes({ store, lineExists = () => false, lineName = () => null, unavailable = null, now = Date.now, newId = randomUUID }) {
-  const writer = createWriteRoutes({ store, lineExists, now, newId });
+function createRegistryRoutes({ store, lineExists = () => false, lineName = () => null, unavailable = null, now = Date.now, newId = randomUUID, onOutbox }) {
+  const writer = createWriteRoutes({ store, lineExists, now, newId, onOutbox });
   const down = () => (typeof unavailable === 'function' ? unavailable() : unavailable);
   const withOwner = item => {
     const name = lineName(item.ownerLineId);

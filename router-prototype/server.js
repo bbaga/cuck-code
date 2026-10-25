@@ -1316,16 +1316,38 @@ function spawnValidator(line, source, criteria, report) {
 
 const { createRegistryRoutes } = require("./registry-routes");
 const { createStore: createRegistryStore } = require("./work-registry");
+const { createDelivery: createRegistryDelivery } = require("./registry-delivery");
 const REGISTRY_FILE = path.join(LINES_DIR, "work-coordination.json");
 const registryStore = createRegistryStore(REGISTRY_FILE);
 let registryUnavailable = null;
+let registryDelivery = null;
+const REGISTRY_DELIVERY_MS = 30000;
 const registryRoutes = createRegistryRoutes({
   store: registryStore,
   lineExists: (id) => lines.has(id),
   lineName: (id) => (lines.get(id) ? lines.get(id).name : null),
   unavailable: () => registryUnavailable,
+  onOutbox: () => registryDeliver(),
 });
-registryStore.load().catch((err) => {
+// Not awaited by callers. Safe to call at any time, also after a merge refresh.
+function registryDeliver() {
+  if (!registryDelivery) return Promise.resolve(null);
+  return registryDelivery.deliver().catch((err) => {
+    slog("error", "registry.delivery.failed", { error: String(err && err.message) });
+    return null;
+  });
+}
+registryStore.load().then(() => {
+  registryDelivery = createRegistryDelivery({
+    store: registryStore,
+    getLine: (id) => lines.get(id),
+    enqueueNotice: (line, text, noticeId) => enqueueRequest(line, plannerRequest(text, null, noticeId, "registry")),
+    now: Date.now,
+    log: (event, data) => slog("warn", event, data),
+  });
+  registryDeliver();
+  setInterval(registryDeliver, REGISTRY_DELIVERY_MS).unref();
+}).catch((err) => {
   if (err && err.code === "REGISTRY_CORRUPT") {
     registryUnavailable = { error: "Work registry is corrupt: " + err.message, file: REGISTRY_FILE };
     slog("error", "registry.corrupt", { file: REGISTRY_FILE, error: err.message });
