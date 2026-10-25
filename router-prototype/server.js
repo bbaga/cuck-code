@@ -662,15 +662,24 @@ Procedure:
    endpoint with a bounded timeout until it responds. Register the PID
    with POST /api/protocol/lines/$LINE_ID/inventory, using kind process,
    name integration-router, pid $SERVER_PID, and worker ${workerId}.
-2. For the 'primary' repo: merge each of its feature branches on top
-   of your integration branch, one by one:
+2. For each feature branch, use its matching expected commit.
+   Keep each branch and expected commit together. Merge every feature
+   branch with one explicit Git merge command. Do not use a shell loop.
+   Use one command for each branch:
    git merge <branch> --no-edit
+   Check the exit status of each command. If a command fails, stop.
+   Report the exact command, exit status, and stderr. Do not infer
+   success from silent output. After each successful merge, run:
+   git merge-base --is-ancestor <expected-commit> HEAD
+   Check its exit status. If it is not zero, stop and report the
+   expected commit and the command failure.
    Resolve conflicts yourself, keeping both features where possible.
    If a conflict cannot be resolved sensibly, stop and report it.
-${extraRepos.length ? `3. For EVERY other repo in the list: make your own copy inside
-   your workdir (git clone <remote or path> <repo-name>), create a
-   local integration branch from its main branch, and merge its
-   feature branches there the same way. Never push to their remotes.` : "2. No additional repositories are registered for this line."}
+${extraRepos.length ? `3. For every other repo in the list: make your own copy inside
+   your workdir (git clone <remote or path> <repo-name>). Create a
+   local integration branch from its main branch. Apply the same
+   explicit merge and ancestry checks to each feature branch. Never
+   push to their remotes.` : "3. No additional repositories are registered for this line."}
 4. When all branches are merged, run ALL acceptance tests and verify
    everything works together. Build and run the project if needed.
 5. For EACH use case you test, record a video of the test case running.
