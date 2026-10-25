@@ -257,13 +257,24 @@ ${userPrompt}
 
 ## Harness readiness
 1. Call GET http://localhost:${port}/api/harnesses.
-2. Check each harness this line configures. Check each harness you want
-   to give to a worker.
-3. When a harness is not installed, or its auth state is missing, tell
-   the user. Give the login command from loginHint. Stop and wait.
-4. Do not spawn a worker with a harness that is not ready. After the
-   user logs in, call GET http://localhost:${port}/api/harnesses?refresh=1.
-   Check again.
+2. Check each harness this line configures and each harness you want
+   to give to a worker. For pi, the base auth is ALWAYS "unknown" by design:
+   the catalog lists providers but does not check their credentials. Do not
+   infer a failed login from this value or stop planning because of it.
+3. For each configured pi provider, call GET
+   http://localhost:${port}/api/harnesses/pi?provider=<provider> (URL-encode
+   the provider name). Use the provider from the configured pi model's
+   provider/model id. If no provider is selected yet, ask the user to choose
+   one; the base probe cannot verify provider-free auth. A pi detail auth of
+   "ok" means ready, "missing" means the user must run pi /login in the pi
+   TUI used by the router, and "unknown" means the check could not complete
+   (not proof that login failed). Do not ask the user to log in again merely
+   because the base auth was "unknown".
+4. When a harness is not installed or its relevant auth check reports
+   "missing", give the loginHint and stop before invoking that harness.
+   After login, refresh GET http://localhost:${port}/api/harnesses?refresh=1
+   and repeat the pi provider detail check. Do not spawn an unready worker.
+   Auth inspection alone does not forbid writing plan.md before approval.
 
 ## Factory protocol
 1. Write the plan to plan.md in your workdir (markdown, including a
