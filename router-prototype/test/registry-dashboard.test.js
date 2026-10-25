@@ -29,6 +29,17 @@ test("event replay uses the durable cursor", () => {
   assert.match(html, /localStorage\.getItem\("registryCursor"\)/);
   assert.match(html, /localStorage\.setItem\("registryCursor"/);
 });
+test("event polling resumes after disconnect and visibility changes without duplicate timers", () => {
+  assert.match(html, /window\.addEventListener\("online", \(\) => \{ checkRegistryEvents\(\)/);
+  assert.match(html, /document\.addEventListener\("visibilitychange", \(\) => \{ if \(!document\.hidden\) checkRegistryEvents\(\)/);
+  assert.match(html, /if \(eventBusy \|\| document\.hidden \|\| !navigator\.onLine\) return/);
+  assert.match(html, /if \(eventTimer\) clearTimeout\(eventTimer\)/);
+});
+test("event replay pages from the saved cursor and refreshes registry data", () => {
+  assert.match(html, /while \(more\)[\s\S]*?registry\/events\?after=/);
+  assert.match(html, /localStorage\.setItem\("registryCursor", cursor\)/);
+  assert.match(html, /if \(changed && !view\.hidden\) await load\(\)/);
+});
 test("inbound request answer uses its expected revision", () => {
   assert.match(html, /id="answerForm"/);
   assert.match(html, /expectedRequestRevision: Number\(d\.get\("revision"\)\)/);

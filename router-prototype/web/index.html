@@ -1289,15 +1289,6 @@ window.addEventListener("DOMContentLoaded", () => {
           row.className = "registry-row"; content.appendChild(row);
         }
       }
-      const cursor = window.registryCursor || localStorage.getItem("registryCursor") || "";
-      const events = await fetch("/api/registry/events?after=" + encodeURIComponent(cursor));
-      if (!events.ok) throw Error("Events load failed (HTTP " + events.status + "); refresh to replay.");
-      const eventData = await events.json();
-      window.registryCursor = eventData.nextCursor;
-      if (eventData.nextCursor != null) localStorage.setItem("registryCursor", String(eventData.nextCursor));
-      if (eventData.items.length) { await load(); return; }
-      content.appendChild(text("h3", "Merge events (" + eventData.items.length + ")"));
-      for (const item of eventData.items) { const row = text("article", JSON.stringify(item)); row.className = "registry-row"; content.appendChild(row); }
       status.textContent = "Snapshot revision " + revision + ". All pages loaded.";
     } catch (err) { status.textContent = String(err); }
   }
@@ -1307,6 +1298,38 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!view.hidden) load();
   });
   document.getElementById("registryRefresh").addEventListener("click", load);
+  const EVENT_POLL_MS = 5000;
+  let eventTimer = null, eventBusy = false;
+  async function checkRegistryEvents() {
+    if (eventBusy || document.hidden || !navigator.onLine) return;
+    eventBusy = true;
+    try {
+      let cursor = localStorage.getItem("registryCursor") || "", changed = false, more = true;
+      while (more) {
+        const res = await fetch("/api/registry/events?after=" + encodeURIComponent(cursor));
+        if (!res.ok) throw Error("Events load failed (HTTP " + res.status + ")");
+        const batch = await res.json();
+        if (batch.items && batch.items.length) changed = true;
+        if (batch.nextCursor != null) {
+          cursor = String(batch.nextCursor);
+          localStorage.setItem("registryCursor", cursor);
+          window.registryCursor = cursor;
+        }
+        more = batch.hasMore === true;
+        if (more && (batch.nextCursor == null || cursor === localStorage.getItem("registryCursor") && !(batch.items || []).length)) break;
+      }
+      if (changed && !view.hidden) await load();
+    } catch (err) { status.textContent = String(err) + ". Will retry."; }
+    finally { eventBusy = false; }
+  }
+  function scheduleRegistryEvents() {
+    if (eventTimer) clearTimeout(eventTimer);
+    eventTimer = null;
+    if (!document.hidden && navigator.onLine) eventTimer = setTimeout(async () => { await checkRegistryEvents(); scheduleRegistryEvents(); }, EVENT_POLL_MS);
+  }
+  window.addEventListener("online", () => { checkRegistryEvents(); scheduleRegistryEvents(); });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) checkRegistryEvents(); scheduleRegistryEvents(); });
+  scheduleRegistryEvents();
   for (const id of ["registryQuery", "registryFilter"]) document.getElementById(id).addEventListener("change", load);
   async function submit(form, route, body) {
     const data = new FormData(form), line = data.get("lineId");
