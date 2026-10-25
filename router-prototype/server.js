@@ -1314,6 +1314,28 @@ function spawnValidator(line, source, criteria, report) {
   spawnWorker(line, worker, worker.prompt);
 }
 
+const { createRegistryRoutes } = require("./registry-routes");
+const { createStore: createRegistryStore } = require("./work-registry");
+const REGISTRY_FILE = path.join(LINES_DIR, "work-coordination.json");
+const registryStore = createRegistryStore(REGISTRY_FILE);
+let registryUnavailable = null;
+const registryRoutes = createRegistryRoutes({
+  store: registryStore,
+  lineExists: (id) => lines.has(id),
+  lineName: (id) => (lines.get(id) ? lines.get(id).name : null),
+  unavailable: () => registryUnavailable,
+});
+registryStore.load().catch((err) => {
+  if (err && err.code === "REGISTRY_CORRUPT") {
+    registryUnavailable = { error: "Work registry is corrupt: " + err.message, file: REGISTRY_FILE };
+    slog("error", "registry.corrupt", { file: REGISTRY_FILE, error: err.message });
+    console.error(`work registry corrupt, registry routes disabled: ${REGISTRY_FILE}: ${err.message}`);
+  } else {
+    slog("error", "registry.load.failed", { file: REGISTRY_FILE, error: String(err && err.message) });
+    console.error(`work registry load failed: ${REGISTRY_FILE}: ${err && err.message}`);
+  }
+});
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://localhost");
   const parts = url.pathname.split("/").filter(Boolean);
@@ -1600,7 +1622,6 @@ const server = http.createServer((req, res) => {
         role: w.role, validates: w.validates, persona: w.persona || "backend",
         kind: w.kind || "standard",
         ...changesetFields(w), ...baseFields(w),
-        ...changesetFields(w),
         lastError: w.lastError || null,
       })) });
     }
@@ -2045,6 +2066,8 @@ When done, reply with a report: what you changed, files changed, how you verifie
     }
     return;
   }
+
+  if (registryRoutes.handle(req, res, url, parts, json)) return;
 
   json(res, 404, { error: "not found" });
 });
