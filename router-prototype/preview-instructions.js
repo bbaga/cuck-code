@@ -7,61 +7,44 @@ const { spawnSync } = require("node:child_process");
 function safeText(value, limit = 8000) {
   return String(value || "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "").slice(0, limit);
 }
-
-function git(workdir, args) {
-  const result = spawnSync("git", ["-C", workdir, ...args], { encoding: "utf8", timeout: 3000 });
-  return result.status === 0 ? result.stdout.trim() : null;
+function git(dir, args) {
+  const r = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", timeout: 3000 });
+  return r.status === 0 ? r.stdout.trim() : null;
 }
-
+function appDirectory(root) {
+  if (fs.existsSync(path.join(root, "package.json"))) return root;
+  const nested = fs.readdirSync(root, { withFileTypes: true }).filter(e => e.isDirectory() && !e.name.startsWith(".") && fs.existsSync(path.join(root, e.name, "package.json"))).map(e => path.join(root, e.name));
+  return nested.length === 1 ? nested[0] : null;
+}
 function instructionFor(root, sha) {
-  const lines = [`Validated source: ${sha}`, "1. Obtain the validated source from the project repository.", `   git clone <repository-url> project && cd project && git checkout ${sha}`];
-  let app = root;
-  if (!fs.existsSync(path.join(app, "package.json")) && fs.existsSync(path.join(app, "router-prototype", "package.json"))) app = path.join(app, "router-prototype");
-  if (!fs.existsSync(path.join(app, "package.json"))) {
-    const nested = fs.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-      .map((entry) => path.join(root, entry.name)).filter((dir) => fs.existsSync(path.join(dir, "package.json")));
-    if (nested.length === 1) app = nested[0];
-  }
-  if (!fs.existsSync(path.join(app, "package.json"))) {
-    lines.push("2. Read the project documentation and identify its required tools and environment.", "3. Do not use commands or settings that the project does not document.", "4. Start and stop the project by following its documented instructions.");
-    return { stack: "unknown", directory: path.relative(root, app) || ".", url: null, instructions: lines };
-  }
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(app, "package.json"), "utf8"));
-    const scripts = pkg.scripts || {};
-    const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-    const supported = deps.next ? "next" : deps.vite ? "vite" : deps["react-scripts"] ? "react-scripts" : deps.express ? "express" : null;
-    if (!supported || typeof scripts.start !== "string") {
-      lines.push("2. Read the project documentation for its required environment and start command.", "3. Do not use commands or settings that the project does not document.", "4. Stop the project with its documented stop method.");
-      return { stack: "unknown", directory: path.relative(root, app) || ".", url: null, instructions: lines };
-    }
-    lines.push(`2. Enter the application directory: ${path.relative(root, app) || "."}.`, "3. Install the dependencies with npm ci.");
-    if (fs.existsSync(path.join(app, ".env.example"))) lines.push("4. Copy .env.example to .env and set required values from the project documentation.");
-    const offset = lines.length + 1;
-    lines.push(`${offset}. Start the application with npm start.`, `${offset + 1}. Open the URL shown by the application.`, `${offset + 2}. Stop the application with Ctrl+C.`);
-    return { stack: supported, directory: path.relative(root, app) || ".", url: null, instructions: lines };
-  } catch {
-    lines.push("2. Read the project documentation and follow its setup instructions.", "3. Do not use commands or settings that the project does not document.");
-    return { stack: "unknown", directory: ".", url: null, instructions: lines };
-  }
+  const dir = appDirectory(root);
+  const directory = dir ? path.relative(root, dir) || "." : ".";
+  const steps = [`Obtain the repository and check out the validated commit ${sha}.`];
+  if (!dir) return { stack: "unknown", directory, url: null, packageManager: null, steps: [...steps, "Review the project documentation to identify the application directory, package manager, setup, and start commands."], prerequisites: ["Project documentation"], limitations: ["The application directory or package manager is ambiguous."], instructions: steps };
+  let pkg;
+  try { pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")); } catch { pkg = {}; }
+  const files = fs.readdirSync(dir);
+  const managers = [files.includes("package-lock.json") || files.includes("npm-shrinkwrap.json") ? "npm" : null, files.includes("yarn.lock") ? "yarn" : null, files.includes("pnpm-lock.yaml") ? "pnpm" : null, files.includes("bun.lock") || files.includes("bun.lockb") ? "bun" : null].filter(Boolean);
+  const manager = managers.length === 1 ? managers[0] : null;
+  const install = manager === "npm" ? (files.includes("package-lock.json") || files.includes("npm-shrinkwrap.json") ? "npm ci" : "npm install") : manager === "yarn" ? "yarn install --frozen-lockfile" : manager === "pnpm" ? "pnpm install --frozen-lockfile" : manager === "bun" ? "bun install --frozen-lockfile" : null;
+  const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+  const stack = deps.next ? "next" : deps.vite ? "vite" : deps["react-scripts"] ? "react-scripts" : deps.express ? "express" : "unknown";
+  const limitations = [];
+  if (!manager) limitations.push(managers.length ? "Multiple package manager lockfiles exist; select the intended manager." : "No supported package manager lockfile exists; confirm the intended manager from project documentation.");
+  if (stack === "unknown" || !pkg.scripts?.start) limitations.push("The framework or start command is not recognized; follow project documentation.");
+  const stepsOut = [...steps, `Enter application directory ${directory}.`, ...(install ? [`Install dependencies with ${install}.`] : ["Confirm the package manager and install command from project documentation."]), ...(pkg.scripts?.start ? ["Start with the documented npm start script."] : ["Use the start command documented by the project."]), "Open the URL reported by the application. Stop it with Ctrl+C."];
+  return { stack, directory, url: null, packageManager: manager, steps: stepsOut, prerequisites: ["Required runtime and environment values from project documentation"], limitations, instructions: stepsOut };
 }
-
 function previewForLine(line) {
-  const integrations = [...line.workers.values()].filter((w) => w.kind === "integration");
-  const pass = integrations.find((w) => w.role === "validator" && w.status === "completed" && w.verdict === "pass");
-  if (!pass) return { eligible: false, reason: "No completed integration result has a PASS verdict." };
+  const pass = [...line.workers.values()].find(w => w.kind === "integration" && w.role === "validator" && w.status === "completed" && w.verdict === "pass");
+  const base = { eligible: false, availability: "unavailable", stale: false, sourceRevision: null, projectDirectory: null, expectedUrl: null, prerequisites: [], limitations: [] };
+  if (!pass) return { ...base, reason: "No completed integration result has a PASS verdict." };
+  const source = pass.validatedCommit || pass.sourceRevision || pass.integrationCommit;
+  if (!source || !/^[a-f0-9]{40}$/i.test(source)) return { ...base, eligible: true, stale: true, reason: "The validated commit was not recorded; source is unavailable or unverified." };
   const workdir = path.resolve(pass.worktreePath || "");
-  if (!workdir || !fs.existsSync(workdir) || !git(workdir, ["rev-parse", "--is-inside-work-tree"])) {
-    return { eligible: true, verified: false, reason: "The validated source worktree is unavailable." };
-  }
-  const sha = git(workdir, ["rev-parse", "HEAD"]);
-  const branch = git(workdir, ["branch", "--show-current"]);
-  if (!sha || !/^[a-f0-9]{40}$/i.test(sha) || branch !== pass.branch) {
-    return { eligible: true, verified: false, reason: "The validated source does not match its recorded branch." };
-  }
-  const result = instructionFor(workdir, sha);
-  result.instructions = result.instructions.map((s) => safeText(s, 500));
-  return { eligible: true, verified: true, commit: sha, branch: safeText(branch, 200), ...result };
+  if (!fs.existsSync(workdir) || git(workdir, ["cat-file", "-e", `${source}^{commit}`]) === null) return { ...base, eligible: true, stale: true, reason: "The recorded validated source is unavailable." };
+  const result = instructionFor(workdir, source);
+  result.instructions = result.instructions.map(s => safeText(s, 500));
+  return { eligible: true, availability: "available", stale: false, sourceRevision: source, projectDirectory: result.directory, expectedUrl: result.url, prerequisites: result.prerequisites, limitations: result.limitations, verified: true, commit: source, branch: safeText(pass.branch, 200), ...result };
 }
-
 module.exports = { previewForLine, instructionFor, safeText };
