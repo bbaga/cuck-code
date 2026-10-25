@@ -240,6 +240,15 @@
     return isFailedValidator(w);
   }
 
+  // Integration graph nodes remain visible while running and after stopping.
+  // A failed node follows the existing hide-failed toggle.
+  function shouldShowIntegrationValidator(w, hideFailed) {
+    if (!w || typeof w !== "object") return false;
+    return w.kind === "integration"
+      && (w.role || "implementor") === "validator"
+      && !shouldHideValidator(w, hideFailed);
+  }
+
   function previewSelectionKey(workerId) {
     return "preview:" + String(workerId);
   }
@@ -467,6 +476,7 @@
     sanitizePreviewCommand,
     isFailedValidator,
     shouldHideValidator,
+    shouldShowIntegrationValidator,
     selectEvidenceAttempt,
     clampEvidenceStep,
     renderEvidenceFromState: renderEvidence,

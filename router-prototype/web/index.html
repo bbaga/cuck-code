@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>cuck-code router</title>
+<link rel="icon" href="data:,">
 <script defer src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <style>
@@ -204,6 +205,7 @@ window.addEventListener("DOMContentLoaded", () => {
     PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
     clearHarnessState, clearProviderState, shouldHideValidator,
+    shouldShowIntegrationValidator,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
     evidencePollIsCurrent } = window.pipelineUI;
   const cards = new Map();
@@ -352,8 +354,7 @@ window.addEventListener("DOMContentLoaded", () => {
       .filter((w) => isVal(w) && w.kind !== "integration"
         && !shouldHideValidator(w, hideFailed));
     const ints = [...st.workers.values()]
-      .filter((w) => isVal(w) && w.kind === "integration" && isPassingIntegration(w)
-        && !shouldHideValidator(w, hideFailed));
+      .filter((w) => shouldShowIntegrationValidator(w, hideFailed));
     const rows = Math.max(impls.length, vals.length, ints.length, 1);
     const h = Math.max(140, 14 + (rows - 1) * 46 + 36 + 14);
     const graph = st.graph;

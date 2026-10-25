@@ -29,6 +29,7 @@ const {
   authBadge,
   isFailedValidator,
   shouldHideValidator,
+  shouldShowIntegrationValidator,
 } = require("../web/pipeline-ui.js");
 const pipelineUiModule = require("../web/pipeline-ui.js");
 
@@ -597,6 +598,40 @@ test("shouldHideValidator hides only failed validators when the flag is on", () 
 
 test("shouldHideValidator defaults a missing role to implementor", () => {
   assert.strictEqual(shouldHideValidator({ status: "failed" }, true), false);
+});
+
+test("integration graph keeps running and completed PASS validators visible", () => {
+  assert.strictEqual(
+    shouldShowIntegrationValidator({
+      role: "validator", kind: "integration", status: "running",
+    }, true),
+    true,
+  );
+  assert.strictEqual(
+    shouldShowIntegrationValidator({
+      role: "validator", kind: "integration", status: "completed", verdict: "pass",
+    }, true),
+    true,
+  );
+});
+
+test("integration graph keeps stopped validators visible and applies the failed toggle", () => {
+  const stopped = { role: "validator", kind: "integration", status: "stopped" };
+  const failed = { role: "validator", kind: "integration", status: "failed" };
+  assert.strictEqual(shouldShowIntegrationValidator(stopped, true), true);
+  assert.strictEqual(shouldShowIntegrationValidator(failed, false), true);
+  assert.strictEqual(shouldShowIntegrationValidator(failed, true), false);
+});
+
+test("integration graph rejects non-integration workers", () => {
+  assert.strictEqual(
+    shouldShowIntegrationValidator({ role: "validator", status: "running" }, true),
+    false,
+  );
+  assert.strictEqual(
+    shouldShowIntegrationValidator({ role: "implementor", kind: "integration" }, true),
+    false,
+  );
 });
 
 test("pipeline-ui exports fetchPiDetail for the browser global and Node tests", () => {
