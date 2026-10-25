@@ -178,6 +178,7 @@
     <div id="registryContent"></div>
     <form id="claimForm"><h3>Publish claim</h3><label>Line ID <input name="lineId" required></label><label>Claim <input name="claim" required></label><button>Publish</button></form>
     <form id="requestForm"><h3>Open request</h3><label>Source line ID <input name="lineId" required></label><label>Target line ID <input name="targetLineId" required></label><label>Text <input name="text" required></label><button>Open request</button></form>
+    <form id="answerForm"><h3>Answer request</h3><label>Target line ID <input name="lineId" required></label><label>Request ID <input name="requestId" required></label><label>Request revision <input name="revision" type="number" min="0" required></label><label>Answer <input name="text" required></label><button>Answer</button></form>
   </section>
   <div id="empty">Select or create a production line.</div>
 </main>
@@ -1284,13 +1285,17 @@ window.addEventListener("DOMContentLoaded", () => {
         if (!rows.length) content.appendChild(text("p", "No " + title.toLowerCase() + " retained."));
         for (const item of rows) {
           if (item.snapshotRevision != null) revision = item.snapshotRevision;
-          const row = text("article", [item.lineId, item.repo, item.status, "revision " + (item.revision ?? item.snapshotRevision), item.age, item.commit, item.mergeEvidence, item.text || item.claim].filter(Boolean).join(" · "));
+          const row = text("article", [item.sourceLineId || item.lineId, item.repo, item.status, "revision " + (item.revision ?? item.snapshotRevision), item.age, item.commit, item.mergeReference || item.mergeEvidence, item.text || item.claim].filter(Boolean).join(" · "));
           row.className = "registry-row"; content.appendChild(row);
         }
       }
-      const events = await fetch("/api/registry/events?after=" + encodeURIComponent(window.registryCursor || ""));
+      const cursor = window.registryCursor || localStorage.getItem("registryCursor") || "";
+      const events = await fetch("/api/registry/events?after=" + encodeURIComponent(cursor));
       if (!events.ok) throw Error("Events load failed (HTTP " + events.status + "); refresh to replay.");
-      const eventData = await events.json(); window.registryCursor = eventData.nextCursor;
+      const eventData = await events.json();
+      window.registryCursor = eventData.nextCursor;
+      if (eventData.nextCursor != null) localStorage.setItem("registryCursor", String(eventData.nextCursor));
+      if (eventData.items.length) { await load(); return; }
       content.appendChild(text("h3", "Merge events (" + eventData.items.length + ")"));
       for (const item of eventData.items) { const row = text("article", JSON.stringify(item)); row.className = "registry-row"; content.appendChild(row); }
       status.textContent = "Snapshot revision " + revision + ". All pages loaded.";
@@ -1314,6 +1319,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
   document.getElementById("claimForm").addEventListener("submit", e => { e.preventDefault(); submit(e.currentTarget, line => "/api/registry/lines/" + encodeURIComponent(line) + "/claims", d => ({ claim: d.get("claim"), expectedSnapshotRevision: Number(window.registryRevision || 0) })); });
   document.getElementById("requestForm").addEventListener("submit", e => { e.preventDefault(); submit(e.currentTarget, line => "/api/registry/lines/" + encodeURIComponent(line) + "/requests", d => ({ targetLineId: d.get("targetLineId"), text: d.get("text"), idempotencyKey: crypto.randomUUID(), expectedSnapshotRevision: Number(window.registryRevision || 0) })); });
+  document.getElementById("answerForm").addEventListener("submit", e => { e.preventDefault(); const form = e.currentTarget; submit(form, line => "/api/registry/lines/" + encodeURIComponent(line) + "/requests/" + encodeURIComponent(new FormData(form).get("requestId")) + "/answer", d => ({ text: d.get("text"), expectedRequestRevision: Number(d.get("revision")) })); });
   window.registryDashboard = { allPages, load, text };
 })();
 </script>
