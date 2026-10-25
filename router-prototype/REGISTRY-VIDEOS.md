@@ -25,7 +25,7 @@ Open `http://localhost:17788` in the browser. Use only this router and its stora
 
 Use the available Playwright MCP browser runtime. This option does not need a local Playwright package. Call `browser_run_code_unsafe` with a function that accepts `page`. The existing page provides a browser through `page.context().browser()`. Create a new context with `recordVideo` set to the absolute evidence directory before opening a page in that context.
 
-Run this code once per case. Replace `CASE_FILE` and the case actions each time. The browser runtime must be able to write to the validator worktree path.
+Run this code once per case. Replace the case actions each time. The browser runtime must be able to write to the validator worktree path. Use the exact selectors listed below. Always open the registry with `#registryToggle`, wait for `#registry` to be visible, and only then use `#registryQuery` or `#registryFilter`.
 
 ```js
 async (page) => {
@@ -49,24 +49,35 @@ Use the returned absolute path to confirm the completed video. Close each contex
 
 If you choose a local Playwright script instead, the `playwright` package and its browser must be available in that runtime. Check with `node -e "console.log(require.resolve('playwright'))"` and `npx playwright --version`. If either check fails, use the MCP option above. Do not assume that a local package is installed, and do not install one just for these recordings.
 
-## Prepare the data
+## Prepare repeatable test data
 
-Use two different line IDs, for example `registry-source` and `registry-target`. Create both lines in the isolated router. Use the source line for claims and the target line for requests.
+Create two lines named `registry-source` and `registry-target` in the isolated router. To create a line without an app harness, POST JSON to `http://localhost:17788/api/lines`, for example:
 
-Before recording the archive case, use the normal line workflow to create a completed merge/archive record for `registry-source`. Open the global registry and confirm that its archive row is visible. The row must show the source line, merge reference, and status. Do not record an empty archive view as a passing case.
+```sh
+curl --fail-with-body -sS -X POST http://localhost:17788/api/lines \\
+  -H 'Content-Type: application/json' -d '{"name":"registry-source"}'
+curl --fail-with-body -sS -X POST http://localhost:17788/api/lines \\
+  -H 'Content-Type: application/json' -d '{"name":"registry-target"}'
+```
 
-Before the request case, open a request from `registry-source` to `registry-target`. Record its request ID and current revision. Answer it from the target line with that revision.
+Use the UI to publish a claim from `registry-source`. The exact selectors are `form#claimForm`, `form#claimForm input[name="lineId"]`, `form#claimForm input[name="claim"]`, and `form#claimForm button`. Fill the line ID with `registry-source` and enter a distinct claim.
 
-## Six cases
+Use the UI to open a request. The exact selectors are `form#requestForm`, `form#requestForm input[name="lineId"]`, `form#requestForm input[name="targetLineId"]`, `form#requestForm input[name="text"]`, and `form#requestForm button`. Set the source to `registry-source` and target to `registry-target`. Save the returned request ID and revision. Answer it with `form#answerForm` using `input[name="lineId"]` = `registry-target`, plus its request ID, revision, and answer text.
 
-1. **Open the registry.** Open the global registry. Show the claims, requests, and archives sections.
-2. **Filter the registry.** Enter a search value or status. Show the filtered rows.
-3. **View an archive.** Show the prepared archive row, its source line, merge reference, and status.
-4. **Publish a claim.** Publish a claim from `registry-source`. Show the updated registry.
-5. **Open and answer a request.** Open a request from `registry-source` to `registry-target`. Answer it from the target line using the saved request revision. Show the updated registry.
-6. **Replay registry events.** Open the dashboard. Disconnect the browser from the network, then reconnect it. Show the registry refresh after event replay.
+Before the archive case, complete a merge/archive for `registry-source` through the normal line workflow. Open the registry and confirm a visible archive row with the source line, merge reference, and status. Do not record an empty archive as a pass.
 
-Use one new recording context and one completed video for each case.
+## Six cases and exact UI selectors
+
+For cases 1, 2, 3, 4, and 6, open the registry using `#registryToggle`, then wait for `#registry` to be visible. For example, use `await recordingPage.locator('#registryToggle').click(); await recordingPage.locator('#registry').waitFor({ state: 'visible' });`.
+
+1. **Open the registry.** Click `#registryToggle`; wait for `#registry`; show `#registryContent` and the headings and rows.
+2. **Filter the registry.** Open and wait for `#registry` first. Fill `#registryQuery` or `#registryFilter`, then click `#registryRefresh`. Show `#registryContent`.
+3. **View an archive.** Open and wait for `#registry` first. In `#registryContent`, show the archive row (`.registry-row`) with its source line, merge reference, and status.
+4. **Publish a claim.** Fill `form#claimForm input[name="lineId"]` and `form#claimForm input[name="claim"]`; submit with `form#claimForm button`. Set line ID to `registry-source`, then show the updated `#registryContent` after opening the registry.
+5. **Open and answer a request.** Fill `form#requestForm input[name="lineId"]`, `form#requestForm input[name="targetLineId"]`, and `form#requestForm input[name="text"]`; submit with `form#requestForm button`. Then fill `form#answerForm input[name="lineId"]`, `form#answerForm input[name="requestId"]`, `form#answerForm input[name="revision"]`, and `form#answerForm input[name="text"]`; submit with `form#answerForm button`. Use target line `registry-target` and the saved request ID and revision.
+6. **Replay registry events.** Open and wait for `#registry`. Disconnect and reconnect the browser network. Show the resulting refresh in `#registryContent`.
+
+Use one new recording context and one completed video for each case. Register each completed video and check its evidence ID before you record the next case.
 
 ## Register each completed video
 
@@ -81,4 +92,4 @@ curl --fail-with-body -sS -X POST "http://localhost:7788/api/protocol/workers/$W
   -d '{"useCase":"View an archive","file":"cuck-code/evidence/registry-archive.webm"}'
 ```
 
-Use a distinct `useCase` and file path for each case. Confirm every registration response before you report the videos as evidence.
+Use a distinct `useCase` and file path for each case. Confirm every registration response and save its `evidenceId` before you start the next case. Do not batch registrations after all recordings.

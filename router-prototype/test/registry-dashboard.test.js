@@ -40,6 +40,21 @@ test("event replay pages from the saved cursor and refreshes registry data", () 
   assert.match(html, /localStorage\.setItem\("registryCursor", cursor\)/);
   assert.match(html, /if \(changed && !view\.hidden\) await load\(\)/);
 });
+test("documented registry UI selectors exist in the HTML", () => {
+  for (const id of ["registryToggle", "registry", "registryQuery", "registryFilter", "registryRefresh", "registryContent"]) {
+    assert.match(html, new RegExp(`id="${id}"`), `missing #${id}`);
+    assert.match(fs.readFileSync(require.resolve("../REGISTRY-VIDEOS.md"), "utf8"), new RegExp(`#${id}\\b`), `guide does not document #${id}`);
+  }
+  for (const [form, names] of Object.entries({
+    claimForm: ["lineId", "claim"],
+    requestForm: ["lineId", "targetLineId", "text"],
+    answerForm: ["lineId", "requestId", "revision", "text"],
+  })) {
+    assert.match(html, new RegExp(`id="${form}"`));
+    for (const name of names) assert.match(html, new RegExp(`<input name="${name}"`));
+    assert.match(fs.readFileSync(require.resolve("../REGISTRY-VIDEOS.md"), "utf8"), new RegExp(`form#${form}`));
+  }
+});
 test("inbound request answer uses its expected revision", () => {
   assert.match(html, /id="answerForm"/);
   assert.match(html, /expectedRequestRevision: Number\(d\.get\("revision"\)\)/);
