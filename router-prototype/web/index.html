@@ -194,8 +194,8 @@ window.addEventListener("DOMContentLoaded", () => {
   const { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge,
     PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
-    clearHarnessState, clearProviderState, shouldHideValidator } =
-    window.pipelineUI;
+    clearHarnessState, clearProviderState, shouldHideValidator,
+    selectEvidenceAttempt, clampEvidenceStep } = window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
   const listEl = document.getElementById("linelist");
@@ -857,98 +857,86 @@ window.addEventListener("DOMContentLoaded", () => {
     for (const item of items) pane.appendChild(inventoryRow(st.id, item));
   }
 
-  function renderEvidence(st, items) {
+  function renderEvidence(st, response) {
     const pane = st.evPane;
+    const selection = selectEvidenceAttempt(response);
+    const showcase = selection.primary;
     const previous = st.evidenceState || { itemId: null, step: 0, time: 0 };
-    pane.innerHTML = "";
-    if (!items.length) {
-      const e = document.createElement("div");
-      e.className = "pEmpty";
-      e.textContent = "No evidence registered for this line yet.";
-      pane.appendChild(e);
-      st.evidenceState = previous;
-      return;
-    }
-    const showcases = items.filter((item) => item.kind === "showcase" && item.version === 1);
-    const showcase = showcases.slice().sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0] || null;
-    const legacy = items.filter((item) => item !== showcase);
-    if (showcase) {
-      const box = document.createElement("section");
-      box.className = "evCase evShowcase";
-      const heading = document.createElement("h2");
-      heading.className = "uc";
-      heading.textContent = showcase.useCase || "Feature demonstration";
-      const meta = document.createElement("div");
-      meta.className = "meta";
-      meta.textContent = new Date(showcase.at).toLocaleString() + " - " + showcase.name;
-      const video = document.createElement("video");
-      video.controls = true;
-      video.preload = "metadata";
-      if (showcase.video) video.src = showcase.video;
-      else {
-        video.hidden = true;
-        const unavailable = document.createElement("div");
-        unavailable.className = "pEmpty";
-        unavailable.textContent = "Video unavailable for this showcase.";
-        box.appendChild(unavailable);
+    const steps = showcase && Array.isArray(showcase.steps) ? showcase.steps : [];
+    const selected = showcase && previous.itemId === showcase.id
+      ? clampEvidenceStep(previous.step, steps.length) : 0;
+    st.evidenceState = { itemId: showcase ? showcase.id : null, step: selected,
+      time: showcase && previous.itemId === showcase.id ? previous.time : 0 };
+
+    if (!showcase) {
+      if (!st.evidenceView || st.evidenceView.kind !== "empty" || st.evidenceView.text !== (selection.ambiguous ? "Current evidence attempt is ambiguous; history is shown below." : "No evidence registered for this line yet.")) {
+        pane.innerHTML = "";
+        const empty = document.createElement("div"); empty.className = "pEmpty";
+        empty.textContent = selection.ambiguous ? "Current evidence attempt is ambiguous; history is shown below." : "No evidence registered for this line yet.";
+        pane.appendChild(empty); st.evidenceView = { kind: "empty", text: empty.textContent };
       }
-      video.addEventListener("loadedmetadata", () => {
-        if (st.evidenceState && st.evidenceState.itemId === showcase.id) video.currentTime = st.evidenceState.time || 0;
-      });
-      video.addEventListener("timeupdate", () => {
-        if (st.evidenceState) st.evidenceState.time = video.currentTime;
-      });
+    } else if (!st.evidenceView || st.evidenceView.itemId !== showcase.id) {
+      pane.innerHTML = "";
+      const box = document.createElement("section"); box.className = "evCase evShowcase";
+      const heading = document.createElement("h2"); heading.className = "uc";
+      const meta = document.createElement("div"); meta.className = "meta";
+      const video = document.createElement("video"); video.controls = true; video.preload = "metadata";
+      video.addEventListener("loadedmetadata", () => { if (st.evidenceState) video.currentTime = st.evidenceState.time || 0; });
+      video.addEventListener("timeupdate", () => { if (st.evidenceState) st.evidenceState.time = video.currentTime; });
       box.append(heading, meta, video);
-      const steps = Array.isArray(showcase.steps) ? showcase.steps : [];
-      const selected = previous.itemId === showcase.id ? Math.min(previous.step, Math.max(steps.length - 1, 0)) : 0;
-      st.evidenceState = { itemId: showcase.id, step: selected, time: previous.itemId === showcase.id ? previous.time : 0 };
-      const slide = document.createElement("div");
-      slide.className = "evSlides";
-      const image = document.createElement("img");
-      image.className = "evShot";
-      image.alt = steps[selected] ? (steps[selected].title || "Demonstration screenshot") : "No screenshot available";
-      if (steps[selected] && steps[selected].screenshot) image.src = steps[selected].screenshot;
-      const copy = document.createElement("div");
-      copy.className = "evCopy";
-      const title = document.createElement("h3");
-      title.textContent = steps[selected] ? (steps[selected].title || "Untitled step") : "Screenshots unavailable";
-      const explanation = document.createElement("p");
-      explanation.textContent = steps[selected] ? (steps[selected].explanation || "No explanation provided.") : "This showcase has no screenshot steps.";
-      copy.append(title, explanation);
-      slide.append(image, copy);
-      const nav = document.createElement("div");
-      nav.className = "evNav";
-      const prev = document.createElement("button");
-      prev.type = "button"; prev.textContent = "Previous"; prev.disabled = selected === 0;
-      const counter = document.createElement("span");
-      counter.className = "evCounter";
-      counter.textContent = steps.length ? (selected + 1) + " of " + steps.length : "No steps";
-      const next = document.createElement("button");
-      next.type = "button"; next.textContent = "Next"; next.disabled = selected >= steps.length - 1;
-      const selectStep = (index) => { st.evidenceState.step = index; renderEvidence(st, items); };
-      prev.addEventListener("click", () => selectStep(selected - 1));
-      next.addEventListener("click", () => selectStep(selected + 1));
-      nav.append(prev, counter, next);
-      box.append(slide, nav);
-      pane.appendChild(box);
+      const slide = document.createElement("div"); slide.className = "evSlides";
+      const copy = document.createElement("div"); copy.className = "evCopy";
+      const title = document.createElement("h3"); const explanation = document.createElement("p"); copy.append(title, explanation);
+      slide.append(copy); box.append(slide);
+      const nav = document.createElement("div"); nav.className = "evNav";
+      const prev = document.createElement("button"); prev.type = "button"; prev.textContent = "Previous";
+      const counter = document.createElement("span"); counter.className = "evCounter";
+      const next = document.createElement("button"); next.type = "button"; next.textContent = "Next";
+      prev.addEventListener("click", () => { st.evidenceState.step--; renderEvidence(st, st.evidenceResponse); });
+      next.addEventListener("click", () => { st.evidenceState.step++; renderEvidence(st, st.evidenceResponse); });
+      nav.append(prev, counter, next); box.append(nav); pane.appendChild(box);
+      st.evidenceView = { kind: "showcase", itemId: showcase.id, box, heading, meta, video, videoUrl: null, slide, copy, title, explanation, prev, counter, next };
     }
-    if (legacy.length) {
-      const history = document.createElement("section");
-      history.className = "evHistory";
-      const title = document.createElement("h3");
-      title.textContent = showcase ? "Previous evidence" : "Evidence history";
-      history.appendChild(title);
+    if (showcase) {
+      const view = st.evidenceView;
+      view.heading.textContent = showcase.useCase || "Feature demonstration";
+      view.meta.textContent = new Date(showcase.at).toLocaleString() + " - " + (showcase.name || "showcase");
+      if (view.videoUrl !== (showcase.video || "")) {
+        view.videoUrl = showcase.video || "";
+        view.video.src = view.videoUrl;
+      }
+      const step = steps[selected];
+      view.slide.innerHTML = "";
+      if (step && step.screenshot) {
+        const image = document.createElement("img"); image.className = "evShot"; image.alt = step.title || "Demonstration screenshot";
+        const missing = document.createElement("div"); missing.className = "pEmpty"; missing.textContent = "Screenshot unavailable."; missing.hidden = true;
+        image.addEventListener("error", () => { image.hidden = true; missing.hidden = false; });
+        image.src = step.screenshot; view.slide.append(image, view.copy, missing);
+      } else {
+        const missing = document.createElement("div"); missing.className = "pEmpty"; missing.textContent = "Screenshot unavailable for this step.";
+        view.slide.append(missing, view.copy);
+      }
+      view.title.textContent = step ? (step.title || "Untitled step") : "Screenshots unavailable";
+      view.explanation.textContent = step ? (step.explanation || "No explanation provided.") : "This showcase has no screenshot steps.";
+      view.prev.disabled = selected === 0; view.next.disabled = selected >= steps.length - 1;
+      view.counter.textContent = steps.length ? (selected + 1) + " of " + steps.length : "No steps";
+    }
+    const legacy = selection.history;
+    const historyKey = legacy.map((item) => item.id || item.at || item.name).join("|");
+    if (legacy.length && (!st.historyView || st.historyView.key !== historyKey || !st.historyView.node.isConnected)) {
+      const history = document.createElement("section"); history.className = "evHistory";
+      const title = document.createElement("h3"); title.textContent = showcase ? "Previous evidence" : "Evidence history"; history.appendChild(title);
       for (const item of legacy) {
         const box = document.createElement("article"); box.className = "evLegacy";
         const name = document.createElement("div"); name.className = "uc"; name.textContent = item.useCase || "Legacy recording";
-        const meta = document.createElement("div"); meta.className = "meta"; meta.textContent = new Date(item.at).toLocaleString() + " - " + item.name;
-        box.append(name, meta);
+        const meta = document.createElement("div"); meta.className = "meta"; meta.textContent = new Date(item.at).toLocaleString() + " - " + (item.name || "evidence"); box.append(name, meta);
         if (item.video) { const video = document.createElement("video"); video.controls = true; video.preload = "metadata"; video.src = item.video; box.appendChild(video); }
         else { const empty = document.createElement("div"); empty.className = "pEmpty"; empty.textContent = "Video unavailable."; box.appendChild(empty); }
         history.appendChild(box);
       }
-      pane.appendChild(history);
-    }
+      if (st.historyView) st.historyView.node.replaceWith(history); else pane.appendChild(history);
+      st.historyView = { key: historyKey, node: history };
+    } else if (!legacy.length && st.historyView) { st.historyView.node.remove(); st.historyView = null; }
   }
 
   async function pollEvidence() {
@@ -959,9 +947,10 @@ window.addEventListener("DOMContentLoaded", () => {
     try {
       const res = await fetch("/api/lines/" + lineId + "/evidence");
       if (!res.ok || selectedLine !== lineId || cards.get(lineId) !== st || gen !== st.evidenceGen) return;
-      const { items } = await res.json();
+      const response = await res.json();
       if (selectedLine !== lineId || cards.get(lineId) !== st || gen !== st.evidenceGen) return;
-      renderEvidence(st, Array.isArray(items) ? items : []);
+      st.evidenceResponse = response;
+      renderEvidence(st, response);
     } catch {}
   }
 

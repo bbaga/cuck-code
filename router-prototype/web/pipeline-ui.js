@@ -245,6 +245,30 @@
     return "unknown";
   }
 
+  // Evidence is current only when the API identifies its integration attempt.
+  // Never infer currentness from timestamps, and keep all other records in history.
+  function selectEvidenceAttempt(response) {
+    const data = response && typeof response === "object" ? response : {};
+    let currentAttemptId = typeof data.currentAttemptId === "string" && data.currentAttemptId
+      ? data.currentAttemptId : null;
+    const ids = data.currentAttemptIds && typeof data.currentAttemptIds === "object"
+      ? Object.values(data.currentAttemptIds).filter((id) => typeof id === "string" && id) : [];
+    const uniqueIds = [...new Set(ids)];
+    if (!currentAttemptId && uniqueIds.length === 1) currentAttemptId = uniqueIds[0];
+    const items = Array.isArray(data.items) ? data.items : [];
+    const historyItems = Array.isArray(data.history) ? data.history : [];
+    const current = currentAttemptId ? items.filter((item) => item && item.attemptId === currentAttemptId) : [];
+    const primary = current.filter((item) => item.kind === "showcase" && item.version === 1)
+      .slice().sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0] || null;
+    return { currentAttemptId, ambiguous: !currentAttemptId && uniqueIds.length > 1,
+      primary, history: [...items.filter((item) => item !== primary), ...historyItems] };
+  }
+
+  function clampEvidenceStep(step, length) {
+    if (!Number.isFinite(step) || length <= 0) return 0;
+    return Math.max(0, Math.min(Math.floor(step), length - 1));
+  }
+
   return {
     PHASE_ROWS,
     EFFORT_LEVELS,
@@ -271,5 +295,7 @@
     authBadge,
     isFailedValidator,
     shouldHideValidator,
+    selectEvidenceAttempt,
+    clampEvidenceStep,
   };
 });
