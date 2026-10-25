@@ -244,6 +244,11 @@
     return "preview:" + String(workerId);
   }
 
+  function isPassingIntegration(worker) {
+    return !!worker && worker.kind === "integration" && worker.role === "validator"
+      && worker.status === "completed" && String(worker.verdict || "").toLowerCase() === "pass";
+  }
+
   function previewSelectionExists(workers, selected) {
     if (typeof selected !== "string" || !selected.startsWith("preview:")) return false;
     return (workers || []).some((worker) => worker && worker.kind === "integration"
@@ -253,21 +258,23 @@
   // Read-only preview contract adapter. Unknown or stale data is never eligible.
   function previewForIntegration(worker, preview) {
     if (!worker || worker.kind !== "integration" || !preview || typeof preview !== "object") return null;
-    const passing = worker.status === "completed" && worker.verdict === "pass";
+    const passing = worker.status === "completed" && String(worker.verdict || "").toLowerCase() === "pass";
     const eligible = passing && preview.availability === "available" && preview.stale !== true
       && preview.eligible === true && Array.isArray(preview.steps);
     return { ...preview, eligible, steps: Array.isArray(preview.steps) ? preview.steps : [] };
   }
 
   function mapPreviewPayload(payload, worker) {
-    if (!payload || typeof payload !== "object" || !worker || worker.kind !== "integration") return null;
-    const steps = Array.isArray(payload.steps) ? payload.steps : [];
+    if (!payload || typeof payload !== "object" || !isPassingIntegration(worker)) return null;
+    const steps = Array.isArray(payload.steps) ? payload.steps
+      : Array.isArray(payload.instructions) ? payload.instructions : [];
     const preview = {
       ...payload,
       sourceRevision: payload.sourceRevision || payload.source_revision || payload.revision || null,
       projectDirectory: payload.projectDirectory || payload.project_directory || null,
-      expectedUrl: payload.expectedUrl || payload.expected_url || null,
-      availability: payload.availability || (payload.available === false ? "unavailable" : "unknown"),
+      expectedUrl: payload.expectedUrl || payload.expected_url || payload.url || null,
+      availability: payload.availability || (payload.available === false ? "unavailable"
+        : payload.stale === true ? "unavailable" : payload.eligible === true ? "available" : "unavailable"),
       stale: payload.stale === true,
       eligible: payload.eligible === true,
       steps: steps.map((step) => typeof step === "string" ? { text: step } : step),
@@ -331,6 +338,7 @@
     buildPipelinePayload,
     authBadge,
     previewForIntegration,
+    isPassingIntegration,
     previewSelectionKey,
     previewSelectionExists,
     mapPreviewPayload,

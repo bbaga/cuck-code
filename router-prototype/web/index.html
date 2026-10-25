@@ -181,7 +181,7 @@
 <script>
 window.addEventListener("DOMContentLoaded", () => {
   const { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge, previewForIntegration,
-    previewSelectionKey, previewSelectionExists, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
+    previewSelectionKey, previewSelectionExists, isPassingIntegration, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
     PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
     clearHarnessState, clearProviderState, shouldHideValidator } =
@@ -332,7 +332,7 @@ window.addEventListener("DOMContentLoaded", () => {
       .filter((w) => isVal(w) && w.kind !== "integration"
         && !shouldHideValidator(w, hideFailed));
     const ints = [...st.workers.values()]
-      .filter((w) => isVal(w) && w.kind === "integration"
+      .filter((w) => isVal(w) && w.kind === "integration" && isPassingIntegration(w)
         && !shouldHideValidator(w, hideFailed));
     const rows = Math.max(impls.length, vals.length, ints.length, 1);
     const h = Math.max(140, 14 + (rows - 1) * 46 + 36 + 14);
