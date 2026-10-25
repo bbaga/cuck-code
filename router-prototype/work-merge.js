@@ -27,25 +27,25 @@ async function git(repoPath, args) {
   return (await execFileAsync('git', ['-C', repoPath, ...args], { timeout: 15000, maxBuffer: 1024 * 1024 })).stdout.trim();
 }
 
-async function verifyMerge({ repoPath, repositoryUrl, commit, targetBranch, strategy, pullRequest, checkPullRequest }) {
+async function verifyMerge({ repoPath, repositoryUrl, commit, targetBranch, strategy, pullRequest, checkPullRequest, gitCommand = git }) {
   if (!COMMIT.test(commit || '') || !/^[A-Za-z0-9._/-]+$/.test(targetBranch || '') || targetBranch.includes('..')) return { verified: false, reason: 'invalid_claim' };
   try {
     const expected = cleanRepoUrl(repositoryUrl);
-    const actual = cleanRepoUrl(await git(repoPath, ['remote', 'get-url', 'origin']));
+    const actual = cleanRepoUrl(await gitCommand(repoPath, ['remote', 'get-url', 'origin']));
     if (expected !== actual) return { verified: false, reason: 'repository_mismatch' };
-    const remote = await git(repoPath, ['ls-remote', '--symref', 'origin', 'HEAD']);
+    const remote = await gitCommand(repoPath, ['ls-remote', '--symref', 'origin', 'HEAD']);
     const head = remote.match(/^ref:\s+refs\/heads\/([^\n]+)\s+HEAD$/m)?.[1];
     if (!head) return { verified: false, reason: 'default_branch_unknown' };
     if (targetBranch !== head) return { verified: false, reason: 'target_not_default_branch' };
     const target = `refs/remotes/origin/${targetBranch}`;
-    await git(repoPath, ['fetch', '--no-tags', 'origin', `+refs/heads/${targetBranch}:${target}`]);
+    await gitCommand(repoPath, ['fetch', '--no-tags', 'origin', `+refs/heads/${targetBranch}:${target}`]);
     if (strategy === 'merge') {
-      await git(repoPath, ['merge-base', '--is-ancestor', commit, target]);
+      await gitCommand(repoPath, ['merge-base', '--is-ancestor', commit, target]);
       return { verified: true, defaultBranch: head, targetBranch, strategy };
     }
     if (!['squash', 'rebase'].includes(strategy) || typeof checkPullRequest !== 'function') return { verified: false, reason: 'unsupported_strategy' };
     const evidence = await checkPullRequest({ repositoryUrl: expected, targetBranch, commit, pullRequest });
-    if (!evidence || evidence.verified !== true || evidence.merged !== true || evidence.base !== targetBranch || !Number.isSafeInteger(evidence.number)) return { verified: false, reason: 'pull_request_unverified' };
+    if (!evidence || evidence.verified !== true || evidence.merged !== true || evidence.base !== targetBranch || evidence.repositoryUrl !== expected || evidence.commit !== commit || !Number.isSafeInteger(evidence.number)) return { verified: false, reason: 'pull_request_unverified' };
     return { verified: true, defaultBranch: head, targetBranch, strategy, pullRequest: evidence.number };
   } catch (error) {
     return { verified: false, reason: 'check_failed', error: error.message };

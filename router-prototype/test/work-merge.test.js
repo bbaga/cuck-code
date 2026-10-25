@@ -19,6 +19,37 @@ test('requires verified pull-request evidence for squash and rebase strategies',
   assert.equal(result.verified, false);
 });
 
+test('verifies ancestry for the exact claim commit on the default branch', async () => {
+  const calls = [];
+  const gitCommand = async (_repo, args) => {
+    calls.push(args);
+    if (args[0] === 'remote') return 'https://github.com/o/r.git';
+    if (args[0] === 'ls-remote') return 'ref: refs/heads/main\tHEAD\n' + 'b'.repeat(40) + '\tHEAD';
+    if (args[0] === 'merge-base') {
+      assert.equal(args[2], 'a'.repeat(40));
+      assert.equal(args[3], 'refs/remotes/origin/main');
+      return '';
+    }
+    return '';
+  };
+  const result = await verifyMerge({ repoPath: '/repo', repositoryUrl: 'https://github.com/o/r', commit: 'a'.repeat(40), targetBranch: 'main', strategy: 'merge', gitCommand });
+  assert.equal(result.verified, true, JSON.stringify(result));
+  assert.equal(calls.some(args => args[0] === 'fetch'), true);
+});
+
+test('accepts only verified pull-request evidence for the same repo, branch, and commit', async () => {
+  const gitCommand = async (_repo, args) => args[0] === 'remote' ? 'https://github.com/o/r.git' : args[0] === 'ls-remote' ? 'ref: refs/heads/main\tHEAD\n' + 'b'.repeat(40) + '\tHEAD' : '';
+  const args = { repoPath: '/repo', repositoryUrl: 'https://github.com/o/r', commit: 'a'.repeat(40), targetBranch: 'main', strategy: 'squash', pullRequest: 8, gitCommand };
+  const evidence = { verified: true, merged: true, base: 'main', number: 8, repositoryUrl: 'https://github.com/o/r.git', commit: 'a'.repeat(40) };
+  assert.equal((await verifyMerge({ ...args, checkPullRequest: async () => evidence })).verified, true);
+  for (const invalid of [
+    { ...evidence, repositoryUrl: 'https://github.com/other/r.git' },
+    { ...evidence, base: 'release' },
+    { ...evidence, commit: 'c'.repeat(40) },
+    { ...evidence, verified: false }
+  ]) assert.equal((await verifyMerge({ ...args, checkPullRequest: async () => invalid })).verified, false);
+});
+
 test('leaves failed checks and stale claim results unchanged', () => {
   const snapshot = base();
   const captured = captureClaim(snapshot, 'c1');
