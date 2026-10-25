@@ -18,6 +18,7 @@ const { flushPendingValidationQueue, removePendingValidations,
   serializePendingValidations, restorePendingValidations } = require("./validation-queue");
 const { CHANGESET_LIMIT, collectChangeset, changesetWakeMessage,
   changesetFields } = require("./changeset");
+const { BaseError, resolveSpawnBase, baseFields, baseNote } = require("./spawn-base");
 const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests } = require("./planner-request");
@@ -278,6 +279,12 @@ ${userPrompt}
    curl -s -X POST http://localhost:${port}/api/protocol/lines/${lineId}/workers \\
      -H 'Content-Type: application/json' \\
      -d '{"name":"<worker-name>","persona":"backend|frontend","repo":"<repo-name>","prompt":"<full instructions>"}'
+   Optional "base" sets the start point of the worktree: a full 40-character
+   commit SHA, or the name of a finished implementor of the same line and
+   repo (its branch head is used). The 500-line limit counts from it. For a
+   stack of dependent PRs, give the child the parent's validated implementor
+   name or head SHA as "base"; the child's draft PR base is the parent's
+   branch. Rejections: 404 unknown, 400 malformed/other repo, 409 running.
    The "repo" field is optional and selects the repository the worker
    works in (default "primary" - your workdir). A line can work across
    several repositories: register additional ones with
@@ -519,11 +526,11 @@ git push -u origin HEAD
 Report the branch name with: git rev-parse --abbrev-ref HEAD`;
 }
 
-function changesetBlock(baseCommit) {
+function changesetBlock(baseCommit, baseNoteText) {
   return `## Change-set limit
 The router measures your change set from base commit ${baseCommit || "unknown"}
 to your branch HEAD (git diff --numstat).
-The limit is ${CHANGESET_LIMIT} changed lines: additions plus deletions.
+${baseNoteText || ""}The limit is ${CHANGESET_LIMIT} changed lines: additions plus deletions.
 The count covers code, tests, documentation, and configuration.
 Binary, dirty, or untracked work cannot enter validation.
 Keep your total at or below the limit. The router enforces this rule.
@@ -533,7 +540,7 @@ The planner can continue your session to reduce or split the work.
 `;
 }
 
-function workerBrief(name, lineName, prompt, persona, workerId, lineId, repo, baseCommit) {
+function workerBrief(name, lineName, prompt, persona, workerId, lineId, repo, baseCommit, baseNoteText) {
   const repoUrl = repo && repo.url ? repo.url : null;
   return `You are implementor worker '${name}' (id ${workerId}) on factory line '${lineName}'.
 Your repository for this task: '${repo ? repo.name : "primary"}'${repoUrl ? ` (remote: ${repoUrl})` : " (no remote)"}.
@@ -545,7 +552,7 @@ checkout: every file you read or write must be inside your worktree.
 Commit your work with clear messages.
 Test scope: run UNIT TESTS only. Do NOT run integration tests. The CI
 pipelines of the repository run the integration tests.
-${changesetBlock(baseCommit)}${containersBlock(workerId, lineId)}${remoteBlockImplementor(repoUrl)}
+${changesetBlock(baseCommit, baseNoteText)}${containersBlock(workerId, lineId)}${remoteBlockImplementor(repoUrl)}
 
 ${IMPL_PERSONA[persona] || IMPL_PERSONA.backend}
 ${persona === "frontend" ? frontendToolsBlock(workerId, null, lineId) : ""}
@@ -734,7 +741,7 @@ function saveLine(line) {
           validationCriteria: w.validationCriteria || null,
           role: w.role, validates: w.validates, persona: w.persona || "backend",
           repo: w.repo || "primary", worktreePath: w.worktreePath,
-          ...changesetFields(w),
+          ...changesetFields(w), ...baseFields(w),
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
           kind: w.kind || "standard" })) }));
   } catch {}
@@ -1514,7 +1521,7 @@ const server = http.createServer((req, res) => {
         id: w.id, name: w.name, ...completionFields(w), sessionId: w.sessionId, branch: w.branch,
         role: w.role, validates: w.validates, persona: w.persona || "backend",
         kind: w.kind || "standard",
-        ...changesetFields(w),
+        ...changesetFields(w), ...baseFields(w),
       })) });
     }
     if (!line.planApproved) return json(res, 409, { error: "plan not approved" });
@@ -1555,8 +1562,19 @@ const server = http.createServer((req, res) => {
       const worktreePath = repo.name === "primary"
         ? path.join(LINES_DIR, "worktrees", line.id, sName)
         : path.join(LINES_DIR, "worktrees", line.id, repo.name, sName);
+      // Validate the base BEFORE any branch or worktree exists.
+      let baseResolved = null;
+      try {
+        baseResolved = resolveSpawnBase(body.base, { workers: line.workers.values(),
+          repoName: repo.name,
+          run: (args) => spawnSync("git", ["-C", repo.path, ...args], { encoding: "utf8" }) });
+      } catch (e) {
+        if (e instanceof BaseError) return json(res, e.status, { error: e.message });
+        return json(res, 500, { error: `base resolution failed: ${e.message}` });
+      }
       fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
-      const wt = spawnSync("git", ["-C", repo.path, "worktree", "add", "-b", branch, worktreePath],
+      const wt = spawnSync("git", ["-C", repo.path, "worktree", "add", "-b", branch, worktreePath,
+        ...(baseResolved ? [baseResolved.sha] : [])],
         { encoding: "utf8" });
       if (wt.error) return json(res, 500, { error: `git is not available: ${wt.error.message}` });
       if (wt.status !== 0) return json(res, 500, { error: "git worktree add failed", stderr: wt.stderr });
@@ -1565,14 +1583,21 @@ const server = http.createServer((req, res) => {
       const baseHead = spawnSync("git", ["-C", worktreePath, "rev-parse", "HEAD"],
         { encoding: "utf8" });
       const baseCommit = baseHead.status === 0 ? baseHead.stdout.trim() : null;
+      if (baseResolved && baseCommit !== baseResolved.sha) {
+        spawnSync("git", ["-C", repo.path, "worktree", "remove", "--force", worktreePath]);
+        spawnSync("git", ["-C", repo.path, "branch", "-D", branch]);
+        return json(res, 500, { error: "worktree HEAD does not match the resolved base", expected: baseResolved.sha, actual: baseCommit });
+      }
+      const base = baseResolved ? body.base : null;
       const worker = { id, lineId: line.id, name: body.name,
         role: "implementor", validates: null, persona, kind: "standard", repo: repo.name,
         runGeneration: 1,
         harness: body.harness || null, model: body.model || null,
         effort: body.effort || null,
-        prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo, baseCommit),
+        prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo, baseCommit,
+          baseNote(base, baseResolved)),
         sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
-        baseCommit, changeset: null,
+        baseCommit, changeset: null, base, baseResolved,
         child: null, transcript: [] };
       line.workers.set(id, worker);
       saveLine(line);
@@ -1580,7 +1605,8 @@ const server = http.createServer((req, res) => {
         name: body.name, persona, branch, repo: repo.name, repoUrl: repo.url || undefined });
       spawnWorker(line, worker, worker.prompt);
       broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona, repo: repo.name } });
-      json(res, 201, { workerId: id, branch, worktree: worktreePath, repo: repo.name });
+      json(res, 201, { workerId: id, branch, worktree: worktreePath, repo: repo.name,
+        baseCommit, ...baseFields(worker) });
     });
     return;
   }
@@ -1979,7 +2005,8 @@ function loadLines() {
           runGeneration: Number.isInteger(w.runGeneration) ? w.runGeneration : 0,
           activeInvocationId: w.activeInvocationId || null,
           lastCompletedInvocationId: w.lastCompletedInvocationId || null,
-          baseCommit: w.baseCommit || null, changeset: w.changeset || null });
+          baseCommit: w.baseCommit || null, changeset: w.changeset || null,
+          ...baseFields(w) });
       }
       for (const w of meta.workers || []) {
         if (w.role !== "validator") continue;
@@ -2001,7 +2028,8 @@ function loadLines() {
           runGeneration: Number.isInteger(w.runGeneration) ? w.runGeneration : 0,
           activeInvocationId: w.activeInvocationId || null,
           lastCompletedInvocationId: w.lastCompletedInvocationId || null,
-          baseCommit: w.baseCommit || null, changeset: w.changeset || null });
+          baseCommit: w.baseCommit || null, changeset: w.changeset || null,
+          ...baseFields(w) });
       }
       const started = meta.started === true || !!meta.sessionId;
       const inventory = new Map();
