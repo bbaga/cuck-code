@@ -245,6 +245,127 @@
     return "unknown";
   }
 
+  // Evidence is current only when the API identifies its integration attempt.
+  // Never infer currentness from timestamps, and keep all other records in history.
+  function selectEvidenceAttempt(response) {
+    const data = response && typeof response === "object" ? response : {};
+    let currentAttemptId = typeof data.currentAttemptId === "string" && data.currentAttemptId
+      ? data.currentAttemptId : null;
+    const ids = data.currentAttemptIds && typeof data.currentAttemptIds === "object"
+      ? Object.values(data.currentAttemptIds).filter((id) => typeof id === "string" && id) : [];
+    const uniqueIds = [...new Set(ids)];
+    if (!currentAttemptId && uniqueIds.length === 1) currentAttemptId = uniqueIds[0];
+    const items = Array.isArray(data.items) ? data.items : [];
+    const historyItems = Array.isArray(data.history) ? data.history : [];
+    const current = currentAttemptId ? items.filter((item) => item && item.attemptId === currentAttemptId) : [];
+    const primary = current.filter((item) => item.kind === "showcase" && item.version === 1)
+      .slice().sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0] || null;
+    return { currentAttemptId, ambiguous: !currentAttemptId && uniqueIds.length > 1,
+      primary, history: [...items.filter((item) => item !== primary), ...historyItems] };
+  }
+
+  function clampEvidenceStep(step, length) {
+    if (!Number.isFinite(step) || length <= 0) return 0;
+    return Math.max(0, Math.min(Math.floor(step), length - 1));
+  }
+
+  function evidencePollIsCurrent(st, lineId, generation, selectedLine, currentState) {
+    return selectedLine === lineId && currentState === st && generation === st.evidenceGen;
+  }
+
+  // This is the production evidence renderer. The page delegates to this
+  // function so unit tests exercise the same DOM path as the browser.
+  function renderEvidence(st, response) {
+    const doc = st.evPane.ownerDocument || document;
+    const pane = st.evPane;
+    const selection = selectEvidenceAttempt(response);
+    const showcase = selection.primary;
+    const previous = st.evidenceState || { itemId: null, step: 0, time: 0 };
+    const steps = showcase && Array.isArray(showcase.steps) ? showcase.steps : [];
+    const selected = showcase && previous.itemId === showcase.id
+      ? clampEvidenceStep(previous.step, steps.length) : 0;
+    st.evidenceState = { itemId: showcase ? showcase.id : null, step: selected,
+      time: showcase && previous.itemId === showcase.id ? previous.time : 0 };
+    if (!showcase) {
+      if (st.evidenceView && st.evidenceView.kind === "showcase") { st.evidenceView.box.remove(); st.evidenceView = null; }
+      const message = selection.ambiguous ? "Current evidence attempt is ambiguous; history is shown below." : "No evidence registered for this line yet.";
+      if (!st.emptyView || st.emptyView.text !== message) {
+        if (st.emptyView) st.emptyView.node.remove();
+        const empty = doc.createElement("div"); empty.className = "pEmpty"; empty.textContent = message;
+        pane.appendChild(empty); st.emptyView = { node: empty, text: message };
+      }
+    } else {
+      if (st.emptyView) { st.emptyView.node.remove(); st.emptyView = null; }
+      if (!st.evidenceView || st.evidenceView.itemId !== showcase.id) {
+      pane.innerHTML = "";
+      const box = doc.createElement("section"); box.className = "evCase evShowcase";
+      const heading = doc.createElement("h2"); heading.className = "uc";
+      const meta = doc.createElement("div"); meta.className = "meta";
+      const video = doc.createElement("video"); video.controls = true; video.preload = "metadata";
+      const videoUnavailable = doc.createElement("div"); videoUnavailable.className = "pEmpty"; videoUnavailable.textContent = "Video unavailable for this showcase.";
+      video.addEventListener("loadedmetadata", () => { if (st.evidenceState) video.currentTime = st.evidenceState.time || 0; });
+      video.addEventListener("timeupdate", () => { if (st.evidenceState) st.evidenceState.time = video.currentTime; });
+      box.append(heading, meta, video, videoUnavailable);
+      const slide = doc.createElement("div"); slide.className = "evSlides";
+      const copy = doc.createElement("div"); copy.className = "evCopy";
+      const title = doc.createElement("h3"); const explanation = doc.createElement("p"); copy.append(title, explanation);
+      slide.append(copy); box.append(slide);
+      const nav = doc.createElement("div"); nav.className = "evNav";
+      const prev = doc.createElement("button"); prev.type = "button"; prev.textContent = "Previous";
+      const counter = doc.createElement("span"); counter.className = "evCounter";
+      const next = doc.createElement("button"); next.type = "button"; next.textContent = "Next";
+      prev.addEventListener("click", () => { st.evidenceState.step--; renderEvidence(st, st.evidenceResponse); });
+      next.addEventListener("click", () => { st.evidenceState.step++; renderEvidence(st, st.evidenceResponse); });
+      nav.append(prev, counter, next); box.append(nav); pane.appendChild(box);
+      st.evidenceView = { kind: "showcase", itemId: showcase.id, box, heading, meta, video, videoUnavailable, videoUrl: null, slide, copy, title, explanation, prev, counter, next, slideKey: null };
+      }
+    }
+    if (showcase) {
+      const view = st.evidenceView;
+      view.heading.textContent = showcase.useCase || "Feature demonstration";
+      view.meta.textContent = new Date(showcase.at).toLocaleString() + " - " + (showcase.name || "showcase");
+      if (view.videoUrl !== (showcase.video || "")) {
+        view.videoUrl = showcase.video || ""; view.video.src = view.videoUrl;
+        view.video.hidden = !view.videoUrl; view.videoUnavailable.hidden = Boolean(view.videoUrl);
+      }
+      const step = steps[selected];
+      const slideKey = selected + "|" + (step && step.screenshot || "");
+      if (view.slideKey !== slideKey) {
+        view.slide.innerHTML = "";
+        if (step && step.screenshot) {
+          const image = doc.createElement("img"); image.className = "evShot"; image.alt = step.title || "Demonstration screenshot";
+          const missing = doc.createElement("div"); missing.className = "pEmpty"; missing.textContent = "Screenshot unavailable."; missing.hidden = true;
+          image.addEventListener("error", () => { image.hidden = true; missing.hidden = false; }); image.src = step.screenshot;
+          view.slide.append(image, view.copy, missing); view.image = image; view.imageMissing = missing;
+        } else {
+          const missing = doc.createElement("div"); missing.className = "pEmpty"; missing.textContent = "Screenshot unavailable for this step.";
+          view.slide.append(missing, view.copy); view.image = null; view.imageMissing = missing;
+        }
+        view.slideKey = slideKey;
+      }
+      view.title.textContent = step ? (step.title || "Untitled step") : "Screenshots unavailable";
+      view.explanation.textContent = step ? (step.explanation || "No explanation provided.") : "This showcase has no screenshot steps.";
+      view.prev.disabled = selected === 0; view.next.disabled = selected >= steps.length - 1;
+      view.counter.textContent = steps.length ? (selected + 1) + " of " + steps.length : "No steps";
+    }
+    const legacy = selection.history;
+    const historyKey = legacy.map((item) => item.id || item.at || item.name).join("|");
+    if (legacy.length && (!st.historyView || st.historyView.key !== historyKey || !st.historyView.node.isConnected)) {
+      const history = doc.createElement("section"); history.className = "evHistory";
+      const heading = doc.createElement("h3"); heading.textContent = showcase ? "Previous evidence" : "Evidence history"; history.appendChild(heading);
+      for (const item of legacy) {
+        const box = doc.createElement("article"); box.className = "evLegacy";
+        const name = doc.createElement("div"); name.className = "uc"; name.textContent = item.useCase || "Legacy recording";
+        const meta = doc.createElement("div"); meta.className = "meta"; meta.textContent = new Date(item.at).toLocaleString() + " - " + (item.name || "evidence"); box.append(name, meta);
+        if (item.video) { const oldVideo = doc.createElement("video"); oldVideo.controls = true; oldVideo.preload = "metadata"; oldVideo.src = item.video; box.appendChild(oldVideo); }
+        else { const empty = doc.createElement("div"); empty.className = "pEmpty"; empty.textContent = "Video unavailable."; box.appendChild(empty); }
+        history.appendChild(box);
+      }
+      if (st.historyView) st.historyView.node.replaceWith(history); else pane.appendChild(history);
+      st.historyView = { key: historyKey, node: history };
+    } else if (!legacy.length && st.historyView) { st.historyView.node.remove(); st.historyView = null; }
+  }
+
   return {
     PHASE_ROWS,
     EFFORT_LEVELS,
@@ -271,5 +392,9 @@
     authBadge,
     isFailedValidator,
     shouldHideValidator,
+    selectEvidenceAttempt,
+    clampEvidenceStep,
+    renderEvidenceFromState: renderEvidence,
+    evidencePollIsCurrent,
   };
 });
