@@ -199,7 +199,16 @@ class VibeHarness extends BaseHarness {
     args.push('--trust', '--agent', 'accept-edits', '--output', 'streaming',
       '--time-limit', String(ctx.timeLimitSec));
     if (ctx.autoApprove) args.push('--auto-approve');
-    args.push('-p', ctx.prompt);
+    // The CLI argument parser rejects a -p/--prompt value that starts with
+    // '-': it parses the prompt as an unknown flag and exits 1. The '='
+    // assignment form passes such a value through verbatim, so planner
+    // turn wrappers that begin with '---' keep working. Prompts that do
+    // not start with '-' keep the byte-for-byte historical argv.
+    if (typeof ctx.prompt === 'string' && ctx.prompt.startsWith('-')) {
+      args.push('--prompt=' + ctx.prompt);
+    } else {
+      args.push('-p', ctx.prompt);
+    }
     if (systemArgs) args.push(...systemArgs);
     const env = {};
     if (ctx.model) env.VIBE_ACTIVE_MODEL = ctx.model;

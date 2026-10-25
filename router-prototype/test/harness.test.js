@@ -79,6 +79,20 @@ test('vibe buildRun: fresh and resumed argv, env, cwd, effort ignored', () => {
   );
 });
 
+test('vibe buildRun: a leading-dash prompt rides the = form of --prompt', () => {
+  const h = createHarness('vibe');
+  // A prompt that starts with '-' would be parsed as an unknown flag in the
+  // two-argument form, so the adapter must keep it in one argv element.
+  const dash = h.buildRun({ ...CTX, prompt: '--- PLANNER TURN CONTEXT ---\nDo the task' });
+  assert.ok(dash.args.includes('--- PLANNER TURN CONTEXT ---\nDo the task') === false,
+    'the dash-leading prompt must not ride as its own argv element');
+  assert.deepStrictEqual(dash.args.slice(-1),
+    ['--prompt=--- PLANNER TURN CONTEXT ---\nDo the task']);
+  // A prompt without a leading dash keeps the historical argv byte for byte.
+  const plain = h.buildRun({ ...CTX });
+  assert.deepStrictEqual(plain.args.slice(-2), ['-p', 'Do the task']);
+});
+
 test('vibe outcome and normalize on fixture lines', () => {
   const h = createHarness('vibe');
   assert.strictEqual(h.supportsNativeTimeLimit, true);

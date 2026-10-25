@@ -130,19 +130,26 @@ function isValidCatalogToken(token) {
 // A model id in a catalog row must carry version-like structure (a digit
 // or a separator). Ordinary error prose ("Failed to load catalog",
 // "Command failed") does not, so prose lines never become catalog rows.
+// A slash is allowed: real catalog rows can carry a provider-qualified id
+// in the model column (for example "google/gemma-4-e4b").
 function looksLikeModelId(token) {
-  return isValidCatalogToken(token) && /[0-9._-]/.test(token.slice(1));
+  return typeof token === "string"
+    && /^[A-Za-z0-9][A-Za-z0-9._@+/-]*$/.test(token)
+    && /[0-9._-]/.test(token.slice(1));
 }
 
 // Parse the output of `pi --list-models` into unique provider choices and
 // provider-qualified model choices. Tolerates table headers, separator
 // rows, variable spacing, and "provider:" section headers with indented
 // model lines. Row structure is validated conservatively: a whitespace
-// row must have exactly two identifier-like cells, a pipe row takes its
-// first two cells, and a model cell must look like a model id. Error
-// prose therefore yields no providers and no models. Callers must parse
-// only after the command exited 0; a failed command never yields rows.
-// Never includes credentials: only provider and model names are read.
+// row takes its first two identifier-like cells, a wider row is data only
+// when a "provider model ..." header announced that exact column count
+// (real catalogs print metadata columns next to provider and model), a
+// pipe row takes its first two cells, and a model cell must look like a
+// model id. Error prose therefore yields no providers and no models.
+// Callers must parse only after the command exited 0; a failed command
+// never yields rows. Never includes credentials: only provider and
+// model names are read.
 function parsePiModelCatalog(stdout) {
   const models = [];
   const seenModels = new Set();
@@ -154,6 +161,10 @@ function parsePiModelCatalog(stdout) {
     models.push({ value: qualified, label: m });
   };
   let current = null;
+  // Column count announced by a "provider model ..." header row. Wider
+  // whitespace rows are catalog data only while they match this count;
+  // without a header, a row with more than two cells is prose, not data.
+  let headerColumns = null;
   for (const rawLine of String(stdout == null ? "" : stdout).split(/\r?\n/)) {
     if (!rawLine.trim()) continue;
     if (/^[\s|:+-=]+$/.test(rawLine)) continue; // table borders/separators
@@ -171,15 +182,22 @@ function parsePiModelCatalog(stdout) {
       }
       addModel(first, second);
       current = first;
-    } else if (!isPipeRow && cells.length === 2) {
+    } else if (!isPipeRow && cells.length >= 2) {
       const [first, second] = cells;
       if (/^provider$/i.test(first) && /^model$/i.test(second)) {
-        current = null; // header row
+        headerColumns = cells.length; // header row, any width
+        current = null;
         continue;
       }
-      // A whitespace row with more than two cells is prose, not a row.
-      addModel(first, second);
-      current = first;
+      // Two cells are always a candidate row; a wider row is data only
+      // when a header announced that exact column count. Real catalogs
+      // print metadata columns (context, max-out, ...) next to the
+      // provider and model; prose lines never match the header width.
+      if (cells.length === 2
+        || (headerColumns !== null && cells.length === headerColumns)) {
+        addModel(first, second);
+        current = first;
+      }
     } else if (!isPipeRow && cells.length === 1) {
       const token = cells[0];
       if (token.endsWith(":")) {

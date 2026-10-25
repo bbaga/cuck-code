@@ -347,7 +347,42 @@ test("parsePiModelCatalog ignores junk lines without a model column", () => {
   assert.deepStrictEqual(parsed.models, [{ value: "p1/m1", label: "m1" }]);
 });
 
-// ---- regression: error prose must never become a catalog row ----
+// ---- regression: the real six-column catalog must parse ----
+
+test("parsePiModelCatalog parses the real pi catalog table with metadata columns", () => {
+  // Byte-for-byte shape of `pi --list-models` on a real install: the model
+  // id can itself be provider-qualified and the table carries context,
+  // max-out, thinking, and images columns after the model.
+  const out = [
+    "provider      model               context  max-out  thinking  images",
+    "lmstudio      google/gemma-4-e4b  50K      131.1K   yes       yes   ",
+    "openai-codex  gpt-5.6-luna        272K     128K     yes       yes   ",
+    "openai-codex  gpt-5.6-sol         272K     128K     yes       yes   ",
+  ].join("\n");
+  assert.deepStrictEqual(parsePiModelCatalog(out), {
+    providers: [
+      { value: "lmstudio", label: "lmstudio" },
+      { value: "openai-codex", label: "openai-codex" },
+    ],
+    models: [
+      { value: "lmstudio/google/gemma-4-e4b", label: "google/gemma-4-e4b" },
+      { value: "openai-codex/gpt-5.6-luna", label: "gpt-5.6-luna" },
+      { value: "openai-codex/gpt-5.6-sol", label: "gpt-5.6-sol" },
+    ],
+  });
+});
+
+test("parsePiModelCatalog ignores a wider row that misses the header width", () => {
+  const out = [
+    "provider  model",
+    "p1  m1  extra",
+    "p2  m2",
+  ].join("\n");
+  const parsed = parsePiModelCatalog(out);
+  assert.deepStrictEqual(parsed.providers, [{ value: "p2", label: "p2" }]);
+  assert.deepStrictEqual(parsed.models, [{ value: "p2/m2", label: "m2" }]);
+});
+
 
 test("parsePiModelCatalog rejects error prose passed directly", () => {
   for (const prose of [

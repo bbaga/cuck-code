@@ -1076,9 +1076,12 @@ window.addEventListener("DOMContentLoaded", () => {
     const entry = installedHarnesses.find((h) => h.id === id);
     if (!entry) return "";
     const badge = authBadge(entry);
-    return badge === "missing"
-      ? entry.id + ": auth missing - run " + (entry.loginHint || entry.id + " login")
-      : entry.id + ": " + badge;
+    if (badge === "missing")
+      return entry.id + ": auth missing - run " + (entry.loginHint || entry.id + " login");
+    // vibe and pi have no provider-free auth probe, so their base state is
+    // honestly "not probed"; pi shows the real state after a mode is chosen.
+    if (badge === "unknown") return entry.id + ": installed (auth not probed)";
+    return entry.id + ": " + badge;
   }
 
   function updateAuthHint(key) {
