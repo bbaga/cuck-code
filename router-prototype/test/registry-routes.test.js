@@ -1,7 +1,7 @@
 "use strict";
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { validClaim, validPatch, boundedInteger, handleRegistryRoute } = require("../registry-routes");
+const { validClaim, validPatch, boundedInteger, handleRegistryRoute, deliverOutbox } = require("../registry-routes");
 
 test("claim fields, status, and text limits are validated", () => {
   assert.equal(validClaim({ repo:"r", branch:"b", commit:"c", title:"t", status:"active" }), true);
@@ -32,6 +32,28 @@ test("claim patch rejects unknown fields before store mutation", async () => {
   handleRegistryRoute({method:"PATCH"},h.res,new URL("http://x/api/registry/lines/L/claims/C"),["api","registry","lines","L","claims","C"],h.deps);
   const out=await h.request({expectedSnapshotRevision:1,expectedRevision:1,patch:{ownerLineId:"elsewhere"}});
   assert.equal(out.status(),400);
+});
+test("outbox retry after restart does not repeat a saved planner notice", async () => {
+  let state={revision:2,outbox:[{id:"notice-1",targetLineId:"T",type:"request.opened",requestId:"R"}]};
+  const store={readSnapshot:async()=>structuredClone(state),transact:async(rev,fn)=>{if(rev!==state.revision)return {stale:true};fn(state);state.revision++;return {result:true};}};
+  const saved=[]; const lines=new Map([["T",{}]]); const saveQueue=(_line,text)=>saved.push(text);
+  await deliverOutbox(store,lines,saveQueue);
+  await deliverOutbox(store,new Map([["T",{}]]),saveQueue); // Simulate a router restart.
+  assert.equal(saved.length,1); assert.match(saved[0],/notice-1/); assert.ok(state.outbox[0].deliveredAt);
+});
+test("bounded merge refresh archives only verified default-branch merges", async () => {
+  const cases=[];
+  for (const [label,evidence] of [["verified",{verified:true,defaultBranch:"main",targetBranch:"main",strategy:"merge"}], ["unverified",{verified:false}], ["wrong branch",{verified:true,defaultBranch:"main",targetBranch:"release",strategy:"merge"}], ["integration only",{verified:true,defaultBranch:"main",targetBranch:"main",strategy:"integration"}]]) {
+    const snap={revision:1,claims:[{id:label,revision:1,commit:"a"}],requests:[],archive:[],events:[],outbox:[],eventCursor:0};
+    const store={readSnapshot:async()=>structuredClone(snap),transact:async(rev,fn)=>({result:await fn(snap),revision:rev+1})};
+    const routeHarness=harness(snap); routeHarness.deps.getStore=()=>store;
+    routeHarness.deps.getMerge=()=>({verifyMerge:async input=>({ ...evidence, verified:evidence.verified && evidence.defaultBranch===input.targetBranch && evidence.strategy==="merge" }),captureClaim:s=>s.claims[0],transition:(s)=>({ok:true,snapshot:{...s,claims:[],archive:[{id:label}],events:[{cursor:1}],eventCursor:1}})});
+    const res=routeHarness.res;
+    handleRegistryRoute({method:"POST"},res,new URL("http://x/api/registry/refresh"),["api","registry","refresh"],routeHarness.deps);
+    await routeHarness.request({claimIds:[label],evidence:{repoPath:"/repo",repositoryUrl:"https://github.com/o/r",targetBranch:evidence.targetBranch||"main",strategy:evidence.strategy||"merge"}});
+    cases.push([label,res.status,snap.archive.length]);
+  }
+  assert.deepEqual(cases.map(x=>x[2]),[1,0,0,0]);
 });
 test("event replay keeps the cursor when no newer event exists", async () => {
   const h=harness({revision:1,claims:[],requests:[],archive:[],events:[{cursor:4}],outbox:[]});

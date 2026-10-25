@@ -61,24 +61,13 @@ function handleRegistryRoute(req, res, url, parts, deps) {
       Object.assign(item, changed.request); state.outbox.push(...changed.effects); return item;
     });
     if (result.stale) return stale(result);
-    await deliverOutbox(store, enqueue);
+    await deliverOutbox(store, lines, enqueue);
     return stale(result);
-  }
-  async function deliverOutbox(store, send) {
-    const snapshot = await store.readSnapshot();
-    for (const notice of snapshot.outbox) {
-      if (notice.deliveredAt || !notice.id || !notice.targetLineId) continue;
-      const target = lines.get(notice.targetLineId);
-      if (!target || target.deliveredNoticeIds?.includes(notice.id)) continue;
-      send(target, `WORK REQUEST NOTICE ${notice.id}: ${notice.type} ${notice.requestId}`);
-      target.deliveredNoticeIds = [...new Set([...(target.deliveredNoticeIds || []), notice.id])];
-      await store.transact(snapshot.revision, state => { const current = state.outbox.find(x => x.id === notice.id); if (current) current.deliveredAt = new Date().toISOString(); });
-    }
   }
   async function refresh(data) {
     if (!data || !data.evidence || typeof data.evidence.repoPath !== "string" || typeof data.evidence.repositoryUrl !== "string" || typeof data.evidence.targetBranch !== "string" || typeof data.evidence.strategy !== "string") throw new TypeError("Verified remote evidence fields are required");
     if (!Array.isArray(data.claimIds) || data.claimIds.length > 20) throw new TypeError("claimIds must contain at most 20 IDs");
-    const merge = require("./work-merge");
+    const merge = deps.getMerge ? deps.getMerge() : require("./work-merge");
     const results = [];
     for (const claimId of data.claimIds) {
       const snap = await store.readSnapshot(), item = snap.claims.find(x => x.id === claimId);
@@ -99,4 +88,15 @@ function validClaim(claim, partial = false) {
   if (!partial && ["repo", "branch", "commit"].some(key => typeof claim[key] !== "string" || !claim[key].trim() || claim[key].length > 500)) return false;
   return ["title", "summary"].every(key => claim[key] == null || typeof claim[key] === "string" && claim[key].length <= TEXT_MAX) && (claim.tags == null || Array.isArray(claim.tags) && claim.tags.length <= 50 && claim.tags.every(tag => typeof tag === "string" && tag.length <= 40));
 }
-module.exports = { handleRegistryRoute, validClaim, validPatch, boundedInteger, deliverOutbox: async () => {} };
+async function deliverOutbox(store, lines, send) {
+  const snapshot = await store.readSnapshot();
+  for (const notice of snapshot.outbox) {
+    if (notice.deliveredAt || !notice.id || !notice.targetLineId) continue;
+    const target = lines.get(notice.targetLineId);
+    if (!target) continue;
+    send(target, `WORK REQUEST NOTICE ${notice.id}: ${notice.type} ${notice.requestId}`);
+    const saved = await store.transact(snapshot.revision, state => { const current = state.outbox.find(x => x.id === notice.id); if (current) current.deliveredAt = new Date().toISOString(); });
+    if (saved.stale) return;
+  }
+}
+module.exports = { handleRegistryRoute, validClaim, validPatch, boundedInteger, deliverOutbox };
