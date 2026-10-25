@@ -6,8 +6,8 @@ const { spawn, spawnSync } = require("node:child_process");
 const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
   resolvePipeline, probeResultFor,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
-const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
-  validateWorkerSpawnBody, lineSummary } = require("./spawn-plan");
+const { planWorkerRun, phaseForWorker, resolveWorkerOverrides,
+  validateWorkerSpawnBody, lineSummary, preparePlannerLaunch } = require("./spawn-plan");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
 const { messageText, InvocationCapture, appendTranscript, hasCriteria,
   validationCriteriaBlock, pendingValidationFor, reportForValidation,
@@ -237,9 +237,7 @@ ${implId ? `- The implementor's app port: read ui.port at the repo root, or call
   fixtures.`;
 }
 
-const { PLANNER_POLICY_VERSION, plannerSystemPrompt, plannerUserPrompt,
-  migratePlannerPolicy } = require("./planner-policy");
-const { trustedSystemChannel, writeSystemPromptFile } = require("./harness");
+const { PLANNER_POLICY_VERSION, migratePlannerPolicy } = require("./planner-policy");
 
 const lines = new Map();
 
@@ -810,43 +808,16 @@ function entryText(entry) {
   return messageText(entry);
 }
 
-// Build the planner child process plan. The trusted policy travels only
-// through the harness system channel; the user prompt stays byte-for-byte
-// unchanged. Fails closed before any launch when the harness has no
-// verified trusted channel (including vibe).
-function buildPlannerPlan(line, cfg, request) {
-  if (!trustedSystemChannel(cfg.harness)) {
-    throw new Error(`planner harness "${cfg.harness}" has no trusted system prompt channel; refusing to launch`);
-  }
-  const systemPrompt = plannerSystemPrompt({
-    lineId: line.id, approved: line.planApproved, workdir: line.workdir,
-    source: request.source,
-  });
-  // Router-owned policy directory inside the line workdir. The content-hash
-  // file name makes the refresh safe when approval or the trusted source
-  // state changes: a new state writes a new file, never a partial overwrite.
-  const systemPromptFile = writeSystemPromptFile(systemPrompt,
-    path.join(line.workdir, "router", "policy"));
-  return planPlannerRun(cfg, {
-    prompt: plannerUserPrompt(request.text),
-    workdir: line.workdir,
-    sessionId: line.sessionId,
-    autoApprove: AUTO_APPROVE,
-    systemPrompt,
-    systemPromptFile,
-  });
-}
-
-// Fail closed on a refused planner launch: report a clear error, drop the
-// request, and return the line to idle. Never falls back to prefixing the
-// policy onto the user prompt.
-function failPlannerLaunch(line, err) {
-  const message = err && err.message ? err.message : String(err);
-  slog("error", "planner.launch.refused", { lineId: line.id, error: message });
-  broadcast(line, "error", { message: `planner launch refused: ${message}` });
+// Surface a blocked planner state. The caller has put the exact request back
+// at the queue front, so nothing is lost: the queue is persisted with the
+// line, and pumping resumes only on an external trigger. No timer re-pumps,
+// so an unsupported configuration causes no busy retry.
+function blockPlanner(line, message) {
+  slog("error", "planner.blocked", { lineId: line.id, error: message });
+  broadcast(line, "error", { message });
   line.activePlannerRequest = null;
   line.lastRun = null;
-  line.status = "idle";
+  line.status = "blocked";
   saveLine(line);
   broadcast(line, "status", { status: line.status });
 }
@@ -855,6 +826,23 @@ function pump(line) {
   if (line.deleted || line.status === "running" || line.queue.length === 0) return;
   const request = restorePlannerRequest(line.queue.shift());
   if (!request) return pump(line);
+  const cfg = resolvePipeline(line).planner;
+  line.plannerHarness = cfg.harness;
+  // Decide the launch before any state change. On a capability refusal or a
+  // plan build error, the exact request (text and trusted source metadata)
+  // goes back to the queue front: nothing is lost and no child process starts.
+  let prepared;
+  try {
+    prepared = preparePlannerLaunch(line, cfg, request, AUTO_APPROVE);
+  } catch (err) {
+    line.queue.unshift(request);
+    return blockPlanner(line, err && err.message ? err.message : String(err));
+  }
+  if (prepared.op === "blocked") {
+    line.queue.unshift(request);
+    return blockPlanner(line, prepared.message);
+  }
+  const plan = prepared.plan;
   const { text } = request;
   line.activePlannerRequest = request;
   line.lastRun = text;
@@ -865,14 +853,6 @@ function pump(line) {
   slog("info", "planner.run.start", { lineId: line.id, resume: !!line.sessionId,
     chars: text.length, prompt: preview(text, 400) });
 
-  const cfg = resolvePipeline(line).planner;
-  line.plannerHarness = cfg.harness;
-  let plan;
-  try {
-    plan = buildPlannerPlan(line, cfg, request);
-  } catch (err) {
-    return failPlannerLaunch(line, err);
-  }
   const adapter = plan.adapter;
   const child = spawn(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, ...plan.env },

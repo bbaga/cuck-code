@@ -100,14 +100,15 @@ The policy file lives under `router/policy/` inside the line workdir
 refreshed when approval or the trusted source state changes. The policy body
 is never logged. Harnesses without a verified trusted channel (currently
 `vibe`) fail closed with a clear error before launch; the router never falls
-back to prefixing the policy onto the user prompt. Configure such a planner
-with `pi`, `codex`, or `claude` via the pipeline settings.
-
-Lines persisted before the policy carry a `plannerPolicyVersion`. On the first
-load after the upgrade the router migrates them once: line state and the UI
-transcript are preserved, the planner harness session ID is cleared, and the
-next invocation starts as a fresh session that receives the trusted policy.
-The migration is logged without policy text.
+back to prefixing the policy onto the user prompt. A refused launch keeps the
+request at the front of the persisted queue and puts the line into a `blocked`
+state, so no request is lost and no retry loop spins. After a supported
+planner harness is configured, the next pump runs the preserved request.
+Configure such a planner with `pi`, `codex`, or `claude` via the pipeline
+settings. Lines persisted before the policy carry a `plannerPolicyVersion`:
+the router migrates them once on load (state and transcript preserved, planner
+session ID cleared, next invocation fresh) and logs the migration without
+policy text.
 
 ## Factory protocol
 

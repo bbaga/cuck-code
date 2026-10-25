@@ -10,10 +10,18 @@ const assert = require("node:assert/strict");
 const { PLANNER_POLICY_VERSION, plannerSystemPrompt, plannerUserPrompt,
   migratePlannerPolicy } = require("../planner-policy");
 const { trustedSystemChannel, createHarness } = require("../harness");
-const { planPlannerRun } = require("../spawn-plan");
+const { planPlannerRun, preparePlannerLaunch } = require("../spawn-plan");
 const { resolvePipeline } = require("../pipeline-config");
+const { plannerRequest } = require("../planner-request");
 
 const BASE = { lineId: "line-1", workdir: "/line/work", approved: false, source: null };
+
+function fakeLine(overrides) {
+  return { id: "line-1", planApproved: false, workdir: "/line/work",
+    sessionId: null, queue: [], ...overrides };
+}
+
+const SOURCE = { workerId: "w-1", invocationId: "inv-1", runId: 3, report: "body" };
 
 // Payloads that any prefixing, unwrapping, or escaping mistake would change.
 const PAYLOADS = [
@@ -106,6 +114,44 @@ test("capability check rejects unsupported planner harnesses before launch", () 
     model: "m", effort: "medium", timeLimitSec: 60, autoApprove: false,
     systemPrompt: "POLICY",
   }), /no verified trusted system channel/);
+});
+
+test("blocked decision preserves the request, spawns no child, and recovers later", (t) => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "planner-blocked-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const vibe = { ...resolvePipeline({}, {}).planner, harness: "vibe" };
+  const pi = { ...vibe, harness: "pi" };
+  const line = fakeLine({ workdir: dir });
+  const request = plannerRequest("continue", SOURCE);
+  line.queue.push(request);
+  // Repeated decisions while the configuration stays unchanged: every call
+  // blocks again with no state change, so no retry loop can spin.
+  const first = preparePlannerLaunch(line, vibe, request, false);
+  const second = preparePlannerLaunch(line, vibe, request, false);
+  assert.equal(first.op, "blocked");
+  assert.equal(second.op, "blocked");
+  assert.match(first.message, /vibe/);
+  assert.match(first.message, /no trusted system prompt channel/);
+  assert.equal(first.plan, undefined, "no child process plan is produced");
+  // The request text and trusted source metadata are untouched, and the
+  // decision does not mutate the line or its queue.
+  assert.equal(request.text, "continue");
+  assert.deepEqual(request.source, SOURCE);
+  assert.deepEqual(line.queue, [request]);
+  assert.equal(line.status, undefined);
+  // After a supported planner harness is configured, the same preserved
+  // request launches.
+  const recovered = preparePlannerLaunch(line, pi, request, false);
+  assert.equal(recovered.op, "launch");
+  const p = recovered.plan.args.indexOf("-p");
+  assert.equal(recovered.plan.args[p + 1], "continue");
+  const s = recovered.plan.args.indexOf("--append-system-prompt");
+  assert.notEqual(s, -1);
+  assert.match(fs.readFileSync(recovered.plan.args[s + 1], "utf8"),
+    /TRUSTED SOURCE: implementor w-1/);
 });
 
 test("fresh and resumed planner plans carry the policy file, never inline", (t) => {
