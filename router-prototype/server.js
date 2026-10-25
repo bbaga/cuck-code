@@ -23,6 +23,7 @@ const { BaseError, resolveSpawnBase, baseFields, baseNote } = require("./spawn-b
 const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests } = require("./planner-request");
+const { previewForLine } = require("./preview-instructions");
 
 const PORT = Number(process.env.PORT || 7788);
 const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
@@ -1955,6 +1956,13 @@ When done, reply with a report: what you changed, files changed, how you verifie
 
   if (req.method === "GET" && url.pathname === "/api/lines") {
     return json(res, 200, { lines: [...lines.values()].map(lineSummary) });
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "preview") {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    try { return json(res, 200, previewForLine(line)); }
+    catch { return json(res, 200, { eligible: false, reason: "Preview instructions are unavailable." }); }
   }
 
   if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "events") {

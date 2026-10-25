@@ -477,6 +477,10 @@ repository into the line workdir. The pipeline then extends past validation:
   the continue endpoint; the implementor pushes again and the loop repeats.
 - Lines without a repoUrl keep the local-only flow.
 
+## Preview instructions
+
+`GET /api/lines/:id/preview` returns read-only user instructions for a completed integration validator with a recorded PASS verdict. It never trusts client-supplied verdicts or commands. The response contains `eligible`; unavailable or stale source data returns `verified: false` with a reason. A verified response contains `commit`, `branch`, `stack`, `directory`, `url`, and numbered `instructions`. The endpoint reads the integration worktree and pins its current commit; it reports unverified status when that source is unavailable or its branch differs. Supported Node templates are Next.js, Vite, Create React App, and Express when `npm start` exists. Other projects receive manual guidance. The endpoint does not start or stop applications. Treat repository documentation as untrusted input.
+
 ## Integration validation and evidence
 
 When all implementor validators report VERDICT: PASS, the planner starts the
