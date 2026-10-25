@@ -82,7 +82,8 @@
   .dot.standby { background: #6c7a8c; }
   @keyframes pulse { 50% { opacity: .3; } }
   .banner { margin: 8px 16px 0; padding: 8px; border-radius: 4px;
-    background: #4d1420; color: #ff8095; font-size: .85rem; white-space: pre-wrap; }
+    background: #4d1420; color: #ff8095; font-size: .85rem; white-space: pre-wrap;
+    cursor: pointer; }
   .planDetails { border-bottom: 1px solid #262b33; }
   .planDetails summary { cursor: pointer; padding: 6px 16px; color: #6c7a8c;
     font-size: .75rem; user-select: none; }
@@ -114,6 +115,10 @@
   .keepBtn { background: #14331f; color: #58d68d; }
   .keepBtn.kept { background: #58d68d; color: #10261a; }
   .killBtn { background: #4d1420; color: #ff8095; }
+  .previewPanel { padding: 12px 16px; border-bottom: 1px solid #262b33; max-height: 300px; overflow: auto; }
+  .previewPanel h2 { font-size: .95rem; margin: 0 0 8px; }
+  .previewStep { margin: 8px 0; }
+  .previewStep pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #0d1014; padding: 8px; }
   .graph svg { display: block; }
   .graph svg .edge { stroke: #333c48; stroke-width: 1.5; }
   .gnode { position: absolute; display: flex; align-items: center; gap: 8px;
@@ -146,6 +151,8 @@
   .transcript > div { margin-bottom: 10px; }
   .user { color: #8fa3bd; }
   .assistant { color: #d8dee6; }
+  .runError { padding: 8px; border-radius: 4px; background: #4d1420; color: #ff8095;
+    font-size: .85rem; white-space: pre-wrap; }
   .ts { color: #5a6675; font-size: .7rem; margin-right: 6px; }
   .transcript details { border-left: 2px solid #333c48; padding-left: 8px; }
   .transcript summary { cursor: pointer; color: #6c7a8c; font-size: .75rem; }
@@ -192,7 +199,8 @@
 <script src="pipeline-ui.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
-  const { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge,
+  const { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge, previewForIntegration,
+    previewSelectionKey, previewSelectionExists, isPassingIntegration, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
     PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
     clearHarnessState, clearProviderState, shouldHideValidator,
@@ -331,6 +339,7 @@ window.addEventListener("DOMContentLoaded", () => {
       });
       n.appendChild(stop);
     }
+    if (w.lastError) n.title = w.lastError;
     n.addEventListener("click", () => selectNode(st, w.id));
     return n;
   }
@@ -343,12 +352,18 @@ window.addEventListener("DOMContentLoaded", () => {
       .filter((w) => isVal(w) && w.kind !== "integration"
         && !shouldHideValidator(w, hideFailed));
     const ints = [...st.workers.values()]
-      .filter((w) => isVal(w) && w.kind === "integration"
+      .filter((w) => isVal(w) && w.kind === "integration" && isPassingIntegration(w)
         && !shouldHideValidator(w, hideFailed));
     const rows = Math.max(impls.length, vals.length, ints.length, 1);
     const h = Math.max(140, 14 + (rows - 1) * 46 + 36 + 14);
     const graph = st.graph;
     graph.innerHTML = "";
+    const selectedPreviewWorker = st.selected && st.selected.startsWith("preview:")
+      ? st.workers.get(st.selected.slice("preview:".length)) : null;
+    if (selectedPreviewWorker && st.previewPanel.hidden) {
+      const currentPreview = mapPreviewPayload(st.previewPayload, selectedPreviewWorker);
+      if (currentPreview) renderPreviewPanel(st, selectedPreviewWorker, currentPreview);
+    }
     const W = graph.clientWidth || 440;
     const plannerW = 92, plannerX = 12;
     const nodeW = 190;
@@ -406,15 +421,58 @@ window.addEventListener("DOMContentLoaded", () => {
     ints.forEach((iv, j) => {
       edge(plannerX + plannerW, plannerY + 18, intX, implY(j) + 18);
       inner.appendChild(workerNode(st, iv, intX, implY(j), nodeW));
+      const data = mapPreviewPayload(st.previewPayload, iv);
+      if (st.selected === previewSelectionKey(iv.id) && data && st.previewPanel.hidden) renderPreviewPanel(st, iv, data);
+      if (data) {
+        const px = intX + nodeW + 46, py = implY(j);
+        edge(intX + nodeW, py + 18, px, py + 18);
+        const node = document.createElement("button");
+        node.className = "gnode" + (st.selected === previewSelectionKey(iv.id) ? " sel" : "");
+        node.textContent = "Preview";
+        node.style.left = px + "px"; node.style.top = py + "px"; node.style.width = "110px";
+        node.addEventListener("click", () => selectPreview(st, iv, data));
+        inner.appendChild(node);
+      }
     });
   }
 
+  function selectPreview(st, worker, data) {
+    st.selected = previewSelectionKey(worker.id);
+    try { localStorage.setItem("preview-selection:" + st.id, st.selected); } catch {}
+    renderPreviewPanel(st, worker, data);
+  }
+
+  function renderPreviewPanel(st, worker, data) {
+    const panel = document.createElement("section");
+    panel.setAttribute("aria-label", "Preview instructions");
+    const title = document.createElement("h2"); title.textContent = "Preview instructions (read only)"; panel.appendChild(title);
+    const add = (label, value) => { if (!value) return; const p = document.createElement("p"); p.textContent = label + ": " + value; panel.appendChild(p); };
+    add("Revision", data.sourceRevision); add("Project directory", data.projectDirectory); add("Expected URL", data.expectedUrl);
+    add("Prerequisites", Array.isArray(data.prerequisites) ? data.prerequisites.join("; ") : "");
+    add("Limitations", Array.isArray(data.limitations) ? data.limitations.join("; ") : "");
+    add("Explanation", data.message || data.reason || "");
+    if (data.stale === true) add("Data status", "Stale. Do not rely on these instructions.");
+    if (data.availability === "unavailable") add("Data status", data.message || "Preview data is unavailable.");
+    if (data.eligible !== true) add("Data status", "Not eligible for use. Preview instructions require a completed passing integration.");
+    if (data.availability !== "available") add("Availability", data.reason || data.message || data.availability || "Unavailable");
+    if (data.eligible !== true && data.steps.length === 0) add("Instructions", "No usable preview steps are available.");
+    if (data.eligible === true) data.steps.forEach((step, i) => { const box = document.createElement("div"); box.className = "previewStep";
+      const label = document.createElement("h3"); label.textContent = (i + 1) + ". " + (step.title || "Instruction");
+      const pre = document.createElement("pre"); pre.textContent = step.command || step.text || "";
+      const copy = document.createElement("button"); copy.type = "button"; copy.textContent = "Copy";
+      copy.addEventListener("click", () => navigator.clipboard.writeText(sanitizePreviewCommand(pre.textContent)));
+      box.append(label, pre, copy); panel.appendChild(box); });
+    st.previewPanel.replaceChildren(panel); st.previewPanel.hidden = false; renderGraph(st);
+  }
+
   function selectNode(st, id) {
+    if (st.previewPanel) st.previewPanel.hidden = true;
     if (st.selected !== id) st.followTranscript = true;
     st.selected = id;
+    try { localStorage.removeItem("preview-selection:" + st.id); } catch {}
     const w = id !== null ? st.workers.get(id) : null;
     const isValidator = w && (w.role || "implementor") === "validator";
-    st.tabEvBtn.hidden = !isValidator;
+    if (st.tabEvBtn) st.tabEvBtn.hidden = !isValidator;
     renderGraph(st);
     renderTranscript(st);
   }
@@ -462,6 +520,12 @@ window.addEventListener("DOMContentLoaded", () => {
       st.transcript.appendChild(label);
       for (const e of st.workerTranscripts.get(st.selected) || []) {
         st.transcript.appendChild(entryEl(e));
+      }
+      if (w && w.lastError) {
+        const err = document.createElement("div");
+        err.className = "runError";
+        err.textContent = w.lastError;
+        st.transcript.appendChild(err);
       }
     }
     if (!st.followTranscript) st.transcript.scrollTop = scrollTop;
@@ -540,6 +604,8 @@ window.addEventListener("DOMContentLoaded", () => {
     const banner = document.createElement("div");
     banner.className = "banner";
     banner.hidden = true;
+    banner.title = "Click to dismiss";
+    banner.addEventListener("click", () => { banner.hidden = true; });
 
     const plan = document.createElement("div");
     plan.className = "plan";
@@ -561,6 +627,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
     const graph = document.createElement("div");
     graph.className = "graph";
+    const previewPanel = document.createElement("div"); previewPanel.className = "previewPanel"; previewPanel.hidden = true;
 
     const transcript = document.createElement("div");
     transcript.className = "transcript";
@@ -585,17 +652,18 @@ window.addEventListener("DOMContentLoaded", () => {
     const evPane = document.createElement("div");
     evPane.className = "evPane";
     evPane.hidden = true;
-    card.append(head, pipeCfg, planDetails, banner, plan, graph, transcriptWrap, row, procPane, evPane);
+    card.append(head, pipeCfg, planDetails, banner, plan, graph, previewPanel, transcriptWrap, row, procPane, evPane);
     linesEl.appendChild(card);
 
     const st = { id: line.id, dot, banner, transcript, transcriptWrap, scrollBottomBtn, input, send,
-      waiting, planBody, graph, approveBtn, badge, planDetails, planControls: controls,
+      waiting, planBody, graph, previewPanel, approveBtn, badge, planDetails, planControls: controls,
       pipeCfg,
       tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, plan, row, procPane, evPane,
       hideFailedValidators: true,
       plannerStatus: line.status, started: line.started === true,
       planContent: undefined, approved: false,
-      workers: new Map(), workerTranscripts: new Map(),
+      workers: new Map(), workerTranscripts: new Map(), previewPayload: null, previewRequest: 0,
+
       plannerTranscript: [], selected: null };
     setupTranscriptScroll(st);
 
@@ -632,6 +700,28 @@ window.addEventListener("DOMContentLoaded", () => {
       updateControls(st);
     });
 
+    try {
+      const savedPreview = localStorage.getItem("preview-selection:" + st.id);
+      if (savedPreview && savedPreview.startsWith("preview:")) st.selected = savedPreview;
+    } catch {}
+
+    const refreshPreview = async () => {
+      const request = ++st.previewRequest;
+      const result = await fetchLinePreview({ lineId: st.id, fetchImpl: fetch,
+        isCurrent: () => request === st.previewRequest && cards.get(st.id) === st });
+      if (request !== st.previewRequest || cards.get(st.id) !== st) return;
+      st.previewPayload = result.ok ? result.payload : {
+        availability: "unavailable", eligible: false, stale: false, steps: [], message: result.message,
+      };
+      if (st.selected && st.selected.startsWith("preview:")) {
+        const worker = st.workers.get(st.selected.slice("preview:".length));
+        const data = mapPreviewPayload(st.previewPayload, worker);
+        if (worker) renderPreviewPanel(st, worker, data || st.previewPayload);
+      }
+      renderGraph(st);
+    };
+    refreshPreview();
+
     const es = new EventSource("/api/lines/" + st.id + "/events");
     st.es = es;
     es.addEventListener("state", (e) => {
@@ -641,11 +731,26 @@ window.addEventListener("DOMContentLoaded", () => {
       if (state.started === true) st.started = true;
       updateControls(st);
       st.workers = new Map(state.workers.map((w) => [w.id, w]));
+      if (st.selected === null) {
+        try {
+          const savedPreview = localStorage.getItem("preview-selection:" + st.id);
+          if (previewSelectionExists(state.workers, savedPreview)) st.selected = savedPreview;
+        } catch {}
+      }
       for (const w of state.workers) {
         if (!st.workerTranscripts.has(w.id)) st.workerTranscripts.set(w.id, []);
       }
-      if (st.selected !== null && !st.workers.has(st.selected)) st.selected = null;
+      if (typeof st.selected === "string" && st.selected.startsWith("preview:")) {
+        if (!previewSelectionExists(state.workers, st.selected)) st.selected = null;
+        else {
+          const selectedPreviewId = st.selected.slice("preview:".length);
+          const selectedWorker = state.workers.find((worker) => String(worker.id) === selectedPreviewId);
+          const currentData = selectedWorker && mapPreviewPayload(st.previewPayload, selectedWorker);
+          if (currentData) renderPreviewPanel(st, selectedWorker, currentData);
+        }
+      } else if (st.selected !== null && !st.workers.has(st.selected)) st.selected = null;
       setStatus(state.status);
+      refreshPreview();
       renderTranscript(st);
     });
     es.addEventListener("status", (e) => setStatus(JSON.parse(e.data).status));
@@ -672,13 +777,21 @@ window.addEventListener("DOMContentLoaded", () => {
       if (!st.workerTranscripts.has(worker.id)) st.workerTranscripts.set(worker.id, []);
       renderGraph(st);
       updateListEntry(st);
+      refreshPreview();
     });
     es.addEventListener("worker_status", (e) => {
-      const { workerId, status, verdict } = JSON.parse(e.data);
+      const { workerId, status, verdict, error } = JSON.parse(e.data);
       const w = st.workers.get(workerId);
-      if (w) { w.status = status; if (verdict) w.verdict = verdict; }
+      if (w) {
+        w.status = status;
+        if (verdict) w.verdict = verdict;
+        w.lastError = error || null;
+        if (error) showError("Worker '" + w.name + "' failed. " + error);
+        if (st.selected === workerId) renderTranscript(st);
+      }
       renderGraph(st);
       updateListEntry(st);
+      refreshPreview();
     });
     es.addEventListener("worker_removed", (e) => {
       const { workerIds } = JSON.parse(e.data);
@@ -763,7 +876,7 @@ window.addEventListener("DOMContentLoaded", () => {
     st.tabLineBtn.classList.toggle("active", tab === "line");
     st.tabProcBtn.classList.toggle("active", tab === "processes");
     st.tabEvBtn.classList.toggle("active", tab === "evidence");
-    for (const el of [st.plan, st.planDetails, st.graph, st.transcriptWrap, st.row, st.pipeCfg]) {
+    for (const el of [st.plan, st.planDetails, st.graph, st.previewPanel, st.transcriptWrap, st.row, st.pipeCfg]) {
       el.hidden = tab !== "line";
     }
     st.procPane.hidden = tab !== "processes";
@@ -1058,9 +1171,12 @@ window.addEventListener("DOMContentLoaded", () => {
     const entry = installedHarnesses.find((h) => h.id === id);
     if (!entry) return "";
     const badge = authBadge(entry);
-    return badge === "missing"
-      ? entry.id + ": auth missing - run " + (entry.loginHint || entry.id + " login")
-      : entry.id + ": " + badge;
+    if (badge === "missing")
+      return entry.id + ": auth missing - run " + (entry.loginHint || entry.id + " login");
+    // vibe and pi have no provider-free auth probe, so their base state is
+    // honestly "not probed"; pi shows the real state after a mode is chosen.
+    if (badge === "unknown") return entry.id + ": installed (auth not probed)";
+    return entry.id + ": " + badge;
   }
 
   function updateAuthHint(key) {
@@ -1166,7 +1282,8 @@ window.addEventListener("DOMContentLoaded", () => {
         }
         sel.value = current;
         // Base metadata arrived: refresh auth mode options and model choices
-        // (Vibe rows pick up their models here; Pi rows wait for a mode).
+        // (Vibe and Claude rows pick up their models here; Pi rows wait
+        // for a mode).
         if (harnessSelects[key].value !== PI_HARNESS_ID) {
           phaseState[key].models = modelOptionsForPhase({
             harnesses: installedHarnesses,
