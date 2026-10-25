@@ -438,7 +438,10 @@ repository into the line workdir. The pipeline then extends past validation:
 
 ## Integration validation and evidence
 
-From the merged repository root, run the registry acceptance check:
+Only the integration validator runs this acceptance script and integration
+tests. Implementors and their validators run unit tests only.
+
+From the merged repository root, run this exact acceptance command:
 
 ```
 node router-prototype/scripts/registry-acceptance.js
@@ -450,10 +453,29 @@ request, checks a stale write, and verifies state after a router restart. It
 prints PASS or FAIL for each step and exits nonzero on failure. Do not use port
 7788 for a separate test server.
 
-For UI evidence, use a browser context with `recordVideo: { dir: "evidence" }`.
-Run the registry claim and request use case in the merged router UI. Close the
-browser context before you register its video. Then register it with
-`POST /api/protocol/workers/:workerId/evidence` and `{ "useCase": "registry claim and request", "file": "evidence/registry-routes.webm" }`.
+Record one UI video for each case below. Use a browser context with
+`recordVideo: { dir: "evidence" }`. Save each video under `evidence/` with a
+separate, clear file name.
+
+1. Create two lines. Record the line creation result.
+2. Publish a claim. Search for it from the other line. Record the claim.
+3. Open the claim list. Move through each page. Record the page results.
+4. Submit a write with an old revision. Record the HTTP 409 result.
+5. Open a request. Accept the request from its target line. Record both steps.
+6. Restart the router. Find the saved claim and accepted request. Record them.
+
+After each case, close its browser context. Wait for the video file to finish
+writing. Register that video with the router evidence API. Use the integration
+validator worker ID in the URL. For example:
+
+```
+curl -s -X POST http://localhost:<PORT>/api/protocol/workers/<workerId>/evidence \\
+  -H 'Content-Type: application/json' \\
+  -d '{"useCase":"claim search from another line","file":"evidence/claim-search.webm"}'
+```
+
+Register each case with its own `useCase` and `file` values. Do not register a
+video before the browser context closes.
 
 When all implementor validators report VERDICT: PASS, the planner starts the
 integration validator (`POST /api/protocol/lines/:id/integration` with the
