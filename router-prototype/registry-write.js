@@ -7,7 +7,6 @@ const claimRules = require('./work-claims');
 const requestRules = require('./work-requests');
 
 const BODY_MAX = 64 * 1024;
-const RETRIES = 3;
 
 // Thrown inside a mutation to abort the transaction without a write.
 class Abort extends Error {
@@ -51,15 +50,9 @@ function createWriteRoutes({ store, lineExists, now, newId }) {
     return item;
   }
 
-  // Run mutation(draft) in a transaction; retry a stale snapshot up to RETRIES times.
-  async function run(mutation) {
-    for (let i = 0; i < RETRIES; i++) {
-      const current = await store.readSnapshot();
-      const out = await store.transact(current.revision, mutation);
-      if (out.ok) return out;
-    }
-    throw new Abort(409, { error: 'Registry is busy; try again', code: 'BUSY' });
-  }
+  // Run mutation(draft) in a serialized transaction. Item-level revisions guard the writes,
+  // so the snapshot revision check is skipped (null).
+  const run = mutation => store.transact(null, mutation);
 
   const findClaim = (snapshot, id) => {
     const claim = snapshot.claims.find(c => c.id === id);

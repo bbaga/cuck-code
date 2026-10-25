@@ -148,14 +148,29 @@ test('transition request: reply notice goes to source, errors', async () => {
   assert.equal((await call(routes, 'PATCH', '/api/registry/lines/L2/requests/nope', { state: 'accepted', expectedRevision: 1 })).code, 404);
 });
 
-test('two quick writes both succeed or one gets structured 409', async () => {
+test('10 concurrent claim creates all succeed', async () => {
   const { routes, store } = await setup();
-  const rs = await Promise.all([
-    call(routes, 'POST', '/api/registry/lines/L1/claims', newClaim()),
-    call(routes, 'POST', '/api/registry/lines/L2/claims', newClaim({ title: 'U' })),
-  ]);
-  for (const r of rs) assert.ok(r.code === 201 || (r.code === 409 && r.body.code === 'BUSY'), JSON.stringify(r));
-  assert.equal((await store.readSnapshot()).claims.length, rs.filter(r => r.code === 201).length);
+  const rs = await Promise.all(Array.from({ length: 10 }, (_, i) => call(routes, 'POST', `/api/registry/lines/L${(i % 2) + 1}/claims`, newClaim({ title: `T${i}` }))));
+  assert.deepEqual(rs.map(r => r.code), Array(10).fill(201));
+  assert.equal((await store.readSnapshot()).claims.length, 10);
+});
+
+test('10 concurrent PATCHes with one expectedRevision: one 200, nine stale 409', async () => {
+  const { routes } = await setup({ claims: [mk('c1')] });
+  const rs = await Promise.all(Array.from({ length: 10 }, (_, i) => call(routes, 'PATCH', '/api/registry/lines/L1/claims/c1', { expectedRevision: 1, title: `N${i}` })));
+  assert.equal(rs.filter(r => r.code === 200).length, 1);
+  const stale = rs.filter(r => r.code === 409);
+  assert.equal(stale.length, 9);
+  for (const r of stale) { assert.equal(r.body.code, 'STALE_REVISION'); assert.equal(r.body.currentRevision, 2); }
+});
+
+test('10 concurrent request opens all succeed with one outbox entry each', async () => {
+  const { routes, store } = await setup();
+  const rs = await Promise.all(Array.from({ length: 10 }, (_, i) => call(routes, 'POST', '/api/registry/lines/L1/requests', reqBody({ idempotencyKey: `k${i}`, subject: `S${i}` }))));
+  assert.deepEqual(rs.map(r => r.code), Array(10).fill(201));
+  const s = await store.readSnapshot();
+  assert.equal(s.requests.length, 10);
+  assert.equal(s.outbox.length, 10);
 });
 
 test('unavailable store gives 503 on writes', async () => {

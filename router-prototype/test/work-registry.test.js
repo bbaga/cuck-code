@@ -64,6 +64,12 @@ test('stale snapshot revision returns stale result', async t => {
   assert.deepEqual(await store.transact(1, () => 'x'), { ok: true, revision: 2, result: 'x' });
 });
 
+test('null expected revision skips the snapshot check', async t => {
+  const store = createStore(await fixture(t));
+  await store.transact(0, () => 1);
+  assert.deepEqual(await store.transact(null, () => 'y'), { ok: true, revision: 2, result: 'y' });
+});
+
 test('concurrent transactions from two stores all apply in order', async t => {
   const file = await fixture(t);
   const a = createStore(file), b = createStore(file);
