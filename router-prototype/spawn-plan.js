@@ -35,6 +35,12 @@ function planRun(cfg, opts) {
     effort: cfg.effort,
     timeLimitSec: cfg.timeLimit,
     autoApprove: opts.autoApprove,
+    // Trusted system prompt (router-owned policy) and its optional
+    // router-owned file. Undefined for every existing caller, so plans for
+    // them stay byte-for-byte unchanged. buildRun fails closed when the
+    // harness has no verified trusted channel.
+    systemPrompt: opts.systemPrompt,
+    systemPromptFile: opts.systemPromptFile,
   });
   return { ...run, adapter };
 }
