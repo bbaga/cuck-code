@@ -1,6 +1,15 @@
 "use strict";
 
+const fs = require("node:fs");
+const path = require("node:path");
 const { isSkipValidation } = require("./handoff");
+
+const NOTICE_ID_RE = /^[A-Za-z0-9:_.-]{1,128}$/;
+const MAX_KNOWN_NOTICES = 500;
+
+function validNoticeId(id) {
+  return typeof id === "string" && NOTICE_ID_RE.test(id);
+}
 
 function sourceIdentity({ workerId, invocationId, runId, report }) {
   if (typeof workerId !== "string" || !workerId
@@ -9,9 +18,11 @@ function sourceIdentity({ workerId, invocationId, runId, report }) {
   return Object.freeze({ workerId, invocationId, runId, report });
 }
 
-function plannerRequest(text, source = null) {
+function plannerRequest(text, source = null, noticeId = null) {
   const identity = source ? sourceIdentity(source) : null;
-  return Object.freeze({ text, source: identity });
+  const request = { text, source: identity };
+  if (validNoticeId(noticeId)) request.noticeId = noticeId;
+  return Object.freeze(request);
 }
 
 function implementorReportRequest(text, worker, invocation, report) {
@@ -25,7 +36,7 @@ function implementorReportRequest(text, worker, invocation, report) {
 
 function restorePlannerRequest(value) {
   if (!value || typeof value.text !== "string") return null;
-  return plannerRequest(value.text, value.source || null);
+  return plannerRequest(value.text, value.source || null, value.noticeId);
 }
 
 function completePlannerCriteria(request, criteria, {
@@ -68,9 +79,15 @@ function retryPlannerRequest(queue, request) {
   return true;
 }
 
+function serializePlannerRequest(request) {
+  const out = { text: request.text, source: request.source || null };
+  if (validNoticeId(request.noticeId)) out.noticeId = request.noticeId;
+  return out;
+}
+
 function serializePlannerRequests(requests) {
   return Array.isArray(requests)
-    ? requests.map((request) => request && ({ text: request.text, source: request.source || null }))
+    ? requests.map((request) => request && serializePlannerRequest(request))
     : [];
 }
 
@@ -80,7 +97,67 @@ function restorePlannerRequests(requests) {
     : [];
 }
 
+function restoreKnownNoticeIds(ids) {
+  return Array.isArray(ids)
+    ? ids.filter(validNoticeId).slice(-MAX_KNOWN_NOTICES)
+    : [];
+}
+
+// Write a file durably: temp file in the same directory, fsync, rename.
+function writeFileDurable(file, data, fsImpl = fs) {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
+  let fd = null;
+  try {
+    fd = fsImpl.openSync(tmp, "w");
+    fsImpl.writeFileSync(fd, data);
+    fsImpl.fsyncSync(fd);
+    fsImpl.closeSync(fd);
+    fd = null;
+    fsImpl.renameSync(tmp, file);
+  } catch (err) {
+    if (fd !== null) { try { fsImpl.closeSync(fd); } catch {} }
+    try { fsImpl.unlinkSync(tmp); } catch {}
+    throw err;
+  }
+}
+
+// Queue a request. `save(line)` must return true only after a durable save.
+// Returns { ok, duplicate } or { ok: false, reason }.
+function enqueuePlannerRequest(line, request, save) {
+  const trusted = restorePlannerRequest(request);
+  if (!trusted) return { ok: false, reason: "invalid-request" };
+  if (line.deleted) return { ok: false, reason: "line-deleted" };
+  const id = trusted.noticeId;
+  if (id) {
+    const known = line.knownNoticeIds || (line.knownNoticeIds = []);
+    if (known.includes(id) || line.queue.some((r) => r && r.noticeId === id)
+      || (line.activePlannerRequest && line.activePlannerRequest.noticeId === id)) {
+      return { ok: true, duplicate: true };
+    }
+  }
+  const previousKnown = line.knownNoticeIds;
+  line.queue.push(trusted);
+  if (id) {
+    line.knownNoticeIds = [...previousKnown, id].slice(-MAX_KNOWN_NOTICES);
+  }
+  let saved = false;
+  try { saved = save(line) === true; } catch { saved = false; }
+  if (!saved) {
+    const index = line.queue.lastIndexOf(trusted);
+    if (index >= 0) line.queue.splice(index, 1);
+    if (id) line.knownNoticeIds = previousKnown;
+    return { ok: false, reason: "save-failed" };
+  }
+  return { ok: true, duplicate: false };
+}
+
 module.exports = {
+  validNoticeId,
+  MAX_KNOWN_NOTICES,
+  serializePlannerRequest,
+  restoreKnownNoticeIds,
+  writeFileDurable,
+  enqueuePlannerRequest,
   sourceIdentity,
   plannerRequest,
   implementorReportRequest,
