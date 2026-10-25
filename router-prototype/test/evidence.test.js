@@ -31,13 +31,23 @@ function corruptedPng() {
   throw new Error("fixture has no IDAT");
 }
 
+const temporaryFixtures = new Set();
 let directoryForTest;
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "evidence-"));
+  temporaryFixtures.add(root);
   directoryForTest = root;
   makeMediaFixtures(root);
   return root;
 }
+
+test.after(() => {
+  for (const directory of temporaryFixtures) {
+    if (directory.startsWith(path.join(os.tmpdir(), "evidence-"))) {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
 
 test("validates a genuine showcase and keeps ordered step metadata", () => {
   const root = fixture();

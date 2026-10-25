@@ -94,6 +94,23 @@ test("delivers screenshots, JPEG types, video ranges, and route errors", async (
   assert.equal((await request(base, "/api/lines/line-1/evidence/current/steps/0/screenshot")).response.status, 200);
 });
 
+test("registers and serves legacy evidence without steps", async () => {
+  const result = await request(base, "/api/protocol/workers/worker-1/evidence", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ useCase: "Legacy demo", file: "demo.webm" }),
+  });
+  assert.equal(result.response.status, 201);
+  assert.equal(result.body.attemptId, "attempt-2");
+  const listing = await request(base, "/api/lines/line-1/evidence");
+  const item = listing.body.items.find((entry) => entry.id === result.body.evidenceId);
+  assert.equal(item.useCase, "Legacy demo");
+  assert.equal(item.kind, undefined);
+  assert.equal(item.steps, undefined);
+  const video = await request(base, item.video);
+  assert.equal(video.response.status, 200);
+  assert.ok(video.body.length > 1024);
+});
+
 test("rejects invalid evidence without a partial record write", async () => {
   const before = JSON.parse(fs.readFileSync(path.join(root, "line-1", "line.json"), "utf8"));
   const result = await request(base, "/api/protocol/workers/worker-1/evidence", {
