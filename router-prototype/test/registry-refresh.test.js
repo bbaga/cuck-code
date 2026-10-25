@@ -174,3 +174,14 @@ test('throwing git never throws out of refreshClaim or sweep', async () => {
   const broken = await setup([claim(1)], { gitCommand: () => { throw new Error('sync'); }, deliver: () => { throw new Error('d'); } });
   assert.equal((await broken.refresh.sweep()).checked, 1);
 });
+
+test('empty merge sweep keeps the snapshot revision; expired archive purge raises it by 1', async () => {
+  const { store, refresh, snap } = await setup([]);
+  const before = (await snap()).revision;
+  await refresh.sweep();
+  assert.equal((await snap()).revision, before);
+  await store.transact(null, s => { s.archive.push({ id: 'old', claimId: 'x', mergedAt: '2020-01-01T00:00:00.000Z' }); });
+  const summary = await refresh.sweep();
+  assert.equal(summary.purged, 1);
+  assert.equal((await snap()).revision, before + 2);
+});
