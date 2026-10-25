@@ -1318,6 +1318,7 @@ const { createRegistryRoutes } = require("./registry-routes");
 const { createStore: createRegistryStore } = require("./work-registry");
 const { createDelivery: createRegistryDelivery } = require("./registry-delivery");
 const { createRefresh: createRegistryRefresh, matchRepo: matchRegistryRepo, ghCheckPullRequest } = require("./registry-refresh");
+const { createStalenessSweep } = require("./registry-staleness");
 const REGISTRY_FILE = path.join(LINES_DIR, "work-coordination.json");
 const registryStore = createRegistryStore(REGISTRY_FILE);
 let registryUnavailable = null;
@@ -1335,8 +1336,23 @@ const registryRefresh = createRegistryRefresh({
   deliver: () => registryDeliver(),
   log: (event, data) => slog("warn", event, data),
 });
+const registryStaleness = createStalenessSweep({
+  store: registryStore,
+  getLine: (id) => lines.get(id),
+  resolveRepo: (claim) => {
+    const line = lines.get(claim.ownerLineId);
+    return line ? matchRegistryRepo(repoList(line), claim.repo) : null;
+  },
+  log: (event, data) => slog("warn", event, data),
+});
+// Merge refresh first, then the staleness sweep. Each is caught on its own.
+async function registrySweepAll() {
+  await registryRefresh.sweep().catch((err) => slog("error", "registry.refresh.sweep_failed", { error: String(err && err.message) }));
+  await registryStaleness.sweep().catch((err) => slog("error", "registry.staleness.sweep_failed", { error: String(err && err.message) }));
+}
 const registryRoutes = createRegistryRoutes({
   refresh: registryRefresh,
+  staleness: registryStaleness,
   store: registryStore,
   lineExists: (id) => lines.has(id),
   lineName: (id) => (lines.get(id) ? lines.get(id).name : null),
@@ -1361,8 +1377,8 @@ registryStore.load().then(() => {
   });
   registryDeliver();
   setInterval(registryDeliver, REGISTRY_DELIVERY_MS).unref();
-  setInterval(() => registryRefresh.sweep(), REGISTRY_SWEEP_MS).unref();
-  setTimeout(() => registryRefresh.sweep(), REGISTRY_FIRST_SWEEP_MS).unref();
+  setInterval(registrySweepAll, REGISTRY_SWEEP_MS).unref();
+  setTimeout(registrySweepAll, REGISTRY_FIRST_SWEEP_MS).unref();
 }).catch((err) => {
   if (err && err.code === "REGISTRY_CORRUPT") {
     registryUnavailable = { error: "Work registry is corrupt: " + err.message, file: REGISTRY_FILE };

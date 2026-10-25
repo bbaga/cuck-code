@@ -55,7 +55,7 @@ function statusFilter(url) {
   return new Set(list);
 }
 
-function createRegistryRoutes({ store, lineExists = () => false, lineName = () => null, unavailable = null, now = Date.now, newId = randomUUID, onOutbox, refresh = null }) {
+function createRegistryRoutes({ store, lineExists = () => false, lineName = () => null, unavailable = null, now = Date.now, newId = randomUUID, onOutbox, refresh = null, staleness = null }) {
   const writer = createWriteRoutes({ store, lineExists, now, newId, onOutbox });
   const down = () => (typeof unavailable === 'function' ? unavailable() : unavailable);
   const withOwner = item => {
@@ -152,7 +152,7 @@ function createRegistryRoutes({ store, lineExists = () => false, lineName = () =
       return true;
     }
     if (parts.slice(3).some(p => !ID_PATTERN.test(p))) { json(res, 404, { error: 'Registry route not found' }); return true; }
-    const refreshing = refresh && refresh.route(req, parts);
+    const refreshing = (refresh && refresh.route(req, parts)) || (staleness && staleness.route(req, parts));
     if (refreshing) {
       refreshing.then(out => json(res, out.status, out.body));
       return true;
