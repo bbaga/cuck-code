@@ -181,7 +181,7 @@
 <script>
 window.addEventListener("DOMContentLoaded", () => {
   const { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge, previewForIntegration,
-    previewSelectionKey, previewSelectionExists, sanitizePreviewCommand,
+    previewSelectionKey, previewSelectionExists, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
     PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
     clearHarnessState, clearProviderState, shouldHideValidator } =
@@ -341,9 +341,8 @@ window.addEventListener("DOMContentLoaded", () => {
     const selectedPreviewWorker = st.selected && st.selected.startsWith("preview:")
       ? st.workers.get(st.selected.slice("preview:".length)) : null;
     if (selectedPreviewWorker && st.previewPanel.hidden) {
-      const currentPreview = previewForIntegration(selectedPreviewWorker, selectedPreviewWorker.preview);
+      const currentPreview = mapPreviewPayload(st.previewPayload, selectedPreviewWorker);
       if (currentPreview) renderPreviewPanel(st, selectedPreviewWorker, currentPreview);
-      else { st.selected = null; try { localStorage.removeItem("preview-selection:" + st.id); } catch {} }
     }
     const W = graph.clientWidth || 440;
     const plannerW = 92, plannerX = 12;
@@ -402,7 +401,7 @@ window.addEventListener("DOMContentLoaded", () => {
     ints.forEach((iv, j) => {
       edge(plannerX + plannerW, plannerY + 18, intX, implY(j) + 18);
       inner.appendChild(workerNode(st, iv, intX, implY(j), nodeW));
-      const data = previewForIntegration(iv, iv.preview);
+      const data = mapPreviewPayload(st.previewPayload, iv);
       if (st.selected === previewSelectionKey(iv.id) && data && st.previewPanel.hidden) renderPreviewPanel(st, iv, data);
       if (data) {
         const px = intX + nodeW + 46, py = implY(j);
@@ -431,7 +430,9 @@ window.addEventListener("DOMContentLoaded", () => {
     add("Revision", data.sourceRevision); add("Project directory", data.projectDirectory); add("Expected URL", data.expectedUrl);
     add("Prerequisites", Array.isArray(data.prerequisites) ? data.prerequisites.join("; ") : "");
     add("Limitations", Array.isArray(data.limitations) ? data.limitations.join("; ") : "");
+    add("Explanation", data.message || data.reason || "");
     if (data.stale === true) add("Data status", "Stale. Do not rely on these instructions.");
+    if (data.availability === "unavailable") add("Data status", data.message || "Preview data is unavailable.");
     if (data.eligible !== true) add("Data status", "Not eligible for use. Preview instructions require a completed passing integration.");
     if (data.availability !== "available") add("Availability", data.reason || data.message || data.availability || "Unavailable");
     if (data.eligible !== true && data.steps.length === 0) add("Instructions", "No usable preview steps are available.");
@@ -641,7 +642,8 @@ window.addEventListener("DOMContentLoaded", () => {
       hideFailedValidators: true,
       plannerStatus: line.status, started: line.started === true,
       planContent: undefined, approved: false,
-      workers: new Map(), workerTranscripts: new Map(),
+      workers: new Map(), workerTranscripts: new Map(), previewPayload: null, previewRequest: 0,
+
       plannerTranscript: [], selected: null };
     setupTranscriptScroll(st);
 
@@ -683,6 +685,23 @@ window.addEventListener("DOMContentLoaded", () => {
       if (savedPreview && savedPreview.startsWith("preview:")) st.selected = savedPreview;
     } catch {}
 
+    const refreshPreview = async () => {
+      const request = ++st.previewRequest;
+      const result = await fetchLinePreview({ lineId: st.id, fetchImpl: fetch,
+        isCurrent: () => request === st.previewRequest && cards.get(st.id) === st });
+      if (request !== st.previewRequest || cards.get(st.id) !== st) return;
+      st.previewPayload = result.ok ? result.payload : {
+        availability: "unavailable", eligible: false, stale: false, steps: [], message: result.message,
+      };
+      if (st.selected && st.selected.startsWith("preview:")) {
+        const worker = st.workers.get(st.selected.slice("preview:".length));
+        const data = mapPreviewPayload(st.previewPayload, worker);
+        if (worker) renderPreviewPanel(st, worker, data || st.previewPayload);
+      }
+      renderGraph(st);
+    };
+    refreshPreview();
+
     const es = new EventSource("/api/lines/" + st.id + "/events");
     st.es = es;
     es.addEventListener("state", (e) => {
@@ -706,11 +725,12 @@ window.addEventListener("DOMContentLoaded", () => {
         else {
           const selectedPreviewId = st.selected.slice("preview:".length);
           const selectedWorker = state.workers.find((worker) => String(worker.id) === selectedPreviewId);
-          const currentData = selectedWorker && previewForIntegration(selectedWorker, selectedWorker.preview);
+          const currentData = selectedWorker && mapPreviewPayload(st.previewPayload, selectedWorker);
           if (currentData) renderPreviewPanel(st, selectedWorker, currentData);
         }
       } else if (st.selected !== null && !st.workers.has(st.selected)) st.selected = null;
       setStatus(state.status);
+      refreshPreview();
       renderTranscript(st);
     });
     es.addEventListener("status", (e) => setStatus(JSON.parse(e.data).status));
@@ -737,6 +757,7 @@ window.addEventListener("DOMContentLoaded", () => {
       if (!st.workerTranscripts.has(worker.id)) st.workerTranscripts.set(worker.id, []);
       renderGraph(st);
       updateListEntry(st);
+      refreshPreview();
     });
     es.addEventListener("worker_status", (e) => {
       const { workerId, status, verdict, error } = JSON.parse(e.data);
@@ -750,6 +771,7 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       renderGraph(st);
       updateListEntry(st);
+      refreshPreview();
     });
     es.addEventListener("worker_removed", (e) => {
       const { workerIds } = JSON.parse(e.data);

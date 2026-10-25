@@ -40,12 +40,16 @@ test("preview eligibility accepts only available passing integration data", () =
     { ...passing, verdict: "fail" }, { ...passing, status: "failed" },
     { ...passing, status: "stopped" }, { ...passing, status: "running" },
     { ...passing, kind: "validator" },
-  ]) assert.equal(pipelineUiModule.previewForIntegration(worker, preview), null);
+  ]) {
+    const result = pipelineUiModule.previewForIntegration(worker, preview);
+    if (worker.kind === "integration") assert.equal(result.eligible, false);
+    else assert.equal(result, null);
+  }
   assert.equal(pipelineUiModule.previewForIntegration(passing, { ...preview, stale: true }).eligible, false);
   assert.equal(pipelineUiModule.previewForIntegration(passing, { ...preview, availability: "unsupported" }).eligible, false);
   assert.equal(pipelineUiModule.previewForIntegration(passing, { eligible: true, availability: "available", steps: [] }).eligible, true);
   const staleWorker = { ...passing, status: "running" };
-  assert.equal(pipelineUiModule.previewForIntegration(staleWorker, preview), null);
+  assert.equal(pipelineUiModule.previewForIntegration(staleWorker, preview).eligible, false);
 });
 
 test("preview selection survives refreshed worker instances and copy strips shell prompts and likely secrets", () => {
@@ -56,6 +60,27 @@ test("preview selection survives refreshed worker instances and copy strips shel
   const safe = pipelineUiModule.sanitizePreviewCommand("npm run dev\n$ API_KEY=abc SECRET=xyz\necho hello");
   assert.equal(safe, "npm run dev\necho hello");
   assert.equal(pipelineUiModule.sanitizePreviewCommand("<img src=x onerror=alert(1)>"), "<img src=x onerror=alert(1)>");
+});
+
+test("GET preview mapping and fetch handle documented fields, failures, and outdated responses", async () => {
+  const worker = { id: "integration-7", kind: "integration", status: "completed", verdict: "pass" };
+  const payload = { availability: "available", eligible: true, stale: false, revision: "abc123",
+    project_directory: "/project", expected_url: "http://localhost:3000", steps: [{ title: "Run", command: "npm run dev" }], limitations: ["Local only"] };
+  const mapped = pipelineUiModule.mapPreviewPayload(payload, { ...worker });
+  assert.equal(mapped.sourceRevision, "abc123");
+  assert.equal(mapped.projectDirectory, "/project");
+  assert.equal(mapped.expectedUrl, "http://localhost:3000");
+  assert.equal(mapped.eligible, true);
+  const response = (status, body) => ({ status, ok: status >= 200 && status < 300, json: async () => body });
+  assert.deepEqual(await pipelineUiModule.fetchLinePreview({ lineId: "line/1", fetchImpl: async (url) => {
+    assert.equal(url, "/api/lines/line%2F1/preview"); return response(200, payload);
+  } }), { ok: true, payload });
+  const missing = await pipelineUiModule.fetchLinePreview({ lineId: "line-1", fetchImpl: async () => response(404, {}) });
+  assert.equal(missing.availability, "unavailable");
+  const network = await pipelineUiModule.fetchLinePreview({ lineId: "line-1", fetchImpl: async () => { throw Error("offline"); } });
+  assert.equal(network.availability, "unavailable");
+  const stale = await pipelineUiModule.fetchLinePreview({ lineId: "line-1", fetchImpl: async () => response(200, payload), isCurrent: () => false });
+  assert.deepEqual(stale, { stale: true });
 });
 
 test("PHASE_ROWS lists the four pipeline phases", () => {

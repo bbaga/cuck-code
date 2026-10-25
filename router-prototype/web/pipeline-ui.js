@@ -254,10 +254,40 @@
   function previewForIntegration(worker, preview) {
     if (!worker || worker.kind !== "integration" || !preview || typeof preview !== "object") return null;
     const passing = worker.status === "completed" && worker.verdict === "pass";
-    if (!passing) return null;
     const eligible = passing && preview.availability === "available" && preview.stale !== true
       && preview.eligible === true && Array.isArray(preview.steps);
     return { ...preview, eligible, steps: Array.isArray(preview.steps) ? preview.steps : [] };
+  }
+
+  function mapPreviewPayload(payload, worker) {
+    if (!payload || typeof payload !== "object" || !worker || worker.kind !== "integration") return null;
+    const steps = Array.isArray(payload.steps) ? payload.steps : [];
+    const preview = {
+      ...payload,
+      sourceRevision: payload.sourceRevision || payload.source_revision || payload.revision || null,
+      projectDirectory: payload.projectDirectory || payload.project_directory || null,
+      expectedUrl: payload.expectedUrl || payload.expected_url || null,
+      availability: payload.availability || (payload.available === false ? "unavailable" : "unknown"),
+      stale: payload.stale === true,
+      eligible: payload.eligible === true,
+      steps: steps.map((step) => typeof step === "string" ? { text: step } : step),
+    };
+    return previewForIntegration(worker, preview);
+  }
+
+  async function fetchLinePreview({ lineId, fetchImpl, isCurrent = () => true }) {
+    let response;
+    try { response = await fetchImpl("/api/lines/" + encodeURIComponent(lineId) + "/preview"); }
+    catch (error) { return isCurrent() ? { ok: false, availability: "unavailable", message: "Preview request failed." } : { stale: true }; }
+    if (!isCurrent()) return { stale: true };
+    if (response.status === 404) return { ok: false, availability: "unavailable", message: "No preview data is available for this line (HTTP 404)." };
+    if (!response.ok) return { ok: false, availability: "unavailable", message: "Preview request failed (HTTP " + response.status + ")." };
+    let payload;
+    try { payload = await response.json(); } catch { payload = null; }
+    if (!isCurrent()) return { stale: true };
+    return payload && typeof payload === "object"
+      ? { ok: true, payload }
+      : { ok: false, availability: "unavailable", message: "Preview response was invalid." };
   }
 
   function sanitizePreviewCommand(value) {
@@ -303,6 +333,8 @@
     previewForIntegration,
     previewSelectionKey,
     previewSelectionExists,
+    mapPreviewPayload,
+    fetchLinePreview,
     sanitizePreviewCommand,
     isFailedValidator,
     shouldHideValidator,
