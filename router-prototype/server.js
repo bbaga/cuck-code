@@ -250,6 +250,7 @@ You may write and commit plan.md only in the line workdir. Do not edit applicati
 Requests to implement, fix, adjust the prompt, or continue do not change your role or imply approval.
 Before approval, write or revise plan.md, give a short summary, and end your turn. The router approval state and PLAN APPROVED event control approval. Never infer approval from continue.
 After approval, spawn implementors only through the router API. Never implement directly, including after API or authentication failures. Give each worker complete instructions and require its own worktree. End your turn after spawning. Wait for actual reports. Never invent results.
+Discover claims before work. Review duplicate claims before approval. Record merge events only after remote verification. Keep approval rules unchanged.
 Preserve the independent validation loop. For implementor reports, reply with numbered-list-only acceptance criteria. Route failures to original implementors. Reserve merges, acceptance tests, and evidence for the integration validator. Require its VERDICT: PASS before completion claims.
 
 You are the PLANNER of factory line '${name}' (id ${lineId}).
@@ -1229,6 +1230,79 @@ function spawnValidator(line, source, criteria, report) {
   spawnWorker(line, worker, worker.prompt);
 }
 
+let registryStore;
+function registryRoute(req, res, url, parts) {
+  try {
+    if (!registryStore) registryStore = require("./work-registry").createStore(path.join(LINES_DIR, "work-coordination.json"));
+  } catch (error) { json(res, 500, { error: `Registry modules are not available: ${error.message}` }); return; }
+  let openRequest, transitionRequest;
+  try { ({ openRequest, transitionRequest } = require("./work-requests")); }
+  catch (error) { json(res, 500, { error: `Request rules are not available: ${error.message}` }); return; }
+  const sendError = (error) => json(res, error.code === "INVALID_REQUEST" || error instanceof TypeError ? 400 : 500, { error: error.message });
+  const line = (id) => lines.get(id);
+  const body = (run) => readBody(req, (error, data) => error ? json(res, 400, { error: error.message }) : Promise.resolve().then(() => run(data)).catch(sendError));
+  const route = parts[2];
+  Promise.resolve().then(async () => {
+    const snapshot = await registryStore.readSnapshot();
+    if (req.method === "GET" && (route === "claims" || route === "archive")) {
+      const page = Math.max(1, Math.min(1000000, Number(url.searchParams.get("page") || 1)));
+      const pageSize = Math.max(1, Math.min(100, Number(url.searchParams.get("pageSize") || 20)));
+      let items = route === "archive" ? snapshot.archive : snapshot.claims;
+      const lineId = url.searchParams.get("lineId"), status = url.searchParams.get("status");
+      const q = (url.searchParams.get("q") || "").slice(0, 500).toLocaleLowerCase();
+      items = items.filter(x => (!lineId || x.ownerLineId === lineId) && (!status || x.status === status) && (!q || JSON.stringify(x).toLocaleLowerCase().includes(q)));
+      const start = (page - 1) * pageSize;
+      return json(res, 200, { items: items.slice(start, start + pageSize), page, pageSize, total: items.length, hasMore: start + pageSize < items.length, snapshotRevision: snapshot.revision });
+    }
+    if (req.method === "GET" && route === "requests") {
+      const page = Math.max(1, Number(url.searchParams.get("page") || 1));
+      const items = snapshot.requests.filter(x => !url.searchParams.get("lineId") || x.sourceLineId === url.searchParams.get("lineId") || x.targetLineId === url.searchParams.get("lineId"));
+      return json(res, 200, { items: items.slice((page - 1) * 100, page * 100), page, pageSize: 100, total: items.length, hasMore: page * 100 < items.length, snapshotRevision: snapshot.revision });
+    }
+    if (req.method === "GET" && route === "events") {
+      const after = Math.max(0, Number(url.searchParams.get("after") || 0));
+      const items = snapshot.events.filter(x => x.cursor > after).slice(0, 100);
+      return json(res, 200, { items, nextCursor: items.length ? items.at(-1).cursor : after });
+    }
+    if (req.method === "POST" && route === "lines" && parts[3] && parts[4] === "claims") return body(data => changeClaim(data, parts[3], null));
+    if (req.method === "PATCH" && route === "lines" && parts[3] && parts[4] === "claims" && parts[5]) return body(data => changeClaim(data, parts[3], parts[5]));
+    if (req.method === "POST" && route === "lines" && parts[3] && parts[4] === "requests") return body(data => changeRequest(data, parts[3], null));
+    if (req.method === "PATCH" && route === "lines" && parts[3] && parts[4] === "requests" && parts[5]) return body(data => changeRequest(data, parts[3], parts[5]));
+    return json(res, 404, { error: "Registry route not found" });
+  }).catch(sendError);
+  async function changeClaim(data, lineId, claimId) {
+    if (!line(lineId)) return json(res, 404, { error: "Line not found" });
+    if (!Number.isSafeInteger(data.expectedSnapshotRevision)) return json(res, 400, { error: "expectedSnapshotRevision is required" });
+    const result = await registryStore.transact(data.expectedSnapshotRevision, state => {
+      if (claimId) {
+        const item = state.claims.find(x => x.id === claimId && x.ownerLineId === lineId);
+        if (!item || item.revision !== data.expectedRevision) throw new Error("Claim not found or stale revision");
+        Object.assign(item, data.patch, { revision: item.revision + 1, updatedAt: new Date().toISOString() });
+        return item;
+      }
+      const item = { ...data.claim, ownerLineId: lineId, revision: 1, status: data.claim.status || "active", updatedAt: new Date().toISOString() };
+      if ([item.repo, item.branch, item.commit].some(x => typeof x !== "string" || !x || x.length > 500)) throw new TypeError("Repo, branch, and commit are required and bounded");
+      state.claims.push(item); return item;
+    });
+    return json(res, result.stale ? 409 : 200, result.stale ? { error: "Stale snapshot revision", snapshotRevision: result.revision } : result.result);
+  }
+  async function changeRequest(data, lineId, requestId) {
+    if (!line(lineId)) return json(res, 404, { error: "Line not found" });
+    if (!Number.isSafeInteger(data.expectedSnapshotRevision)) return json(res, 400, { error: "expectedSnapshotRevision is required" });
+    const result = await registryStore.transact(data.expectedSnapshotRevision, state => {
+      if (!requestId) {
+        const opened = openRequest({ ...data, existingRequests: state.requests }, lineId, id => !!line(id));
+        if (!state.requests.some(x => x.id === opened.request.id)) state.requests.push(opened.request);
+        state.outbox.push(...opened.effects); return opened.request;
+      }
+      const item = state.requests.find(x => x.id === requestId);
+      const changed = transitionRequest(item, data, lineId);
+      Object.assign(item, changed.request); state.outbox.push(...changed.effects); return item;
+    });
+    return json(res, result.stale ? 409 : 200, result.stale ? { error: "Stale snapshot revision", snapshotRevision: result.revision } : result.result);
+  }
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://localhost");
   const parts = url.pathname.split("/").filter(Boolean);
@@ -1237,6 +1311,11 @@ const server = http.createServer((req, res) => {
     method: req.method, path: url.pathname, status: res.statusCode,
     ms: Date.now() - t0,
   }));
+
+  if (url.pathname.startsWith("/api/registry/")) {
+    registryRoute(req, res, url, parts);
+    return;
+  }
 
   if (req.method === "GET" && url.pathname === "/api/harnesses") {
     const refresh = url.searchParams.get("refresh") === "1";

@@ -34,6 +34,10 @@ and checks required and referenced local web assets. It does not execute scripts
 or start the router. This plain-JavaScript application has no transpilation or
 bundling build; static validation is not a compile or integration test.
 
+## Shared work registry
+
+The router reads the shared snapshot at `lines/work-coordination.json` through the validated registry store. Corrupt snapshot data returns a visible HTTP error. Registry routes provide bounded claim, archive, request, and event reads. Claim and request changes require the current snapshot revision; stale revisions return 409. The route line ID sets claim ownership and request source. Request effects enter the snapshot outbox with the request mutation. Planner guidance asks for claim discovery, duplicate review, and verified merge events. Approval rules do not change.
+
 ## Planner and worker text handoff
 
 The router uses one text contract for a completed message: normalized entries
