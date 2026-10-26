@@ -181,6 +181,19 @@
   .pipeCfg .pipeRow { padding: 1px 0; }
   .wcfg { font-size: .62rem; color: #6c7a8c; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; }
+  #registry { flex: 1; padding: 24px; min-width: 0; }
+  #registry[hidden] { display: none; }
+  #registryBtn[aria-pressed="true"] { background: #2a3b55; }
+  .regSummary, .regConn { font-size: .8rem; color: #8fa3bd; }
+  .regControls, .regPager, .regTabs { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+  .regTableWrap { overflow-x: auto; }
+  #registry table { border-collapse: collapse; font-size: .78rem; width: 100%; }
+  #registry th, #registry td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #262b33; }
+  #registry th { color: #8fa3bd; }
+  .regBadge { background: #4d3a14; color: #ffc46b; border-radius: 3px; padding: 0 4px; }
+  .regError { padding: 6px; border-radius: 4px; background: #4d1420; color: #ff8095; font-size: .8rem; }
+  #registry input, #registry select { padding: 6px; background: #0d1014; color: inherit;
+    border: 1px solid #2c333d; border-radius: 4px; }
   @media (max-width: 640px) {
     .phaseRow { grid-template-columns: 1fr 1fr; }
     .phaseRow .phaseName { grid-column: 1 / -1; }
@@ -192,12 +205,15 @@
 <aside id="sidebar">
   <h1>cuck-code</h1>
   <button id="create">+ Create new line</button>
+  <button id="registryBtn" aria-pressed="false">Registry</button>
   <div id="linelist"></div>
 </aside>
 <main id="lines">
   <div id="empty">Select or create a production line.</div>
 </main>
+<section id="registry" hidden aria-label="Registry"></section>
 <script src="pipeline-ui.js"></script>
+<script src="registry-ui.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
   const { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge, previewForIntegration,
@@ -890,7 +906,19 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  const registryToggle = registryUI.createToggle(
+    () => { document.getElementById("lines").hidden = true; },
+    () => { document.getElementById("lines").hidden = false; },
+    () => { regView.start(); registryEl.hidden = false; registryBtn.setAttribute("aria-pressed", "true"); },
+    () => { regView.stop(); registryEl.hidden = true; registryBtn.setAttribute("aria-pressed", "false"); });
+  const registryEl = document.getElementById("registry");
+  const registryBtn = document.getElementById("registryBtn");
+  const regView = registryUI.mount(document, registryEl, { fetch: (u) => fetch(u), window,
+    EventSource: window.EventSource });
+  registryBtn.addEventListener("click", () => registryToggle.toggle());
+
   function selectLine(id) {
+    registryToggle.hide();
     selectedLine = id;
     for (const st of cards.values()) {
       const show = st.id === id;

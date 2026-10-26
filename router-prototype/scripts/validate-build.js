@@ -16,8 +16,9 @@ const PRODUCTION_SCRIPTS = [
   "validation-queue.js",
   "planner-request.js",
   "web/pipeline-ui.js",
+  "web/registry-ui.js",
 ];
-const REQUIRED_WEB_ASSETS = ["web/index.html", "web/pipeline-ui.js"];
+const REQUIRED_WEB_ASSETS = ["web/index.html", "web/pipeline-ui.js", "web/registry-ui.js"];
 
 function parseJavaScript(source, filename) {
   try {
