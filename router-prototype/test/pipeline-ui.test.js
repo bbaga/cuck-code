@@ -712,7 +712,7 @@ test("multiple integration validators preserve insertion order in final section"
 
 test("failed standard validators are filtered before row allocation and section offsets", () => {
   const records=[{id:"a"},{id:"bad",role:"validator",validates:"a",status:"completed",verdict:"fail"},
-{id:"b"},{id:"b-validator",role:"validator",validates:"b"},
+    {id:"bad-2",role:"validator",validates:"a",status:"completed",verdict:"fail"},{id:"b"},{id:"b-validator",role:"validator",validates:"b"},
     {id:"orphan",role:"validator",validates:"absent"},
     {id:"int-a",role:"validator",kind:"integration"},{id:"int-b",role:"validator",kind:"integration"}];
   const hidden=pipelineUiModule.buildGraphLanes(records,true);
@@ -724,7 +724,7 @@ test("failed standard validators are filtered before row allocation and section 
   const visible=pipelineUiModule.buildGraphLanes(records,false);
   assert.deepEqual(visible.lanes.map(l=>({id:l.worker.id,startRow:l.startRow,rowCount:l.rowCount})),[
     {id:"a",startRow:0,rowCount:2},{id:"b",startRow:3,rowCount:1}]);
-  assert.deepEqual(visible.lanes[0].validators.map(v=>v.id),["bad"]);
+  assert.deepEqual(visible.lanes[0].validators.map(v=>v.id),["bad","bad-2"]);
   assert.equal(visible.orphanStartRow,5); assert.equal(visible.integrationStartRow,7); assert.equal(visible.totalRows,9);
 });
 
