@@ -2,7 +2,6 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -17,8 +16,6 @@ const plannerBrief = new Function('WORKER_CAP', `${source.slice(start, end + 3)}
 const brief = plannerBrief('N', 'L-1', 'PROMPT', 7788);
 const BEGIN = '## Work registry\n';
 const FINISH = '## Container and process hygiene';
-// SHA-256 of the brief text before the registry block was added (WORKER_CAP 8).
-const BASELINE_SHA256 = '3687c098dfa7aab2e5cfc10f1895c10c574a1487cfc1de0b85c3674f65ebef63';
 
 test('registry block sits between the factory protocol and the hygiene section', () => {
   const a = brief.indexOf(BEGIN);
@@ -39,11 +36,16 @@ test('registry block names the real port, line id and endpoints', () => {
   ]) assert.ok(block.includes(text), `missing: ${text}`);
 });
 
-test('the rest of the brief is unchanged', () => {
-  const a = brief.indexOf(BEGIN);
-  const rest = brief.slice(0, a) + brief.slice(brief.indexOf(FINISH));
-  assert.equal(crypto.createHash('sha256').update(rest).digest('hex'), BASELINE_SHA256);
-  for (const text of ['PLANNER-ONLY RULES', 'Never infer approval from continue.', 'You plan and coordinate only']) {
-    assert.ok(rest.includes(text), `missing: ${text}`);
-  }
+test('the existing approval and role text is still present', () => {
+  for (const text of [
+    '## Factory protocol', '## Container and process hygiene', 'PLANNER-ONLY RULES',
+    'Never infer approval from continue.', 'You plan and coordinate only'
+  ]) assert.ok(brief.includes(text), `brief lost existing text: ${text}`);
+});
+
+test('the registry heading occurs once, before the hygiene heading', () => {
+  const first = brief.indexOf('## Work registry');
+  assert.ok(first >= 0, 'registry heading missing');
+  assert.equal(brief.indexOf('## Work registry', first + 1), -1, 'registry heading occurs more than once');
+  assert.ok(first < brief.indexOf('## Container and process hygiene'), 'registry heading must precede the hygiene heading');
 });

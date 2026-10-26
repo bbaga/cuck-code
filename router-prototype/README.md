@@ -446,12 +446,14 @@ The registry lets lines see each other's work. It avoids duplicate work between 
   - `owner-gone`: the owner line was deleted.
   - `branch-missing`: the branch is missing on the remote more than 24 hours after the claim or the last branch change.
   - `age`: the owner did not confirm the claim for 14 days.
-  A stale claim accepts only renew or supersede.
+  A stale claim accepts only renew or supersede. Another patch gives 409 `STALE_CLAIM`.
 - **Retire and tombstones.** A claim stale for more than 30 days is retired. The router removes it and keeps a tombstone for 30 days. A merged claim is archived and never retired.
 - **Merge verification.** The router checks a claim against the default branch of the registered repository. The commit must be an ancestor of the default branch. For squash and rebase, `gh` must show a merged pull request with the same head commit. The router sets `merged` only after a check passes. Otherwise the claim stays and shows `unverified` with the reason.
+- **Merge sweep.** The router checks merges every 10 minutes. It sweeps only `active` and `available` claims. It rechecks a claim after 30 minutes. It checks 20 claims at most in one sweep. A manual refresh always checks.
+- **Stale sweep.** The router rechecks the branch of a claim every 6 hours. One sweep covers 50 claims and 20 branch checks at most.
 - **Archive.** A merged claim moves to the archive with its merge evidence.
 - **Requests.** One line asks another line for something. States: `open`, `accepted`, `declined`, `fulfilled`. Allowed changes: `open` to `accepted` or `declined`; `accepted` to `fulfilled`. Only the target line responds (403 `NOT_TARGET`). Only the two lines read the request (403 otherwise). `fulfilled` needs a reference: `{claimId}` or `{branch, commit}`. A request with a deleted line is marked `orphaned` and does not change (409 `ORPHANED`). A new request needs an `idempotencyKey`. A repeat with the same key returns the first request.
-- **Notices and outbox.** Each request change and each merge writes a notice to the outbox. The router delivers it to the planner of the recipient line. The text starts with an `UNTRUSTED CONTENT FROM ANOTHER LINE` label. A notice never approves a plan or starts work. The router delivers each notice once, and the planner queue ignores a repeat. A failed delivery stays in the outbox and the router tries again. A notice for a deleted line is dropped.
+- **Notices and outbox.** Each request change and each merge writes a notice to the outbox. The router delivers it to the planner of the recipient line. The first line holds an untrusted label, for example `WORK REQUEST NOTICE <id> (UNTRUSTED CONTENT FROM ANOTHER LINE): ...` or `REGISTRY MERGE NOTICE <id> (UNTRUSTED CONTENT FROM ANOTHER LINE): ...`. A notice never approves a plan or starts work. The router delivers each notice once, and the planner queue ignores a repeat. A failed delivery stays in the outbox and the router tries again. A notice for a deleted line is dropped.
 - **Events and cursor.** Each important change adds an event with a growing `cursor`. Read events with `after=<cursor>`. The answer has `nextCursor` and `hasMore`. `tooOld: true` means the events after your cursor were removed. Then read the claims again.
 - **Live stream.** `GET /api/registry/stream` sends `revision` and `eventCursor` only. It is a hint. Read the events or the claims to get the data.
 
@@ -466,16 +468,16 @@ All paths start with `/api/registry`. Every route returns 503 `REGISTRY_UNAVAILA
 | GET | `/requests?lineId=` | List requests of one line. Filters: `state`, `q`, paging. | 400 no `lineId` |
 | GET | `/requests/:id?lineId=` | Read one request. | 400, 403, 404 |
 | GET | `/events?after=&limit=` | Read events after a cursor. | 400 bad number |
-| GET | `/summary` | Counts by status, owner, repo and request state. `eventCursor` may be present. | none |
-| GET | `/stream` | Server-sent events with revision hints. | 503 `STREAM_LIMIT` |
+| GET | `/summary` | Fields: `claimsByStatus`, `claimsByOwner`, `claimsByRepo`, `requestsByState`, `archiveCount`, `snapshotRevision`, `eventCursor`. | none |
+| GET | `/stream` | Server-sent events with revision hints. | 503 `STREAM_LIMIT`, 503 `REGISTRY_UNAVAILABLE` |
 | POST | `/lines/:lineId/claims` | Create a claim. `idempotencyKey` is optional. | 400, 403, 409 |
 | PATCH | `/lines/:lineId/claims/:id` | Change a claim. | 400, 403, 409 |
 | POST | `/lines/:lineId/claims/:id/renew` | Renew a claim. | 403, 404, 409 |
 | POST | `/lines/:lineId/claims/:id/supersede` | Supersede a claim. | 403, 404, 409 |
 | POST | `/lines/:lineId/requests` | Open a request. | 400, 404, 409 |
 | PATCH | `/lines/:lineId/requests/:id` | Accept, decline or fulfil. Body: `state`, `expectedRevision`, `reference`. | 400, 403, 409 |
-| POST | `/refresh` | Check all current claims for merges now. 202 if a run is active. | 400 |
-| POST | `/claims/:id/refresh` | Check one claim for a merge now. | 404 |
+| POST | `/refresh` | Run the merge sweep now. 202 if a run is active. | 400 `FORBIDDEN_FIELD`, 400 `INVALID_JSON`, 400 `BODY_TOO_LARGE` |
+| POST | `/claims/:id/refresh` | Check one claim for a merge now. | 400 `FORBIDDEN_FIELD`, 400 `INVALID_JSON`, 400 `BODY_TOO_LARGE`, 404 |
 | POST | `/staleness/sweep` | Run the stale sweep now. 202 if a run is active. | 500 |
 
 ### Storage and operations
