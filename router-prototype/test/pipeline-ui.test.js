@@ -695,6 +695,39 @@ test("index.html binds every pipelineUI helper its script uses", () => {
   assert.deepEqual(unbound, []);
 });
 
+test("implementor without validators still receives one graph row", () => {
+  const result=pipelineUiModule.buildGraphLanes([{id:"solo"}]);
+  assert.deepEqual(result.lanes.map(l=>({id:l.worker.id,startRow:l.startRow,rowCount:l.rowCount})),[{id:"solo",startRow:0,rowCount:1}]);
+  assert.equal(result.totalRows,1);
+});
+
+test("multiple integration validators preserve insertion order in final section", () => {
+  const result=pipelineUiModule.buildGraphLanes([
+    {id:"impl"}, {id:"int-a",role:"validator",kind:"integration"},
+    {id:"int-b",role:"validator",kind:"integration"},
+  ]);
+  assert.deepEqual(result.integrations.map(v=>v.id),["int-a","int-b"]);
+  assert.equal(result.integrationStartRow,2);
+});
+
+test("failed standard validators are filtered before row allocation and section offsets", () => {
+  const records=[{id:"a"},{id:"bad",role:"validator",validates:"a",status:"completed",verdict:"fail"},
+    {id:"good",role:"validator",validates:"a",status:"completed",verdict:"pass"},{id:"b"},{id:"b-validator",role:"validator",validates:"b"},
+    {id:"orphan",role:"validator",validates:"absent"},
+    {id:"int-a",role:"validator",kind:"integration"},{id:"int-b",role:"validator",kind:"integration"}];
+  const hidden=pipelineUiModule.buildGraphLanes(records,true);
+  assert.deepEqual(hidden.lanes.map(l=>({id:l.worker.id,startRow:l.startRow,rowCount:l.rowCount})),[
+    {id:"a",startRow:0,rowCount:1},{id:"b",startRow:2,rowCount:1}]);
+  assert.deepEqual(hidden.lanes[0].validators.map(v=>v.id),[]);
+  assert.deepEqual(hidden.orphans.map(v=>v.id),["good","orphan"]);
+  assert.equal(hidden.orphanStartRow,4); assert.equal(hidden.integrationStartRow,7); assert.equal(hidden.totalRows,9);
+  const visible=pipelineUiModule.buildGraphLanes(records,false);
+  assert.deepEqual(visible.lanes.map(l=>({id:l.worker.id,startRow:l.startRow,rowCount:l.rowCount})),[
+    {id:"a",startRow:0,rowCount:1},{id:"b",startRow:2,rowCount:1}]);
+  assert.deepEqual(visible.lanes[0].validators.map(v=>v.id),[]);
+  assert.equal(visible.orphanStartRow,4); assert.equal(visible.integrationStartRow,7); assert.equal(visible.totalRows,9);
+});
+
 test("buildGraphLanes groups in implementor order and allocates validator rows", () => {
   assert.deepEqual(pipelineUiModule.buildGraphLanes([]).totalRows, 0);
   const records = [
