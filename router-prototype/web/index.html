@@ -219,6 +219,7 @@
 <script src="pipeline-ui.js"></script>
 <script src="registry-ui-extra.js"></script>
 <script src="registry-ui.js"></script>
+<script src="registry-line.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
   const { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge, previewForIntegration,
@@ -570,6 +571,9 @@ window.addEventListener("DOMContentLoaded", () => {
     const tabProcBtn = document.createElement("button");
     tabProcBtn.className = "tabBtn";
     tabProcBtn.textContent = "Processes";
+    const tabWorkBtn = document.createElement("button");
+    tabWorkBtn.className = "tabBtn";
+    tabWorkBtn.textContent = "Work";
     const tabEvBtn = document.createElement("button");
     tabEvBtn.className = "tabBtn";
     tabEvBtn.textContent = "Evidence";
@@ -600,7 +604,7 @@ window.addEventListener("DOMContentLoaded", () => {
       await fetch("/api/lines/" + line.id, { method: "DELETE" });
       removeCard(line.id);
     });
-    head.append(name, dot, tabLineBtn, tabProcBtn, tabEvBtn, hideFailedToggle, delBtn);
+    head.append(name, dot, tabLineBtn, tabProcBtn, tabEvBtn, tabWorkBtn, hideFailedToggle, delBtn);
     const pipeCfg = document.createElement("div");
     pipeCfg.className = "pipeCfg";
     pipeCfg.hidden = true;
@@ -674,13 +678,16 @@ window.addEventListener("DOMContentLoaded", () => {
     const evPane = document.createElement("div");
     evPane.className = "evPane";
     evPane.hidden = true;
-    card.append(head, pipeCfg, planDetails, banner, plan, graph, previewPanel, transcriptWrap, row, procPane, evPane);
+    const workPane = document.createElement("div");
+    workPane.className = "evPane";
+    workPane.hidden = true;
+    card.append(head, pipeCfg, planDetails, banner, plan, graph, previewPanel, transcriptWrap, row, procPane, evPane, workPane);
     linesEl.appendChild(card);
 
     const st = { id: line.id, dot, banner, transcript, transcriptWrap, scrollBottomBtn, input, send,
       waiting, planBody, graph, previewPanel, approveBtn, badge, planDetails, planControls: controls,
       pipeCfg,
-      tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, plan, row, procPane, evPane,
+      tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, tabWorkBtn, workPane, plan, row, procPane, evPane,
       hideFailedValidators: true,
       plannerStatus: line.status, started: line.started === true,
       planContent: undefined, approved: false,
@@ -692,6 +699,7 @@ window.addEventListener("DOMContentLoaded", () => {
     tabLineBtn.addEventListener("click", () => setLineTab(st, "line"));
     tabProcBtn.addEventListener("click", () => setLineTab(st, "processes"));
     tabEvBtn.addEventListener("click", () => setLineTab(st, "evidence"));
+    tabWorkBtn.addEventListener("click", () => setLineTab(st, "work"));
     hideFailedCheckbox.addEventListener("change", () => {
       st.hideFailedValidators = hideFailedCheckbox.checked;
       renderGraph(st);
@@ -903,6 +911,12 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     st.procPane.hidden = tab !== "processes";
     st.evPane.hidden = tab !== "evidence";
+    st.workPane.hidden = tab !== "work";
+    st.tabWorkBtn.classList.toggle("active", tab === "work");
+    if (tab === "work") {
+      if (!st.work) st.work = registryLine.mount(document, st.workPane, { fetch: (u, o) => fetch(u, o), window, lineId: st.id });
+      st.work.load();
+    }
     if (tab === "processes") pollInventory();
     if (tab === "evidence") pollEvidence();
     if (tab === "line") {
