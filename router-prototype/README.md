@@ -361,10 +361,16 @@ cached for 30 seconds; `?refresh=1` skips the cache. Per harness it reports
 `[{value, label}]` list built from the code defaults, the per-phase
 `<PHASE>_MODEL` env values, `VIBE_ACTIVE_MODEL`, and `VIBE_MODELS`
 (a comma-separated list of extra model ids; empty values are ignored).
-The `claude` entry also carries `models`: the CLI aliases `opus`,
-`sonnet`, `haiku` (each resolves to the latest model of its family), then
-the full model ids from `CLAUDE_MODELS` (comma-separated). Its `auth` comes
-from `claude auth status`.
+The `claude` entry also carries `models`. It reads exactly three local JSON
+files: `~/.claude/settings.json`, `~/.claude/settings.local.json`, and
+`~/.claude/cache/gateway-models.json`. Choices appear in this order: aliases,
+settings options, local settings options, then gateway models. Duplicate model
+values are removed. A gateway row is removed when its display label matches a
+picker label. Invalid or missing files contribute no rows. Claude environment
+model values are ignored, and no network access occurs. Rows use only `value`
+and `label`; picker fields use `model` and optional `label`, while gateway
+fields use `id` and optional `display_name`. The list has at most 100 rows.
+Its `auth` comes from `claude auth status`.
 The `pi` entry carries `authModes` (`[{value, label}]`, the providers
 discovered from `pi --list-models`) and provider-qualified `models`
 (`value` is `provider/model`). A failed `pi --list-models` command yields

@@ -2,6 +2,7 @@ const http = require("node:http");
 const http2 = require("node:http2");
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
 const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
@@ -876,12 +877,25 @@ function runProbe(cmd, timeoutMs = 2000) {
   });
 }
 
+function readJsonFile(file) {
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
+}
+
+function readClaudeConfig() {
+  const home = os.homedir();
+  return {
+    settings: readJsonFile(path.join(home, ".claude", "settings.json")),
+    localSettings: readJsonFile(path.join(home, ".claude", "settings.local.json")),
+    gatewayCache: readJsonFile(path.join(home, ".claude", "cache", "gateway-models.json")),
+  };
+}
+
 // Probe a single harness and report whether it is installed. An unknown
 // harness id has no probe entry and counts as not installed.
 async function harnessInstalled(harnessId) {
   const probe = HARNESS_PROBES.find((h) => h.id === harnessId);
   if (!probe) return false;
-  const results = await probeHarnesses((cmd) => runProbe(cmd));
+  const results = await probeHarnesses((cmd) => runProbe(cmd), undefined, readClaudeConfig);
   const result = probeResultFor(results, harnessId);
   return !!(result && result.installed);
 }
@@ -897,7 +911,7 @@ async function harnessProbe(refresh) {
     && Date.now() - Date.parse(harnessCache.atIso) < HARNESS_CACHE_MS) {
     return harnessCache;
   }
-  const harnesses = await probeHarnesses((cmd) => runProbe(cmd));
+  const harnesses = await probeHarnesses((cmd) => runProbe(cmd), undefined, readClaudeConfig);
   harnessCache = { atIso: new Date().toISOString(), harnesses };
   return harnessCache;
 }

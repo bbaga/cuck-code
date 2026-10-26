@@ -276,16 +276,47 @@ function vibeModelChoices(env) {
 // family, so they stay valid across model releases.
 const CLAUDE_MODEL_ALIASES = ["opus", "sonnet", "haiku"];
 
-// Stable, deduplicated Claude model choices: the CLI aliases, then the
-// full model ids from CLAUDE_MODELS (comma-separated). Pure in `env`.
-function claudeModelChoices(env) {
-  const e = env || process.env;
+function claudeText(value) {
+  if (typeof value !== "string") return "";
+  return value.trim().slice(0, 200);
+}
+
+function claudePickerOptions(settings) {
+  const options = settings && settings.modelPicker && settings.modelPicker.options;
+  if (!Array.isArray(options)) return [];
+  return options.map((row) => {
+    if (!row || typeof row !== "object") return null;
+    const value = claudeText(row.value || row.model);
+    if (!value) return null;
+    return { value, label: claudeText(row.label) || value };
+  }).filter(Boolean);
+}
+
+function claudeGatewayModels(cache) {
+  if (!cache || !Array.isArray(cache.models)) return [];
+  return cache.models.map((row) => {
+    if (!row || typeof row !== "object") return null;
+    const value = claudeText(row.id);
+    if (!value) return null;
+    return { value, label: claudeText(row.display_name) || value };
+  }).filter(Boolean);
+}
+
+function claudeModelChoices(config) {
+  const c = config && typeof config === "object" ? config : {};
+  const rows = CLAUDE_MODEL_ALIASES.map((value) => ({ value, label: value }));
+  const picker = claudePickerOptions(c.settings);
+  const local = claudePickerOptions(c.localSettings);
+  const gateway = claudeGatewayModels(c.gatewayCache);
+  const pickerLabels = new Set([...picker, ...local].map((row) => row.label));
   const seen = new Set();
   const choices = [];
-  for (const v of [...CLAUDE_MODEL_ALIASES, ...parseVibeModelsEnv(e.CLAUDE_MODELS)]) {
-    if (seen.has(v)) continue;
-    seen.add(v);
-    choices.push({ value: v, label: v });
+  for (const row of [...rows, ...picker, ...local, ...gateway]) {
+    if (gateway.includes(row) && pickerLabels.has(row.label)) continue;
+    if (seen.has(row.value)) continue;
+    seen.add(row.value);
+    choices.push({ value: row.value, label: row.label });
+    if (choices.length === 100) break;
   }
   return choices;
 }
@@ -294,7 +325,7 @@ function claudeModelChoices(env) {
 // command cannot start or times out. Returns one result per harness:
 // { id, installed, auth, loginHint, version } plus, for vibe and claude,
 // `models` and, for pi, `authModes` and provider-qualified `models`.
-async function probeHarnesses(run, env) {
+async function probeHarnesses(run, env, readClaudeConfig) {
   return Promise.all(HARNESS_PROBES.map(async (probe) => {
     const versionRes = await run(probe.versionCmd);
     let auth = "unknown";
@@ -315,7 +346,10 @@ async function probeHarnesses(run, env) {
       result.models = vibeModelChoices(env);
     }
     if (probe.id === "claude") {
-      result.models = claudeModelChoices(env);
+      let config;
+      try { config = typeof readClaudeConfig === "function" ? await readClaudeConfig() : null; }
+      catch { config = null; }
+      result.models = claudeModelChoices(config);
     }
     if (probe.id === "pi" && probe.listModelsCmd) {
       const catalogRes = await run(probe.listModelsCmd);
@@ -392,6 +426,9 @@ module.exports = {
   parsePiAuthCheck,
   parseVibeModelsEnv,
   vibeModelChoices,
+  claudeText,
+  claudePickerOptions,
+  claudeGatewayModels,
   claudeModelChoices,
   piProviderDetail,
 };

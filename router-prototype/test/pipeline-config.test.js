@@ -16,6 +16,7 @@ const {
   parsePiAuthCheck,
   parseVibeModelsEnv,
   vibeModelChoices,
+  claudeModelChoices,
   piProviderDetail,
 } = require("../pipeline-config");
 
@@ -277,13 +278,14 @@ test("probeHarnesses attaches vibe models from env and defaults", async () => {
   ]);
 });
 
-test("probeHarnesses attaches claude aliases and CLAUDE_MODELS", async () => {
-  const results = await probeHarnesses(async () => null, {
-    CLAUDE_MODELS: "claude-opus-5-5, sonnet,,claude-haiku-5-5",
-  });
-  const claude = results.find((r) => r.id === "claude");
-  assert.deepStrictEqual(claude.models.map((m) => m.value),
-    ["opus", "sonnet", "haiku", "claude-opus-5-5", "claude-haiku-5-5"]);
+test("probeHarnesses reads Claude config and falls back on reader errors", async () => {
+  const reader = async () => ({ settings: { modelPicker: { options: [{ model: "local" }] } } });
+  const results = await probeHarnesses(async () => null, { ANTHROPIC_MODEL: "ignored" }, reader);
+  assert.deepStrictEqual(results.find((r) => r.id === "claude").models.map((m) => m.value),
+    ["opus", "sonnet", "haiku", "local"]);
+  const fallback = await probeHarnesses(async () => null, {}, async () => { throw new Error("bad"); });
+  assert.deepStrictEqual(fallback.find((r) => r.id === "claude").models.map((m) => m.value),
+    ["opus", "sonnet", "haiku"]);
 });
 
 // ---- parsePiModelCatalog ----
