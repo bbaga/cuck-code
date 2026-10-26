@@ -252,8 +252,11 @@
   function buildGraphLanes(workers, hideFailed) {
     const list = Array.isArray(workers) ? workers : [];
     const implementors = list.filter((w) => w && (w.role || "implementor") !== "validator");
-    const validators = list.filter((w) => w && (w.role || "implementor") === "validator"
-      && w.kind !== "integration" && !shouldHideValidator(w, hideFailed));
+    const standardValidators = list.filter((w) => w && (w.role || "implementor") === "validator"
+      && w.kind !== "integration");
+    const validators = hideFailed === true
+      ? standardValidators.filter((w) => !isFailedValidator(w))
+      : standardValidators;
     const integrations = list.filter((w) => shouldShowIntegrationValidator(w, hideFailed));
     const assigned = new Set(implementors.map((w) => w.id));
     const lanes = implementors.map((worker) => {

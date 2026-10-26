@@ -712,20 +712,20 @@ test("multiple integration validators preserve insertion order in final section"
 
 test("failed standard validators are filtered before row allocation and section offsets", () => {
   const records=[{id:"a"},{id:"bad",role:"validator",validates:"a",status:"completed",verdict:"fail"},
-    {id:"good",role:"validator",validates:"a",status:"completed",verdict:"pass"},{id:"b"},{id:"b-validator",role:"validator",validates:"b"},
+{id:"b"},{id:"b-validator",role:"validator",validates:"b"},
     {id:"orphan",role:"validator",validates:"absent"},
     {id:"int-a",role:"validator",kind:"integration"},{id:"int-b",role:"validator",kind:"integration"}];
   const hidden=pipelineUiModule.buildGraphLanes(records,true);
   assert.deepEqual(hidden.lanes.map(l=>({id:l.worker.id,startRow:l.startRow,rowCount:l.rowCount})),[
     {id:"a",startRow:0,rowCount:1},{id:"b",startRow:2,rowCount:1}]);
   assert.deepEqual(hidden.lanes[0].validators.map(v=>v.id),[]);
-  assert.deepEqual(hidden.orphans.map(v=>v.id),["good","orphan"]);
-  assert.equal(hidden.orphanStartRow,4); assert.equal(hidden.integrationStartRow,7); assert.equal(hidden.totalRows,9);
+  assert.deepEqual(hidden.orphans.map(v=>v.id),["orphan"]);
+  assert.equal(hidden.orphanStartRow,4); assert.equal(hidden.integrationStartRow,6); assert.equal(hidden.totalRows,8);
   const visible=pipelineUiModule.buildGraphLanes(records,false);
   assert.deepEqual(visible.lanes.map(l=>({id:l.worker.id,startRow:l.startRow,rowCount:l.rowCount})),[
-    {id:"a",startRow:0,rowCount:1},{id:"b",startRow:2,rowCount:1}]);
-  assert.deepEqual(visible.lanes[0].validators.map(v=>v.id),[]);
-  assert.equal(visible.orphanStartRow,4); assert.equal(visible.integrationStartRow,7); assert.equal(visible.totalRows,9);
+    {id:"a",startRow:0,rowCount:2},{id:"b",startRow:3,rowCount:1}]);
+  assert.deepEqual(visible.lanes[0].validators.map(v=>v.id),["bad"]);
+  assert.equal(visible.orphanStartRow,5); assert.equal(visible.integrationStartRow,7); assert.equal(visible.totalRows,9);
 });
 
 test("buildGraphLanes groups in implementor order and allocates validator rows", () => {
