@@ -4,7 +4,7 @@
   if (typeof module === "object" && module.exports) module.exports = factory();
   else root.registryUI = factory();
 })(typeof self !== "undefined" ? self : this, function () {
-  const X = typeof require === "function" ? require("./registry-ui-extra.js") : root.registryUIExtra;
+  const X = typeof require === "function" ? require("./registry-ui-extra.js") : root.registryUIExtra || null;
   const STATUSES = ["planned", "active", "available", "superseded", "stale", "merged"];
   const FILTERS = [{ value: "current", label: "current" }, { value: "all", label: "all" }]
     .concat(STATUSES.map((s) => ({ value: s, label: s })));
@@ -183,11 +183,13 @@
           const status = el("td", r.status);
           for (const b of r.badges) status.append(" ", el("span", b, "regBadge"));
           const open = st.detail && st.detail.id === r.id;
-          const dBtn = el("button", open ? "Hide details" : "Details");
-          dBtn.setAttribute("aria-expanded", String(!!open));
-          dBtn.addEventListener("click", () => toggleDetail(r.id));
+          const dBtn = X && el("button", open ? "Hide details" : "Details");
           const titleTd = el("td", r.title + " ");
-          titleTd.append(dBtn);
+          if (dBtn) {
+            dBtn.setAttribute("aria-expanded", String(!!open));
+            dBtn.addEventListener("click", () => toggleDetail(r.id));
+            titleTd.append(dBtn);
+          }
           tr.append(titleTd, status, el("td", r.owner), el("td", r.repo), el("td", r.branch),
             el("td", r.commit), el("td", r.revision), el("td", r.updated), el("td", r.mergeCheck));
         } else {
@@ -206,12 +208,20 @@
       prev.disabled = !st.result || st.page <= 1;
       next.disabled = !st.result || !st.result.hasMore;
       const sm = st.summary;
+      lineSel.hidden = repoSel.hidden = lineSel.hidden || !X;
+      if (!X) {
+        breakdownBar.textContent = eventsBox.textContent = "Extra panels unavailable (registry-ui-extra.js not loaded)";
+        return finishRender(sm);
+      }
       fillSel(lineSel, st.lineId, "any owner line", st.lines.map((l) => [l.id, l.name || l.id]));
       fillSel(repoSel, st.repo, "any repo", X.repoOptions(sm).map((r) => [r, r]));
       const bd = X.breakdown(sm, st.lines);
       breakdownBar.textContent = sm ? "By owner line: " + (bd.owners.join(" | ") || "none")
         + " || By repo: " + (bd.repos.join(" | ") || "none") : "";
       renderEvents();
+      finishRender(sm);
+    }
+    function finishRender(sm) {
       summaryBar.textContent = sm
         ? STATUSES.map((s) => s + ": " + ((sm.claimsByStatus || {})[s] || 0)).join(" | ")
           + " | archive: " + (sm.archiveCount || 0) + " | revision: " + (sm.snapshotRevision ?? "-")
@@ -254,7 +264,8 @@
     }
     async function loadEvents(reload) {
       try {
-        let after = reload ? 0 : st.evCursor;
+        let after = st.evCursor;
+        if (reload) after = Math.max(0, (await getJson("/api/registry/summary")).eventCursor - X.EVENTS_SHOWN) || 0;
         let got = [];
         for (let i = 0; i < 50; i++) {
           const r = await getJson("/api/registry/events?limit=100&after=" + after);
@@ -329,7 +340,7 @@
         let d = null;
         try { d = JSON.parse(ev.data); } catch (_) { return; }
         conn.onOpen();
-        if (shouldRefetch(st.evCursor, d && d.eventCursor)) loadEvents(false);
+        if (X && shouldRefetch(st.evCursor, d && d.eventCursor)) loadEvents(false);
         if (shouldRefetch(st.revision, d && d.revision)) schedule();
         else render();
       });
@@ -350,7 +361,7 @@
       win.clearTimeout(st.timer);
       conn.state.label = "offline"; conn.state.errors = 0; conn.state.polling = false;
     }
-    return { start() { render(); connect(); load(); loadLines(); loadEvents(true); }, stop: disconnect, load, state: st };
+    return { start() { render(); connect(); load(); if (X) { loadLines(); loadEvents(true); } }, stop: disconnect, load, state: st };
   }
 
   return { STATUSES, FILTERS, POLL_MS, statusQuery, listUrl, pagingLabel, shortCommit, mergeCheckLabel,

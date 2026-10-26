@@ -17,8 +17,9 @@ const PRODUCTION_SCRIPTS = [
   "planner-request.js",
   "web/pipeline-ui.js",
   "web/registry-ui.js",
+  "web/registry-ui-extra.js",
 ];
-const REQUIRED_WEB_ASSETS = ["web/index.html", "web/pipeline-ui.js", "web/registry-ui.js"];
+const REQUIRED_WEB_ASSETS = ["web/index.html", "web/pipeline-ui.js", "web/registry-ui.js", "web/registry-ui-extra.js"];
 
 function parseJavaScript(source, filename) {
   try {
@@ -101,4 +102,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { validateBuild };
+module.exports = { validateBuild, REQUIRED_WEB_ASSETS };

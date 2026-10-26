@@ -252,6 +252,7 @@ test("events load, append on stream message, and reload when too old", async () 
   const mkEv = (n) => ({ id: "e" + n, cursor: n, type: "t", at: "x" });
   let tooOld = false;
   const respond = (u) => {
+    if (u.includes("summary")) return { ok: true, json: async () => ({ claimsByStatus: {}, snapshotRevision: 5, eventCursor: 30 }) };
     if (!u.includes("/events")) return okRes(u);
     const after = Number(/after=(\d+)/.exec(u)[1]);
     const all = Array.from({ length: 30 }, (_, i) => mkEv(i + 1)).filter((x) => x.cursor > after);
@@ -262,6 +263,7 @@ test("events load, append on stream message, and reload when too old", async () 
   await flush();
   assert.strictEqual(e.v.state.events.length, 20);
   assert.strictEqual(e.v.state.events[0].cursor, 30);
+  assert.ok(e.calls.some((u) => u.includes("/events?limit=100&after=10")));
   ES.all[0].l.registry({ data: JSON.stringify({ revision: 5, eventCursor: 30 }) });
   assert.ok(!e.calls.some((u) => u.includes("after=30")));
   ES.all[0].l.registry({ data: JSON.stringify({ revision: 5, eventCursor: 31 }) });
@@ -278,4 +280,40 @@ test("summary breakdown uses line names", () => {
   assert.deepStrictEqual(b.owners, ["gone: 1", "Line A: 2"]);
   assert.deepStrictEqual(b.repos, ["r: 3"]);
   assert.deepStrictEqual(X.repoOptions({ claimsByRepo: { b: 1, a: 1 } }), ["a", "b"]);
+});
+
+test("every local script in index.html is a validated, served asset", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const { REQUIRED_WEB_ASSETS } = require("../scripts/validate-build");
+  const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
+  const server = fs.readFileSync(path.join(__dirname, "../server.js"), "utf8");
+  const srcs = [...html.matchAll(/<script[^>]*\ssrc="([^"]+)"/g)].map((m) => m[1]).filter((s) => !/^(https?:)?\/\//.test(s));
+  assert.ok(srcs.includes("registry-ui-extra.js"));
+  for (const s of srcs) {
+    assert.ok(REQUIRED_WEB_ASSETS.includes("web/" + s), s + " missing from REQUIRED_WEB_ASSETS");
+    assert.ok(server.includes('"/' + s + '"'), s + " is not served by server.js");
+  }
+});
+
+test("mount degrades when the extra script is missing", async () => {
+  const main = require.resolve("../web/registry-ui.js");
+  const extra = require.resolve("../web/registry-ui-extra.js");
+  const savedMain = require.cache[main];
+  const savedExtra = require.cache[extra];
+  delete require.cache[main];
+  require.cache[extra] = { id: extra, filename: extra, loaded: true, exports: null };
+  try {
+    const Rn = require("../web/registry-ui.js");
+    const c = fakeDoc().mk("section");
+    const v = Rn.mount(fakeDoc(), c, { fetch: async (u) => okRes(u), window: { setTimeout() {}, clearTimeout() {}, setInterval() {}, clearInterval() {} } });
+    v.start();
+    await flush();
+    assert.strictEqual(c.children[5].children[0].tag, "table");
+    assert.match(c.children[1].textContent, /active: 2/);
+    assert.match(c.children[7].textContent, /unavailable/);
+  } finally {
+    require.cache[extra] = savedExtra;
+    require.cache[main] = savedMain;
+  }
 });

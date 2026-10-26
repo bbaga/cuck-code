@@ -138,7 +138,7 @@ function createRegistryRoutes({ store, lineExists = () => false, lineName = () =
       return {
         claimsByStatus: count(snapshot.claims, 'status'), claimsByOwner: owners, claimsByRepo: repos,
         requestsByState: count(snapshot.requests, 'state'), archiveCount: snapshot.archive.length,
-        snapshotRevision: snapshot.revision,
+        snapshotRevision: snapshot.revision, eventCursor: snapshot.eventCursor,
       };
     }
     throw new HttpError(404, 'Registry route not found');
