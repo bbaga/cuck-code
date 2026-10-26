@@ -2179,10 +2179,10 @@ When done, reply with a report: what you changed, files changed, how you verifie
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/pipeline-ui.js") {
+  if (req.method === "GET" && (url.pathname === "/pipeline-ui.js" || url.pathname === "/registry-ui.js")) {
     try {
       res.writeHead(200, { "Content-Type": "application/javascript" });
-      res.end(fs.readFileSync(path.join(__dirname, "web", "pipeline-ui.js")));
+      res.end(fs.readFileSync(path.join(__dirname, "web", url.pathname.slice(1))));
     } catch {
       return json(res, 404, { error: "not found" });
     }
