@@ -190,8 +190,7 @@
   #registry th { color: #8fa3bd; }
   .regBadge { background: #4d3a14; color: #ffc46b; border-radius: 3px; padding: 0 4px; }
   .regError { padding: 6px; border-radius: 4px; background: #4d1420; color: #ff8095; font-size: .8rem; }
-  #registry input, #registry select { padding: 6px; background: #0d1014; color: inherit;
-    border: 1px solid #2c333d; border-radius: 4px; }
+  #registry input, #registry select { padding: 6px; background: #0d1014; color: inherit; border: 1px solid #2c333d; border-radius: 4px; }
   @media (max-width: 640px) {
     body { flex-direction: column; }
     #sidebar { width: auto; box-sizing: border-box; border-right: 0; border-bottom: 1px solid #262b33; }
@@ -914,8 +913,7 @@ window.addEventListener("DOMContentLoaded", () => {
     () => { regView.stop(); registryEl.hidden = true; registryBtn.setAttribute("aria-pressed", "false"); });
   const registryEl = document.getElementById("registry");
   const registryBtn = document.getElementById("registryBtn");
-  const regView = registryUI.mount(document, registryEl, { fetch: (u) => fetch(u), window,
-    EventSource: window.EventSource });
+  const regView = registryUI.mount(document, registryEl, { fetch: (u) => fetch(u), window, EventSource: window.EventSource });
   registryBtn.addEventListener("click", () => registryToggle.toggle());
 
   function selectLine(id) {

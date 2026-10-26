@@ -228,6 +228,7 @@
         try {
           const sum = await getJson("/api/registry/summary");
           if (st.failed || shouldRefetch(st.revision, sum.snapshotRevision)) await load();
+          if (!st.es && opts.EventSource) connect();
         } catch (err) { fail(err); render(); }
       }, POLL_MS);
     }
@@ -244,7 +245,15 @@
         if (shouldRefetch(st.revision, d && d.revision)) schedule();
         else render();
       });
-      es.onerror = () => { if (conn.onError().polling) startPolling(); render(); };
+      es.onerror = () => {
+        if (es.readyState === 2) {
+          st.es = null;
+          conn.onUnavailable();
+          startPolling();
+          load();
+        } else if (conn.onError().polling) startPolling();
+        render();
+      };
     }
     function disconnect() {
       if (st.es) st.es.close();

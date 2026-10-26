@@ -92,93 +92,101 @@ function fakeDoc() {
 }
 const flush = () => new Promise((r) => setImmediate(r));
 
+const okRes = (u, rev = 5) => ({ ok: true, json: async () => (u.includes("summary")
+  ? { claimsByStatus: { active: 2 }, archiveCount: 1, snapshotRevision: rev }
+  : { items: [claim], page: 1, pageSize: 25, total: 1, hasMore: false }) });
+const errRes = (status, error, code) => ({ ok: false, status, json: async () => (error ? { error, code } : Promise.reject(new Error("x"))) });
+function env(respond, EventSource) {
+  ES.all = [];
+  const e = { calls: [], timers: [], polling: 0, c: fakeDoc().mk("section") };
+  e.win = { setTimeout: (f) => e.timers.push(f), clearTimeout() {},
+    setInterval: (f) => { e.poll = f; e.polling += 1; return 1; }, clearInterval() { e.polling -= 1; } };
+  e.v = R.mount(fakeDoc(), e.c, { fetch: async (u) => { e.calls.push(u); return respond(u); }, window: e.win, EventSource });
+  e.wrap = () => e.c.children[5].children[0];
+  e.err = () => e.c.children[2].textContent;
+  e.conn = () => e.c.children[4].children[2].textContent;
+  return e;
+}
+class ES {
+  static all = [];
+  constructor(u) { this.u = u; this.l = {}; ES.all.push(this); }
+  addEventListener(e, f) { this.l[e] = f; }
+  close() { this.closed = true; }
+}
+
 test("mount loads data, shows errors, and handles stream events", async () => {
-  const doc = fakeDoc();
-  const calls = [];
-  let fail = false;
-  const fetchFn = async (u) => {
-    calls.push(u);
-    if (fail) return { ok: false, status: 503, json: async () => ({ error: "Work registry is corrupt", code: "REGISTRY_UNAVAILABLE", file: "f" }) };
-    return { ok: true, json: async () => u.includes("summary")
-      ? { claimsByStatus: { active: 2 }, archiveCount: 1, snapshotRevision: 5 }
-      : { items: [claim], page: 1, pageSize: 25, total: 1, hasMore: false, snapshotRevision: 5 } };
-  };
-  const timers = [];
-  const win = { setTimeout: (f) => { timers.push(f); return timers.length; }, clearTimeout() {},
-    setInterval: () => 1, clearInterval() {} };
-  let es;
-  class FakeES { constructor(u) { this.u = u; this.l = {}; es = this; }
-    addEventListener(e, f) { this.l[e] = f; } close() { this.closed = true; } }
-  const container = doc.mk("section");
-  const v = R.mount(doc, container, { fetch: fetchFn, window: win, EventSource: FakeES });
-  v.start();
+  let res = okRes;
+  const e = env((u) => res(u), ES);
+  e.v.start();
   await flush();
+  const es = ES.all[0];
   assert.strictEqual(es.u, "/api/registry/stream");
-  assert.strictEqual(v.state.revision, 5);
-  const [summaryBar, errLine] = container.children.slice(1);
-  assert.ok(summaryBar.textContent.includes("active: 2"));
-  assert.ok(summaryBar.textContent.includes("revision: 5"));
-  const n = calls.length;
+  assert.strictEqual(e.v.state.revision, 5);
+  assert.match(e.c.children[1].textContent, /active: 2.*revision: 5/);
+  const n = e.calls.length;
   es.l.registry({ data: JSON.stringify({ revision: 5 }) });
-  assert.strictEqual(timers.length, 0);
+  assert.strictEqual(e.timers.length, 0);
   es.l.registry({ data: JSON.stringify({ revision: 6 }) });
-  assert.strictEqual(timers.length, 1);
-  fail = true;
-  timers[0]();
+  assert.strictEqual(e.timers.length, 1);
+  res = () => errRes(503, "Work registry is corrupt", "REGISTRY_UNAVAILABLE");
+  e.timers[0]();
   await flush();
-  assert.ok(calls.length > n);
-  assert.match(errLine.textContent, /REGISTRY_UNAVAILABLE: Work registry is corrupt/);
-  assert.strictEqual(v.state.result, null);
-  assert.strictEqual(container.children[5].children[0].textContent, "Could not load claims");
-  fail = false;
-  await v.load();
-  assert.strictEqual(container.children[5].children[0].tag, "table");
-  v.stop();
+  assert.ok(e.calls.length > n);
+  assert.match(e.err(), /REGISTRY_UNAVAILABLE: Work registry is corrupt/);
+  assert.strictEqual(e.v.state.result, null);
+  assert.strictEqual(e.wrap().textContent, "Could not load claims");
+  res = okRes;
+  await e.v.load();
+  assert.strictEqual(e.wrap().tag, "table");
+  e.v.stop();
   assert.ok(es.closed);
 });
 
 test("mount shows 400 and non-JSON errors", async () => {
-  const doc = fakeDoc();
-  let res;
-  const win = { setTimeout() {}, clearTimeout() {}, setInterval: () => 1, clearInterval() {} };
-  const container = doc.mk("section");
-  const v = R.mount(doc, container, { fetch: async () => res, window: win });
-  res = { ok: false, status: 400, json: async () => ({ error: "Unknown status", code: "BAD_REQUEST" }) };
-  await v.load();
-  assert.match(container.children[2].textContent, /BAD_REQUEST: Unknown status/);
-  res = { ok: false, status: 502, json: async () => { throw new Error("x"); } };
-  await v.load();
-  assert.match(container.children[2].textContent, /HTTP 502/);
+  let res = errRes(400, "Unknown status", "BAD_REQUEST");
+  const e = env(() => res);
+  await e.v.load();
+  assert.match(e.err(), /BAD_REQUEST: Unknown status/);
+  res = errRes(502);
+  await e.v.load();
+  assert.match(e.err(), /HTTP 502/);
 });
 
 test("polling failure clears rows and a later poll restores them", async () => {
-  const doc = fakeDoc();
-  let mode = "ok";
-  const fetchFn = async (u) => {
-    if (mode === "503") return { ok: false, status: 503, json: async () => ({ error: "corrupt", code: "REGISTRY_UNAVAILABLE" }) };
-    if (mode === "down") throw new Error("network down");
-    return { ok: true, json: async () => u.includes("summary")
-      ? { claimsByStatus: {}, archiveCount: 0, snapshotRevision: 5 }
-      : { items: [claim], page: 1, pageSize: 25, total: 1, hasMore: false } };
-  };
-  let poll;
-  const win = { setTimeout() {}, clearTimeout() {}, setInterval: (f) => { poll = f; return 1; }, clearInterval() {} };
-  const container = doc.mk("section");
-  const v = R.mount(doc, container, { fetch: fetchFn, window: win });
-  v.start();
+  let res = okRes;
+  const e = env((u) => res(u));
+  e.v.start();
   await flush();
-  const wrap = () => container.children[5].children[0];
-  assert.strictEqual(wrap().tag, "table");
-  mode = "down";
-  await poll();
-  assert.strictEqual(wrap().textContent, "Could not load claims");
-  assert.match(container.children[2].textContent, /network down/);
-  mode = "ok";
-  await poll();
-  assert.strictEqual(wrap().tag, "table");
-  assert.strictEqual(container.children[2].textContent, "");
-  mode = "503";
-  await poll();
-  assert.strictEqual(wrap().textContent, "Could not load claims");
-  assert.match(container.children[2].textContent, /REGISTRY_UNAVAILABLE: corrupt/);
+  assert.strictEqual(e.wrap().tag, "table");
+  res = () => { throw new Error("network down"); };
+  await e.poll();
+  assert.strictEqual(e.wrap().textContent, "Could not load claims");
+  assert.match(e.err(), /network down/);
+  res = okRes;
+  await e.poll();
+  assert.strictEqual(e.wrap().tag, "table");
+  assert.strictEqual(e.err(), "");
+  res = () => errRes(503, "corrupt", "REGISTRY_UNAVAILABLE");
+  await e.poll();
+  assert.strictEqual(e.wrap().textContent, "Could not load claims");
+  assert.match(e.err(), /REGISTRY_UNAVAILABLE: corrupt/);
+});
+
+test("closed stream starts polling and a good poll reopens it", async () => {
+  let res = () => errRes(503, "corrupt", "REGISTRY_UNAVAILABLE");
+  const e = env((u) => res(u), ES);
+  e.v.start();
+  ES.all[0].readyState = 2;
+  ES.all[0].onerror();
+  await flush();
+  assert.strictEqual(e.polling, 1);
+  assert.match(e.err(), /REGISTRY_UNAVAILABLE/);
+  assert.match(e.conn(), /^offline/);
+  res = okRes;
+  await e.poll();
+  ES.all[1].l.hello();
+  await flush();
+  assert.strictEqual(e.polling, 0);
+  assert.strictEqual(e.wrap().tag, "table");
+  assert.match(e.conn(), /^live/);
 });
