@@ -150,3 +150,35 @@ test("mount shows 400 and non-JSON errors", async () => {
   await v.load();
   assert.match(container.children[2].textContent, /HTTP 502/);
 });
+
+test("polling failure clears rows and a later poll restores them", async () => {
+  const doc = fakeDoc();
+  let mode = "ok";
+  const fetchFn = async (u) => {
+    if (mode === "503") return { ok: false, status: 503, json: async () => ({ error: "corrupt", code: "REGISTRY_UNAVAILABLE" }) };
+    if (mode === "down") throw new Error("network down");
+    return { ok: true, json: async () => u.includes("summary")
+      ? { claimsByStatus: {}, archiveCount: 0, snapshotRevision: 5 }
+      : { items: [claim], page: 1, pageSize: 25, total: 1, hasMore: false } };
+  };
+  let poll;
+  const win = { setTimeout() {}, clearTimeout() {}, setInterval: (f) => { poll = f; return 1; }, clearInterval() {} };
+  const container = doc.mk("section");
+  const v = R.mount(doc, container, { fetch: fetchFn, window: win });
+  v.start();
+  await flush();
+  const wrap = () => container.children[5].children[0];
+  assert.strictEqual(wrap().tag, "table");
+  mode = "down";
+  await poll();
+  assert.strictEqual(wrap().textContent, "Could not load claims");
+  assert.match(container.children[2].textContent, /network down/);
+  mode = "ok";
+  await poll();
+  assert.strictEqual(wrap().tag, "table");
+  assert.strictEqual(container.children[2].textContent, "");
+  mode = "503";
+  await poll();
+  assert.strictEqual(wrap().textContent, "Could not load claims");
+  assert.match(container.children[2].textContent, /REGISTRY_UNAVAILABLE: corrupt/);
+});

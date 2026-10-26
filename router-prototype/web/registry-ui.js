@@ -201,6 +201,11 @@
       }
       return body;
     }
+    function fail(err) {
+      st.error = "Registry error: " + err.message;
+      st.failed = true;
+      st.result = null;
+    }
     async function load() {
       try {
         const [list, sum] = await Promise.all([
@@ -209,9 +214,7 @@
         st.revision = sum.snapshotRevision;
         st.refreshed = new Date().toLocaleTimeString();
       } catch (err) {
-        st.error = "Registry error: " + err.message;
-        st.failed = true;
-        st.result = null;
+        fail(err);
       }
       render();
     }
@@ -224,8 +227,8 @@
       st.poll = win.setInterval(async () => {
         try {
           const sum = await getJson("/api/registry/summary");
-          if (shouldRefetch(st.revision, sum.snapshotRevision)) await load();
-        } catch (err) { st.error = "Registry error: " + err.message; render(); }
+          if (st.failed || shouldRefetch(st.revision, sum.snapshotRevision)) await load();
+        } catch (err) { fail(err); render(); }
       }, POLL_MS);
     }
     function stopPolling() { win.clearInterval(st.poll); st.poll = null; }
