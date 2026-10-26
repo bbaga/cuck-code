@@ -694,3 +694,69 @@ test("index.html binds every pipelineUI helper its script uses", () => {
   );
   assert.deepEqual(unbound, []);
 });
+
+test("implementor without validators still receives one graph row", () => {
+  const result=pipelineUiModule.buildGraphLanes([{id:"solo"}]);
+  assert.deepEqual(result.lanes.map(l=>({id:l.worker.id,startRow:l.startRow,rowCount:l.rowCount})),[{id:"solo",startRow:0,rowCount:1}]);
+  assert.equal(result.totalRows,1);
+});
+
+test("multiple integration validators preserve insertion order in final section", () => {
+  const result=pipelineUiModule.buildGraphLanes([
+    {id:"impl"}, {id:"int-a",role:"validator",kind:"integration"},
+    {id:"int-b",role:"validator",kind:"integration"},
+  ]);
+  assert.deepEqual(result.integrations.map(v=>v.id),["int-a","int-b"]);
+  assert.equal(result.integrationStartRow,2);
+});
+
+test("failed standard validators are filtered before row allocation and section offsets", () => {
+  const records=[{id:"a"},{id:"bad",role:"validator",validates:"a",status:"completed",verdict:"fail"},
+    {id:"bad-2",role:"validator",validates:"a",status:"completed",verdict:"fail"},{id:"b"},{id:"b-validator",role:"validator",validates:"b"},
+    {id:"orphan",role:"validator",validates:"absent"},
+    {id:"int-a",role:"validator",kind:"integration"},{id:"int-b",role:"validator",kind:"integration"}];
+  const hidden=pipelineUiModule.buildGraphLanes(records,true);
+  assert.deepEqual(hidden.lanes.map(l=>({id:l.worker.id,startRow:l.startRow,rowCount:l.rowCount})),[
+    {id:"a",startRow:0,rowCount:1},{id:"b",startRow:2,rowCount:1}]);
+  assert.deepEqual(hidden.lanes[0].validators.map(v=>v.id),[]);
+  assert.deepEqual(hidden.orphans.map(v=>v.id),["orphan"]);
+  assert.equal(hidden.orphanStartRow,4); assert.equal(hidden.integrationStartRow,6); assert.equal(hidden.totalRows,8);
+  const visible=pipelineUiModule.buildGraphLanes(records,false);
+  assert.deepEqual(visible.lanes.map(l=>({id:l.worker.id,startRow:l.startRow,rowCount:l.rowCount})),[
+    {id:"a",startRow:0,rowCount:2},{id:"b",startRow:3,rowCount:1}]);
+  assert.deepEqual(visible.lanes[0].validators.map(v=>v.id),["bad","bad-2"]);
+  assert.equal(visible.orphanStartRow,5); assert.equal(visible.integrationStartRow,7); assert.equal(visible.totalRows,9);
+});
+
+test("buildGraphLanes groups in implementor order and allocates validator rows", () => {
+  assert.deepEqual(pipelineUiModule.buildGraphLanes([]).totalRows, 0);
+  const records = [
+    {id:"v2",role:"validator",validates:"a"}, {id:"b"}, {id:"vB",role:"validator",validates:"b"},
+    {id:"a"}, {id:"v1",role:"validator",validates:"a"}, {id:"orphan",role:"validator",validates:"missing"},
+  ];
+  const before = JSON.stringify(records);
+  const lanes = pipelineUiModule.buildGraphLanes(records);
+  assert.deepEqual(lanes.lanes.map(x=>x.worker.id), ["b","a"]);
+  assert.deepEqual(lanes.lanes.map(x=>x.validators.map(v=>v.id)), [["vB"],["v2","v1"]]);
+  assert.deepEqual(lanes.lanes.map(x=>x.rowCount), [1,2]);
+  assert.deepEqual(lanes.lanes.map(x=>x.startRow), [0,2]);
+  assert.deepEqual(lanes.orphans.map(v=>v.id), ["orphan"]);
+  assert.equal(lanes.totalRows, 6);
+  assert.equal(JSON.stringify(records), before);
+});
+
+test("buildGraphLanes keeps unvalidated and integration workers separate and filters failures before rows", () => {
+  const records = [
+    {id:"impl"}, {id:"bad",role:"validator",validates:"impl",status:"failed"},
+    {id:"unknown",role:"validator",validates:"absent"},
+    {id:"int",role:"validator",kind:"integration",status:"running"},
+  ];
+  const hidden = pipelineUiModule.buildGraphLanes(records, true);
+  assert.deepEqual(hidden.lanes.map(l=>[l.startRow,l.rowCount]), [[0,1]]);
+  assert.deepEqual(hidden.orphans.map(v=>v.id), ["unknown"]);
+  assert.deepEqual(hidden.integrations.map(v=>v.id), ["int"]);
+  assert.equal(hidden.totalRows, 5);
+  const shown = pipelineUiModule.buildGraphLanes(records, false);
+  assert.deepEqual(shown.lanes[0].validators.map(v=>v.id), ["bad"]);
+  assert.equal(shown.lanes[0].rowCount, 1);
+});

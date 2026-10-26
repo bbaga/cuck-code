@@ -226,7 +226,7 @@ window.addEventListener("DOMContentLoaded", () => {
     PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
     clearHarnessState, clearProviderState, shouldHideValidator,
-    shouldShowIntegrationValidator,
+    shouldShowIntegrationValidator, buildGraphLanes,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
     evidencePollIsCurrent } = window.pipelineUI;
   const cards = new Map();
@@ -368,15 +368,18 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderGraph(st) {
-    const isVal = (w) => (w.role || "implementor") === "validator";
-    const impls = [...st.workers.values()].filter((w) => !isVal(w));
-    const hideFailed = !!st.hideFailedValidators;
-    const vals = [...st.workers.values()]
-      .filter((w) => isVal(w) && w.kind !== "integration"
-        && !shouldHideValidator(w, hideFailed));
-    const ints = [...st.workers.values()]
-      .filter((w) => shouldShowIntegrationValidator(w, hideFailed));
-    const rows = Math.max(impls.length, vals.length, ints.length, 1);
+    const graph = st.graph;
+    const top = graph.scrollTop, left = graph.scrollLeft;
+    try { renderGraphContents(st); } finally { graph.scrollTop = top; graph.scrollLeft = left; }
+  }
+
+  function renderGraphContents(st) {
+    const layout = pipelineUI.buildGraphLanes([...st.workers.values()], !!st.hideFailedValidators);
+    const lanes = layout.lanes;
+    const impls = lanes.map((lane) => lane.worker);
+    const vals = [...lanes.flatMap((lane) => lane.validators), ...layout.orphans];
+    const ints = layout.integrations;
+    const rows = Math.max(layout.totalRows, 1);
     const h = Math.max(140, 14 + (rows - 1) * 46 + 36 + 14);
     const graph = st.graph;
     graph.innerHTML = "";
@@ -403,7 +406,11 @@ window.addEventListener("DOMContentLoaded", () => {
     inner.appendChild(svg);
     graph.appendChild(inner);
     const plannerY = Math.round(h / 2 - 18);
-    const implY = (i) => 14 + i * 46;
+    const implY = (i) => 14 + lanes[i].startRow * 46;
+    const validatorY = new Map();
+    lanes.forEach((lane) => lane.validators.forEach((v, i) => validatorY.set(v.id, 14 + (lane.startRow + i) * 46)));
+    layout.orphans.forEach((v, i) => validatorY.set(v.id, 14 + (layout.orphanStartRow + i) * 46));
+    const integrationY = (i) => 14 + (layout.integrationStartRow + i) * 46;
 
     const pn = document.createElement("div");
     pn.className = "gnode planner" + (st.selected === null ? " sel" : "");
@@ -419,13 +426,11 @@ window.addEventListener("DOMContentLoaded", () => {
     inner.appendChild(pn);
 
     const edge = (x1, y1, x2, y2) => {
-      const line = document.createElementNS(SVGNS, "line");
-      line.setAttribute("x1", x1);
-      line.setAttribute("y1", y1);
-      line.setAttribute("x2", x2);
-      line.setAttribute("y2", y2);
-      line.setAttribute("class", "edge");
-      svg.appendChild(line);
+      const path = document.createElementNS(SVGNS, "path");
+      const mid = x1 + 20;
+      path.setAttribute("d", `M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`);
+      path.setAttribute("class", "edge");
+      svg.appendChild(path);
     };
 
     impls.forEach((w, i) => {
@@ -433,20 +438,33 @@ window.addEventListener("DOMContentLoaded", () => {
       inner.appendChild(workerNode(st, w, implX, implY(i), nodeW));
     });
 
-    vals.forEach((v, j) => {
-      const implIdx = impls.findIndex((w) => w.id === v.validates);
-      const fromY = implIdx !== -1 ? implY(implIdx) : plannerY;
-      edge(implX + nodeW, fromY + 18, valX, implY(j) + 18);
-      inner.appendChild(workerNode(st, v, valX, implY(j), nodeW));
+    vals.forEach((v) => {
+      const y = validatorY.get(v.id);
+      const sourceIndex = lanes.findIndex((lane) => lane.worker.id === v.validates);
+      const source = sourceIndex >= 0 ? lanes[sourceIndex] : null;
+      if (source && source.validators[0] === v) {
+        edge(implX + nodeW, y + 18, valX, y + 18);
+      } else if (source) {
+        const startY = implY(sourceIndex) + 18;
+        const gutterX = implX + nodeW + 22;
+        const path = document.createElementNS(SVGNS, "path");
+        path.setAttribute("d", `M ${implX + nodeW} ${startY} H ${gutterX} V ${y + 18} H ${valX}`);
+        path.setAttribute("class", "edge");
+        svg.appendChild(path);
+      } else {
+        edge(plannerX + plannerW, plannerY + 18, valX, y + 18);
+      }
+      inner.appendChild(workerNode(st, v, valX, y, nodeW));
     });
 
     ints.forEach((iv, j) => {
-      edge(plannerX + plannerW, plannerY + 18, intX, implY(j) + 18);
-      inner.appendChild(workerNode(st, iv, intX, implY(j), nodeW));
+      const y = integrationY(j);
+      edge(plannerX + plannerW, plannerY + 18, intX, y + 18);
+      inner.appendChild(workerNode(st, iv, intX, y, nodeW));
       const data = mapPreviewPayload(st.previewPayload, iv);
       if (st.selected === previewSelectionKey(iv.id) && data && st.previewPanel.hidden) renderPreviewPanel(st, iv, data);
       if (data) {
-        const px = intX + nodeW + 46, py = implY(j);
+        const px = intX + nodeW + 46, py = y;
         edge(intX + nodeW, py + 18, px, py + 18);
         const node = document.createElement("button");
         node.className = "gnode" + (st.selected === previewSelectionKey(iv.id) ? " sel" : "");

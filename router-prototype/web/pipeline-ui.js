@@ -249,6 +249,28 @@
       && !shouldHideValidator(w, hideFailed);
   }
 
+  function buildGraphLanes(workers, hideFailed) {
+    const list = Array.isArray(workers) ? workers : [];
+    const implementors = list.filter((w) => w && (w.role || "implementor") !== "validator");
+    const validators = list.filter((w) => w && (w.role || "implementor") === "validator"
+      && w.kind !== "integration" && !shouldHideValidator(w, hideFailed));
+    const integrations = list.filter((w) => shouldShowIntegrationValidator(w, hideFailed));
+    const assigned = new Set(implementors.map((w) => w.id));
+    const lanes = implementors.map((worker) => {
+      const grouped = validators.filter((v) => v.validates === worker.id);
+      grouped.forEach((v) => assigned.add(v.id));
+      return { worker, validators: grouped, rowCount: Math.max(1, grouped.length) };
+    });
+    const orphans = validators.filter((v) => !assigned.has(v.id));
+    let row = 0;
+    lanes.forEach((lane, index) => { lane.startRow = row; row += lane.rowCount; if (index < lanes.length - 1) row++; });
+    const orphanStartRow = orphans.length ? row + (lanes.length ? 1 : 0) : null;
+    if (orphans.length) row = orphanStartRow + orphans.length;
+    const integrationStartRow = integrations.length ? row + (row ? 1 : 0) : null;
+    if (integrations.length) row = integrationStartRow + integrations.length;
+    return { lanes, orphans, orphanStartRow, integrations, integrationStartRow, totalRows: row };
+  }
+
   function previewSelectionKey(workerId) {
     return "preview:" + String(workerId);
   }
@@ -477,6 +499,7 @@
     isFailedValidator,
     shouldHideValidator,
     shouldShowIntegrationValidator,
+    buildGraphLanes,
     selectEvidenceAttempt,
     clampEvidenceStep,
     renderEvidenceFromState: renderEvidence,
