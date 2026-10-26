@@ -30,7 +30,7 @@
     const pages = Math.max(1, Math.ceil(r.total / r.pageSize));
     return "page " + r.page + " of " + pages + " (" + r.total + " total)";
   }
-  function shortCommit(c) { return c ? String(c).slice(0, 8) : "-"; }
+  const shortCommit = (c) => (c ? String(c).slice(0, 8) : "-");
   function mergeCheckLabel(m) {
     if (!m || !m.checkedAt) return "never checked";
     if (m.verified) return "verified";
@@ -69,11 +69,8 @@
       checkedAt: e.checkedAt || "-",
     };
   }
-  function shouldRefetch(shownRevision, eventRevision) {
-    return Number.isFinite(eventRevision) && (!Number.isFinite(shownRevision) || eventRevision > shownRevision);
-  }
+  const shouldRefetch = (shown, ev) => Number.isFinite(ev) && (!Number.isFinite(shown) || ev > shown);
 
-  // Connection state machine: live / reconnecting / offline, with polling fallback.
   function createConnection() {
     const s = { label: "offline", errors: 0, polling: false };
     return {
@@ -89,7 +86,6 @@
     };
   }
 
-  // Dashboard visibility: remembers what to restore.
   function createToggle(hideLines, showLines, onOpen, onClose) {
     const t = { open: false };
     return {
@@ -131,7 +127,6 @@
     sel.addEventListener("change", () => { st.filter = sel.value; st.page = 1; load(); });
     const search = el("input");
     search.type = "search";
-    search.placeholder = "Search claims";
     search.setAttribute("aria-label", "Search claims");
     let deb = null;
     search.addEventListener("input", () => {

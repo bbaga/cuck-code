@@ -182,8 +182,6 @@
   .wcfg { font-size: .62rem; color: #6c7a8c; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; }
   #registry { flex: 1; padding: 24px; min-width: 0; }
-  #registry[hidden] { display: none; }
-  #registryBtn[aria-pressed="true"] { background: #2a3b55; }
   .regSummary, .regConn { font-size: .8rem; color: #8fa3bd; }
   .regControls, .regPager, .regTabs { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
   .regTableWrap { overflow-x: auto; }
@@ -198,7 +196,6 @@
     body { flex-direction: column; }
     #sidebar { width: auto; box-sizing: border-box; border-right: 0; border-bottom: 1px solid #262b33; }
     #registry { padding: 12px; }
-    .regControls input, .regControls select { max-width: 100%; }
     .phaseRow { grid-template-columns: 1fr 1fr; }
     .phaseRow .phaseName { grid-column: 1 / -1; }
     .authHint { grid-column: 1 / -1; }

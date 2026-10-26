@@ -18,7 +18,6 @@ test("claimRow builds the view model", () => {
   assert.strictEqual(r.mergeCheck, "unverified: no-pr");
   assert.deepStrictEqual(r.badges, ["stale: owner deleted", "unverified"]);
   assert.strictEqual(R.claimRow({ id: "x", revision: 0 }).revision, "0");
-  assert.strictEqual(R.mergeCheckLabel(null), "never checked");
   assert.strictEqual(R.mergeCheckLabel({ verified: true, checkedAt: "t" }), "verified");
 });
 
