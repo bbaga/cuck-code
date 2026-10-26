@@ -90,7 +90,7 @@
     const fetchFn = opts.fetch, lineId = opts.lineId;
     const enc = encodeURIComponent;
     const base = "/api/registry/lines/" + enc(lineId);
-    const st = { claims: [], incoming: [], outgoing: [], lines: [], repos: [], targetClaims: [], editing: null, fulfilling: null };
+    const st = { claims: [], incoming: [], outgoing: [], lines: [], repos: [], targetClaims: [], editing: null, fulfilling: null, failed: {} };
     const claimKey = createKeeper(opts.newId), reqKey = createKeeper(opts.newId);
     const el = (tag, text, cls) => { const n = doc.createElement(tag); if (text != null) n.textContent = text; if (cls) n.className = cls; return n; };
     const msg = () => { const n = el("div", "", "workMsg"); n.setAttribute("role", "alert"); return n; };
@@ -123,7 +123,15 @@
         return { ok: false };
       } catch (e) { notice.textContent = "Network error: " + e.message; return { ok: false }; }
     }
-    async function read(url) { try { const r = await fetchFn(url); if (!r.ok) throw new Error(String(r.status)); return await r.json(); } catch (e) { notice.textContent = "Load failed: " + e.message; return null; } }
+    async function read(url) {
+      try {
+        const r = await fetchFn(url);
+        let d = null;
+        try { d = await r.json(); } catch { /* no body */ }
+        if (!r.ok) { const m = mapError(r.status, d); notice.textContent = d && d.code && d.error ? d.code + ": " + d.error : m.message; return null; }
+        return d;
+      } catch (e) { notice.textContent = "Load failed: " + e.message; return null; }
+    }
 
     function claimRow(c) {
       const li = el("li", [c.title, c.status, "rev " + c.revision, c.branch, String(c.commit || "").slice(0, 8)].join(" · "));
@@ -137,7 +145,7 @@
         li.append(" ", by);
       }
       li.append(out);
-      if (st.editing === c.id) li.append(editForm(c, out));
+      if (st.editing === c.id && acts.includes("edit")) li.append(editForm(c, out));
       return li;
     }
     function editForm(c, out) {
@@ -185,14 +193,15 @@
       }
       return li;
     }
-    function list(box, items, make, empty) {
+    function list(box, items, make, empty, failed) {
+      if (failed) return box.replaceChildren(el("p", failed));
       if (!items.length) return box.replaceChildren(el("p", empty));
       const ul = el("ul"); ul.append(...items.map(make)); box.replaceChildren(ul);
     }
-    const renderClaims = () => list(claimsBox, st.claims, claimRow, "No claims yet.");
+    const renderClaims = () => list(claimsBox, st.claims, claimRow, "No claims yet.", st.failed.claims && "Could not load claims");
     const renderRequests = () => {
-      list(inBox, st.incoming, (r) => requestRow(r, true), "No incoming requests.");
-      list(outBox, st.outgoing, (r) => requestRow(r, false), "No outgoing requests.");
+      list(inBox, st.incoming, (r) => requestRow(r, true), "No incoming requests.", st.failed.requests && "Could not load requests");
+      list(outBox, st.outgoing, (r) => requestRow(r, false), "No outgoing requests.", st.failed.requests && "Could not load requests");
     };
 
     function buildPublish() {
@@ -240,6 +249,7 @@
       const [cl, inc, ls, rp] = await Promise.all([
         read("/api/registry/claims?" + q + "&status=all&pageSize=100"), read("/api/registry/requests?" + q + "&pageSize=100"),
         built ? null : read("/api/lines"), built ? null : read("/api/protocol/lines/" + enc(lineId) + "/repos")]);
+      st.editing = null; st.fulfilling = null; st.failed = { claims: !cl, requests: !inc };
       if (cl) st.claims = (cl.items || []).filter((c) => c.ownerLineId === lineId || !c.ownerLineId);
       if (inc) {
         const all = inc.items || [];

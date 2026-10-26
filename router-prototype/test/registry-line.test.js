@@ -85,7 +85,7 @@ function setup(overrides = {}) {
   const calls = [];
   const respond = (u, o) => {
     if (overrides.write && o && o.method) return overrides.write(u, o);
-    if (u.startsWith("/api/registry/claims")) return json(200, { items: [claim] });
+    if (u.startsWith("/api/registry/claims")) return json(200, { items: [overrides.claim || claim] });
     if (u.startsWith("/api/registry/requests")) return json(200, { items: [
       { id: "q1", subject: "Need X", sourceLineId: "o", targetLineId: "me", state: "open", revision: 1 },
       { id: "q2", subject: "Ask Y", sourceLineId: "me", targetLineId: "o", state: "open", revision: 2 }] });
@@ -162,4 +162,31 @@ test("plain-script vm load (no require/module) and mount", async () => {
   const v = ctx.registryLine.mount(fakeDoc(), c, { fetch: async () => ({ ok: true, json: async () => ({ items: [], lines: [] }) }), window: {}, lineId: "me" });
   await v.start();
   assert.strictEqual(find(c, (x) => x.textContent === "No claims yet.") !== null, true);
+});
+
+test("stale edit form is dropped after a reload, supersede and load failure", async () => {
+  const o = {};
+  const { c, v } = setup({ get claim() { return o.claim; }, write: (u) => (u.includes("/supersede") && o.claim ? json(200, {}) : json(409, { error: "s", code: "STALE_REVISION", currentRevision: 9 })) });
+  await v.start();
+  const btn = (t) => find(c, (x) => x.tag === "button" && x.textContent === t);
+  const forms = () => { let n = 0; walk(c.children[2], (x) => { if (x.tag === "form") n++; }); return n; };
+  btn("Edit").listeners.click();
+  assert.strictEqual(forms(), 1);
+  btn("Supersede").listeners.click(); await flush(); await flush();
+  assert.strictEqual(forms(), 0, "409 reload closes the edit form");
+  btn("Edit").listeners.click();
+  o.claim = { ...claim, status: "superseded" };
+  btn("Supersede").listeners.click(); await flush(); await flush();
+  assert.strictEqual(forms(), 0, "superseded row has no edit form");
+  assert.strictEqual(btn("Edit"), null);
+});
+
+test("503 on load shows code and message, not the empty state", async () => {
+  const c = fakeDoc().createElement("div");
+  const v = L.mount(fakeDoc(), c, { fetch: async () => json(503, { error: "down", code: "REGISTRY_UNAVAILABLE" }), window: {}, lineId: "me" });
+  await v.start();
+  assert.strictEqual(c.children[0].textContent, "REGISTRY_UNAVAILABLE: down");
+  assert.ok(find(c, (x) => x.textContent === "Could not load claims"));
+  assert.ok(find(c, (x) => x.textContent === "Could not load requests"));
+  assert.ok(!find(c, (x) => x.textContent === "No claims yet."));
 });
