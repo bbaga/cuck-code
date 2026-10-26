@@ -4,7 +4,7 @@
   if (typeof module === "object" && module.exports) module.exports = factory();
   else root.registryUI = factory();
 })(typeof self !== "undefined" ? self : this, function () {
-  const STATUSES = ["planned", "active", "available", "stale", "unverified", "merged"];
+  const STATUSES = ["planned", "active", "available", "superseded", "stale", "merged"];
   const FILTERS = [{ value: "current", label: "current" }, { value: "all", label: "all" }]
     .concat(STATUSES.map((s) => ({ value: s, label: s })));
   const POLL_MS = 15000;
@@ -180,7 +180,9 @@
         body.append(tr);
       }
       table.append(body);
-      tableWrap.replaceChildren(items.length || !st.result ? table : el("p", claims ? "No claims match" : "No archived items"));
+      const empty = st.failed ? "Could not load " + st.kind
+        : st.result && !items.length ? (claims ? "No claims match" : "No archived items") : "";
+      tableWrap.replaceChildren(empty ? el("p", empty) : table);
       pageLabel.textContent = pagingLabel(st.result);
       prev.disabled = !st.result || st.page <= 1;
       next.disabled = !st.result || !st.result.hasMore;
@@ -198,9 +200,9 @@
       let body = null;
       try { body = await res.json(); } catch (_) { body = null; }
       if (!res.ok) {
-        const e = body && body.error;
-        throw new Error((e && (e.code || e.message || e)) ? String(e.code ? e.code + ": " + (e.message || "") : e.message || e)
-          : "HTTP " + res.status);
+        const msg = body && typeof body.error === "string" ? body.error : "";
+        throw new Error(body && body.code ? body.code + (msg ? ": " + msg : "")
+          : msg || "HTTP " + res.status);
       }
       return body;
     }
@@ -208,11 +210,13 @@
       try {
         const [list, sum] = await Promise.all([
           getJson(listUrl(st.kind, st)), getJson("/api/registry/summary")]);
-        st.result = list; st.summary = sum; st.error = "";
+        st.result = list; st.summary = sum; st.error = ""; st.failed = false;
         st.revision = sum.snapshotRevision;
         st.refreshed = new Date().toLocaleTimeString();
       } catch (err) {
         st.error = "Registry error: " + err.message;
+        st.failed = true;
+        st.result = null;
       }
       render();
     }

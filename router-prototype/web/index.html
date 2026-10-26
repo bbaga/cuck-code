@@ -195,6 +195,10 @@
   #registry input, #registry select { padding: 6px; background: #0d1014; color: inherit;
     border: 1px solid #2c333d; border-radius: 4px; }
   @media (max-width: 640px) {
+    body { flex-direction: column; }
+    #sidebar { width: auto; box-sizing: border-box; border-right: 0; border-bottom: 1px solid #262b33; }
+    #registry { padding: 12px; }
+    .regControls input, .regControls select { max-width: 100%; }
     .phaseRow { grid-template-columns: 1fr 1fr; }
     .phaseRow .phaseName { grid-column: 1 / -1; }
     .authHint { grid-column: 1 / -1; }

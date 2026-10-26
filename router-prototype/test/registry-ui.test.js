@@ -39,6 +39,7 @@ test("status filter maps to query", () => {
   assert.ok(u("stale").includes("status=stale"));
   assert.ok(!u("bogus").includes("status="));
   assert.strictEqual(R.FILTERS.length, 8);
+  assert.ok(!R.STATUSES.includes("unverified") && R.STATUSES.includes("superseded"));
   assert.ok(R.listUrl("archive", { filter: "stale", page: 1 }).startsWith("/api/registry/archive?page=1"));
 });
 
@@ -98,7 +99,7 @@ test("mount loads data, shows errors, and handles stream events", async () => {
   let fail = false;
   const fetchFn = async (u) => {
     calls.push(u);
-    if (fail) return { ok: false, status: 503, json: async () => ({ error: { code: "REGISTRY_UNAVAILABLE", message: "down" } }) };
+    if (fail) return { ok: false, status: 503, json: async () => ({ error: "Work registry is corrupt", code: "REGISTRY_UNAVAILABLE", file: "f" }) };
     return { ok: true, json: async () => u.includes("summary")
       ? { claimsByStatus: { active: 2 }, archiveCount: 1, snapshotRevision: 5 }
       : { items: [claim], page: 1, pageSize: 25, total: 1, hasMore: false, snapshotRevision: 5 } };
@@ -127,7 +128,26 @@ test("mount loads data, shows errors, and handles stream events", async () => {
   timers[0]();
   await flush();
   assert.ok(calls.length > n);
-  assert.match(errLine.textContent, /REGISTRY_UNAVAILABLE/);
+  assert.match(errLine.textContent, /REGISTRY_UNAVAILABLE: Work registry is corrupt/);
+  assert.strictEqual(v.state.result, null);
+  assert.strictEqual(container.children[5].children[0].textContent, "Could not load claims");
+  fail = false;
+  await v.load();
+  assert.strictEqual(container.children[5].children[0].tag, "table");
   v.stop();
   assert.ok(es.closed);
+});
+
+test("mount shows 400 and non-JSON errors", async () => {
+  const doc = fakeDoc();
+  let res;
+  const win = { setTimeout() {}, clearTimeout() {}, setInterval: () => 1, clearInterval() {} };
+  const container = doc.mk("section");
+  const v = R.mount(doc, container, { fetch: async () => res, window: win });
+  res = { ok: false, status: 400, json: async () => ({ error: "Unknown status", code: "BAD_REQUEST" }) };
+  await v.load();
+  assert.match(container.children[2].textContent, /BAD_REQUEST: Unknown status/);
+  res = { ok: false, status: 502, json: async () => { throw new Error("x"); } };
+  await v.load();
+  assert.match(container.children[2].textContent, /HTTP 502/);
 });
