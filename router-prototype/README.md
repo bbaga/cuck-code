@@ -76,6 +76,10 @@ report line to be exactly `VERDICT: PASS` or `VERDICT: FAIL`; a missing or
 incomplete verdict stays unset and produces a diagnostic. Report bodies are
 sent in full, without adding punctuation to the report text.
 
+## Graph lanes
+
+The graph places each standard validator in the lane of the implementor it validates. The first validator shares the implementor row, and later validators use rows below it. Each implementor lane has at least one row. Unmatched validators use an ordered fallback section. Integration validators use a separate final section, with eligible Preview nodes on their integration row. The failed-validator filter runs before row sizing, so hidden validators do not leave empty rows. Graph selection keeps the fixed viewport position.
+
 ## Production lines
 
 Clicking "Create new line" adds a standing-by "Draft line" (work directory under
