@@ -29,6 +29,7 @@ const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlanner
 const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence } = require("./evidence");
 const { createDashboardLive } = require("./dashboard-live");
+const { readClaudeConfig } = require("./claude-config");
 
 const PORT = Number(process.env.PORT || 7788);
 const HTTPS_PORT = Number(process.env.HTTPS_PORT || 0);
@@ -875,42 +876,6 @@ function runProbe(cmd, timeoutMs = 2000) {
     child.on("error", () => finish(null));
     child.on("close", (code) => finish({ code, stdout }));
   });
-}
-
-function readJsonFile(file) {
-  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
-}
-
-// Read only the Claude model metadata needed by the picker. Claude currently
-// stores its catalog as UUID-named files under cache/model-catalog; do not
-// recurse through the home directory or expose any other settings/cache data.
-function readClaudeModelCatalog(home) {
-  const dir = path.join(home, ".claude", "cache", "model-catalog");
-  let files;
-  try { files = fs.readdirSync(dir).filter((name) => /^[a-z0-9-]+\\.json$/i.test(name)); }
-  catch { return []; }
-  const models = [];
-  for (const name of files.sort()) {
-    const catalog = readJsonFile(path.join(dir, name));
-    const rows = catalog && catalog.catalog && catalog.catalog.config
-      && catalog.catalog.config.models;
-    if (!Array.isArray(rows)) continue;
-    for (const row of rows) {
-      if (!row || typeof row !== "object") continue;
-      models.push({ id: row.id, display_name: row.name || row.short_name });
-    }
-  }
-  return models;
-}
-
-function readClaudeConfig() {
-  const home = os.homedir();
-  return {
-    settings: readJsonFile(path.join(home, ".claude", "settings.json")),
-    localSettings: readJsonFile(path.join(home, ".claude", "settings.local.json")),
-    gatewayCache: readJsonFile(path.join(home, ".claude", "cache", "gateway-models.json")),
-    modelCatalog: readClaudeModelCatalog(home),
-  };
 }
 
 // Probe a single harness and report whether it is installed. An unknown

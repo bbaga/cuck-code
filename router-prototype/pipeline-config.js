@@ -308,12 +308,11 @@ function claudeModelChoices(config) {
   const picker = claudePickerOptions(c.settings);
   const local = claudePickerOptions(c.localSettings);
   const gateway = claudeGatewayModels(c.gatewayCache);
-  const catalog = claudeGatewayModels({ models: c.modelCatalog });
   const pickerLabels = new Set([...picker, ...local].map((row) => row.label));
   const seen = new Set();
   const choices = [];
-  for (const row of [...rows, ...picker, ...local, ...gateway, ...catalog]) {
-    if ((gateway.includes(row) || catalog.includes(row)) && pickerLabels.has(row.label)) continue;
+  for (const row of [...rows, ...picker, ...local, ...gateway]) {
+    if (gateway.includes(row) && pickerLabels.has(row.label)) continue;
     if (seen.has(row.value)) continue;
     seen.add(row.value);
     choices.push({ value: row.value, label: row.label });
