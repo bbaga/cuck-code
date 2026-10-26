@@ -440,8 +440,20 @@ window.addEventListener("DOMContentLoaded", () => {
 
     vals.forEach((v) => {
       const y = validatorY.get(v.id);
-      const source = lanes.find((lane) => lane.worker.id === v.validates);
-      edge(source ? implX + nodeW : plannerX + plannerW, source ? y + 18 : plannerY + 18, valX, y + 18);
+      const sourceIndex = lanes.findIndex((lane) => lane.worker.id === v.validates);
+      const source = sourceIndex >= 0 ? lanes[sourceIndex] : null;
+      if (source && source.validators[0] === v) {
+        edge(implX + nodeW, y + 18, valX, y + 18);
+      } else if (source) {
+        const startY = implY(sourceIndex) + 18;
+        const gutterX = implX + nodeW + 22;
+        const path = document.createElementNS(SVGNS, "path");
+        path.setAttribute("d", `M ${implX + nodeW} ${startY} H ${gutterX} V ${y + 18} H ${valX}`);
+        path.setAttribute("class", "edge");
+        svg.appendChild(path);
+      } else {
+        edge(plannerX + plannerW, plannerY + 18, valX, y + 18);
+      }
       inner.appendChild(workerNode(st, v, valX, y, nodeW));
     });
 

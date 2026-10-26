@@ -694,3 +694,36 @@ test("index.html binds every pipelineUI helper its script uses", () => {
   );
   assert.deepEqual(unbound, []);
 });
+
+test("buildGraphLanes groups in implementor order and allocates validator rows", () => {
+  assert.deepEqual(pipelineUiModule.buildGraphLanes([]).totalRows, 0);
+  const records = [
+    {id:"v2",role:"validator",validates:"a"}, {id:"b"}, {id:"vB",role:"validator",validates:"b"},
+    {id:"a"}, {id:"v1",role:"validator",validates:"a"}, {id:"orphan",role:"validator",validates:"missing"},
+  ];
+  const before = JSON.stringify(records);
+  const lanes = pipelineUiModule.buildGraphLanes(records);
+  assert.deepEqual(lanes.lanes.map(x=>x.worker.id), ["b","a"]);
+  assert.deepEqual(lanes.lanes.map(x=>x.validators.map(v=>v.id)), [["vB"],["v2","v1"]]);
+  assert.deepEqual(lanes.lanes.map(x=>x.rowCount), [1,2]);
+  assert.deepEqual(lanes.lanes.map(x=>x.startRow), [0,2]);
+  assert.deepEqual(lanes.orphans.map(v=>v.id), ["orphan"]);
+  assert.equal(lanes.totalRows, 6);
+  assert.equal(JSON.stringify(records), before);
+});
+
+test("buildGraphLanes keeps unvalidated and integration workers separate and filters failures before rows", () => {
+  const records = [
+    {id:"impl"}, {id:"bad",role:"validator",validates:"impl",status:"failed"},
+    {id:"unknown",role:"validator",validates:"absent"},
+    {id:"int",role:"validator",kind:"integration",status:"running"},
+  ];
+  const hidden = pipelineUiModule.buildGraphLanes(records, true);
+  assert.deepEqual(hidden.lanes.map(l=>[l.startRow,l.rowCount]), [[0,1]]);
+  assert.deepEqual(hidden.orphans.map(v=>v.id), ["unknown"]);
+  assert.deepEqual(hidden.integrations.map(v=>v.id), ["int"]);
+  assert.equal(hidden.totalRows, 5);
+  const shown = pipelineUiModule.buildGraphLanes(records, false);
+  assert.deepEqual(shown.lanes[0].validators.map(v=>v.id), ["bad"]);
+  assert.equal(shown.lanes[0].rowCount, 1);
+});
