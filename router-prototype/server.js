@@ -1,4 +1,5 @@
 const http = require("node:http");
+const http2 = require("node:http2");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -26,8 +27,12 @@ const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlanner
   writeFileDurable, enqueuePlannerRequest, submitPrompt } = require("./planner-request");
 const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence } = require("./evidence");
+const { createDashboardLive } = require("./dashboard-live");
 
 const PORT = Number(process.env.PORT || 7788);
+const HTTPS_PORT = Number(process.env.HTTPS_PORT || 0);
+const TLS_KEY = process.env.TLS_KEY;
+const TLS_CERT = process.env.TLS_CERT;
 const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
 const AUTO_APPROVE = process.env.LINE_AUTO_APPROVE !== "0";
 const INDEX_HTML = path.join(__dirname, "web", "index.html");
@@ -767,7 +772,24 @@ function sseSend(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+const dashboardLive = createDashboardLive({
+  log: (event, fields) => slog("info", event, fields),
+});
+
+function dashboardStateForLine(line) {
+  return { id: line.id, name: line.name, status: line.status,
+    sessionId: line.sessionId, started: line.started,
+    pipeline: resolvePipeline(line), transcript: line.transcript.slice(-50),
+    planApproved: line.planApproved,
+    workers: [...line.workers.values()].map((w) => ({
+      id: w.id, name: w.name, ...completionFields(w), branch: w.branch, role: w.role,
+      validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
+      ...changesetFields(w), lastError: w.lastError || null,
+    })) };
+}
+
 function broadcast(line, event, data) {
+  dashboardLive.publish(event === "error" ? "line_error" : event, line.id, data);
   for (const res of line.clients) {
     try { sseSend(res, event, data); } catch {}
   }
@@ -1436,7 +1458,7 @@ registryStore.load().then(() => {
   }
 });
 
-const server = http.createServer((req, res) => {
+const requestHandler = (req, res) => {
   const url = new URL(req.url, "http://localhost");
   const parts = url.pathname.split("/").filter(Boolean);
   const t0 = Date.now();
@@ -1516,6 +1538,8 @@ const server = http.createServer((req, res) => {
         queue: [], clients: new Set(), transcript: [] };
       lines.set(id, line);
       saveLine(line);
+      dashboardLive.publish("line_created", id, lineSummary(line));
+      dashboardLive.publish("state", id, dashboardStateForLine(line));
       slog("info", "line.created", { lineId: id, name, repoUrl });
       json(res, 201, { id, name });
     });
@@ -1607,6 +1631,7 @@ const server = http.createServer((req, res) => {
     for (const res2 of line.clients) { try { res2.end(); } catch {} }
     line.clients.clear();
     lines.delete(line.id);
+    dashboardLive.publish("line_deleted", line.id, { id: line.id });
     if (!registryUnavailable) {
       registryRoutes.onLineDeleted(line.id).catch((err) => {
         slog("error", "registry.line_deleted.failed", { lineId: line.id, error: String(err && err.message) });
@@ -2160,6 +2185,17 @@ When done, reply with a report: what you changed, files changed, how you verifie
     catch { return json(res, 200, { eligible: false, reason: "Preview instructions are unavailable." }); }
   }
 
+  if (req.method === "GET" && url.pathname === "/api/events") {
+    dashboardLive.attach(req, res, (send) => {
+      const currentLines = [...lines.values()];
+      send("snapshot_begin", null, { lines: currentLines.map(lineSummary) });
+      for (const line of currentLines) send("state", line.id, dashboardStateForLine(line));
+      send("snapshot_end", null, {});
+    });
+    return;
+  }
+
+  // Deprecated compatibility endpoint. The dashboard uses /api/events instead.
   if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "events") {
     const line = lines.get(parts[2]);
     if (!line) return json(res, 404, { error: "no such line" });
@@ -2167,17 +2203,7 @@ When done, reply with a report: what you changed, files changed, how you verifie
       "Connection": "keep-alive", "X-Accel-Buffering": "no" });
     line.clients.add(res);
     slog("info", "sse.open", { lineId: line.id, clients: line.clients.size });
-    sseSend(res, "state", { id: line.id, name: line.name, status: line.status,
-      sessionId: line.sessionId, started: line.started,
-      pipeline: resolvePipeline(line),
-      transcript: line.transcript.slice(-50),
-      planApproved: line.planApproved,
-      workers: [...line.workers.values()].map((w) => ({
-        id: w.id, name: w.name, ...completionFields(w), branch: w.branch, role: w.role,
-        validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
-        ...changesetFields(w),
-        lastError: w.lastError || null,
-      })) });
+    sseSend(res, "state", dashboardStateForLine(line));
     req.on("close", () => {
       line.clients.delete(res);
       slog("info", "sse.close", { lineId: line.id, clients: line.clients.size });
@@ -2209,7 +2235,10 @@ When done, reply with a report: what you changed, files changed, how you verifie
   if (registryRoutes.handle(req, res, url, parts, json)) return;
 
   json(res, 404, { error: "not found" });
-});
+};
+
+const server = http.createServer(requestHandler);
+let secureServer = null;
 
 setInterval(() => {
   for (const line of lines.values()) {
@@ -2221,12 +2250,17 @@ setInterval(() => {
 
 function shutdown() {
   slog("info", "server.shutdown", { lines: lines.size });
+  dashboardLive.close();
   for (const line of lines.values()) {
     if (line.child) line.child.kill("SIGTERM");
     for (const w of line.workers.values()) if (w.child) w.child.kill("SIGTERM");
     for (const res of line.clients) res.end();
   }
-  server.close(() => process.exit(0));
+  const listeners = [server, ...(secureServer ? [secureServer] : [])];
+  let remaining = listeners.length;
+  for (const listener of listeners) listener.close(() => {
+    if (--remaining === 0) process.exit(0);
+  });
   setTimeout(() => process.exit(0), 1000).unref();
 }
 process.on("SIGINT", shutdown);
@@ -2353,5 +2387,19 @@ loadLines();
 })();
 slog("info", "server.boot", { lines: lines.size,
   workers: [...lines.values()].reduce((n, l) => n + l.workers.size, 0),
-  port: PORT, logMaxBytes: LOG_MAX_BYTES, logKeep: LOG_KEEP });
+  port: PORT, httpsPort: HTTPS_PORT || null, logMaxBytes: LOG_MAX_BYTES, logKeep: LOG_KEEP });
 server.listen(PORT, () => slog("info", "server.listen", { port: PORT }));
+
+if (HTTPS_PORT) {
+  if (!TLS_KEY || !TLS_CERT) {
+    throw new Error("HTTPS_PORT requires TLS_KEY and TLS_CERT paths");
+  }
+  secureServer = http2.createSecureServer({
+    key: fs.readFileSync(path.resolve(TLS_KEY)),
+    cert: fs.readFileSync(path.resolve(TLS_CERT)),
+    allowHTTP1: true,
+  }, requestHandler);
+  secureServer.listen(HTTPS_PORT, () => {
+    slog("info", "server.https_listen", { port: HTTPS_PORT, protocol: "h2" });
+  });
+}

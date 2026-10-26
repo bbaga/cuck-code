@@ -748,88 +748,75 @@ window.addEventListener("DOMContentLoaded", () => {
     };
     refreshPreview();
 
-    const es = new EventSource("/api/lines/" + st.id + "/events");
-    st.es = es;
-    es.addEventListener("state", (e) => {
-      const state = JSON.parse(e.data);
-      st.plannerTranscript = state.transcript;
-      st.approved = !!state.planApproved;
-      if (state.started === true) st.started = true;
-      updateControls(st);
-      st.workers = new Map(state.workers.map((w) => [w.id, w]));
-      if (st.selected === null) {
-        try {
-          const savedPreview = localStorage.getItem("preview-selection:" + st.id);
-          if (previewSelectionExists(state.workers, savedPreview)) st.selected = savedPreview;
-        } catch {}
-      }
-      for (const w of state.workers) {
-        if (!st.workerTranscripts.has(w.id)) st.workerTranscripts.set(w.id, []);
-      }
-      if (typeof st.selected === "string" && st.selected.startsWith("preview:")) {
-        if (!previewSelectionExists(state.workers, st.selected)) st.selected = null;
-        else {
-          const selectedPreviewId = st.selected.slice("preview:".length);
-          const selectedWorker = state.workers.find((worker) => String(worker.id) === selectedPreviewId);
-          const currentData = selectedWorker && mapPreviewPayload(st.previewPayload, selectedWorker);
-          if (currentData) renderPreviewPanel(st, selectedWorker, currentData);
+    st.handlers = {
+      state(state) {
+        st.plannerTranscript = state.transcript || [];
+        st.approved = !!state.planApproved;
+        if (state.started === true) st.started = true;
+        updateControls(st);
+        st.workers = new Map((state.workers || []).map((w) => [w.id, w]));
+        if (st.selected === null) {
+          try {
+            const savedPreview = localStorage.getItem("preview-selection:" + st.id);
+            if (previewSelectionExists(state.workers || [], savedPreview)) st.selected = savedPreview;
+          } catch {}
         }
-      } else if (st.selected !== null && !st.workers.has(st.selected)) st.selected = null;
-      setStatus(state.status);
-      refreshPreview();
-      renderTranscript(st);
-    });
-    es.addEventListener("status", (e) => setStatus(JSON.parse(e.data).status));
-    es.addEventListener("entry", (e) => {
-      const entry = JSON.parse(e.data);
-      st.plannerTranscript.push(entry);
-      if (st.selected === null) appendEntry(st, entryEl(entry));
-    });
-    es.addEventListener("worker_entry", (e) => {
-      const { workerId, entry } = JSON.parse(e.data);
-      if (!st.workerTranscripts.has(workerId)) {
-        st.workerTranscripts.set(workerId, []);
-        if (!st.workers.has(workerId)) {
-          st.workers.set(workerId, { id: workerId, name: workerId, status: "running", branch: "",
-            role: "implementor", kind: "standard" });
+        for (const w of state.workers || []) {
+          if (!st.workerTranscripts.has(w.id)) st.workerTranscripts.set(w.id, []);
         }
-      }
-      st.workerTranscripts.get(workerId).push(entry);
-      if (st.selected === workerId) appendEntry(st, entryEl(entry));
-    });
-    es.addEventListener("worker_spawned", (e) => {
-      const { worker } = JSON.parse(e.data);
-      st.workers.set(worker.id, worker);
-      if (!st.workerTranscripts.has(worker.id)) st.workerTranscripts.set(worker.id, []);
-      renderGraph(st);
-      updateListEntry(st);
-      refreshPreview();
-    });
-    es.addEventListener("worker_status", (e) => {
-      const { workerId, status, verdict, error } = JSON.parse(e.data);
-      const w = st.workers.get(workerId);
-      if (w) {
-        w.status = status;
-        if (verdict) w.verdict = verdict;
-        w.lastError = error || null;
-        if (error) showError("Worker '" + w.name + "' failed. " + error);
-        if (st.selected === workerId) renderTranscript(st);
-      }
-      renderGraph(st);
-      updateListEntry(st);
-      refreshPreview();
-    });
-    es.addEventListener("worker_removed", (e) => {
-      const { workerIds } = JSON.parse(e.data);
-      for (const id of workerIds || []) {
-        st.workers.delete(id);
-        st.workerTranscripts.delete(id);
-      }
-      if (st.selected !== null && !st.workers.has(st.selected)) selectNode(st, null);
-      renderGraph(st);
-      updateListEntry(st);
-    });
-    es.addEventListener("error", (e) => { if (e.data) showError(JSON.parse(e.data).message); });
+        if (typeof st.selected === "string" && st.selected.startsWith("preview:")) {
+          if (!previewSelectionExists(state.workers || [], st.selected)) st.selected = null;
+          else {
+            const selectedPreviewId = st.selected.slice("preview:".length);
+            const selectedWorker = (state.workers || []).find((worker) => String(worker.id) === selectedPreviewId);
+            const currentData = selectedWorker && mapPreviewPayload(st.previewPayload, selectedWorker);
+            if (currentData) renderPreviewPanel(st, selectedWorker, currentData);
+          }
+        } else if (st.selected !== null && !st.workers.has(st.selected)) st.selected = null;
+        setStatus(state.status);
+        refreshPreview();
+        renderTranscript(st);
+      },
+      status(data) { setStatus(data.status); },
+      entry(entry) {
+        st.plannerTranscript.push(entry);
+        if (st.selected === null) appendEntry(st, entryEl(entry));
+      },
+      worker_entry({ workerId, entry }) {
+        if (!st.workerTranscripts.has(workerId)) {
+          st.workerTranscripts.set(workerId, []);
+          if (!st.workers.has(workerId)) st.workers.set(workerId, { id: workerId, name: workerId,
+            status: "running", branch: "", role: "implementor", kind: "standard" });
+        }
+        st.workerTranscripts.get(workerId).push(entry);
+        if (st.selected === workerId) appendEntry(st, entryEl(entry));
+      },
+      worker_spawned({ worker }) {
+        st.workers.set(worker.id, worker);
+        if (!st.workerTranscripts.has(worker.id)) st.workerTranscripts.set(worker.id, []);
+        renderGraph(st); updateListEntry(st); refreshPreview();
+      },
+      worker_status({ workerId, status, verdict, error }) {
+        const w = st.workers.get(workerId);
+        if (w) {
+          w.status = status;
+          if (verdict) w.verdict = verdict;
+          w.lastError = error || null;
+          if (error) showError("Worker '" + w.name + "' failed. " + error);
+          if (st.selected === workerId) renderTranscript(st);
+        }
+        renderGraph(st); updateListEntry(st); refreshPreview();
+      },
+      worker_removed({ workerIds }) {
+        for (const id of workerIds || []) {
+          st.workers.delete(id);
+          st.workerTranscripts.delete(id);
+        }
+        if (st.selected !== null && !st.workers.has(st.selected)) selectNode(st, null);
+        renderGraph(st); updateListEntry(st);
+      },
+      line_error({ message }) { if (message) showError(message); },
+    };
 
     const post = async () => {
       const text = input.value.trim();
@@ -876,7 +863,6 @@ window.addEventListener("DOMContentLoaded", () => {
   function removeCard(id) {
     const st = cards.get(id);
     if (st) {
-      if (st.es) st.es.close();
       st.transcriptResizeObserver.disconnect();
       st.card.remove();
       st.entry.remove();
@@ -1406,8 +1392,33 @@ window.addEventListener("DOMContentLoaded", () => {
     if (id) selectLine(id);
   });
 
+  const dashboardStream = new EventSource("/api/events");
+  dashboardStream.addEventListener("dashboard", (e) => {
+    let envelope;
+    try { envelope = JSON.parse(e.data); } catch { return; }
+    if (!envelope || envelope.version !== 1) return;
+    if (envelope.type === "snapshot_begin") {
+      const present = new Set((envelope.data.lines || []).map((line) => line.id));
+      for (const id of [...cards.keys()]) if (!present.has(id)) removeCard(id);
+      for (const line of envelope.data.lines || []) if (!cards.has(line.id)) addCard(line);
+      return;
+    }
+    if (envelope.type === "line_created") {
+      if (!cards.has(envelope.lineId)) addCard(envelope.data);
+      return;
+    }
+    if (envelope.type === "line_deleted") {
+      removeCard(envelope.lineId || envelope.data.id);
+      return;
+    }
+    const st = cards.get(envelope.lineId);
+    const handler = st && st.handlers && st.handlers[envelope.type];
+    if (handler) handler(envelope.data);
+  });
+  dashboardStream.addEventListener("error", () => {
+    // EventSource reconnects automatically; do not present a transport failure as a line error.
+  });
   refresh();
-  setInterval(refresh, 3000);
   setInterval(pollPlans, 3000);
   setInterval(pollInventory, 3000);
   setInterval(pollEvidence, 3000);

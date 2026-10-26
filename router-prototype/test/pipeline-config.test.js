@@ -356,16 +356,19 @@ test("parsePiModelCatalog parses the real pi catalog table with metadata columns
   const out = [
     "provider      model               context  max-out  thinking  images",
     "lmstudio      google/gemma-4-e4b  50K      131.1K   yes       yes   ",
+    "ollama-local  gemma4:e4b          230K     18.2K    no        no    ",
     "openai-codex  gpt-5.6-luna        272K     128K     yes       yes   ",
     "openai-codex  gpt-5.6-sol         272K     128K     yes       yes   ",
   ].join("\n");
   assert.deepStrictEqual(parsePiModelCatalog(out), {
     providers: [
       { value: "lmstudio", label: "lmstudio" },
+      { value: "ollama-local", label: "ollama-local" },
       { value: "openai-codex", label: "openai-codex" },
     ],
     models: [
       { value: "lmstudio/google/gemma-4-e4b", label: "google/gemma-4-e4b" },
+      { value: "ollama-local/gemma4:e4b", label: "gemma4:e4b" },
       { value: "openai-codex/gpt-5.6-luna", label: "gpt-5.6-luna" },
       { value: "openai-codex/gpt-5.6-sol", label: "gpt-5.6-sol" },
     ],

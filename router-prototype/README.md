@@ -12,10 +12,16 @@ every Vibe output entry to the browser over SSE in real time.
 node server.js
 ```
 
-Then open http://localhost:7788. Configuration via env: `PORT` (default 7788),
+Then open http://localhost:7788. The dashboard uses one tagged SSE stream at
+`GET /api/events` per browser tab; the legacy per-line stream endpoint remains
+available for compatibility. Configuration via env: `PORT` (default 7788),
 `LINES_DIR` (default `./lines`), `IMPLEMENTOR_MODEL` (default `glm-5-3-flash`,
 the fast model) and `VALIDATOR_MODEL` (default `glm-5-3`, the full-effort
-model). The router pins each vibe session to its role's model via
+model). For a browser-facing HTTPS/HTTP/2 endpoint, start the router with
+`HTTPS_PORT=7789 TLS_KEY=/path/to/key.pem TLS_CERT=/path/to/cert.pem`; trust
+the certificate's local CA and open `https://localhost:7789`. Node serves this
+TLS listener directly while worker and CLI traffic stays on HTTP port 7788. The
+router pins each vibe session to its role's model via
 `VIBE_ACTIVE_MODEL` in the spawn environment; planner runs inherit the ambient
 config. Requires Node >= 18 and the `vibe` CLI on PATH.
 

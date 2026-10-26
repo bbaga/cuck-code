@@ -134,7 +134,7 @@ function isValidCatalogToken(token) {
 // in the model column (for example "google/gemma-4-e4b").
 function looksLikeModelId(token) {
   return typeof token === "string"
-    && /^[A-Za-z0-9][A-Za-z0-9._@+/-]*$/.test(token)
+    && /^[A-Za-z0-9][A-Za-z0-9._@+/:.-]*$/.test(token)
     && /[0-9._-]/.test(token.slice(1));
 }
 
