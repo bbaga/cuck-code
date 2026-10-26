@@ -188,6 +188,10 @@
   #registry table { border-collapse: collapse; font-size: .78rem; width: 100%; }
   #registry th, #registry td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #262b33; }
   #registry th { color: #8fa3bd; }
+  .regDetails { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 4px 0; font-size: .78rem; }
+  .regDetails dt { color: #8fa3bd; }
+  .regDetails dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .regEvents { font-size: .78rem; }
   .regBadge { background: #4d3a14; color: #ffc46b; border-radius: 3px; padding: 0 4px; }
   .regError { padding: 6px; border-radius: 4px; background: #4d1420; color: #ff8095; font-size: .8rem; }
   #registry input, #registry select { padding: 6px; background: #0d1014; color: inherit; border: 1px solid #2c333d; border-radius: 4px; }
@@ -213,6 +217,7 @@
 </main>
 <section id="registry" hidden aria-label="Registry"></section>
 <script src="pipeline-ui.js"></script>
+<script src="registry-ui-extra.js"></script>
 <script src="registry-ui.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {

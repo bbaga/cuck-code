@@ -2,8 +2,9 @@
 // Loaded in the browser via <script> and in Node tests via require().
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
-  else root.registryUI = factory();
-})(typeof self !== "undefined" ? self : this, function () {
+  else root.registryUI = factory(root);
+})(typeof self !== "undefined" ? self : this, function (root) {
+  const X = typeof require === "function" ? require("./registry-ui-extra.js") : (root && root.registryUIExtra) || null;
   const STATUSES = ["planned", "active", "available", "superseded", "stale", "merged"];
   const FILTERS = [{ value: "current", label: "current" }, { value: "all", label: "all" }]
     .concat(STATUSES.map((s) => ({ value: s, label: s })));
@@ -14,12 +15,14 @@
     if (filter === "current") return "";
     return STATUSES.includes(filter) || filter === "all" ? filter : "";
   }
-  function listUrl(kind, { filter, q, page, pageSize }) {
+  function listUrl(kind, { filter, q, page, pageSize, lineId, repo }) {
     const p = new URLSearchParams();
     if (kind === "claims") {
       const s = statusQuery(filter);
       if (s) p.set("status", s);
       if (q && q.trim()) p.set("q", q.trim());
+      if (lineId) p.set("lineId", lineId);
+      if (repo) p.set("repo", repo);
     }
     p.set("page", String(page || 1));
     p.set("pageSize", String(pageSize || 25));
@@ -100,7 +103,7 @@
     const win = opts.window || {};
     const fetchFn = opts.fetch;
     const st = { kind: "claims", filter: "current", q: "", page: 1, result: null,
-      revision: null, summary: null, error: "", refreshed: "", es: null, timer: null, poll: null };
+      revision: null, summary: null, lines: [], lineId: "", repo: "", detail: null, events: [], evError: "", evCursor: 0, error: "", refreshed: "", es: null, timer: null, poll: null };
     const conn = createConnection();
     const el = (tag, text, cls) => {
       const n = doc.createElement(tag);
@@ -133,6 +136,20 @@
       win.clearTimeout(deb);
       deb = win.setTimeout(() => { st.q = search.value; st.page = 1; load(); }, 300);
     });
+    const mkSel = (label, onPick) => {
+      const s = el("select");
+      s.setAttribute("aria-label", label);
+      s.addEventListener("change", () => { onPick(s.value); st.page = 1; load(); });
+      return s;
+    };
+    const lineSel = mkSel("Owner line filter", (v) => { st.lineId = v; });
+    const repoSel = mkSel("Repository filter", (v) => { st.repo = v; });
+    const fillSel = (s, cur, first, opts) => {
+      s.replaceChildren(...[["", first]].concat(opts).map(([v, t]) => { const o = el("option", t); o.value = v; return o; }));
+      s.value = cur;
+    };
+    const breakdownBar = el("div", null, "regSummary");
+    const eventsBox = el("div", null, "regEvents");
     const tableWrap = el("div", null, "regTableWrap");
     const prev = el("button", "Previous");
     const next = el("button", "Next");
@@ -142,13 +159,13 @@
     const pager = el("div", null, "regPager");
     pager.append(prev, pageLabel, next);
     const controls = el("div", null, "regControls");
-    controls.append(sel, search, connLabel);
-    container.replaceChildren(el("h2", "Registry"), summaryBar, errLine, tabs, controls, tableWrap, pager);
+    controls.append(sel, search, connLabel, lineSel, repoSel);
+    container.replaceChildren(el("h2", "Registry"), summaryBar, errLine, tabs, controls, tableWrap, pager, breakdownBar, eventsBox);
 
     const CLAIM_COLS = ["Title", "Status", "Owner line", "Repo", "Branch", "Commit", "Rev", "Updated", "Merge check"];
     const ARCH_COLS = ["Title", "Merged at", "Repository", "Target branch", "Strategy", "PR", "Commit", "Checked"];
     function render() {
-      sel.hidden = search.hidden = st.kind !== "claims";
+      sel.hidden = search.hidden = lineSel.hidden = repoSel.hidden = st.kind !== "claims";
       for (const k of Object.keys(tabBtns)) tabBtns[k].setAttribute("aria-pressed", String(k === st.kind));
       const claims = st.kind === "claims";
       const items = (st.result && st.result.items) || [];
@@ -165,7 +182,15 @@
           const r = claimRow(it);
           const status = el("td", r.status);
           for (const b of r.badges) status.append(" ", el("span", b, "regBadge"));
-          tr.append(el("td", r.title), status, el("td", r.owner), el("td", r.repo), el("td", r.branch),
+          const open = st.detail && st.detail.id === r.id;
+          const dBtn = X && el("button", open ? "Hide details" : "Details");
+          const titleTd = el("td", r.title + " ");
+          if (dBtn) {
+            dBtn.setAttribute("aria-expanded", String(!!open));
+            dBtn.addEventListener("click", () => toggleDetail(r.id));
+            titleTd.append(dBtn);
+          }
+          tr.append(titleTd, status, el("td", r.owner), el("td", r.repo), el("td", r.branch),
             el("td", r.commit), el("td", r.revision), el("td", r.updated), el("td", r.mergeCheck));
         } else {
           const r = archiveRow(it);
@@ -173,6 +198,7 @@
             el("td", r.strategy), el("td", r.pullRequest), el("td", r.commit), el("td", r.checkedAt));
         }
         body.append(tr);
+        if (claims && st.detail && st.detail.id === it.id) body.append(detailRow());
       }
       table.append(body);
       const empty = st.failed ? "Could not load " + st.kind
@@ -182,6 +208,20 @@
       prev.disabled = !st.result || st.page <= 1;
       next.disabled = !st.result || !st.result.hasMore;
       const sm = st.summary;
+      lineSel.hidden = repoSel.hidden = lineSel.hidden || !X;
+      if (!X) {
+        breakdownBar.textContent = eventsBox.textContent = "Extra panels unavailable (registry-ui-extra.js not loaded)";
+        return finishRender(sm);
+      }
+      fillSel(lineSel, st.lineId, "any owner line", st.lines.map((l) => [l.id, l.name || l.id]));
+      fillSel(repoSel, st.repo, "any repo", X.repoOptions(sm).map((r) => [r, r]));
+      const bd = X.breakdown(sm, st.lines);
+      breakdownBar.textContent = sm ? "By owner line: " + (bd.owners.join(" | ") || "none")
+        + " || By repo: " + (bd.repos.join(" | ") || "none") : "";
+      renderEvents();
+      finishRender(sm);
+    }
+    function finishRender(sm) {
       summaryBar.textContent = sm
         ? STATUSES.map((s) => s + ": " + ((sm.claimsByStatus || {})[s] || 0)).join(" | ")
           + " | archive: " + (sm.archiveCount || 0) + " | revision: " + (sm.snapshotRevision ?? "-")
@@ -189,6 +229,64 @@
       connLabel.textContent = conn.state.label + (st.refreshed ? " (last refresh " + st.refreshed + ")" : "");
       errLine.textContent = st.error;
       errLine.hidden = !st.error;
+    }
+    function detailRow() {
+      const d = st.detail;
+      const td = el("td");
+      td.colSpan = CLAIM_COLS.length;
+      if (d.error) { const p = el("p", d.error, "regError"); p.setAttribute("role", "alert"); td.append(p); }
+      else if (!d.item) td.append(el("p", "Loading details..."));
+      else {
+        const dl = el("dl", null, "regDetails");
+        for (const [k, v] of X.detailsModel(d.item)) dl.append(el("dt", k), el("dd", v));
+        td.append(dl);
+      }
+      const tr = el("tr");
+      tr.append(td);
+      return tr;
+    }
+    async function toggleDetail(id) {
+      if (st.detail && st.detail.id === id) { st.detail = null; render(); return; }
+      const d = st.detail = { id, item: null, error: "" };
+      render();
+      try { d.item = await getJson("/api/registry/claims/" + encodeURIComponent(id)); }
+      catch (err) { d.error = "Could not load details: " + err.message; }
+      if (st.detail === d) render();
+    }
+    function renderEvents() {
+      const list = el("ul");
+      for (const e of st.events) {
+        const r = X.eventRow(e);
+        list.append(el("li", r.time + " " + r.type + " " + r.subject + (r.reason === "-" ? "" : " (" + r.reason + ")")));
+      }
+      eventsBox.replaceChildren(el("h3", "Recent events"),
+        st.evError ? el("p", st.evError, "regError") : st.events.length ? list : el("p", "No events yet"));
+    }
+    async function loadEvents(reload) {
+      try {
+        let after = st.evCursor;
+        if (reload) after = Math.max(0, (await getJson("/api/registry/summary")).eventCursor - X.EVENTS_SHOWN) || 0;
+        let got = [];
+        for (let i = 0; i < 50; i++) {
+          const r = await getJson("/api/registry/events?limit=100&after=" + after);
+          if (!reload && r.tooOld) return loadEvents(true);
+          got = got.concat(r.items || []);
+          if (!r.hasMore) break;
+          after = r.nextCursor;
+        }
+        st.events = reload ? X.mergeEvents([], got.slice(-X.EVENTS_SHOWN))
+          : X.mergeEvents(st.events, got, X.EVENTS_MAX);
+        st.evCursor = Math.max(st.evCursor, X.lastCursor(st.events));
+        st.evError = "";
+      } catch (err) { st.evError = "Could not load events: " + err.message; }
+      renderEvents();
+    }
+    async function loadLines() {
+      try {
+        const b = await getJson("/api/lines");
+        st.lines = (Array.isArray(b) ? b : b && b.lines) || [];
+      } catch (_) { st.lines = []; }
+      render();
     }
     async function getJson(url) {
       const res = await fetchFn(url);
@@ -242,6 +340,7 @@
         let d = null;
         try { d = JSON.parse(ev.data); } catch (_) { return; }
         conn.onOpen();
+        if (X && shouldRefetch(st.evCursor, d && d.eventCursor)) loadEvents(false);
         if (shouldRefetch(st.revision, d && d.revision)) schedule();
         else render();
       });
@@ -262,7 +361,7 @@
       win.clearTimeout(st.timer);
       conn.state.label = "offline"; conn.state.errors = 0; conn.state.polling = false;
     }
-    return { start() { render(); connect(); load(); }, stop: disconnect, load, state: st };
+    return { start() { render(); connect(); load(); if (X) { loadLines(); loadEvents(true); } }, stop: disconnect, load, state: st };
   }
 
   return { STATUSES, FILTERS, POLL_MS, statusQuery, listUrl, pagingLabel, shortCommit, mergeCheckLabel,
