@@ -323,7 +323,7 @@ test("browser scripts load as plain scripts without require or module", async ()
   const path = require("node:path");
   const vm = require("node:vm");
   const load = (files) => {
-    const ctx = vm.createContext({ console });
+    const ctx = vm.createContext({ console, URLSearchParams });
     for (const f of files) {
       vm.runInContext(fs.readFileSync(path.join(__dirname, "../web", f), "utf8"), ctx, { filename: f });
     }
