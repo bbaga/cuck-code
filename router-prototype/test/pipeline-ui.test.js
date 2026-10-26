@@ -53,6 +53,25 @@ test("preview eligibility accepts only available passing integration data", () =
   assert.equal(pipelineUiModule.previewForIntegration(staleWorker, preview).eligible, false);
 });
 
+test("structured preview steps keep descriptions separate from sanitized copy commands", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
+  const render = html.slice(html.indexOf("function renderPreviewPanel"), html.indexOf("function selectNode"));
+  assert.match(render, /label\.textContent = .*step\.description/);
+  assert.match(render, /sanitizePreviewCommand\(step\.command\)/);
+  assert.match(render, /navigator\.clipboard\.writeText\(command\)/);
+  assert.match(render, /if \(command\).*Copy command/s);
+  assert.match(render, /typeof step === "object" && typeof step\.command === "string"/);
+  assert.match(render, /pre\.textContent = command \|\|/);
+  const clone = "git clone https://example.test/repo.git && cd repo && git checkout abc123";
+  const description = "Clone the repository and select the validated revision";
+  const safeCommand = pipelineUiModule.sanitizePreviewCommand(clone + "\n$ API_KEY=secret SECRET=hidden\necho sk-1234567890abcdef");
+  assert.equal(safeCommand, clone + "\necho [REDACTED]");
+  assert.equal(pipelineUiModule.sanitizePreviewCommand(""), "");
+  assert.equal(pipelineUiModule.sanitizePreviewCommand(null), "");
+  assert.ok(description && safeCommand.includes("git checkout"));
+  assert.ok(!safeCommand.includes(description));
+});
+
 test("preview selection survives refreshed worker instances and copy strips shell prompts and likely secrets", () => {
   const old = [{ id: "i1", kind: "integration" }];
   const selected = pipelineUiModule.previewSelectionKey("i1");

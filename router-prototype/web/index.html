@@ -458,11 +458,15 @@ window.addEventListener("DOMContentLoaded", () => {
     if (data.availability !== "available") add("Availability", data.reason || data.message || data.availability || "Unavailable");
     if (data.eligible !== true && data.steps.length === 0) add("Instructions", "No usable preview steps are available.");
     if (data.eligible === true) data.steps.forEach((step, i) => { const box = document.createElement("div"); box.className = "previewStep";
-      const label = document.createElement("h3"); label.textContent = (i + 1) + ". " + (step.title || "Instruction");
-      const pre = document.createElement("pre"); pre.textContent = step.command || step.text || "";
-      const copy = document.createElement("button"); copy.type = "button"; copy.textContent = "Copy";
-      copy.addEventListener("click", () => navigator.clipboard.writeText(sanitizePreviewCommand(pre.textContent)));
-      box.append(label, pre, copy); panel.appendChild(box); });
+      const label = document.createElement("h3"); label.textContent = (i + 1) + ". " + (step.description || step.title || "Instruction");
+      box.appendChild(label);
+      const command = step && typeof step === "object" && typeof step.command === "string"
+        ? sanitizePreviewCommand(step.command) : "";
+      const pre = document.createElement("pre"); pre.textContent = command || (typeof step === "string" ? step : step.text || "");
+      box.appendChild(pre);
+      if (command) { const copy = document.createElement("button"); copy.type = "button"; copy.textContent = "Copy command";
+        copy.addEventListener("click", () => navigator.clipboard.writeText(command)); box.appendChild(copy); }
+      panel.appendChild(box); });
     st.previewPanel.replaceChildren(panel); st.previewPanel.hidden = false; renderGraph(st);
   }
 
