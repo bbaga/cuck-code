@@ -317,3 +317,32 @@ test("mount degrades when the extra script is missing", async () => {
     require.cache[main] = savedMain;
   }
 });
+
+test("browser scripts load as plain scripts without require or module", async () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const vm = require("node:vm");
+  const load = (files) => {
+    const ctx = vm.createContext({ console });
+    for (const f of files) {
+      vm.runInContext(fs.readFileSync(path.join(__dirname, "../web", f), "utf8"), ctx, { filename: f });
+    }
+    return ctx;
+  };
+  const win = { setTimeout() {}, clearTimeout() {}, setInterval() {}, clearInterval() {} };
+  const mountIn = async (ctx) => {
+    assert.strictEqual(typeof ctx.registryUI.mount, "function");
+    const c = fakeDoc().mk("section");
+    ctx.registryUI.mount(fakeDoc(), c, { fetch: async (u) => okRes(u), window: win }).start();
+    await flush();
+    assert.strictEqual(c.children[5].children[0].tag, "table");
+    assert.match(c.children[1].textContent, /active: 2/);
+    return c;
+  };
+  const both = load(["pipeline-ui.js", "registry-ui-extra.js", "registry-ui.js"]);
+  assert.ok(both.pipelineUI && both.registryUIExtra);
+  const c = await mountIn(both);
+  assert.ok(!/unavailable/.test(c.children[7].textContent));
+  const only = await mountIn(load(["registry-ui.js"]));
+  assert.match(only.children[7].textContent, /Extra panels unavailable/);
+});

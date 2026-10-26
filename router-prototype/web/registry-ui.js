@@ -2,9 +2,9 @@
 // Loaded in the browser via <script> and in Node tests via require().
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
-  else root.registryUI = factory();
-})(typeof self !== "undefined" ? self : this, function () {
-  const X = typeof require === "function" ? require("./registry-ui-extra.js") : root.registryUIExtra || null;
+  else root.registryUI = factory(root);
+})(typeof self !== "undefined" ? self : this, function (root) {
+  const X = typeof require === "function" ? require("./registry-ui-extra.js") : (root && root.registryUIExtra) || null;
   const STATUSES = ["planned", "active", "available", "superseded", "stale", "merged"];
   const FILTERS = [{ value: "current", label: "current" }, { value: "all", label: "all" }]
     .concat(STATUSES.map((s) => ({ value: s, label: s })));
