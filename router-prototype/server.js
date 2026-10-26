@@ -2,6 +2,7 @@ const http = require("node:http");
 const http2 = require("node:http2");
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
 const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
@@ -28,6 +29,7 @@ const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlanner
 const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence } = require("./evidence");
 const { createDashboardLive } = require("./dashboard-live");
+const { readClaudeConfig } = require("./claude-config");
 
 const PORT = Number(process.env.PORT || 7788);
 const HTTPS_PORT = Number(process.env.HTTPS_PORT || 0);
@@ -881,7 +883,7 @@ function runProbe(cmd, timeoutMs = 2000) {
 async function harnessInstalled(harnessId) {
   const probe = HARNESS_PROBES.find((h) => h.id === harnessId);
   if (!probe) return false;
-  const results = await probeHarnesses((cmd) => runProbe(cmd));
+  const results = await probeHarnesses((cmd) => runProbe(cmd), undefined, readClaudeConfig);
   const result = probeResultFor(results, harnessId);
   return !!(result && result.installed);
 }
@@ -897,7 +899,7 @@ async function harnessProbe(refresh) {
     && Date.now() - Date.parse(harnessCache.atIso) < HARNESS_CACHE_MS) {
     return harnessCache;
   }
-  const harnesses = await probeHarnesses((cmd) => runProbe(cmd));
+  const harnesses = await probeHarnesses((cmd) => runProbe(cmd), undefined, readClaudeConfig);
   harnessCache = { atIso: new Date().toISOString(), harnesses };
   return harnessCache;
 }

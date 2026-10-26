@@ -2,6 +2,10 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { readClaudeConfig } = require("../claude-config");
 const {
   PHASES,
   HARNESS_IDS,
@@ -16,6 +20,7 @@ const {
   parsePiAuthCheck,
   parseVibeModelsEnv,
   vibeModelChoices,
+  claudeModelChoices,
   piProviderDetail,
 } = require("../pipeline-config");
 
@@ -198,6 +203,24 @@ test("probeResultFor returns null for an empty list", () => {
   assert.strictEqual(probeResultFor([], "vibe"), null);
 });
 
+// ---- Claude server reader and probe API ----
+
+test("server Claude reader reads only the approved files", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "claude-reader-"));
+  try {
+    fs.mkdirSync(path.join(home, ".claude", "cache"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".claude", "settings.json"), JSON.stringify({ modelPicker: { options: [{ model: "kimi-k3", label: "Kimi K3" }] }, token: "secret" }));
+    fs.writeFileSync(path.join(home, ".claude", "settings.local.json"), JSON.stringify({ modelPicker: { options: [{ model: "deepseek-v3", label: "DeepSeek V3" }] } }));
+    fs.writeFileSync(path.join(home, ".claude", "cache", "gateway-models.json"), JSON.stringify({ models: [{ id: "kimi-k3", display_name: "Kimi K3" }] }));
+    fs.writeFileSync(path.join(home, ".claude", "cache", "not-approved.json"), JSON.stringify({ models: [{ id: "wrong" }] }));
+    const config = readClaudeConfig(home);
+    assert.deepStrictEqual(config.settings.modelPicker.options[0], { model: "kimi-k3", label: "Kimi K3" });
+    assert.deepStrictEqual(config.localSettings.modelPicker.options[0], { model: "deepseek-v3", label: "DeepSeek V3" });
+    assert.deepStrictEqual(config.gatewayCache.models, [{ id: "kimi-k3", display_name: "Kimi K3" }]);
+    assert.deepStrictEqual(claudeModelChoices(config).map((m) => m.value), ["opus", "sonnet", "haiku", "kimi-k3", "deepseek-v3"]);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 // ---- probeHarnesses ----
 
 function fakeRun(map) {
@@ -277,13 +300,33 @@ test("probeHarnesses attaches vibe models from env and defaults", async () => {
   ]);
 });
 
-test("probeHarnesses attaches claude aliases and CLAUDE_MODELS", async () => {
-  const results = await probeHarnesses(async () => null, {
-    CLAUDE_MODELS: "claude-opus-5-5, sonnet,,claude-haiku-5-5",
+test("probeHarnesses preserves approved Claude source order and gateway suppression", async () => {
+  const reader = async () => ({
+    settings: { modelPicker: { options: [{ model: "local" }] } },
+    localSettings: { modelPicker: { options: [{ value: "local-2", label: "Local 2" }] } },
+    gatewayCache: { models: [
+      { id: "kimi-k3", display_name: "Kimi K3" },
+      { id: "deepseek-v3", display_name: "DeepSeek V3" },
+      { id: "gateway-local", display_name: "local" },
+    ] },
   });
-  const claude = results.find((r) => r.id === "claude");
-  assert.deepStrictEqual(claude.models.map((m) => m.value),
-    ["opus", "sonnet", "haiku", "claude-opus-5-5", "claude-haiku-5-5"]);
+  const results = await probeHarnesses(async () => null, {}, reader);
+  assert.deepStrictEqual(results.find((r) => r.id === "claude").models, [
+    { value: "opus", label: "opus" }, { value: "sonnet", label: "sonnet" },
+    { value: "haiku", label: "haiku" }, { value: "local", label: "local" },
+    { value: "local-2", label: "Local 2" }, { value: "kimi-k3", label: "Kimi K3" },
+    { value: "deepseek-v3", label: "DeepSeek V3" },
+  ]);
+});
+
+test("probeHarnesses reads Claude config and falls back on reader errors", async () => {
+  const reader = async () => ({ settings: { modelPicker: { options: [{ model: "local" }] } } });
+  const results = await probeHarnesses(async () => null, { ANTHROPIC_MODEL: "ignored" }, reader);
+  assert.deepStrictEqual(results.find((r) => r.id === "claude").models.map((m) => m.value),
+    ["opus", "sonnet", "haiku", "local"]);
+  const fallback = await probeHarnesses(async () => null, {}, async () => { throw new Error("bad"); });
+  assert.deepStrictEqual(fallback.find((r) => r.id === "claude").models.map((m) => m.value),
+    ["opus", "sonnet", "haiku"]);
 });
 
 // ---- parsePiModelCatalog ----
