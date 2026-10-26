@@ -278,6 +278,28 @@ test("probeHarnesses attaches vibe models from env and defaults", async () => {
   ]);
 });
 
+test("probeHarnesses reads Claude settings and model catalog in source order", async () => {
+  const reader = async () => ({
+    settings: { modelPicker: { options: [{ model: "local" }] } },
+    localSettings: { modelPicker: { options: [{ value: "local-2", label: "Local 2" }] } },
+    modelCatalog: [
+      { id: "kimi-k3", name: "Kimi K3" },
+      { id: "deepseek-v3", name: "DeepSeek V3" },
+      { id: "local", name: "Local" },
+    ],
+  });
+  const results = await probeHarnesses(async () => null, {}, reader);
+  assert.deepStrictEqual(results.find((r) => r.id === "claude").models, [
+    { value: "opus", label: "opus" },
+    { value: "sonnet", label: "sonnet" },
+    { value: "haiku", label: "haiku" },
+    { value: "local", label: "local" },
+    { value: "local-2", label: "Local 2" },
+    { value: "kimi-k3", label: "Kimi K3" },
+    { value: "deepseek-v3", label: "DeepSeek V3" },
+  ]);
+});
+
 test("probeHarnesses reads Claude config and falls back on reader errors", async () => {
   const reader = async () => ({ settings: { modelPicker: { options: [{ model: "local" }] } } });
   const results = await probeHarnesses(async () => null, { ANTHROPIC_MODEL: "ignored" }, reader);
