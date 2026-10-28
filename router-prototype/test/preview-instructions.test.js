@@ -40,15 +40,21 @@ test("missing worktree reports unverified source", () => {
   assert.equal(result.availability, "unavailable");
 });
 test("API response preserves structured steps and includes a pinned clone and detached checkout", t => {
-  const { root, commit } = repository(t, { "app/package.json": JSON.stringify({ scripts: { start: "vite" }, dependencies: { vite: "1" } }), "app/package-lock.json": "{}", "app/.env.example": "SECRET=example" });
+  const { root, commit } = repository(t, { "app/package.json": JSON.stringify({ scripts: { start: "vite" }, dependencies: { vite: "1" } }), "app/package-lock.json": "{}", "app/.env.example": "SECRET=example", "app/README.md": "# Verification\nOpen http://localhost:4173 and confirm the preview page loads.\n- Submit a valid sample and confirm the result appears.\n" });
   const result = previewForLine(line(validator(root, commit), "https://example.com/team/project.git"));
   assert.equal(result.sourceRevision, commit);
   assert.equal(result.stack, "vite");
   assert.equal(result.directory, "app");
-  assert.equal(result.steps[0].command.includes(commit), true);
-  assert.match(result.steps[0].command, /git clone .* && git -C .* checkout --detach/);
-  assert.ok(result.steps.some(step => step.command === "npm ci"));
-  assert.ok(result.steps.every(step => typeof step.description === "string" && (typeof step.command === "string" || step.command === null)));
+  assert.equal(result.steps.find(step => step.phase === "obtain").command.includes(commit), true);
+  assert.match(result.steps.find(step => step.phase === "obtain").command, /git clone .* && git -C .* checkout --detach/);
+  assert.ok(result.steps.some(step => step.phase === "install" && step.command === "cd 'cuck-code-" + commit.slice(0, 8) + "/app/' && npm ci"));
+  assert.deepEqual(result.steps.map(step => step.phase), ["prepare", "obtain", "enter", "install", "run", "verify", "stop"]);
+  assert.ok(result.steps.every(step => step.description && step.expected && typeof step.phase === "string" && (typeof step.command === "string" || step.command === null)));
+  assert.match(result.steps.find(step => step.phase === "run").command, /cd .* && npm run start/);
+  assert.match(result.steps.find(step => step.phase === "verify").description, /Submit a valid sample and confirm the result appears/);
+  assert.match(result.steps.find(step => step.phase === "verify").expected, /require user confirmation/);
+  assert.equal(result.expectedUrl, "http://localhost:4173");
+  assert.ok(result.prerequisites.some(text => /unknown/.test(text)));
   assert.deepEqual(result.instructions, result.steps);
   assert.equal(JSON.stringify(result).includes("[object Object]"), false);
   assert.equal(result.steps.at(-1).command, null);
@@ -80,6 +86,8 @@ test("unknown and ambiguous pinned project layouts give cautious guidance", t =>
   const result = previewForLine(line(validator(root, ambiguous)));
   assert.equal(result.stack, "unknown");
   assert.ok(result.limitations.some(text => text.includes("ambiguous")));
+  assert.ok(result.steps.some(step => step.phase === "verify" && /What to verify:/.test(step.description) && /needs confirmation/.test(step.expected)));
+  assert.ok(result.steps.every(step => step.command === null));
 });
 test("absent, conflicting, credential-bearing, and unsafe URLs return manual-only API guidance", t => {
   const { root, commit } = repository(t, { "package.json": JSON.stringify({ scripts: { start: "vite" }, dependencies: { vite: "1" } }), "package-lock.json": "{}" });
