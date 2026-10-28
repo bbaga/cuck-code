@@ -272,6 +272,34 @@
       && !shouldHideValidator(w, hideFailed);
   }
 
+  const NODE_FONT_FAMILY = "system-ui, sans-serif";
+  const NODE_FONTS = {
+    name: "12.8px " + NODE_FONT_FAMILY,
+    chip: "10.4px " + NODE_FONT_FAMILY,
+    cfg: "9.92px " + NODE_FONT_FAMILY,
+    stop: "11.2px " + NODE_FONT_FAMILY,
+  };
+  const NODE_MIN_COLUMN_WIDTH = 120;
+
+  function nodeWidth(worker, measureText) {
+    const gap = 8, safety = 6;
+    const validator = (worker.role || "implementor") === "validator";
+    const chipText = validator ? "val" : (worker.persona || "backend");
+    const chip = measureText(chipText.toUpperCase(), NODE_FONTS.chip)
+      + chipText.length * 0.4 + 12 + 6;
+    const parts = [chip, measureText(String(worker.name || ""), NODE_FONTS.name)];
+    const cfg = [worker.harness, worker.model, worker.effort].filter(Boolean).join(" · ");
+    if (cfg) parts.push(measureText(cfg, NODE_FONTS.cfg));
+    parts.push(10);
+    if (worker.status === "running") parts.push(measureText("Stop", NODE_FONTS.stop) + 16 + 4);
+    const content = parts.reduce((sum, w) => sum + w, 0) + gap * (parts.length - 1);
+    return Math.ceil(content + 20 + 2 + safety);
+  }
+
+  function columnWidth(widths) {
+    return Math.max(NODE_MIN_COLUMN_WIDTH, ...widths);
+  }
+
   function buildGraphLanes(workers, hideFailed) {
     const list = Array.isArray(workers) ? workers : [];
     const implementors = list.filter((w) => w && (w.role || "implementor") !== "validator");
@@ -686,6 +714,9 @@
     shouldHideValidator,
     shouldShowIntegrationValidator,
     buildGraphLanes,
+    nodeWidth,
+    columnWidth,
+    NODE_FONTS,
     selectEvidenceAttempt,
     sortEvidenceNewestFirst,
     formatEvidenceAuthor,
