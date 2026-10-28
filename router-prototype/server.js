@@ -26,6 +26,7 @@ const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlanner
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests, serializePlannerRequest, restoreKnownNoticeIds,
   writeFileDurable, enqueuePlannerRequest, submitPrompt } = require("./planner-request");
+const { scopeFields } = require("./scope-fields");
 const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require("./evidence");
 const { createDashboardLive } = require("./dashboard-live");
@@ -969,6 +970,7 @@ function dashboardStateForLine(line) {
       id: w.id, name: w.name, ...completionFields(w), branch: w.branch, role: w.role,
       validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
       ...changesetFields(w), lastError: w.lastError || null, ...compactionFields(w, line),
+      ...scopeFields(w, line.workers),
     })) };
 }
 
@@ -1593,7 +1595,7 @@ function spawnValidator(line, source, criteria, report) {
     implementorId: implWorker.id, persona: worker.persona });
   broadcast(line, "worker_spawned", { worker: { id, name, branch: worker.branch,
     status: worker.status, role: worker.role, validates: worker.validates,
-    persona: worker.persona } });
+    persona: worker.persona, ...scopeFields(worker, line.workers) } });
   spawnWorker(line, worker, worker.prompt);
 }
 
@@ -2131,7 +2133,7 @@ const requestHandler = (req, res) => {
       slog("info", "worker.spawned", { lineId: line.id, workerId: id,
         name: body.name, persona, branch, repo: repo.name, repoUrl: repo.url || undefined });
       spawnWorker(line, worker, worker.prompt);
-      broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona, repo: repo.name } });
+      broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona, repo: repo.name, ...scopeFields(worker, line.workers) } });
       json(res, 201, { workerId: id, branch, worktree: worktreePath, repo: repo.name,
         baseCommit, ...baseFields(worker) });
     });
@@ -2311,7 +2313,8 @@ const requestHandler = (req, res) => {
       slog("info", "integration.spawned", { lineId: line.id, validatorId: id,
         branches: branchEntries.map((e) => `${e.repo}:${e.branch}`) });
       broadcast(line, "worker_spawned", { worker: { id, name, branch, status: worker.status,
-        role: worker.role, validates: null, persona: worker.persona, kind: "integration" } });
+        role: worker.role, validates: null, persona: worker.persona, kind: "integration",
+        ...scopeFields(worker, line.workers) } });
       spawnWorker(line, worker, worker.prompt);
       json(res, 201, { validatorId: id, branch,
         branches: branchEntries.map((e) => ({ repo: e.repo, branch: e.branch })),
