@@ -8,7 +8,7 @@ in one shell, because the variables carry over between sections. Use `bash` or `
 
 ```bash
 PORT=$(node -e 'const s=require("net").createServer().listen(0,()=>{console.log(s.address().port);s.close()})')
-WORK=$(mktemp -d); mkdir -p "$WORK/lines" "$WORK/bin" "$WORK/origins" "$WORK/video"
+WORK=$(mktemp -d); mkdir -p "$WORK/lines" "$WORK/bin" "$WORK/origins"
 BASE=http://localhost:$PORT; JSON='Content-Type: application/json'
 ```
 
@@ -41,7 +41,7 @@ start_router() {
 start_router
 ```
 
-At the end, stop it with `kill "$SERVER_PID"` and run `rm -rf "$WORK"` (section 9).
+At the end, stop it with `kill "$SERVER_PID"` and run `rm -rf "$WORK"` (section 10).
 
 ## 1. Seed data (HTTP API only)
 
