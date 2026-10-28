@@ -22,7 +22,8 @@ const { flushPendingValidationQueue, removePendingValidations,
 const { CHANGESET_LIMIT, collectChangeset, changesetWakeMessage,
   changesetFields } = require("./changeset");
 const { BaseError, resolveSpawnBase, baseFields, baseNote } = require("./spawn-base");
-const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
+const { recordRequestEntry, userEntry, isPromptEcho } = require("./transcript-echo");
+const { recordedPlannerRequest, sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests, serializePlannerRequest, restoreKnownNoticeIds,
   writeFileDurable, enqueuePlannerRequest, submitPrompt } = require("./planner-request");
@@ -1142,8 +1143,12 @@ function pump(line) {
   // calls pump again when it is done.
   if (line.sessionId && shouldAutoCompact(line.context, maxContextFor(line, line))
     && compactPlanner(line, "auto")) return;
-  const request = restorePlannerRequest(line.queue.shift());
+  let request = restorePlannerRequest(line.queue.shift());
   if (!request) return pump(line);
+  if (!request.fromUser && !request.recorded) {
+    recordRequestEntry(line, request, { append: appendTranscript, broadcast });
+  }
+  request = recordedPlannerRequest(request);
   const { text } = request;
   line.activePlannerRequest = request;
   // The first run after a compaction starts a fresh session: it needs the
@@ -1195,6 +1200,7 @@ function pump(line) {
     }
     if (typeof entry.at !== "number") entry.at = Date.now();
     runOutput.add(entry);
+    if (isPromptEcho(entry)) return;
     appendTranscript(line.transcript, entry);
     slog("debug", "planner.entry", { lineId: line.id, type: entry.type,
       role: entry.role || null, chars: raw.length, text: preview(entryText(entry), 200) });
@@ -1864,11 +1870,16 @@ const requestHandler = (req, res) => {
           text = `PLAN FEEDBACK from the user: ${body.text}. Revise plan.md accordingly. Do not spawn workers yet.`;
         } catch {}
       }
-      const out = submitPrompt(line, plannerRequest(text), {
+      const out = submitPrompt(line, plannerRequest(text, null, null, body.text), {
         wasStarted, save: saveLine, pump,
         onQueued: () => slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
           prompt: preview(body.text, 2000) }) });
       if (out.status !== 202) console.error(`prompt rejected for line ${line.id}: ${out.body.error}`);
+      else {
+        const entry = userEntry(body.text);
+        appendTranscript(line.transcript, entry);
+        broadcast(line, "entry", entry);
+      }
       json(res, out.status, out.body);
     });
     return;
