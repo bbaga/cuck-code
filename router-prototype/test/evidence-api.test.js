@@ -161,8 +161,8 @@ test("sorts items and history newest first by numeric at", async () => {
   // Inserted out of time order. A text compare would put 9999999999999 and
   // 10000000000000 in the wrong order against 999999999999.
   data.evidence = [
-    record("c2", 10000000000000, "attempt-2"), record("c3", 999999999999, "attempt-2"),
-    record("c1", 2000, "attempt-2"),
+    record("c1", 2000, "attempt-2"), record("c2", 10000000000000, "attempt-2"),
+    record("c3", 999999999999, "attempt-2"),
     record("h2", 3000, "attempt-1"), record("h3", 10000000000001, "attempt-1"),
     record("h1", 999999999998, "attempt-1")];
   fs.writeFileSync(file, JSON.stringify(data));
