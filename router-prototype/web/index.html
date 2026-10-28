@@ -256,7 +256,7 @@ window.addEventListener("DOMContentLoaded", () => {
     clearHarnessState, clearProviderState, shouldHideValidator,
     shouldShowIntegrationValidator, buildGraphLanes,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
-    evidencePollIsCurrent, clampSize, readStoredSize, writeStoredSize } = window.pipelineUI;
+    evidencePollIsCurrent, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize } = window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
   const listEl = document.getElementById("linelist");
@@ -439,7 +439,7 @@ window.addEventListener("DOMContentLoaded", () => {
       if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
       e.preventDefault();
       const { min, max } = limits();
-      apply(clampSize(getSize() + (e.key === "ArrowDown" ? RESIZE_STEP : -RESIZE_STEP), min, max));
+      apply(stepSize(getSize(), e.key === "ArrowDown" ? RESIZE_STEP : -RESIZE_STEP, min, max));
     });
   }
 
@@ -449,7 +449,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const graphKey = "graph-height:" + lineId;
     const chatKey = "chat-height:" + lineId;
     const graphLimits = () => ({ min: 80, max: Math.round(window.innerHeight * 0.8) });
-    const chatLimits = () => ({ min: 120, max: Math.max(120, window.innerHeight * 2) });
+    const chatLimits = () => ({ min: 120, max: chatMaxHeight(window.innerHeight) });
     const setGraph = (h) => {
       graph.classList.toggle("userSized", h !== null);
       graph.style.height = h === null ? "" : h + "px";

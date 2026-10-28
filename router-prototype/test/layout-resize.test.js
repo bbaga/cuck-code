@@ -1,7 +1,7 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert");
-const { clampSize, readStoredSize, writeStoredSize } = require("../web/pipeline-ui.js");
+const { clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize } = require("../web/pipeline-ui.js");
 
 const memory = (init = {}) => {
   const m = new Map(Object.entries(init));
@@ -47,4 +47,18 @@ test("writeStoredSize saves a rounded size and null resets it", () => {
   assert.equal(readStoredSize(s, "k", 80, 400), 151);
   writeStoredSize(s, "k", null);
   assert.equal(readStoredSize(s, "k", 80, 400), null);
+});
+
+test("stepSize moves by the delta and never moves the wrong way", () => {
+  assert.equal(stepSize(200, 16, 80, 400), 216);
+  assert.equal(stepSize(200, -16, 80, 400), 184);
+  assert.equal(stepSize(24, -16, 120, 400), 24);
+  assert.equal(stepSize(24, 16, 120, 400), 120);
+  assert.equal(stepSize(400, 16, 80, 400), 400);
+});
+
+test("chatMaxHeight equals the window height with a floor", () => {
+  assert.equal(chatMaxHeight(800), 800);
+  assert.equal(chatMaxHeight(50), 120);
+  assert.equal(chatMaxHeight(undefined), 120);
 });

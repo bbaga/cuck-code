@@ -493,6 +493,15 @@
     return Math.min(Math.max(n, min), Math.max(min, max));
   }
 
+  function stepSize(size, delta, min, max) {
+    const next = clampSize(size + delta, min, max);
+    return (delta < 0 && next > size) || (delta > 0 && next < size) ? size : next;
+  }
+
+  function chatMaxHeight(windowHeight) {
+    return Math.max(120, Number(windowHeight) || 0);
+  }
+
   function readStoredSize(storage, key, min, max) {
     try {
       const raw = storage && storage.getItem(key);
@@ -556,6 +565,8 @@
     renderEvidenceFromState: renderEvidence,
     evidencePollIsCurrent,
     clampSize,
+    stepSize,
+    chatMaxHeight,
     readStoredSize,
     writeStoredSize,
   };
