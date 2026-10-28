@@ -491,6 +491,14 @@
     doc.addEventListener("keydown", (event) => {
       const cur = evidenceKeyStates.get(doc);
       if (!cur || !cur.evidenceView) return;
+      if (event.key === "Tab" && cur.evidenceLightbox) {
+        const box = cur.evidenceLightbox;
+        const stops = [box.prev, box.next, box.close].filter((b) => !b.disabled);
+        const at = stops.indexOf(event.target);
+        const edge = event.shiftKey ? at <= 0 : at === stops.length - 1 || at < 0;
+        if (edge) { if (event.preventDefault) event.preventDefault(); stops[event.shiftKey ? stops.length - 1 : 0].focus(); }
+        return;
+      }
       const action = evidenceKeyAction(event, { open: Boolean(cur.evidenceLightbox), visible: !cur.evPane.hidden });
       if (!action) return;
       if (event.preventDefault) event.preventDefault();

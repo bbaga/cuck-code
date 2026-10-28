@@ -23,7 +23,7 @@ class Element {
 }
 class Document { constructor() { this.body = new Element(this, "body"); this.listeners = {}; } createElement(tag) { return new Element(this, tag); }
   addEventListener(name, fn) { (this.listeners[name] ||= []).push(fn); }
-  key(key, target) { for (const fn of this.listeners.keydown || []) fn({ key, target: target || this.body, preventDefault() {} }); } }
+  key(key, target, extra) { for (const fn of this.listeners.keydown || []) fn({ key, target: target || this.body, preventDefault() {}, ...extra }); } }
 function makeState() { const doc = new Document(); const pane = doc.createElement("div"); doc.body.appendChild(pane); return { evPane: pane, evidenceState: null, evidenceResponse: null }; }
 function showcase(id = "current", attemptId = "attempt-current") { return { id, attemptId, kind: "showcase", version: 1, at: "2026-01-01T00:00:00Z", name: "demo.webm", video: "/video.webm", useCase: "Use case", steps: [
   { title: "First", explanation: "First explanation", screenshot: "/one.png" },
@@ -193,4 +193,16 @@ test("arrow keys inside an input do nothing and only one listener exists", () =>
   doc.key("ArrowRight", { tagName: "INPUT" }); assert.strictEqual(st.evidenceState.step, 0);
   renderEvidenceFromState(st, response); renderEvidenceFromState(st, response);
   assert.strictEqual(doc.listeners.keydown.length, 1);
+});
+test("Tab wraps from the last button to the first inside the large view", () => {
+  const { st } = setup(); const doc = st.evPane.ownerDocument; st.evidenceView.image.click();
+  const box = st.evidenceLightbox; doc.key("Tab", box.close);
+  assert.strictEqual(box.prev.disabled, true); assert.strictEqual(doc.activeElement, box.next);
+  doc.activeElement = null; doc.key("Tab", box.next); assert.strictEqual(doc.activeElement, null);
+});
+test("Shift+Tab wraps from the first button to the last inside the large view", () => {
+  const { st } = setup(); const doc = st.evPane.ownerDocument; st.evidenceView.image.click();
+  const box = st.evidenceLightbox; doc.key("Tab", box.next, { shiftKey: true });
+  assert.strictEqual(doc.activeElement, box.close);
+  doc.activeElement = null; doc.key("Tab", box.close, { shiftKey: true }); assert.strictEqual(doc.activeElement, null);
 });
