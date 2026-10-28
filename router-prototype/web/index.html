@@ -47,7 +47,8 @@
   .pEmpty { color: #4a5563; font-size: .72rem; }
   #sidebar { width: 280px; padding: 24px; border-right: 1px solid #262b33;
     background: #161a20; flex-shrink: 0; }
-  #sidebar h1 { font-size: 1.1rem; margin: 0 0 16px; }
+  #sidebar h1 { display: flex; align-items: center; gap: 8px; font-size: 1.1rem; margin: 0 0 16px; }
+  #sidebar h1 img { width: 1.2em; height: 1.2em; }
   #sidebar button { width: 100%; }
   button { padding: 8px 14px; background: #2d6cdf; color: #fff; border: 0;
     border-radius: 4px; cursor: pointer; }
@@ -223,7 +224,7 @@
 </head>
 <body>
 <aside id="sidebar">
-  <h1>cuck-code</h1>
+  <h1><img src="/favicon.svg" alt="">cuck-code</h1>
   <button id="create">+ Create new line</button>
   <button id="registryBtn" aria-pressed="false">Registry</button>
   <div id="linelist"></div>

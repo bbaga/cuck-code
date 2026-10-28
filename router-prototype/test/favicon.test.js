@@ -87,3 +87,15 @@ test("GET / includes the favicon link", async () => {
   const html = await res.text();
   assert.match(html, /<link rel="icon" type="image\/svg\+xml" href="\/favicon\.svg">/);
 });
+
+test("GET / shows the logo img before the text in the sidebar h1", async () => {
+  const res = await fetch(baseUrl + "/");
+  assert.strictEqual(res.status, 200);
+  const html = await res.text();
+  const h1 = html.match(/<h1>([\s\S]*?)<\/h1>/);
+  assert.ok(h1, "html must contain an h1");
+  assert.ok(
+    h1[1].indexOf('<img src="/favicon.svg" alt="">') < h1[1].indexOf("cuck-code"),
+    "the logo img must come before the text cuck-code",
+  );
+});
