@@ -86,9 +86,24 @@ function validateShowcase(worktree, body) {
     path: video.path, name: path.basename(video.path), steps };
 }
 
-function publicEvidence(lineId, item) {
+function evidenceRole(worker) {
+  if (!worker) return null;
+  return worker.kind === "integration" ? "integration validator" : worker.role || null;
+}
+
+// resolveAuthor(workerId) returns the live worker or undefined. Stored
+// byName/byRole win, because they survive removal of the worker.
+function evidenceAuthor(item, resolveAuthor) {
+  const worker = typeof resolveAuthor === "function" && item.by ? resolveAuthor(item.by) : null;
+  const hasName = typeof item.byName === "string";
+  return { id: item.by || null,
+    name: hasName ? item.byName : worker ? worker.name || null : null,
+    role: hasName ? item.byRole || null : evidenceRole(worker) };
+}
+
+function publicEvidence(lineId, item, resolveAuthor) {
   const result = { id: item.id, useCase: item.useCase, name: item.name, at: item.at,
-    attemptId: item.attemptId || null,
+    attemptId: item.attemptId || null, addedBy: evidenceAuthor(item, resolveAuthor),
     video: `/api/lines/${lineId}/evidence/${item.id}/video` };
   if (item.kind === "showcase" && item.version === 1) {
     result.kind = item.kind;
@@ -100,4 +115,4 @@ function publicEvidence(lineId, item) {
   return result;
 }
 
-module.exports = { checkedFile, validateShowcase, publicEvidence };
+module.exports = { checkedFile, validateShowcase, publicEvidence, evidenceRole };

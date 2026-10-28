@@ -27,7 +27,7 @@ const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlanner
   restorePlannerRequests, serializePlannerRequest, restoreKnownNoticeIds,
   writeFileDurable, enqueuePlannerRequest, submitPrompt } = require("./planner-request");
 const { previewForLine } = require("./preview-instructions");
-const { validateShowcase, checkedFile, publicEvidence } = require("./evidence");
+const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require("./evidence");
 const { createDashboardLive } = require("./dashboard-live");
 const { readClaudeConfig } = require("./claude-config");
 const { sessionContextTokens } = require("./context-probe");
@@ -1002,7 +1002,8 @@ function saveLine(line) {
           keep: i.keep, status: i.status })),
         evidence: [...(line.evidence || new Map()).values()].map((e) => ({
           id: e.id, kind: e.kind || "video", version: e.version || null,
-          useCase: e.useCase, path: e.path, name: e.name, by: e.by, at: e.at,
+          useCase: e.useCase, path: e.path, name: e.name, by: e.by, byName: e.byName || null,
+          byRole: e.byRole || null, at: e.at,
           attemptId: e.attemptId || null,
           steps: e.steps || [] })),
         workers: [...line.workers.values()].map((w) => ({
@@ -2348,7 +2349,8 @@ const requestHandler = (req, res) => {
       }
       const id = crypto.randomUUID();
       if (!line.evidence) line.evidence = new Map();
-      line.evidence.set(id, { id, ...record, by: worker.id, at: Date.now(),
+      line.evidence.set(id, { id, ...record, by: worker.id, byName: worker.name,
+        byRole: evidenceRole(worker), at: Date.now(),
         // The router owns attempt identity. Do not accept a client-supplied
         // attemptId, because that could make old evidence current again.
         attemptId: currentAttemptId(worker) });
@@ -2367,8 +2369,10 @@ const requestHandler = (req, res) => {
     const all = [...(line.evidence || new Map()).values()];
     const current = all.filter((e) => isCurrentEvidence(line, e));
     const history = all.filter((e) => !isCurrentEvidence(line, e));
-    const items = current.map((e) => publicEvidence(line.id, e));
-    const historical = history.map((e) => publicEvidence(line.id, e));
+    const resolveAuthor = (workerId) => line.workers.get(workerId);
+    const newestFirst = (a, b) => Number(b.at) - Number(a.at);
+    const items = current.map((e) => publicEvidence(line.id, e, resolveAuthor)).sort(newestFirst);
+    const historical = history.map((e) => publicEvidence(line.id, e, resolveAuthor)).sort(newestFirst);
     const currentAttemptIds = {};
     for (const worker of line.workers.values()) {
       const attemptId = currentAttemptId(worker);
