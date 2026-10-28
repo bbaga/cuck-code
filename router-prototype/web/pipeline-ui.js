@@ -613,6 +613,40 @@
     } else if (!legacy.length && st.historyView) { st.historyView.node.remove(); st.historyView = null; }
   }
 
+  function clampSize(value, min, max) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return min;
+    return Math.min(Math.max(n, min), Math.max(min, max));
+  }
+
+  function stepSize(size, delta, min, max) {
+    const next = clampSize(size + delta, min, max);
+    return (delta < 0 && next > size) || (delta > 0 && next < size) ? size : next;
+  }
+
+  function chatMaxHeight(windowHeight) {
+    return Math.max(120, Number(windowHeight) || 0);
+  }
+
+  function readStoredSize(storage, key, min, max) {
+    try {
+      const raw = storage && storage.getItem(key);
+      if (raw === null || raw === undefined || raw === "") return null;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0) return null;
+      return clampSize(n, min, max);
+    } catch { return null; }
+  }
+
+  function writeStoredSize(storage, key, value) {
+    try {
+      if (!storage) return false;
+      if (value === null || value === undefined) storage.removeItem(key);
+      else storage.setItem(key, String(Math.round(value)));
+      return true;
+    } catch { return false; }
+  }
+
   return {
     PHASE_ROWS,
     EFFORT_LEVELS,
@@ -659,5 +693,10 @@
     clampEvidenceStep,
     renderEvidenceFromState: renderEvidence,
     evidencePollIsCurrent,
+    clampSize,
+    stepSize,
+    chatMaxHeight,
+    readStoredSize,
+    writeStoredSize,
   };
 });
