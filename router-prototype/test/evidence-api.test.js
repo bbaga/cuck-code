@@ -150,12 +150,28 @@ test("reports addedBy for validator and integration validator", async () => {
   assert.equal(typeof items[0].at, "number");
 });
 
-test("sorts items and history newest first", async () => {
+test("sorts items and history newest first by numeric at", async () => {
+  server.kill("SIGTERM");
+  await new Promise((resolve) => server.once("exit", resolve));
+  const file = path.join(root, "line-1", "line.json");
+  const data = JSON.parse(fs.readFileSync(file, "utf8"));
+  const video = data.evidence[0].path;
+  const record = (id, at, attemptId) => ({ id, useCase: id, name: "demo.webm", path: video,
+    by: "worker-1", at, attemptId });
+  // Inserted out of time order. A text compare would put 9999999999999 and
+  // 10000000000000 in the wrong order against 999999999999.
+  data.evidence = [
+    record("c2", 10000000000000, "attempt-2"), record("c3", 999999999999, "attempt-2"),
+    record("c1", 2000, "attempt-2"),
+    record("h2", 3000, "attempt-1"), record("h3", 10000000000001, "attempt-1"),
+    record("h1", 999999999998, "attempt-1")];
+  fs.writeFileSync(file, JSON.stringify(data));
+  const restarted = await start(root);
+  server = restarted.child; base = restarted.base;
   const { items, history } = await listing();
-  const ats = (list) => list.map((i) => Number(i.at));
-  assert.deepEqual(ats(items), [...ats(items)].sort((a, b) => b - a));
-  assert.deepEqual(ats(history), [...ats(history)].sort((a, b) => b - a));
-  assert.ok(items.length >= 2);
+  assert.deepEqual(items.map((i) => i.id), ["c2", "c3", "c1"]);
+  assert.deepEqual(history.map((i) => i.id), ["h3", "h1", "h2"]);
+  for (const entry of [...items, ...history]) assert.equal(typeof entry.at, "number");
 });
 
 test("keeps addedBy after removal; old records fall back to workers or null", async () => {
