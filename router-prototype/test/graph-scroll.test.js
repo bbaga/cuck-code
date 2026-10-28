@@ -50,7 +50,10 @@ test("validator SVG paths originate at implementor center and route later rows t
   const v2={id:"v2",name:"v2",role:"validator",validates:"impl",status:"completed"};
   h.ui.renderGraph(state(h,[impl,v1,v2]));
   const paths=[];function visit(n){if(n.attrs&&n.attrs.class==="edge")paths.push(n.attrs.d);for(const c of n.children||[])visit(c);}visit(h.graph);
-  const implValidator=paths.filter(d=>d.startsWith("M 340 "));
+  const edges=[];function collect(n){if(n.attrs&&n.attrs.class==="edge")edges.push(n);for(const c of n.children||[])collect(c);}collect(h.graph);
+  assert.ok(edges.length >= 3, "render includes planner and validator connection paths");
+  assert.ok(edges.every(path=>path.attrs.fill==="none"), "every rendered edge path is explicitly unfilled");
+  const implValidator=edges.map(path=>path.attrs.d).filter(d=>d.startsWith("M 340 "));
   assert.equal(implValidator.length,2);
   assert.equal(implValidator[0],"M 340 32 H 360 V 32 H 386");
   assert.equal(implValidator[1],"M 340 32 H 362 V 78 H 386");

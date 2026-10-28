@@ -121,7 +121,7 @@
   .previewStep { margin: 8px 0; }
   .previewStep pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #0d1014; padding: 8px; }
   .graph svg { display: block; }
-  .graph svg .edge { stroke: #333c48; stroke-width: 1.5; }
+  .graph svg .edge { stroke: #333c48; stroke-width: 1.5; fill: none; }
   .gnode { position: absolute; display: flex; align-items: center; gap: 8px;
     padding: 0 10px; height: 36px; border: 1px solid #333c48; border-radius: 8px;
     background: #10141a; font-size: .8rem; cursor: pointer; user-select: none; }
@@ -430,6 +430,7 @@ window.addEventListener("DOMContentLoaded", () => {
       const mid = x1 + 20;
       path.setAttribute("d", `M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`);
       path.setAttribute("class", "edge");
+      path.setAttribute("fill", "none");
       svg.appendChild(path);
     };
 
@@ -450,6 +451,7 @@ window.addEventListener("DOMContentLoaded", () => {
         const path = document.createElementNS(SVGNS, "path");
         path.setAttribute("d", `M ${implX + nodeW} ${startY} H ${gutterX} V ${y + 18} H ${valX}`);
         path.setAttribute("class", "edge");
+        path.setAttribute("fill", "none");
         svg.appendChild(path);
       } else {
         edge(plannerX + plannerW, plannerY + 18, valX, y + 18);
