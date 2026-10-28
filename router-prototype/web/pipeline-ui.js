@@ -351,6 +351,13 @@
       : { ok: false, availability: "unavailable", message: "Preview response was invalid." };
   }
 
+  // Decide how the prompt field handles a keyboard event.
+  function promptKeyAction({ key, shiftKey = false, isComposing = false, keyCode } = {}) {
+    if (isComposing || keyCode === 229) return "ignore";
+    if (key !== "Enter") return "ignore";
+    return shiftKey ? "newline" : "send";
+  }
+
   function sanitizePreviewCommand(value) {
     if (typeof value !== "string") return "";
     let text = value.replace(/\r/g, "").split("\n").filter((line) => !/^\s*(?:\$|#|> )\s*/.test(line)).join("\n");
@@ -522,6 +529,7 @@
     mapPreviewPayload,
     fetchLinePreview,
     sanitizePreviewCommand,
+    promptKeyAction,
     isFailedValidator,
     shouldHideValidator,
     shouldShowIntegrationValidator,

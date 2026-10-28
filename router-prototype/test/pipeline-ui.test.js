@@ -30,8 +30,19 @@ const {
   isFailedValidator,
   shouldHideValidator,
   shouldShowIntegrationValidator,
+  promptKeyAction,
 } = require("../web/pipeline-ui.js");
 const pipelineUiModule = require("../web/pipeline-ui.js");
+
+test("prompt key action sends only plain Enter", () => {
+  assert.equal(promptKeyAction({ key: "Enter" }), "send");
+  assert.equal(promptKeyAction({ key: "Enter", shiftKey: true }), "newline");
+  assert.equal(promptKeyAction({ key: "Enter", isComposing: true }), "ignore");
+  assert.equal(promptKeyAction({ key: "Enter", keyCode: 229 }), "ignore");
+  assert.equal(promptKeyAction({ key: "a" }), "ignore");
+  assert.equal(promptKeyAction({ key: " " }), "ignore");
+  assert.equal(promptKeyAction({ key: "Enter", shiftKey: false }), "send");
+});
 
 test("preview eligibility accepts only available passing integration data", () => {
   const passing = { kind: "integration", status: "completed", verdict: "pass" };
