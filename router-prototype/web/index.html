@@ -37,6 +37,17 @@
   .evCounter { color: #8fa3bd; font-size: .78rem; min-width: 70px; text-align: center; }
   .evHistory { border-top: 1px solid #262b33; margin-top: 24px; padding-top: 12px; }
   .evHistory h3 { color: #8fa3bd; font-size: .82rem; margin: 0 0 12px; }
+  .evShot { cursor: zoom-in; }
+  .evShot:focus-visible { outline: 3px solid #ffd166; outline-offset: 2px; }
+  .evLightbox { position: fixed; inset: 0; z-index: 1000; background: rgba(5, 7, 10, .92);
+    display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .evLbPanel { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 1400px;
+    max-height: 100%; color: #c1cad5; }
+  .evLbImage { flex: 1 1 auto; min-height: 0; max-width: 100%; max-height: 72vh; object-fit: contain; background: #0d1014; }
+  .evLbPanel h3 { margin: 0; font-size: 1rem; color: #d8dee6; }
+  .evLbPanel p { margin: 0; line-height: 1.5; max-height: 14vh; overflow-y: auto; white-space: pre-wrap; }
+  .evLbPanel .evNav { margin-top: 4px; }
+  .evLbPanel .evNav button:focus-visible { outline: 3px solid #ffd166; outline-offset: 2px; }
   .evLegacy { margin-bottom: 14px; }
   .evLegacy video { max-width: 640px; }
   @media (max-width: 640px) {
@@ -158,6 +169,8 @@
   .ts { color: #5a6675; font-size: .7rem; margin-right: 6px; }
   .transcript details { border-left: 2px solid #333c48; padding-left: 8px; }
   .transcript summary { cursor: pointer; color: #6c7a8c; font-size: .75rem; }
+  .transcript details.routerMessage pre { max-height: 240px; overflow: auto; white-space: pre-wrap;
+    word-break: break-word; }
   .transcript pre { margin: 6px 0 0; color: #8b98a8; }
   .liveLabel { color: #6c7a8c; font-size: .75rem; font-family: system-ui, sans-serif; }
   .row { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #262b33; }
@@ -284,8 +297,9 @@ window.addEventListener("DOMContentLoaded", () => {
       s.textContent = new Date(entry.at).toLocaleTimeString([], { hour12: false });
       div.appendChild(s);
     };
-    const details = (label, body) => {
+    const details = (label, body, cls) => {
       const d = document.createElement("details");
+      if (cls) d.className = cls;
       const s = document.createElement("summary");
       s.textContent = label;
       const pre = document.createElement("pre");
@@ -293,7 +307,12 @@ window.addEventListener("DOMContentLoaded", () => {
       d.append(s, pre);
       div.appendChild(d);
     };
-    if (entry && entry.type === "message" && entry.role === "user") {
+    if (entry && entry.type === "message" && entry.role === "user" && entry.origin === "router") {
+      stamp();
+      const text = textOf(entry);
+      const first = text.split("\n", 1)[0];
+      details("Router message: " + (first.length > 100 ? first.slice(0, 100) + "…" : first), text, "routerMessage");
+    } else if (entry && entry.type === "message" && entry.role === "user") {
       div.className = "user";
       stamp();
       div.appendChild(document.createTextNode("> " + textOf(entry)));

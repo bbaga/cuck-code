@@ -22,12 +22,14 @@ const { flushPendingValidationQueue, removePendingValidations,
 const { CHANGESET_LIMIT, collectChangeset, changesetWakeMessage,
   changesetFields } = require("./changeset");
 const { BaseError, resolveSpawnBase, baseFields, baseNote } = require("./spawn-base");
-const { sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
+const { recordRequestEntry, userEntry, isPromptEcho } = require("./transcript-echo");
+const { recordedPlannerRequest, sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests, serializePlannerRequest, restoreKnownNoticeIds,
   writeFileDurable, enqueuePlannerRequest, submitPrompt } = require("./planner-request");
+const { scopeFields } = require("./scope-fields");
 const { previewForLine } = require("./preview-instructions");
-const { validateShowcase, checkedFile, publicEvidence } = require("./evidence");
+const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require("./evidence");
 const { createDashboardLive } = require("./dashboard-live");
 const { readClaudeConfig } = require("./claude-config");
 const { sessionContextTokens } = require("./context-probe");
@@ -969,6 +971,7 @@ function dashboardStateForLine(line) {
       id: w.id, name: w.name, ...completionFields(w), branch: w.branch, role: w.role,
       validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
       ...changesetFields(w), lastError: w.lastError || null, ...compactionFields(w, line),
+      ...scopeFields(w, line.workers),
     })) };
 }
 
@@ -1002,7 +1005,8 @@ function saveLine(line) {
           keep: i.keep, status: i.status })),
         evidence: [...(line.evidence || new Map()).values()].map((e) => ({
           id: e.id, kind: e.kind || "video", version: e.version || null,
-          useCase: e.useCase, path: e.path, name: e.name, by: e.by, at: e.at,
+          useCase: e.useCase, path: e.path, name: e.name, by: e.by, byName: e.byName || null,
+          byRole: e.byRole || null, at: e.at,
           attemptId: e.attemptId || null,
           steps: e.steps || [] })),
         workers: [...line.workers.values()].map((w) => ({
@@ -1139,8 +1143,12 @@ function pump(line) {
   // calls pump again when it is done.
   if (line.sessionId && shouldAutoCompact(line.context, maxContextFor(line, line))
     && compactPlanner(line, "auto")) return;
-  const request = restorePlannerRequest(line.queue.shift());
+  let request = restorePlannerRequest(line.queue.shift());
   if (!request) return pump(line);
+  if (!request.fromUser && !request.recorded) {
+    recordRequestEntry(line, request, { append: appendTranscript, broadcast });
+  }
+  request = recordedPlannerRequest(request);
   const { text } = request;
   line.activePlannerRequest = request;
   // The first run after a compaction starts a fresh session: it needs the
@@ -1192,6 +1200,7 @@ function pump(line) {
     }
     if (typeof entry.at !== "number") entry.at = Date.now();
     runOutput.add(entry);
+    if (isPromptEcho(entry)) return;
     appendTranscript(line.transcript, entry);
     slog("debug", "planner.entry", { lineId: line.id, type: entry.type,
       role: entry.role || null, chars: raw.length, text: preview(entryText(entry), 200) });
@@ -1592,7 +1601,7 @@ function spawnValidator(line, source, criteria, report) {
     implementorId: implWorker.id, persona: worker.persona });
   broadcast(line, "worker_spawned", { worker: { id, name, branch: worker.branch,
     status: worker.status, role: worker.role, validates: worker.validates,
-    persona: worker.persona } });
+    persona: worker.persona, ...scopeFields(worker, line.workers) } });
   spawnWorker(line, worker, worker.prompt);
 }
 
@@ -1861,11 +1870,16 @@ const requestHandler = (req, res) => {
           text = `PLAN FEEDBACK from the user: ${body.text}. Revise plan.md accordingly. Do not spawn workers yet.`;
         } catch {}
       }
-      const out = submitPrompt(line, plannerRequest(text), {
+      const out = submitPrompt(line, plannerRequest(text, null, null, body.text), {
         wasStarted, save: saveLine, pump,
         onQueued: () => slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
           prompt: preview(body.text, 2000) }) });
       if (out.status !== 202) console.error(`prompt rejected for line ${line.id}: ${out.body.error}`);
+      else {
+        const entry = userEntry(body.text);
+        appendTranscript(line.transcript, entry);
+        broadcast(line, "entry", entry);
+      }
       json(res, out.status, out.body);
     });
     return;
@@ -2130,7 +2144,7 @@ const requestHandler = (req, res) => {
       slog("info", "worker.spawned", { lineId: line.id, workerId: id,
         name: body.name, persona, branch, repo: repo.name, repoUrl: repo.url || undefined });
       spawnWorker(line, worker, worker.prompt);
-      broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona, repo: repo.name } });
+      broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona, repo: repo.name, ...scopeFields(worker, line.workers) } });
       json(res, 201, { workerId: id, branch, worktree: worktreePath, repo: repo.name,
         baseCommit, ...baseFields(worker) });
     });
@@ -2310,7 +2324,8 @@ const requestHandler = (req, res) => {
       slog("info", "integration.spawned", { lineId: line.id, validatorId: id,
         branches: branchEntries.map((e) => `${e.repo}:${e.branch}`) });
       broadcast(line, "worker_spawned", { worker: { id, name, branch, status: worker.status,
-        role: worker.role, validates: null, persona: worker.persona, kind: "integration" } });
+        role: worker.role, validates: null, persona: worker.persona, kind: "integration",
+        ...scopeFields(worker, line.workers) } });
       spawnWorker(line, worker, worker.prompt);
       json(res, 201, { validatorId: id, branch,
         branches: branchEntries.map((e) => ({ repo: e.repo, branch: e.branch })),
@@ -2348,7 +2363,8 @@ const requestHandler = (req, res) => {
       }
       const id = crypto.randomUUID();
       if (!line.evidence) line.evidence = new Map();
-      line.evidence.set(id, { id, ...record, by: worker.id, at: Date.now(),
+      line.evidence.set(id, { id, ...record, by: worker.id, byName: worker.name,
+        byRole: evidenceRole(worker), at: Date.now(),
         // The router owns attempt identity. Do not accept a client-supplied
         // attemptId, because that could make old evidence current again.
         attemptId: currentAttemptId(worker) });
@@ -2367,8 +2383,10 @@ const requestHandler = (req, res) => {
     const all = [...(line.evidence || new Map()).values()];
     const current = all.filter((e) => isCurrentEvidence(line, e));
     const history = all.filter((e) => !isCurrentEvidence(line, e));
-    const items = current.map((e) => publicEvidence(line.id, e));
-    const historical = history.map((e) => publicEvidence(line.id, e));
+    const resolveAuthor = (workerId) => line.workers.get(workerId);
+    const newestFirst = (a, b) => Number(b.at) - Number(a.at);
+    const items = current.map((e) => publicEvidence(line.id, e, resolveAuthor)).sort(newestFirst);
+    const historical = history.map((e) => publicEvidence(line.id, e, resolveAuthor)).sort(newestFirst);
     const currentAttemptIds = {};
     for (const worker of line.workers.values()) {
       const attemptId = currentAttemptId(worker);

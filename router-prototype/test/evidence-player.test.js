@@ -3,14 +3,17 @@ const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
-const { selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState, evidencePollIsCurrent } = require("../web/pipeline-ui.js");
+const { sortEvidenceNewestFirst, formatEvidenceAuthor, evidenceKeyAction, selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState, evidencePollIsCurrent } = require("../web/pipeline-ui.js");
 
 class Element {
-  constructor(doc, tag) { this.ownerDocument = doc; this.tagName = tag.toUpperCase(); this.children = []; this.parentNode = null; this.listeners = {}; this.hidden = false; this.disabled = false; this.currentTime = 0; this.textContent = ""; }
+  constructor(doc, tag) { this.ownerDocument = doc; this.tagName = tag.toUpperCase(); this.children = []; this.parentNode = null; this.listeners = {}; this.hidden = false; this.disabled = false; this.currentTime = 0; this.textContent = ""; this.attrs = {}; this.focused = false; }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+  focus() { this.focused = true; this.ownerDocument.activeElement = this; }
   append(...nodes) { for (const node of nodes) this.appendChild(node); }
   appendChild(node) { if (node.parentNode) node.parentNode.children = node.parentNode.children.filter((child) => child !== node); node.parentNode = this; this.children.push(node); return node; }
   addEventListener(name, fn) { (this.listeners[name] ||= []).push(fn); }
-  dispatch(name) { for (const fn of this.listeners[name] || []) fn({ target: this }); }
+  dispatch(name, extra) { for (const fn of this.listeners[name] || []) fn({ target: this, ...extra }); }
   click() { if (!this.disabled) this.dispatch("click"); }
   replaceWith(node) { if (!this.parentNode) return; const p = this.parentNode; const i = p.children.indexOf(this); p.children[i] = node; node.parentNode = p; this.parentNode = null; }
   remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((child) => child !== this); this.parentNode = null; }
@@ -18,7 +21,9 @@ class Element {
   set innerHTML(value) { if (value === "") { for (const child of this.children) child.parentNode = null; this.children = []; } }
   get innerHTML() { return ""; }
 }
-class Document { constructor() { this.body = new Element(this, "body"); } createElement(tag) { return new Element(this, tag); } }
+class Document { constructor() { this.body = new Element(this, "body"); this.listeners = {}; } createElement(tag) { return new Element(this, tag); }
+  addEventListener(name, fn) { (this.listeners[name] ||= []).push(fn); }
+  key(key, target, extra) { for (const fn of this.listeners.keydown || []) fn({ key, target: target || this.body, preventDefault() {}, ...extra }); } }
 function makeState() { const doc = new Document(); const pane = doc.createElement("div"); doc.body.appendChild(pane); return { evPane: pane, evidenceState: null, evidenceResponse: null }; }
 function showcase(id = "current", attemptId = "attempt-current") { return { id, attemptId, kind: "showcase", version: 1, at: "2026-01-01T00:00:00Z", name: "demo.webm", video: "/video.webm", useCase: "Use case", steps: [
   { title: "First", explanation: "First explanation", screenshot: "/one.png" },
@@ -107,4 +112,97 @@ test("production polling rejects stale responses and keeps visible focus styling
   assert.strictEqual(evidencePollIsCurrent(st, "line", 2, "other", st), false);
   assert.strictEqual(evidencePollIsCurrent(st, "line", 2, "line", other), false);
   assert.match(html, /evidencePollIsCurrent/); assert.match(html, /:focus-visible/); assert.match(renderer, /video\.controls = true/);
+});
+
+function setup(extra = {}) {
+  const st = makeState(); const current = { ...showcase(), at: 2000, addedBy: { id: "w1", name: "Val", role: "validator" }, ...extra };
+  const response = { items: [current], history: [], currentAttemptId: current.attemptId };
+  st.evidenceResponse = response; renderEvidenceFromState(st, response); return { st, response };
+}
+const overlays = (st) => st.evPane.ownerDocument.body.children.filter((c) => c.className === "evLightbox");
+test("sortEvidenceNewestFirst sorts numerically and puts invalid last", () => {
+  const list = [{ id: "a", at: 9 }, { id: "x", at: "bad" }, { id: "b", at: 100 }, { id: "n" }];
+  assert.deepStrictEqual(sortEvidenceNewestFirst(list).map((i) => i.id), ["b", "a", "x", "n"]);
+  assert.deepStrictEqual(list.map((i) => i.id), ["a", "x", "b", "n"]);
+});
+test("formatEvidenceAuthor handles all shapes", () => {
+  assert.strictEqual(formatEvidenceAuthor({ addedBy: { name: "Val", role: "validator" } }), "Val (validator)");
+  assert.strictEqual(formatEvidenceAuthor({ addedBy: { name: "Val", role: null } }), "Val");
+  assert.strictEqual(formatEvidenceAuthor({ addedBy: { name: null, role: null } }), "unknown validator");
+  assert.strictEqual(formatEvidenceAuthor({}), "unknown validator");
+});
+test("evidenceKeyAction maps keys and ignores inputs and hidden tab", () => {
+  const on = { open: true, visible: true };
+  assert.strictEqual(evidenceKeyAction({ key: "ArrowRight" }, on), "next");
+  assert.strictEqual(evidenceKeyAction({ key: "ArrowLeft" }, on), "prev");
+  assert.strictEqual(evidenceKeyAction({ key: "Escape" }, on), "close");
+  assert.strictEqual(evidenceKeyAction({ key: "Escape" }, { open: false, visible: true }), null);
+  assert.strictEqual(evidenceKeyAction({ key: "ArrowLeft" }, { open: false, visible: false }), null);
+  assert.strictEqual(evidenceKeyAction({ key: "ArrowLeft", target: { tagName: "INPUT" } }, on), null);
+  assert.strictEqual(evidenceKeyAction({ key: "ArrowLeft", target: { tagName: "DIV", isContentEditable: true } }, on), null);
+});
+test("meta line shows time, author, file name, and ISO title", () => {
+  const { st } = setup(); const meta = st.evidenceView.meta;
+  assert.match(meta.textContent, /added by Val \(validator\)/); assert.match(meta.textContent, /demo\.webm/);
+  assert.strictEqual(meta.getAttribute("title"), new Date(2000).toISOString());
+  const bad = setup({ at: "nope" }).st.evidenceView.meta;
+  assert.match(bad.textContent, /^unknown time/); assert.doesNotMatch(bad.textContent, /Invalid/);
+});
+test("history lists newest entry first", () => {
+  const st = makeState(); const mk = (id, at) => ({ id, at, useCase: id, video: "/v.webm" });
+  renderEvidenceFromState(st, { items: [], history: [mk("old", 1), mk("new", 5), mk("mid", 3)], currentAttemptId: "x" });
+  const names = st.historyView.node.children.slice(1).map((a) => a.children[0].textContent);
+  assert.deepStrictEqual(names, ["new", "mid", "old"]);
+});
+test("click on screenshot opens large view; Escape closes and restores focus", () => {
+  const { st } = setup(); const image = st.evidenceView.image;
+  assert.strictEqual(image.getAttribute("tabindex"), "0"); assert.ok(image.getAttribute("aria-label"));
+  image.click(); const [box] = overlays(st);
+  assert.strictEqual(box.getAttribute("role"), "dialog"); assert.strictEqual(box.getAttribute("aria-modal"), "true");
+  assert.strictEqual(st.evidenceLightbox.counter.textContent, "1 of 2");
+  st.evPane.ownerDocument.key("Escape");
+  assert.strictEqual(overlays(st).length, 0); assert.strictEqual(st.evidenceView.image.focused, true);
+});
+test("Enter on screenshot opens large view; Close button closes it", () => {
+  const { st } = setup(); st.evidenceView.image.dispatch("keydown", { key: "Enter" });
+  assert.strictEqual(overlays(st).length, 1); st.evidenceLightbox.close.click(); assert.strictEqual(overlays(st).length, 0);
+});
+test("arrow keys flip steps, stop at both ends, and keep inline slide in sync", () => {
+  const { st } = setup(); const doc = st.evPane.ownerDocument; st.evidenceView.image.click();
+  doc.key("ArrowLeft"); assert.strictEqual(st.evidenceState.step, 0);
+  doc.key("ArrowRight"); assert.strictEqual(st.evidenceState.step, 1);
+  assert.strictEqual(st.evidenceLightbox.title.textContent, "Second"); assert.strictEqual(st.evidenceView.title.textContent, "Second");
+  assert.strictEqual(st.evidenceLightbox.counter.textContent, "2 of 2");
+  doc.key("ArrowRight"); assert.strictEqual(st.evidenceState.step, 1);
+  assert.strictEqual(st.evidenceLightbox.next.disabled, true);
+});
+test("arrow keys flip inline slides when the large view is closed", () => {
+  const { st } = setup(); st.evPane.ownerDocument.key("ArrowRight");
+  assert.strictEqual(st.evidenceState.step, 1); assert.strictEqual(overlays(st).length, 0);
+  st.evPane.hidden = true; st.evPane.ownerDocument.key("ArrowLeft"); assert.strictEqual(st.evidenceState.step, 1);
+});
+test("poll with same data keeps the large view open on the same step", () => {
+  const { st, response } = setup(); st.evidenceView.image.click(); st.evPane.ownerDocument.key("ArrowRight");
+  const overlay = overlays(st)[0]; const lb = st.evidenceLightbox;
+  renderEvidenceFromState(st, response);
+  assert.strictEqual(overlays(st)[0], overlay); assert.strictEqual(st.evidenceLightbox, lb);
+  assert.strictEqual(lb.counter.textContent, "2 of 2");
+});
+test("arrow keys inside an input do nothing and only one listener exists", () => {
+  const { st, response } = setup(); const doc = st.evPane.ownerDocument;
+  doc.key("ArrowRight", { tagName: "INPUT" }); assert.strictEqual(st.evidenceState.step, 0);
+  renderEvidenceFromState(st, response); renderEvidenceFromState(st, response);
+  assert.strictEqual(doc.listeners.keydown.length, 1);
+});
+test("Tab wraps from the last button to the first inside the large view", () => {
+  const { st } = setup(); const doc = st.evPane.ownerDocument; st.evidenceView.image.click();
+  const box = st.evidenceLightbox; doc.key("Tab", box.close);
+  assert.strictEqual(box.prev.disabled, true); assert.strictEqual(doc.activeElement, box.next);
+  doc.activeElement = null; doc.key("Tab", box.next); assert.strictEqual(doc.activeElement, null);
+});
+test("Shift+Tab wraps from the first button to the last inside the large view", () => {
+  const { st } = setup(); const doc = st.evPane.ownerDocument; st.evidenceView.image.click();
+  const box = st.evidenceLightbox; doc.key("Tab", box.next, { shiftKey: true });
+  assert.strictEqual(doc.activeElement, box.close);
+  doc.activeElement = null; doc.key("Tab", box.close, { shiftKey: true }); assert.strictEqual(doc.activeElement, null);
 });

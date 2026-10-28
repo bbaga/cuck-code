@@ -28,7 +28,11 @@ function writeLine(root, attemptId = "attempt-2", evidenceAttemptId = attemptId)
   fs.writeFileSync(path.join(lineDir, "line.json"), JSON.stringify({
     id: "line-1", name: "Evidence", workers: [{ id: "worker-1", name: "implementor",
       role: "implementor", worktreePath: worktree, runGeneration: 2,
-      lastCompletedInvocationId: attemptId }], evidence: [
+      lastCompletedInvocationId: attemptId },
+    { id: "worker-2", name: "validator-a", role: "validator", validates: "worker-1", worktreePath: worktree,
+      runGeneration: 1, lastCompletedInvocationId: attemptId },
+    { id: "worker-3", name: "integration-a", role: "validator", kind: "integration",
+      worktreePath: worktree, runGeneration: 1, lastCompletedInvocationId: attemptId }], evidence: [
       { id: "old", kind: "showcase", version: 1, useCase: "Old", name: "demo.webm",
         path: oldVideo, by: "worker-1", at: 1, attemptId: "attempt-1",
         steps: [{ title: "Old step", explanation: "Old result", screenshot: oldImage }] },
@@ -122,6 +126,80 @@ test("rejects invalid evidence without a partial record write", async () => {
   assert.equal(after.evidence.length, before.evidence.length);
 });
 
+async function register(workerId, useCase) {
+  const result = await request(base, `/api/protocol/workers/${workerId}/evidence`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ useCase, file: "demo.webm" }),
+  });
+  assert.equal(result.response.status, 201);
+  return result.body.evidenceId;
+}
+
+async function listing() {
+  return (await request(base, "/api/lines/line-1/evidence")).body;
+}
+
+test("reports addedBy for validator and integration validator", async () => {
+  const validatorId = await register("worker-2", "By validator");
+  const integrationId = await register("worker-3", "By integration");
+  const { items } = await listing();
+  assert.deepEqual(items.find((i) => i.id === validatorId).addedBy,
+    { id: "worker-2", name: "validator-a", role: "validator" });
+  assert.deepEqual(items.find((i) => i.id === integrationId).addedBy,
+    { id: "worker-3", name: "integration-a", role: "integration validator" });
+  assert.equal(typeof items[0].at, "number");
+});
+
+test("sorts items and history newest first by numeric at", async () => {
+  server.kill("SIGTERM");
+  await new Promise((resolve) => server.once("exit", resolve));
+  const file = path.join(root, "line-1", "line.json");
+  const data = JSON.parse(fs.readFileSync(file, "utf8"));
+  const video = data.evidence[0].path;
+  const record = (id, at, attemptId) => ({ id, useCase: id, name: "demo.webm", path: video,
+    by: "worker-1", at, attemptId });
+  // Inserted out of time order. A text compare would put 9999999999999 and
+  // 10000000000000 in the wrong order against 999999999999.
+  data.evidence = [
+    record("c1", 2000, "attempt-2"), record("c2", 10000000000000, "attempt-2"),
+    record("c3", 999999999999, "attempt-2"),
+    record("h2", 3000, "attempt-1"), record("h3", 10000000000001, "attempt-1"),
+    record("h1", 999999999998, "attempt-1")];
+  fs.writeFileSync(file, JSON.stringify(data));
+  const restarted = await start(root);
+  server = restarted.child; base = restarted.base;
+  const { items, history } = await listing();
+  assert.deepEqual(items.map((i) => i.id), ["c2", "c3", "c1"]);
+  assert.deepEqual(history.map((i) => i.id), ["h3", "h1", "h2"]);
+  for (const entry of [...items, ...history]) assert.equal(typeof entry.at, "number");
+});
+
+test("keeps addedBy after removal; old records fall back to workers or null", async () => {
+  const id = await register("worker-2", "Before removal");
+  server.kill("SIGTERM");
+  await new Promise((resolve) => server.once("exit", resolve));
+  const file = path.join(root, "line-1", "line.json");
+  const data = JSON.parse(fs.readFileSync(file, "utf8"));
+  data.workers = data.workers.filter((w) => w.id !== "worker-2");
+  // Old-style records: no byName. One author exists, one is gone.
+  data.evidence.push(
+    { id: "old-live", useCase: "Old live", name: "demo.webm", path: data.evidence[0].path,
+      by: "worker-3", at: 10, attemptId: "attempt-2" },
+    { id: "old-gone", useCase: "Old gone", name: "demo.webm", path: data.evidence[0].path,
+      by: "worker-9", at: 11, attemptId: "attempt-2" },
+    { id: "old-none", useCase: "Old none", name: "demo.webm", path: data.evidence[0].path,
+      at: 12, attemptId: "attempt-2" });
+  fs.writeFileSync(file, JSON.stringify(data));
+  const restarted = await start(root);
+  server = restarted.child; base = restarted.base;
+  const { items } = await listing();
+  const by = (key) => items.find((i) => i.id === key).addedBy;
+  assert.deepEqual(by(id), { id: "worker-2", name: "validator-a", role: "validator" });
+  assert.deepEqual(by("old-live"), { id: "worker-3", name: "integration-a", role: "integration validator" });
+  assert.deepEqual(by("old-gone"), { id: "worker-9", name: null, role: null });
+  assert.deepEqual(by("old-none"), { id: null, name: null, role: null });
+});
+
 test("keeps current items empty after a later attempt and reloads history", async () => {
   server.kill("SIGTERM");
   await new Promise((resolve) => server.once("exit", resolve));
@@ -130,6 +208,6 @@ test("keeps current items empty after a later attempt and reloads history", asyn
   server = restarted.child; base = restarted.base;
   const { body } = await request(base, "/api/lines/line-1/evidence");
   assert.deepEqual(body.items, []);
-  assert.deepEqual(body.history.map((item) => item.id), ["old", "current"]);
-  assert.equal(body.history[1].attemptId, "attempt-2");
+  assert.equal(body.history.at(-1).id, "old");
+  assert.equal(body.history.find((item) => item.id === "current").attemptId, "attempt-2");
 });
