@@ -147,7 +147,9 @@
   .gnode { position: absolute; display: flex; align-items: center; gap: 8px;
     padding: 0 10px; height: 36px; border: 1px solid #333c48; border-radius: 8px;
     background: #10141a; font-size: .8rem; cursor: pointer; user-select: none; }
-  .gnode .dot { margin-left: 0; }
+  .gnode .dot { margin-left: 0; flex-shrink: 0; }
+  .gnode > span { white-space: nowrap; flex-shrink: 0; }
+  .gnode .wcfg { color: #8fa3bd; }
   .gnode.sel { outline: 2px solid #2d6cdf; }
   .gnode.w-running { border-color: #3d8bff; }
   .gnode.w-completed { border-color: #35c46a; }
@@ -268,17 +270,20 @@ window.addEventListener("DOMContentLoaded", () => {
     clearHarnessState, clearProviderState, shouldHideValidator,
     shouldShowIntegrationValidator, buildGraphLanes,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
-<<<<<<< HEAD
     evidencePollIsCurrent, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
     nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT } = window.pipelineUI;
-=======
-    evidencePollIsCurrent, nodeWidth, columnWidth } = window.pipelineUI;
->>>>>>> 0bc8fcd (Size pipeline nodes to their content and show full names)
   const cards = new Map();
   const linesEl = document.getElementById("lines");
   const listEl = document.getElementById("linelist");
   let selectedLine = null;
   const SVGNS = "http://www.w3.org/2000/svg";
+  const graphTextMeasure = (() => {
+    try {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      return (text, font = NODE_FONT) => { ctx.font = font; return ctx.measureText(String(text)).width; };
+    } catch (_) { return (text) => String(text).length * 8; }
+  })();
 
   mermaid.initialize({ startOnLoad: false, theme: "dark" });
 
