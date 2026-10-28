@@ -510,23 +510,41 @@ window.addEventListener("DOMContentLoaded", () => {
     const add = (label, value) => { if (!value) return; const p = document.createElement("p"); p.textContent = label + ": " + value; panel.appendChild(p); };
     add("Revision", data.sourceRevision); add("Project directory", data.projectDirectory); add("Expected URL", data.expectedUrl);
     add("Prerequisites", Array.isArray(data.prerequisites) ? data.prerequisites.join("; ") : "");
-    add("Limitations", Array.isArray(data.limitations) ? data.limitations.join("; ") : "");
+    if (Array.isArray(data.limitations) && data.limitations.length) {
+      const heading = document.createElement("h3"); heading.textContent = "Limitations"; panel.appendChild(heading);
+      data.limitations.forEach((limitation) => { const item = document.createElement("p"); item.textContent = limitation; panel.appendChild(item); });
+    }
+    if (!data.expectedUrl) add("Confirm manually", "The expected URL is not known. Confirm the correct URL before verification.");
+    if (!Array.isArray(data.environment) || data.environment.length === 0) add("Environment", "No environment requirements were provided. Confirm required environment values yourself. Do not paste secrets into commands.");
     add("Explanation", data.message || data.reason || "");
     if (data.stale === true) add("Data status", "Stale. Do not rely on these instructions.");
     if (data.availability === "unavailable") add("Data status", data.message || "Preview data is unavailable.");
     if (data.eligible !== true) add("Data status", "Not eligible for use. Preview instructions require a completed passing integration.");
     if (data.availability !== "available") add("Availability", data.reason || data.message || data.availability || "Unavailable");
     if (data.eligible !== true && data.steps.length === 0) add("Instructions", "No usable preview steps are available.");
-    if (data.eligible === true) data.steps.forEach((step, i) => { const box = document.createElement("div"); box.className = "previewStep";
-      const label = document.createElement("h3"); label.textContent = (i + 1) + ". " + (step.description || step.title || "Instruction");
-      box.appendChild(label);
-      const command = step && typeof step === "object" && typeof step.command === "string"
-        ? sanitizePreviewCommand(step.command) : "";
-      const pre = document.createElement("pre"); pre.textContent = command || (typeof step === "string" ? step : step.text || "");
-      box.appendChild(pre);
-      if (command) { const copy = document.createElement("button"); copy.type = "button"; copy.textContent = "Copy command";
-        copy.addEventListener("click", () => navigator.clipboard.writeText(command)); box.appendChild(copy); }
-      panel.appendChild(box); });
+    if (data.eligible === true) {
+      const phaseNames = { prerequisites: "Prerequisites", revision: "Get revision", install: "Install", run: "Run", verify: "Verify", stop: "Stop" };
+      let phase = null, number = 0;
+      data.steps.forEach((rawStep) => {
+        const step = typeof rawStep === "string" ? { text: rawStep } : (rawStep && typeof rawStep === "object" ? rawStep : {});
+        const nextPhase = typeof step.phase === "string" ? step.phase.toLowerCase() : "";
+        const group = phaseNames[nextPhase] || "Additional steps";
+        if (group !== phase) { const heading = document.createElement("h3"); heading.textContent = group; panel.appendChild(heading); phase = group; }
+        number++;
+        const box = document.createElement("div"); box.className = "previewStep";
+        const label = document.createElement("h4"); label.textContent = number + ". " + (step.description || step.title || "Instruction"); box.appendChild(label);
+        const command = step.manual !== true && step.type !== "manual" && typeof step.command === "string"
+          ? sanitizePreviewCommand(step.command) : "";
+        const text = command || step.text || (typeof rawStep === "string" ? rawStep : "");
+        if (text) { const details = document.createElement("p"); details.textContent = text; box.appendChild(details); }
+        if (command) { const pre = document.createElement("pre"); pre.textContent = command; box.appendChild(pre);
+          const copy = document.createElement("button"); copy.type = "button"; copy.textContent = "Copy command";
+          copy.addEventListener("click", () => navigator.clipboard.writeText(command)); box.appendChild(copy); }
+        if (step.expected) { const expected = document.createElement("p"); expected.textContent = "Expected outcome: " + step.expected; box.appendChild(expected); }
+        else if (nextPhase === "verify") { const expected = document.createElement("p"); expected.textContent = "Expected outcome: Confirm the result manually; no expected result was provided."; box.appendChild(expected); }
+        panel.appendChild(box);
+      });
+    }
     st.previewPanel.replaceChildren(panel); st.previewPanel.hidden = false; renderGraph(st);
   }
 

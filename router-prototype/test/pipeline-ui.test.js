@@ -56,12 +56,17 @@ test("preview eligibility accepts only available passing integration data", () =
 test("structured preview steps keep descriptions separate from sanitized copy commands", () => {
   const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
   const render = html.slice(html.indexOf("function renderPreviewPanel"), html.indexOf("function selectNode"));
-  assert.match(render, /label\.textContent = .*step\.description/);
+  assert.match(render, /phaseNames = \{ prerequisites: "Prerequisites", revision: "Get revision", install: "Install", run: "Run", verify: "Verify", stop: "Stop" \}/);
+  assert.match(render, /label\.textContent = number \+ .*step\.description/);
   assert.match(render, /sanitizePreviewCommand\(step\.command\)/);
   assert.match(render, /navigator\.clipboard\.writeText\(command\)/);
+  assert.match(render, /step\.manual !== true && step\.type !== "manual"/);
   assert.match(render, /if \(command\).*Copy command/s);
-  assert.match(render, /typeof step === "object" && typeof step\.command === "string"/);
-  assert.match(render, /pre\.textContent = command \|\|/);
+  assert.match(render, /Expected outcome: /);
+  assert.match(render, /textContent = limitation/);
+  assert.match(render, /Confirm the correct URL before verification/);
+  assert.match(render, /Confirm required environment values yourself/);
+  assert.match(render, /typeof rawStep === "string" \? rawStep/);
   const clone = "git clone https://example.test/repo.git && cd repo && git checkout abc123";
   const description = "Clone the repository and select the validated revision";
   const safeCommand = pipelineUiModule.sanitizePreviewCommand(clone + "\n$ API_KEY=secret SECRET=hidden\necho sk-1234567890abcdef");
