@@ -16,6 +16,32 @@
   // Phases whose sessions are resumed and take a maxContext setting.
   const CONTEXT_PHASES = ["planner", "implementor"];
 
+  const NODE_FONT = '0.8rem system-ui, sans-serif';
+  const NODE_CONFIG_FONT = '0.8rem system-ui, sans-serif';
+  const NODE_WIDTH_MARGIN = 8;
+  const NODE_PADDING = 20;
+  const NODE_BORDER = 2;
+  const NODE_GAP = 8;
+
+  function nodeWidth(worker, measureText) {
+    const measure = typeof measureText === "function" ? measureText : (text) => String(text).length * 8;
+    const w = worker || {};
+    const persona = (w.role || "implementor") === "validator" ? "val" : (w.persona || "backend");
+    const config = [w.harness, w.model, w.effort].filter(Boolean).join(" · ");
+    const parts = [persona, w.name || "", config];
+    let content = measure(parts[0]) + 12;
+    content += NODE_GAP + measure(parts[1]);
+    if (config) content += NODE_GAP + measure(config);
+    content += NODE_GAP + 10;
+    if (w.status === "running") content += NODE_GAP + measure("Stop") + 16;
+    return Math.ceil(content + NODE_PADDING + NODE_BORDER + NODE_WIDTH_MARGIN);
+  }
+
+  function columnWidth(widths) {
+    const values = Array.isArray(widths) ? widths.filter(Number.isFinite) : [];
+    return Math.max(0, ...values);
+  }
+
   // Parse a max context size typed in thousands: "200K", "50k", "1M",
   // "1.5M", or a bare "200" (read as 200K). Returns tokens, null for an
   // empty value, or NaN for anything else.
@@ -491,6 +517,11 @@
     PHASE_ROWS,
     EFFORT_LEVELS,
     CONTEXT_PHASES,
+    NODE_FONT,
+    NODE_CONFIG_FONT,
+    NODE_WIDTH_MARGIN,
+    nodeWidth,
+    columnWidth,
     parseContextSize,
     formatTokens,
     PI_HARNESS_ID,
