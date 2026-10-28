@@ -247,7 +247,7 @@ window.addEventListener("DOMContentLoaded", () => {
     clearHarnessState, clearProviderState, shouldHideValidator,
     shouldShowIntegrationValidator, buildGraphLanes,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
-    evidencePollIsCurrent } = window.pipelineUI;
+    evidencePollIsCurrent, composerKeyAction } = window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
   const listEl = document.getElementById("linelist");
@@ -1014,7 +1014,7 @@ window.addEventListener("DOMContentLoaded", () => {
     };
     input.addEventListener("input", () => fitComposer(input));
     input.addEventListener("keydown", (e) => {
-      if (pipelineUI.composerKeyAction(e) === "send") { e.preventDefault(); post(); }
+      if (composerKeyAction(e) === "send") { e.preventDefault(); post(); }
     });
 
     setStatus(line.status);
