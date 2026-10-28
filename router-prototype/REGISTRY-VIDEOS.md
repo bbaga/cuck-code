@@ -102,18 +102,21 @@ The repo call returns `{"name":"demo","path":...}` with status 201. The claim st
 | `.workPane` | Work view of the line | `web/index.html`, `web/registry-line.js` |
 | `.workPane` labels `Repo (free text)`, `Title`, `Summary`, `Tags (comma list)`, `Branch`, `Commit (40 hex)`, `Contract`, `Status` | Publish form fields (use `getByLabel`) | `web/registry-line.js` |
 | `.workPane` buttons `Publish`, `Send request`, `Accept`, `Decline`, `Mark fulfilled`, `Fulfil` | Work view actions (`getByRole('button')`) | `web/registry-line.js` |
-| `.workPane` labels `Target line`, `Claim reference (optional)`, `Subject`, `Text`, `Claim` | Request form and fulfil form | `web/registry-line.js` |
-| `.workPane h3` `My claims`, `Incoming requests`, `Outgoing requests` | Section headings; the list is the next `ul` | `web/registry-line.js` |
+| `.workPane` labels `Target line`, `Claim reference (optional)`, `Subject` | Request form fields |  `web/registry-line.js` |
+| `.workPane textarea` | The `Text` field of the request form (only one textarea exists; do not use `getByLabel('Text')`) | `web/registry-line.js` |
+| `.workPane form:has(button:text-is("Fulfil")) select` | The `Claim` select of the fulfil form (its label text includes the option text) | `web/registry-line.js` |
+| `.workPane h3:text-is("My claims") + div`, `... "Incoming requests") + div`, `... "Outgoing requests") + div` | The list box of each section (the `ul` is inside it) | `web/registry-line.js` |
 | `.workMsg` (`role=alert`) | Work view error text | `web/registry-line.js` |
 | `#registry .regTabs button` `Claims` / `Archive` (`aria-pressed`) | Dashboard tabs | `web/registry-ui.js` |
 | `[aria-label="Status filter"]`, `[aria-label="Search claims"]` | Dashboard status select (`current`, `all`, `stale`, ...) and search box | `web/registry-ui.js` |
 | `[aria-label="Owner line filter"]`, `[aria-label="Repository filter"]` | Dashboard filters | `web/registry-ui.js` |
 | `#registry .regConn` (`role=status`) | `live`, `reconnecting`, or `offline` | `web/registry-ui.js` |
-| `#registry .regError` (`role=alert`) | `Registry error: ...` text | `web/registry-ui.js` |
+| `#registry > .regError` (`role=alert`) | Top error line: `Registry error: ...` text. Do not use `#registry .regError`: detail rows and the events panel also use that class | `web/registry-ui.js` |
 | `#registry .regSummary` (first) | Count line: `active: 1 \| ... \| archive: 1 \| revision: N` | `web/registry-ui.js` |
 | `#registry .regSummary` (second) | `By owner line: ... \|\| By repo: ...` | `web/registry-ui.js`, `web/registry-ui-extra.js` |
 | `#registry .regTableWrap` (`table` or `p`) | Claims or archive table; `p` shows `Could not load claims` | `web/registry-ui.js` |
 | `#registry .regTableWrap button` `Details` | Detail row (stale reason, merge fields) | `web/registry-ui.js` |
+| `#registry .regEvents p.regError` | Events panel error text, for example `Unavailable` |
 | `#registry .regEvents li` | Recent events: `<time> <type> <subject>` | `web/registry-ui.js`, `web/registry-ui-extra.js` |
 
 The dashboard shows a deleted owner as `<line name or id> (deleted owner)` in the Owner line column.
@@ -181,11 +184,11 @@ Setup: sections 0 and 1. Lines A and B exist, and line A owns `Shared CSV parser
 
 1. Click `Line B`, then `Work`. Under `New request`, choose `Line A` in `Target line`.
    Wait until `Claim reference (optional)` lists `Shared CSV parser`. Choose it.
-2. Fill `Subject` with `Need the parser` and `Text` with `Please share the parser branch`. Click `Send request`.
+2. Fill `Subject` with `Need the parser` and the `textarea` (`Text`) with `Please share the parser branch`. Click `Send request`.
 3. Expect `Need the parser · Line A · open · rev 1` under `Outgoing requests`.
 4. Click `Line A`, then `Work`. Expect `Need the parser · Line B · open` under `Incoming requests`.
 5. Click `Accept`. Expect the row to read `accepted`.
-6. Click `Mark fulfilled`. In the form, choose `Shared CSV parser` in `Claim`. Click `Fulfil`.
+6. Click `Mark fulfilled`. In the form, choose `Shared CSV parser` in the select of the fulfil form (`.workPane form:has(button:text-is("Fulfil")) select`). Click `Fulfil`.
 7. Expect the row to read `fulfilled`.
 8. Click `Line B`, then `Work`. Expect `Need the parser · Line A · fulfilled` under `Outgoing requests`.
    Line B has no buttons on outgoing rows.
@@ -198,7 +201,7 @@ Setup: sections 0 and 1. Line D has `Doomed claim` and an open request `Doomed a
 2. Click `#registryBtn` again. Click the `Line D` entry. Click `.card:visible .deleteBtn` twice.
    The first click shows `Sure?`. Click the second within 4 seconds.
 3. Expect the `Line D` entry to leave the sidebar.
-4. Click `Line A`, then `Work`. Expect `Doomed ask · <line D id> · open · orphaned · rev 1` under
+4. Click `Line A`, then `Work`. Expect `Doomed ask · <line D id> · open · orphaned · rev 2` under
    `Incoming requests`. Line A cannot accept it. The name shows as the id because the line is gone.
 5. Click `#registryBtn`. Select `stale` in `Status filter` (or keep `all`).
 6. Expect the row `Doomed claim` with status `stale: owner-gone` and owner `<line D id> (deleted owner)`.
@@ -208,6 +211,9 @@ Setup: sections 0 and 1. Line D has `Doomed claim` and an open request `Doomed a
 ## 8. Case 5: merge visibility with the real verifier
 
 Setup: sections 0 and 1, including the git commands. Claim `Merged feature` is `active` on line M.
+Do this case soon after the router start. The background merge sweep (first run 60 seconds after start)
+can archive the claim before your manual refresh. Then the refresh returns `already_merged`.
+That result is also correct. The Archive and `claim.merged` checks below stay the same.
 
 1. Click `#registryBtn`. Expect `Merged feature` in the Claims tab with `Merge check` `never checked`.
 2. Run the refresh (the router checks the commit in the registered repo; the UI has no refresh button):
@@ -235,10 +241,10 @@ Setup: sections 0 and 1.
 
 3. Stop the router: `kill "$SERVER_PID"`. Expect `.regConn` to show `reconnecting`, then `offline`.
 4. Wait up to 20 seconds for the next poll. Expect the table area to read `Could not load claims`,
-   `.regError` to read `Registry error: ...`, and the breakdown and `.regEvents` to clear (events read `Unavailable`).
+   `#registry > .regError` to read `Registry error: ...`, and the breakdown to clear. Expect `#registry .regEvents p.regError` to read `Unavailable`.
 5. Start it again with the same port and directory: `start_router`.
 6. Expect `.regConn` to return to `live` (within about 20 seconds). Expect the table, breakdown and
-   events to fill again, and `.regError` to clear.
+   events to fill again, and `#registry > .regError` to clear.
 
 ## 10. Finish
 
