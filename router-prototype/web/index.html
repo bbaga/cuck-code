@@ -66,7 +66,7 @@
   .lineentry .lname { flex: 1; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; }
   .lcount { color: #6c7a8c; font-size: .75rem; flex-shrink: 0; }
-  .head { display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+  .head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px;
     border-bottom: 1px solid #262b33; font-weight: 600; }
   .deleteBtn { margin-left: 8px; padding: 3px 10px; font-size: .7rem;
     background: #4d1420; color: #ff8095; }
@@ -160,15 +160,20 @@
   .transcript pre { margin: 6px 0 0; color: #8b98a8; }
   .liveLabel { color: #6c7a8c; font-size: .75rem; font-family: system-ui, sans-serif; }
   .row { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #262b33; }
-  .row input { flex: 1; padding: 8px; background: #0d1014; color: inherit;
+  .row input { flex: 1; min-width: 0; padding: 8px; background: #0d1014; color: inherit;
     border: 1px solid #2c333d; border-radius: 4px; }
+  .ctxMeter { align-self: center; font-size: .72rem; color: #6c7a8c; white-space: nowrap;
+    font-variant-numeric: tabular-nums; }
+  .ctxMeter.near { color: #e5a04b; }
+  .transcript .compacted { color: #8fa3bd; border-left: 2px solid #3b5170; padding-left: 8px;
+    white-space: pre-wrap; }
   #createPanel { border: 1px solid #262b33; border-radius: 8px; background: #161a20;
     padding: 16px; margin-bottom: 20px; max-width: 620px; }
   #createPanel h2 { font-size: .95rem; margin: 0 0 10px; }
   #createPanel label { display: block; font-size: .75rem; color: #8fa3bd; margin: 8px 0 2px; }
-  #createPanel input, #createPanel select { width: 100%; padding: 6px; background: #0d1014;
+  #createPanel input, #createPanel select, .pipePane input, .pipePane select { width: 100%; padding: 6px; background: #0d1014;
     color: inherit; border: 1px solid #2c333d; border-radius: 4px; font-size: .8rem; }
-  .phaseRow { display: grid; grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 88px;
+  .phaseRow { display: grid; grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 88px 72px;
     gap: 6px; align-items: center; margin-top: 6px; }
   .phaseRow .phaseName { font-size: .75rem; color: #6c7a8c; }
   .authHint { font-size: .7rem; color: #e5a04b; margin-top: 2px; min-height: 1em;
@@ -179,6 +184,17 @@
   .pipeCfg { padding: 6px 16px; border-bottom: 1px solid #262b33; font-size: .72rem;
     color: #8fa3bd; }
   .pipeCfg .pipeRow { padding: 1px 0; }
+  .pipePane { flex: 1; overflow-y: auto; padding: 12px 16px; max-width: 720px; }
+  .pipePane h3 { font-size: .85rem; margin: 14px 0 6px; color: #d8dee6; }
+  .pipePane .pipeCfg { padding: 0; border: 0; }
+  .pipeNote { font-size: .72rem; color: #6c7a8c; margin: 0 0 8px; }
+  .presetBar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+    gap: 6px; align-items: center; margin: 4px 0 8px; }
+  .presetBar button, .pipeBtns button { white-space: nowrap; }
+  .pipeBtns { display: flex; gap: 8px; margin-top: 10px; }
+  button.secondary { background: #262b33; }
+  .createErr.ok { background: #143d2a; color: #7ee2a8; }
+  @media (max-width: 640px) { .presetBar { grid-template-columns: 1fr 1fr; } }
   .wcfg { font-size: .62rem; color: #6c7a8c; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; }
   #registry { flex: 1; padding: 24px; min-width: 0; }
@@ -221,7 +237,7 @@
 <script src="registry-ui.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
-  const { PHASE_ROWS, EFFORT_LEVELS, filterInstalled, buildPipelinePayload, authBadge, previewForIntegration,
+  const { PHASE_ROWS, EFFORT_LEVELS, CONTEXT_PHASES, parseContextSize, formatTokens, filterInstalled, buildPipelinePayload, authBadge, previewForIntegration,
     previewSelectionKey, previewSelectionExists, isPassingIntegration, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
     PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
@@ -280,6 +296,10 @@ window.addEventListener("DOMContentLoaded", () => {
       div.appendChild(document.createTextNode("> " + textOf(entry)));
     } else if (entry && entry.type === "message" && entry.role === "assistant") {
       div.className = "assistant";
+      stamp();
+      div.appendChild(document.createTextNode(textOf(entry)));
+    } else if (entry && entry.type === "message" && entry.role === "system") {
+      div.className = "compacted";
       stamp();
       div.appendChild(document.createTextNode(textOf(entry)));
     } else if (entry && entry.type === "reasoning") {
@@ -519,6 +539,34 @@ window.addEventListener("DOMContentLoaded", () => {
     if (st.tabEvBtn) st.tabEvBtn.hidden = !isValidator;
     renderGraph(st);
     renderTranscript(st);
+    renderContextControls(st);
+  }
+
+  // Context meter and Compact button for the selected session: the planner
+  // or an implementor. Validators and preview nodes have no session to
+  // compact.
+  function renderContextControls(st) {
+    if (!st.ctxMeter) return;
+    const target = st.selected === null ? st.plannerCtx
+      : (typeof st.selected === "string" && !st.selected.startsWith("preview:")
+        ? st.workers.get(st.selected) : null);
+    const ctx = target && target.context;
+    st.ctxMeter.hidden = st.compactBtn.hidden = !ctx;
+    if (!ctx) return;
+    const limit = ctx.threshold ? " / " + formatTokens(ctx.threshold) : "";
+    st.ctxMeter.textContent = (ctx.estimated ? "~" : "") + formatTokens(ctx.tokens) + limit + " ctx";
+    st.ctxMeter.classList.toggle("near", !!ctx.threshold && ctx.tokens >= ctx.threshold * 0.8);
+    st.ctxMeter.title = (ctx.estimated
+      ? "Estimated from prompt and reply text; tool output is not counted. "
+      : "Reported by the harness. ")
+      + ctx.turns + " turn(s) on this session, " + ctx.compactions + " compaction(s)."
+      + (ctx.threshold ? " Compacts automatically at " + formatTokens(ctx.threshold) + "." : "");
+    const running = st.selected === null ? st.plannerStatus === "running" : target.status === "running";
+    st.compactBtn.textContent = target.compacting ? "Compacting…" : "Compact";
+    st.compactBtn.disabled = !!target.compacting || !target.hasSession || running;
+    st.compactBtn.title = target.compacted && !target.hasSession
+      ? "Compacted; the next run starts a fresh session with the summary."
+      : "Summarize this session and continue in a fresh one.";
   }
 
   function syncTranscriptScroll(st) {
@@ -623,22 +671,43 @@ window.addEventListener("DOMContentLoaded", () => {
       removeCard(line.id);
     });
     head.append(name, dot, tabLineBtn, tabProcBtn, tabEvBtn, hideFailedToggle, delBtn);
-    const pipeCfg = document.createElement("div");
-    pipeCfg.className = "pipeCfg";
-    pipeCfg.hidden = true;
-    if (line.pipeline && typeof line.pipeline === "object") {
-      for (const { key } of PHASE_ROWS) {
-        const p = line.pipeline[key];
-        if (!p || typeof p !== "object") continue;
-        const parts = [p.harness, p.model, p.effort].filter(Boolean);
-        if (p.timeLimit) parts.push(p.timeLimit + "s");
-        const row = document.createElement("div");
-        row.className = "pipeRow";
-        row.textContent = key + ": " + (parts.join(" · ") || "default");
-        pipeCfg.appendChild(row);
-      }
-      pipeCfg.hidden = !pipeCfg.children.length;
-    }
+    const tabPipeBtn = document.createElement("button");
+    tabPipeBtn.className = "tabBtn";
+    tabPipeBtn.textContent = "Pipeline";
+    head.insertBefore(tabPipeBtn, hideFailedToggle);
+    // Pipeline page: the effective settings, and a form to change the
+    // line's own settings at any time.
+    const pipePane = document.createElement("div");
+    pipePane.className = "pipePane";
+    pipePane.hidden = true;
+    const pipeEffective = document.createElement("div");
+    pipeEffective.className = "pipeCfg";
+    const pipeEditTitle = document.createElement("h3");
+    pipeEditTitle.textContent = "Change settings";
+    const pipeNote = document.createElement("p");
+    pipeNote.className = "pipeNote";
+    pipeNote.textContent = "Changes apply from the next run. Running sessions finish with their current settings. "
+      + "Existing workers keep the harness, model and effort they were spawned with; new workers use the new settings. "
+      + "A planner harness change compacts the planner session on the old harness and continues in a fresh one.";
+    const pipeMsg = document.createElement("div");
+    pipeMsg.className = "createErr";
+    pipeMsg.hidden = true;
+    const showPipeMsg = (message, ok) => {
+      pipeMsg.textContent = message || "";
+      pipeMsg.hidden = !message;
+      pipeMsg.classList.toggle("ok", !!ok);
+    };
+    const pipeForm = createPipelineForm("lp-" + line.id);
+    const pipePresets = createPresetBar(pipeForm, showPipeMsg);
+    const pipeBtns = document.createElement("div");
+    pipeBtns.className = "pipeBtns";
+    const pipeSave = document.createElement("button");
+    pipeSave.textContent = "Save settings";
+    const pipeRevert = document.createElement("button");
+    pipeRevert.className = "secondary";
+    pipeRevert.textContent = "Revert";
+    pipeBtns.append(pipeSave, pipeRevert);
+    pipePane.append(pipeEffective, pipeEditTitle, pipeNote, pipePresets.el, pipeForm.el, pipeMsg, pipeBtns);
     const planDetails = document.createElement("details");
     planDetails.className = "planDetails";
     planDetails.hidden = true;
@@ -689,19 +758,27 @@ window.addEventListener("DOMContentLoaded", () => {
     input.placeholder = "Send a prompt";
     const send = document.createElement("button");
     send.textContent = "Send";
-    row.append(input, send);
+    const ctxMeter = document.createElement("span");
+    ctxMeter.className = "ctxMeter";
+    ctxMeter.hidden = true;
+    const compactBtn = document.createElement("button");
+    compactBtn.textContent = "Compact";
+    compactBtn.hidden = true;
+    row.append(input, send, ctxMeter, compactBtn);
     const procPane = document.createElement("div");
     procPane.className = "procPane";
     procPane.hidden = true;
     const evPane = document.createElement("div");
     evPane.className = "evPane";
     evPane.hidden = true;
-    card.append(head, pipeCfg, planDetails, banner, plan, graph, previewPanel, transcriptWrap, row, procPane, evPane);
+    card.append(head, planDetails, banner, plan, graph, previewPanel, transcriptWrap, row, procPane, evPane, pipePane);
     linesEl.appendChild(card);
 
     const st = { id: line.id, dot, banner, transcript, transcriptWrap, scrollBottomBtn, input, send,
+      ctxMeter, compactBtn, plannerCtx: null,
       waiting, planBody, graph, previewPanel, approveBtn, badge, planDetails, planControls: controls,
-      pipeCfg,
+      pipePane, tabPipeBtn, pipeForm, pipePresets, pipeEffective,
+      pipeline: line.pipeline || null, pipelineOverrides: line.pipelineOverrides || null,
       tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, plan, row, procPane, evPane,
       hideFailedValidators: true,
       plannerStatus: line.status, started: line.started === true,
@@ -714,6 +791,27 @@ window.addEventListener("DOMContentLoaded", () => {
     tabLineBtn.addEventListener("click", () => setLineTab(st, "line"));
     tabProcBtn.addEventListener("click", () => setLineTab(st, "processes"));
     tabEvBtn.addEventListener("click", () => setLineTab(st, "evidence"));
+    tabPipeBtn.addEventListener("click", () => setLineTab(st, "pipeline"));
+    renderPipelineSummary(st);
+    pipeForm.set(st.pipelineOverrides);
+    pipeRevert.addEventListener("click", () => { pipeForm.set(st.pipelineOverrides); pipePresets.reset(); showPipeMsg(null); });
+    pipeSave.addEventListener("click", async () => {
+      const out = pipeForm.read();
+      if (out.error) return showPipeMsg(out.error);
+      pipeSave.disabled = true;
+      const res = await fetch("/api/lines/" + st.id + "/pipeline", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pipeline: out.pipeline }),
+      }).catch(() => null);
+      pipeSave.disabled = false;
+      const data = res ? await res.json().catch(() => ({})) : {};
+      if (!res || !res.ok) return showPipeMsg(data.error || "Saving the settings failed.");
+      st.pipeline = data.pipeline;
+      st.pipelineOverrides = data.overrides;
+      renderPipelineSummary(st);
+      pipeForm.set(st.pipelineOverrides);
+      showPipeMsg("Saved. The settings apply from the next run.", true);
+    });
     hideFailedCheckbox.addEventListener("change", () => {
       st.hideFailedValidators = hideFailedCheckbox.checked;
       renderGraph(st);
@@ -732,11 +830,25 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       renderGraph(st);
       updateListEntry(st);
+      renderContextControls(st);
     };
     const showError = (message) => {
       banner.textContent = message;
       banner.hidden = false;
     };
+
+    compactBtn.addEventListener("click", async () => {
+      const workerId = st.selected;
+      const url = workerId === null ? "/api/lines/" + st.id + "/compact"
+        : "/api/protocol/workers/" + workerId + "/compact";
+      compactBtn.disabled = true;
+      const res = await fetch(url, { method: "POST" }).catch(() => null);
+      if (!res || !res.ok) {
+        const data = res ? await res.json().catch(() => ({})) : {};
+        showError("Compaction did not start. " + (data.error || "Request failed."));
+        renderContextControls(st);
+      }
+    });
 
     approveBtn.addEventListener("click", async () => {
       await fetch("/api/lines/" + st.id + "/approve", { method: "POST" });
@@ -770,6 +882,8 @@ window.addEventListener("DOMContentLoaded", () => {
       state(state) {
         st.plannerTranscript = state.transcript || [];
         st.approved = !!state.planApproved;
+        st.plannerCtx = state.context ? { context: state.context, compacting: !!state.compacting,
+          hasSession: !!state.hasSession, compacted: !!state.compacted } : null;
         if (state.started === true) st.started = true;
         updateControls(st);
         st.workers = new Map((state.workers || []).map((w) => [w.id, w]));
@@ -823,7 +937,7 @@ window.addEventListener("DOMContentLoaded", () => {
           if (error) showError("Worker '" + w.name + "' failed. " + error);
           if (st.selected === workerId) renderTranscript(st);
         }
-        renderGraph(st); updateListEntry(st); refreshPreview();
+        renderGraph(st); updateListEntry(st); refreshPreview(); renderContextControls(st);
       },
       worker_removed({ workerIds }) {
         for (const id of workerIds || []) {
@@ -834,6 +948,23 @@ window.addEventListener("DOMContentLoaded", () => {
         renderGraph(st); updateListEntry(st);
       },
       line_error({ message }) { if (message) showError(message); },
+      pipeline({ pipeline, overrides }) {
+        const changed = JSON.stringify(overrides || null) !== JSON.stringify(st.pipelineOverrides || null);
+        st.pipeline = pipeline;
+        st.pipelineOverrides = overrides || null;
+        renderPipelineSummary(st);
+        // Another tab or the API changed the settings: show them, unless
+        // this page is open with possibly unsaved edits.
+        if (changed && st.tab !== "pipeline") st.pipeForm.set(st.pipelineOverrides);
+      },
+      context({ target, ...fields }) {
+        if (target === "planner") st.plannerCtx = fields;
+        else {
+          const w = st.workers.get(target);
+          if (w) Object.assign(w, fields);
+        }
+        renderContextControls(st);
+      },
     };
 
     const post = async () => {
@@ -882,6 +1013,8 @@ window.addEventListener("DOMContentLoaded", () => {
     const st = cards.get(id);
     if (st) {
       st.transcriptResizeObserver.disconnect();
+      st.pipeForm.dispose();
+      st.pipePresets.dispose();
       st.card.remove();
       st.entry.remove();
       cards.delete(id);
@@ -901,16 +1034,48 @@ window.addEventListener("DOMContentLoaded", () => {
     st.entryCount.textContent = st.workers.size ? st.workers.size + "w" : "";
   }
 
+  // Effective settings of a line: the line's own settings merged over the
+  // router defaults, one row per phase.
+  function renderPipelineSummary(st) {
+    const box = st.pipeEffective;
+    box.innerHTML = "";
+    const title = document.createElement("h3");
+    title.textContent = "Effective settings";
+    box.appendChild(title);
+    const p = st.pipeline && typeof st.pipeline === "object" ? st.pipeline : {};
+    const own = st.pipelineOverrides || {};
+    for (const { key } of PHASE_ROWS) {
+      const cfg = p[key];
+      if (!cfg || typeof cfg !== "object") continue;
+      const parts = [cfg.harness, cfg.model || "default model", cfg.effort].filter(Boolean);
+      if (cfg.timeLimit) parts.push(cfg.timeLimit + "s");
+      if (cfg.maxContext !== undefined) {
+        parts.push(cfg.maxContext ? "compact at " + formatTokens(cfg.maxContext) : "no auto compaction");
+      }
+      const row = document.createElement("div");
+      row.className = "pipeRow";
+      row.textContent = key + ": " + parts.join(" · ")
+        + (own[key] && Object.keys(own[key]).length ? "" : "  (defaults)");
+      box.appendChild(row);
+    }
+  }
+
   function setLineTab(st, tab) {
     st.tab = tab;
     st.tabLineBtn.classList.toggle("active", tab === "line");
     st.tabProcBtn.classList.toggle("active", tab === "processes");
     st.tabEvBtn.classList.toggle("active", tab === "evidence");
-    for (const el of [st.plan, st.planDetails, st.graph, st.previewPanel, st.transcriptWrap, st.row, st.pipeCfg]) {
+    st.tabPipeBtn.classList.toggle("active", tab === "pipeline");
+    for (const el of [st.plan, st.planDetails, st.graph, st.previewPanel, st.transcriptWrap, st.row]) {
       el.hidden = tab !== "line";
     }
     st.procPane.hidden = tab !== "processes";
     st.evPane.hidden = tab !== "evidence";
+    st.pipePane.hidden = tab !== "pipeline";
+    if (tab === "pipeline") {
+      st.pipeForm.open();
+      reloadPresets();
+    }
     if (tab === "processes") pollInventory();
     if (tab === "evidence") pollEvidence();
     if (tab === "line") {
@@ -1114,62 +1279,29 @@ window.addEventListener("DOMContentLoaded", () => {
   repoInput.type = "url";
   createPanel.append(mkLabel("Repo URL", repoInput), repoInput);
 
-  const harnessSelects = {}, authModeSelects = {}, modelSelects = {},
-    effortSelects = {}, authHints = {};
-  const phaseState = {};
+  // Installed harnesses, shared by every pipeline form. A form asks for a
+  // reload when it opens; concurrent reloads share one request.
   let installedHarnesses = [];
-  for (const { key } of PHASE_ROWS) {
-    const row = document.createElement("div");
-    row.className = "phaseRow";
-    const phaseName = document.createElement("span");
-    phaseName.className = "phaseName";
-    phaseName.textContent = key;
-    const hSel = document.createElement("select");
-    hSel.id = "cp-harness-" + key;
-    hSel.setAttribute("aria-label", key + " harness");
-    const hDef = document.createElement("option");
-    hDef.value = "";
-    hDef.textContent = "default";
-    hSel.appendChild(hDef);
-    const amSel = document.createElement("select");
-    amSel.id = "cp-authmode-" + key;
-    amSel.setAttribute("aria-label", key + " authentication mode");
-    const amDef = document.createElement("option");
-    amDef.value = "";
-    amDef.textContent = "default";
-    amSel.appendChild(amDef);
-    amSel.hidden = true;
-    amSel.disabled = true;
-    const mSel = document.createElement("select");
-    mSel.id = "cp-model-" + key;
-    mSel.setAttribute("aria-label", key + " model");
-    const mDef = document.createElement("option");
-    mDef.value = "";
-    mDef.textContent = "default";
-    mSel.appendChild(mDef);
-    const eSel = document.createElement("select");
-    eSel.id = "cp-effort-" + key;
-    eSel.setAttribute("aria-label", key + " effort");
-    const eDef = document.createElement("option");
-    eDef.value = "";
-    eDef.textContent = "default";
-    eSel.appendChild(eDef);
-    for (const level of EFFORT_LEVELS) {
-      const o = document.createElement("option");
-      o.value = level;
-      o.textContent = level;
-      eSel.appendChild(o);
-    }
-    const hint = document.createElement("div");
-    hint.className = "authHint";
-    row.append(phaseName, hSel, amSel, mSel, eSel, hint);
-    createPanel.appendChild(row);
-    harnessSelects[key] = hSel;
-    authModeSelects[key] = amSel;
-    modelSelects[key] = mSel;
-    effortSelects[key] = eSel;
-    authHints[key] = hint;
-    phaseState[key] = clearHarnessState(null);
+  let harnessMissingText = "";
+  let harnessRequest = null;
+  const harnessListeners = new Set();
+  function reloadHarnesses() {
+    if (harnessRequest) return harnessRequest;
+    harnessRequest = (async () => {
+      try {
+        const res = await fetch("/api/harnesses");
+        if (!res.ok) return;
+        const data = await res.json();
+        installedHarnesses = filterInstalled(data.harnesses);
+        const missing = installedHarnesses.filter((h) => h.auth === "missing");
+        harnessMissingText = missing.length
+          ? "Login needed: " + missing.map((h) =>
+              h.id + " (" + (h.loginHint || h.id + " login") + ")").join(", ")
+          : "";
+        for (const listener of harnessListeners) listener();
+      } catch {} finally { harnessRequest = null; }
+    })();
+    return harnessRequest;
   }
 
   // Rebuild the options of a select, keeping its default "" option and its
@@ -1186,112 +1318,358 @@ window.addEventListener("DOMContentLoaded", () => {
     sel.value = [...sel.options].some((o) => o.value === current) ? current : "";
   }
 
-  function syncPhaseRow(key) {
-    const state = phaseState[key];
-    const harness = harnessSelects[key].value;
-    const amSel = authModeSelects[key];
-    // The pure state resets the value to "" for every non-Pi harness, so a
-    // stale selected mode cannot survive a harness change.
-    const amState = authModeSelectState({
-      harnessId: harness,
-      options: harness === PI_HARNESS_ID
-        ? authModeOptions(installedHarnesses, PI_HARNESS_ID)
-        : [],
-      currentValue: amSel.value,
-    });
-    setSelectOptions(amSel, amState.options);
-    amSel.value = amState.value;
-    amSel.hidden = amState.hidden;
-    amSel.disabled = amState.disabled;
-    setSelectOptions(modelSelects[key], state.models);
-    authHints[key].textContent = state.statusText || baseAuthHintText(key);
-  }
-
-  function baseAuthHintText(key) {
-    const id = harnessSelects[key].value;
-    const entry = installedHarnesses.find((h) => h.id === id);
-    if (!entry) return "";
-    const badge = authBadge(entry);
-    if (badge === "missing")
-      return entry.id + ": auth missing - run " + (entry.loginHint || entry.id + " login");
-    // vibe and pi have no provider-free auth probe, so their base state is
-    // honestly "not probed"; pi shows the real state after a mode is chosen.
-    if (badge === "unknown") return entry.id + ": installed (auth not probed)";
-    return entry.id + ": " + badge;
-  }
-
-  function updateAuthHint(key) {
-    authHints[key].textContent = phaseState[key].statusText || baseAuthHintText(key);
-  }
-
-  for (const { key } of PHASE_ROWS) {
-    harnessSelects[key].addEventListener("change", () => onHarnessChange(key));
-    authModeSelects[key].addEventListener("change", () => onAuthModeChange(key));
-  }
-
-  function onHarnessChange(key) {
-    // New harness: drop the auth mode, model, models, status, and hints, and
-    // invalidate any in-flight Pi detail fetch for this row.
-    const state = phaseState[key];
-    state.tracker.next();
-    const next = clearHarnessState(state);
-    next.models = modelOptionsForPhase({
-      harnesses: installedHarnesses,
-      harnessId: harnessSelects[key].value,
-      piDetail: null,
-    });
-    // Explicitly reset the auth mode select before it is hidden or filled.
-    authModeSelects[key].value = "";
-    phaseState[key] = next;
-    syncPhaseRow(key);
-  }
-
-  async function onAuthModeChange(key) {
-    const state = phaseState[key];
-    const provider = authModeSelects[key].value;
-    // New mode: drop provider-specific state and invalidate older fetches.
-    state.tracker.next();
-    phaseState[key] = clearProviderState(state);
-    syncPhaseRow(key);
-    if (!provider) return;
-    const token = phaseState[key].tracker.next();
-    const result = await fetchPiDetail({
-      url: piDetailUrl(provider),
-      fetchImpl: fetch,
-      isCurrent: (t) => phaseState[key].tracker.isCurrent(t),
-      token,
-    });
-    if (result.stage === "fetch-error") {
-      if (result.current) {
-        phaseState[key].statusText = result.error;
-        updateAuthHint(key);
-      }
-      return;
+  // Select a value, adding it as an option first when the current choices
+  // do not list it (a saved model the metadata does not know, or a harness
+  // that is not installed here).
+  function selectValue(sel, value, missingLabel) {
+    const v = typeof value === "string" ? value : "";
+    if (v && ![...sel.options].some((o) => o.value === v)) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = v + (missingLabel ? " (" + missingLabel + ")" : "");
+      sel.appendChild(o);
     }
-    // fetchPiDetail already dropped a response that went stale when the
-    // fetch resolved, before the status was read or the body parsed.
-    if (result.stage === "stale-after-fetch") return;
-    // Recheck after the async json() step: a newer selection must win.
-    const outcome = piDetailApply({
-      isCurrent: result.current,
-      ok: result.ok,
-      status: result.status,
-      data: result.data,
-    });
-    if (!outcome.apply) return;
-    phaseState[key].piDetail = outcome.piDetail;
-    phaseState[key].models = outcome.models;
-    phaseState[key].statusText = outcome.statusText;
-    syncPhaseRow(key);
+    sel.value = v;
   }
 
-  const authSummary = document.createElement("div");
-  authSummary.className = "authSummary";
-  createPanel.appendChild(authSummary);
+  // One pipeline settings form: a row per phase with harness, Pi auth mode,
+  // model, effort, and (for resumed phases) max context. Used by the create
+  // panel and by each line's Pipeline page. read() returns { pipeline } or
+  // { error }; set() fills the form from a pipeline override object.
+  function createPipelineForm(idPrefix) {
+    const el = document.createElement("div");
+    el.className = "pipeForm";
+    const harnessSelects = {}, authModeSelects = {}, modelSelects = {},
+      effortSelects = {}, authHints = {}, maxContextInputs = {};
+    const phaseState = {};
+    // Fields the form has no control for (timeLimit) survive a set/read.
+    let extraFields = {};
+    for (const { key } of PHASE_ROWS) {
+      const row = document.createElement("div");
+      row.className = "phaseRow";
+      const phaseName = document.createElement("span");
+      phaseName.className = "phaseName";
+      phaseName.textContent = key;
+      const mkSelect = (kind, label) => {
+        const sel = document.createElement("select");
+        sel.id = idPrefix + "-" + kind + "-" + key;
+        sel.setAttribute("aria-label", key + " " + label);
+        const def = document.createElement("option");
+        def.value = "";
+        def.textContent = "default";
+        sel.appendChild(def);
+        return sel;
+      };
+      const hSel = mkSelect("harness", "harness");
+      const amSel = mkSelect("authmode", "authentication mode");
+      amSel.hidden = true;
+      amSel.disabled = true;
+      const mSel = mkSelect("model", "model");
+      const eSel = mkSelect("effort", "effort");
+      for (const level of EFFORT_LEVELS) {
+        const o = document.createElement("option");
+        o.value = level;
+        o.textContent = level;
+        eSel.appendChild(o);
+      }
+      const hint = document.createElement("div");
+      hint.className = "authHint";
+      row.append(phaseName, hSel, amSel, mSel, eSel);
+      if (CONTEXT_PHASES.includes(key)) {
+        const ctxIn = document.createElement("input");
+        ctxIn.id = idPrefix + "-maxctx-" + key;
+        ctxIn.placeholder = "max ctx";
+        ctxIn.title = "Max context window, e.g. 200K or 50K. The session is compacted when it reaches this size. Empty uses the router default.";
+        ctxIn.setAttribute("aria-label", key + " max context window");
+        row.appendChild(ctxIn);
+        maxContextInputs[key] = ctxIn;
+      }
+      row.appendChild(hint);
+      el.appendChild(row);
+      harnessSelects[key] = hSel;
+      authModeSelects[key] = amSel;
+      modelSelects[key] = mSel;
+      effortSelects[key] = eSel;
+      authHints[key] = hint;
+      phaseState[key] = clearHarnessState(null);
+    }
+    const authSummary = document.createElement("div");
+    authSummary.className = "authSummary";
+    el.appendChild(authSummary);
+
+    function syncPhaseRow(key) {
+      const state = phaseState[key];
+      const harness = harnessSelects[key].value;
+      const amSel = authModeSelects[key];
+      // The pure state resets the value to "" for every non-Pi harness, so a
+      // stale selected mode cannot survive a harness change.
+      const amState = authModeSelectState({
+        harnessId: harness,
+        options: harness === PI_HARNESS_ID
+          ? authModeOptions(installedHarnesses, PI_HARNESS_ID)
+          : [],
+        currentValue: amSel.value,
+      });
+      setSelectOptions(amSel, amState.options);
+      amSel.value = amState.value;
+      amSel.hidden = amState.hidden;
+      amSel.disabled = amState.disabled;
+      setSelectOptions(modelSelects[key], state.models);
+      authHints[key].textContent = state.statusText || baseAuthHintText(key);
+    }
+
+    function baseAuthHintText(key) {
+      const id = harnessSelects[key].value;
+      const entry = installedHarnesses.find((h) => h.id === id);
+      if (!entry) return "";
+      const badge = authBadge(entry);
+      if (badge === "missing")
+        return entry.id + ": auth missing - run " + (entry.loginHint || entry.id + " login");
+      // vibe and pi have no provider-free auth probe, so their base state is
+      // honestly "not probed"; pi shows the real state after a mode is chosen.
+      if (badge === "unknown") return entry.id + ": installed (auth not probed)";
+      return entry.id + ": " + badge;
+    }
+
+    function updateAuthHint(key) {
+      authHints[key].textContent = phaseState[key].statusText || baseAuthHintText(key);
+    }
+
+    for (const { key } of PHASE_ROWS) {
+      harnessSelects[key].addEventListener("change", () => onHarnessChange(key));
+      authModeSelects[key].addEventListener("change", () => onAuthModeChange(key));
+    }
+
+    function onHarnessChange(key) {
+      // New harness: drop the auth mode, model, models, status, and hints, and
+      // invalidate any in-flight Pi detail fetch for this row.
+      const state = phaseState[key];
+      state.tracker.next();
+      const next = clearHarnessState(state);
+      next.models = modelOptionsForPhase({
+        harnesses: installedHarnesses,
+        harnessId: harnessSelects[key].value,
+        piDetail: null,
+      });
+      // Explicitly reset the auth mode select before it is hidden or filled.
+      authModeSelects[key].value = "";
+      phaseState[key] = next;
+      syncPhaseRow(key);
+    }
+
+    async function onAuthModeChange(key) {
+      const state = phaseState[key];
+      const provider = authModeSelects[key].value;
+      // New mode: drop provider-specific state and invalidate older fetches.
+      state.tracker.next();
+      phaseState[key] = clearProviderState(state);
+      syncPhaseRow(key);
+      if (!provider) return;
+      const token = phaseState[key].tracker.next();
+      const result = await fetchPiDetail({
+        url: piDetailUrl(provider),
+        fetchImpl: fetch,
+        isCurrent: (t) => phaseState[key].tracker.isCurrent(t),
+        token,
+      });
+      if (result.stage === "fetch-error") {
+        if (result.current) {
+          phaseState[key].statusText = result.error;
+          updateAuthHint(key);
+        }
+        return;
+      }
+      // fetchPiDetail already dropped a response that went stale when the
+      // fetch resolved, before the status was read or the body parsed.
+      if (result.stage === "stale-after-fetch") return;
+      // Recheck after the async json() step: a newer selection must win.
+      const outcome = piDetailApply({
+        isCurrent: result.current,
+        ok: result.ok,
+        status: result.status,
+        data: result.data,
+      });
+      if (!outcome.apply) return;
+      phaseState[key].piDetail = outcome.piDetail;
+      phaseState[key].models = outcome.models;
+      phaseState[key].statusText = outcome.statusText;
+      syncPhaseRow(key);
+    }
+
+    // Base metadata arrived: refresh harness options, auth mode options and
+    // model choices (Vibe and Claude rows pick up their models here; Pi rows
+    // wait for a mode).
+    function applyHarnesses() {
+      for (const { key } of PHASE_ROWS) {
+        const sel = harnessSelects[key];
+        const current = sel.value;
+        const model = modelSelects[key].value;
+        for (const o of [...sel.options]) if (o.value !== "") o.remove();
+        for (const h of installedHarnesses) {
+          const o = document.createElement("option");
+          o.value = h.id;
+          o.textContent = h.id + (h.version ? " (" + h.version + ")" : "");
+          sel.appendChild(o);
+        }
+        selectValue(sel, current, "not installed");
+        if (sel.value !== PI_HARNESS_ID) {
+          phaseState[key].models = modelOptionsForPhase({
+            harnesses: installedHarnesses,
+            harnessId: sel.value,
+            piDetail: null,
+          });
+        }
+        syncPhaseRow(key);
+        selectValue(modelSelects[key], model);
+      }
+      authSummary.textContent = harnessMissingText;
+    }
+    harnessListeners.add(applyHarnesses);
+
+    function set(pipeline) {
+      const p = pipeline && typeof pipeline === "object" ? pipeline : {};
+      extraFields = {};
+      for (const { key } of PHASE_ROWS) {
+        const cfg = p[key] && typeof p[key] === "object" ? p[key] : {};
+        selectValue(harnessSelects[key], cfg.harness, "not installed");
+        onHarnessChange(key);
+        selectValue(modelSelects[key], cfg.model);
+        effortSelects[key].value = EFFORT_LEVELS.includes(cfg.effort) ? cfg.effort : "";
+        if (maxContextInputs[key]) {
+          maxContextInputs[key].value = cfg.maxContext ? formatTokens(cfg.maxContext) : "";
+        }
+        if (cfg.timeLimit) extraFields[key] = { timeLimit: cfg.timeLimit };
+      }
+    }
+
+    function read() {
+      const rows = {};
+      for (const { key } of PHASE_ROWS) {
+        rows[key] = {
+          ...(extraFields[key] || {}),
+          harness: harnessSelects[key].value,
+          model: modelSelects[key].value,
+          effort: effortSelects[key].value,
+        };
+        if (maxContextInputs[key]) {
+          const maxContext = parseContextSize(maxContextInputs[key].value);
+          if (Number.isNaN(maxContext)) {
+            return { error: key + " max context must look like 200K, 50K or 1M" };
+          }
+          rows[key].maxContext = maxContext;
+        }
+      }
+      return { pipeline: buildPipelinePayload(rows) };
+    }
+
+    return { el, set, read, reset: () => set(null),
+      open: () => { applyHarnesses(); reloadHarnesses(); },
+      dispose: () => harnessListeners.delete(applyHarnesses) };
+  }
+
+  // Preset bar for a pipeline form: pick a saved preset to fill the form,
+  // save the form as a named preset, or delete the selected preset. Every
+  // bar on the page shares the server-side preset list.
+  const presetBars = new Set();
+  let presetList = [];
+  async function reloadPresets() {
+    try {
+      const res = await fetch("/api/pipeline-presets");
+      if (!res.ok) return;
+      presetList = (await res.json()).presets || [];
+      for (const bar of presetBars) bar.render();
+    } catch {}
+  }
+
+  function createPresetBar(form, showError) {
+    const el = document.createElement("div");
+    el.className = "presetBar";
+    const sel = document.createElement("select");
+    sel.setAttribute("aria-label", "pipeline preset");
+    const nameIn = document.createElement("input");
+    nameIn.placeholder = "preset name";
+    nameIn.setAttribute("aria-label", "preset name");
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.textContent = "Save as preset";
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "secondary";
+    delBtn.textContent = "Delete preset";
+    el.append(sel, nameIn, saveBtn, delBtn);
+
+    function render() {
+      const current = sel.value;
+      sel.innerHTML = "";
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = presetList.length ? "Load a preset…" : "No presets saved";
+      sel.appendChild(none);
+      for (const p of presetList) {
+        const o = document.createElement("option");
+        o.value = p.name;
+        o.textContent = p.name;
+        sel.appendChild(o);
+      }
+      sel.value = presetList.some((p) => p.name === current) ? current : "";
+      delBtn.disabled = !sel.value;
+    }
+
+    sel.addEventListener("change", () => {
+      const preset = presetList.find((p) => p.name === sel.value);
+      delBtn.disabled = !preset;
+      if (!preset) return;
+      form.set(preset.pipeline);
+      nameIn.value = preset.name;
+      showError(null);
+    });
+    saveBtn.addEventListener("click", async () => {
+      const name = nameIn.value.trim();
+      if (!name) return showError("Type a preset name first.");
+      const out = form.read();
+      if (out.error) return showError(out.error);
+      if (!out.pipeline) return showError("Choose at least one setting before saving a preset.");
+      const res = await fetch("/api/pipeline-presets/" + encodeURIComponent(name), {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pipeline: out.pipeline }),
+      }).catch(() => null);
+      if (!res || !res.ok) {
+        const data = res ? await res.json().catch(() => ({})) : {};
+        return showError(data.error || "Saving the preset failed.");
+      }
+      showError(null);
+      await reloadPresets();
+      sel.value = name;
+      delBtn.disabled = false;
+    });
+    delBtn.addEventListener("click", async () => {
+      if (!sel.value) return;
+      await fetch("/api/pipeline-presets/" + encodeURIComponent(sel.value), { method: "DELETE" })
+        .catch(() => null);
+      nameIn.value = "";
+      await reloadPresets();
+    });
+
+    const bar = { el, render, reset: () => { sel.value = ""; nameIn.value = ""; render(); },
+      dispose: () => presetBars.delete(bar) };
+    presetBars.add(bar);
+    render();
+    return bar;
+  }
 
   const createErr = document.createElement("div");
   createErr.className = "createErr";
   createErr.hidden = true;
+  const showCreateError = (message) => {
+    createErr.textContent = message || "";
+    createErr.hidden = !message;
+  };
+  const createForm = createPipelineForm("cp");
+  const createPresets = createPresetBar(createForm, showCreateError);
+  const pipeLabel = document.createElement("label");
+  pipeLabel.textContent = "Pipeline";
+  createPanel.append(pipeLabel, createPresets.el, createForm.el);
+
   const cpBtns = document.createElement("div");
   cpBtns.className = "row";
   cpBtns.style.borderTop = "0";
@@ -1305,61 +1683,19 @@ window.addEventListener("DOMContentLoaded", () => {
   createPanel.append(createErr, cpBtns);
   linesMain.insertBefore(createPanel, linesMain.firstChild);
 
-  async function loadHarnesses() {
-    try {
-      const res = await fetch("/api/harnesses");
-      if (!res.ok) return;
-      const data = await res.json();
-      installedHarnesses = filterInstalled(data.harnesses);
-      for (const { key } of PHASE_ROWS) {
-        const sel = harnessSelects[key];
-        const current = sel.value;
-        for (const o of [...sel.options]) if (o.value !== "") o.remove();
-        for (const h of installedHarnesses) {
-          const o = document.createElement("option");
-          o.value = h.id;
-          o.textContent = h.id + (h.version ? " (" + h.version + ")" : "");
-          sel.appendChild(o);
-        }
-        sel.value = current;
-        // Base metadata arrived: refresh auth mode options and model choices
-        // (Vibe and Claude rows pick up their models here; Pi rows wait
-        // for a mode).
-        if (harnessSelects[key].value !== PI_HARNESS_ID) {
-          phaseState[key].models = modelOptionsForPhase({
-            harnesses: installedHarnesses,
-            harnessId: harnessSelects[key].value,
-            piDetail: null,
-          });
-        }
-        syncPhaseRow(key);
-      }
-      const missing = installedHarnesses.filter((h) => h.auth === "missing");
-      authSummary.textContent = missing.length
-        ? "Login needed: " + missing.map((h) =>
-            h.id + " (" + (h.loginHint || h.id + " login") + ")").join(", ")
-        : "";
-    } catch {}
-  }
-
   function resetCreatePanel() {
     nameInput.value = "";
     repoInput.value = "";
-    for (const { key } of PHASE_ROWS) {
-      harnessSelects[key].value = "";
-      authModeSelects[key].value = "";
-      modelSelects[key].value = "";
-      effortSelects[key].value = "";
-      phaseState[key] = clearHarnessState(phaseState[key]);
-      syncPhaseRow(key);
-    }
-    createErr.hidden = true;
+    createForm.reset();
+    createPresets.reset();
+    showCreateError(null);
   }
 
   createBtn.addEventListener("click", () => {
     createPanel.hidden = !createPanel.hidden;
     if (!createPanel.hidden) {
-      loadHarnesses();
+      createForm.open();
+      reloadPresets();
       nameInput.focus();
     }
   });
@@ -1375,17 +1711,10 @@ window.addEventListener("DOMContentLoaded", () => {
     const repoUrl = repoInput.value.trim();
     if (name) body.name = name;
     if (repoUrl) body.repoUrl = repoUrl;
-    const rows = {};
-    for (const { key } of PHASE_ROWS) {
-      rows[key] = {
-        harness: harnessSelects[key].value,
-        model: modelSelects[key].value,
-        effort: effortSelects[key].value,
-      };
-    }
-    const pipeline = buildPipelinePayload(rows);
-    if (pipeline) body.pipeline = pipeline;
-    createErr.hidden = true;
+    const out = createForm.read();
+    if (out.error) return showCreateError(out.error);
+    if (out.pipeline) body.pipeline = out.pipeline;
+    showCreateError(null);
     let res;
     try {
       res = await fetch("/api/lines", {
@@ -1393,14 +1722,12 @@ window.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify(body),
       });
     } catch (err) {
-      createErr.textContent = String(err);
-      createErr.hidden = false;
+      showCreateError(String(err));
       return;
     }
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      createErr.textContent = data.error || "Creation failed (HTTP " + res.status + ")";
-      createErr.hidden = false;
+      showCreateError(data.error || "Creation failed (HTTP " + res.status + ")");
       return;
     }
     const { id } = await res.json().catch(() => ({}));

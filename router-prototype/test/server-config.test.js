@@ -83,11 +83,13 @@ test("line serialization carries the resolved pipeline", () => {
     id: "line-1", name: "demo", status: "idle", queueDepth: 1,
     sessionId: "s-1", started: true, workers: 2,
     pipeline: {
-      planner: { harness: "pi", model: null, effort: "medium", timeLimit: 60 },
-      implementor: { harness: "vibe", model: "glm-5-3-flash", effort: "medium", timeLimit: 3600 },
+      planner: { harness: "pi", model: null, effort: "medium", timeLimit: 60, maxContext: 150000 },
+      implementor: { harness: "vibe", model: "glm-5-3-flash", effort: "medium", timeLimit: 3600,
+        maxContext: 150000 },
       validator: { harness: "vibe", model: "glm-5-3", effort: "medium", timeLimit: 3600 },
       integration: { harness: "vibe", model: "glm-5-3", effort: "medium", timeLimit: 3600 },
     },
+    pipelineOverrides: { planner: { harness: "pi", timeLimit: 60 } },
   });
 });
 

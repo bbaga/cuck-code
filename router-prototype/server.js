@@ -30,6 +30,11 @@ const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence } = require("./evidence");
 const { createDashboardLive } = require("./dashboard-live");
 const { readClaudeConfig } = require("./claude-config");
+const { sessionContextTokens } = require("./context-probe");
+const { createPresetStore } = require("./pipeline-presets");
+const { newContextStats, restoreContextStats, recordTurn, resetForFreshSession,
+  contextView, shouldAutoCompact, parseAutoThreshold, compactionPrompt, acceptSummary,
+  handoffBlock, workerReseedPrompt } = require("./compaction");
 
 const PORT = Number(process.env.PORT || 7788);
 const HTTPS_PORT = Number(process.env.HTTPS_PORT || 0);
@@ -39,6 +44,11 @@ const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
 const AUTO_APPROVE = process.env.LINE_AUTO_APPROVE !== "0";
 const INDEX_HTML = path.join(__dirname, "web", "index.html");
 const WORKER_CAP = 8;
+// Default context size (tokens) at which a planner or implementor session
+// is compacted before its next run; a line's pipeline maxContext overrides
+// it per phase. 0 turns automatic compaction off. Parsed here so a bad
+// value stops the router at startup.
+parseAutoThreshold(process.env.COMPACT_AUTO_TOKENS);
 const UI_PORT_BASE = Number(process.env.UI_PORT_BASE || 4100);
 const UI_TEST_SLOTS = Number(process.env.UI_TEST_SLOTS || 1);
 
@@ -254,6 +264,8 @@ ${implId ? `- The implementor's app port: read ui.port at the repo root, or call
 const { wrapPlannerTurn } = require("./planner-turn");
 
 const lines = new Map();
+const pipelinePresets = createPresetStore(path.join(LINES_DIR, "pipeline-presets.json"),
+  { writeFile: writeFileDurable });
 
 function plannerBrief(name, lineId, userPrompt, port) {
   return `PLANNER-ONLY RULES
@@ -774,6 +786,174 @@ function sseSend(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+// Context state of a planner (line) or worker session for the dashboard.
+// Only sessions that are resumed can be compacted: the planner and
+// implementors. Validators start fresh on every run.
+// The compaction threshold for a planner (line) or implementor session.
+function maxContextFor(line, owner) {
+  const pipeline = resolvePipeline(line);
+  return (owner === line ? pipeline.planner : pipeline.implementor).maxContext;
+}
+
+function compactionFields(owner, line = owner) {
+  const compactable = owner.role === undefined || owner.role === "implementor";
+  if (!compactable) return {};
+  if (!owner.context) owner.context = newContextStats();
+  return { context: contextView(owner.context, maxContextFor(line, owner)),
+    compacting: !!owner.compacting, hasSession: !!owner.sessionId,
+    compacted: !!owner.handoff };
+}
+
+function broadcastContext(line, target, owner) {
+  broadcast(line, "context", { target, ...compactionFields(owner, line) });
+}
+
+// Run one summary turn on an existing session and return its assistant
+// text. The turn uses the session's own harness config. It neither streams
+// to the transcript nor changes router state; callers decide what to do with
+// the summary. setChild receives the child process (null when it ends) so
+// stop and delete can kill it.
+function runSummaryTurn(plan, timeLimitSec, setChild, cb) {
+  const adapter = plan.adapter;
+  let child;
+  try {
+    child = spawn(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, ...plan.env },
+      ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
+  } catch (err) {
+    return cb(err.message, null, null);
+  }
+  setChild(child);
+  let killTimer = null;
+  if (!adapter.supportsNativeTimeLimit) {
+    killTimer = setTimeout(() => { try { child.kill("SIGTERM"); } catch {} }, timeLimitSec * 1000);
+  }
+  const output = new InvocationCapture();
+  const records = new JsonlDecoder();
+  const consume = (raw) => {
+    const parsed = parseJsonRecord(raw);
+    const entry = parsed && adapter.normalize(parsed);
+    if (entry) output.add(entry);
+  };
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { for (const raw of records.push(chunk)) consume(raw); });
+  const stderr = new StderrCapture();
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (c) => stderr.push(c));
+  let spawnError = null;
+  child.on("error", (err) => { spawnError = err; });
+  child.on("close", (code, signal) => {
+    if (killTimer) clearTimeout(killTimer);
+    setChild(null);
+    for (const raw of records.finish()) consume(raw);
+    const finished = adapter.finalize();
+    if (finished) output.add(finished);
+    const outcome = spawnError ? "fail" : adapter.outcome(code, signal);
+    if (outcome !== "ok") {
+      return cb(describeFailure({ cmd: plan.cmd, code, signal, outcome, spawnError,
+        streamError: adapter.errorText(), stderr: stderr.text() }), null, adapter);
+    }
+    const summary = acceptSummary(output.text());
+    cb(summary ? null : "the session returned no usable summary", summary, adapter);
+  });
+}
+
+// Compact the line's planner session: summary turn, then drop the session
+// id. The next planner run starts a fresh session seeded with the planner
+// brief and the summary. Calls pump afterwards so queued requests run.
+// sessionCfg is the config the session was created with; a harness switch
+// passes it so the summary turn runs on the harness that owns the session.
+function compactPlanner(line, reason, sessionCfg = null) {
+  if (line.deleted || line.compacting || line.status === "running" || !line.sessionId) return false;
+  line.compacting = true;
+  if (!line.context) line.context = newContextStats();
+  const current = resolvePipeline(line).planner;
+  const cfg = sessionCfg ? { ...current, ...sessionCfg } : current;
+  const plan = planPlannerRun(cfg, { prompt: compactionPrompt("planner"), workdir: line.workdir,
+    sessionId: line.sessionId, autoApprove: AUTO_APPROVE });
+  const before = contextView(line.context, cfg.maxContext);
+  slog("info", "planner.compact.start", { lineId: line.id, reason, tokens: before.tokens,
+    estimated: before.estimated });
+  broadcastContext(line, "planner", line);
+  runSummaryTurn(plan, cfg.timeLimit, (child) => { line.child = child; }, (error, summary) => {
+    line.compacting = false;
+    if (line.deleted) return;
+    if (error && reason === "harness-switch") {
+      // The new harness cannot resume the old session, so the planner
+      // starts fresh either way; plan.md and router state remain.
+      slog("warn", "planner.compact.failed", { lineId: line.id, reason, error: preview(error, 500) });
+      broadcast(line, "error", { message: `Context compaction before the harness switch failed; the planner starts a fresh session without a summary. ${error}` });
+      line.sessionId = null;
+      line.sessionCfg = null;
+      line.handoff = "No summary is available: the previous session could not be summarized before the harness switch. Read plan.md and query the router API (workers, reports) to recover the current state.";
+      line.context = resetForFreshSession(line.context);
+    } else if (error) {
+      if (reason === "auto") line.context.autoFailed = true;
+      slog("warn", "planner.compact.failed", { lineId: line.id, reason, error: preview(error, 500) });
+      broadcast(line, "error", { message: `Context compaction failed; the planner keeps its current session. ${error}` });
+    } else {
+      line.sessionId = null;
+      line.sessionCfg = null;
+      line.handoff = summary;
+      line.context = resetForFreshSession(line.context);
+      const entry = { type: "message", role: "system", at: Date.now(),
+        text: `Context compacted (${reason}, ~${before.tokens} tokens). The next run starts a fresh session with this summary:\n\n${summary}` };
+      appendTranscript(line.transcript, entry);
+      broadcast(line, "entry", entry);
+      slog("info", "planner.compact.done", { lineId: line.id, reason, summaryChars: summary.length });
+    }
+    saveLine(line);
+    broadcastContext(line, "planner", line);
+    pump(line);
+  });
+  return true;
+}
+
+// Compact an idle implementor session the same way. The next continuation
+// starts a fresh session with the worker brief, the summary, and the new
+// instructions. then(error) runs after the attempt, whether it worked or not.
+function compactWorker(line, worker, reason, then = () => {}) {
+  // Without the original brief a fresh session could not be reseeded.
+  if (worker.compacting || worker.child || !worker.sessionId || !worker.prompt) return false;
+  worker.compacting = true;
+  worker.stopRequested = false;
+  if (!worker.context) worker.context = newContextStats();
+  const phase = phaseForWorker(worker.role, worker.kind);
+  const cfg = resolvePipeline(line)[phase];
+  const effective = resolveWorkerOverrides(cfg, worker, phase);
+  const plan = planWorkerRun({ ...cfg, ...effective }, { phase,
+    prompt: compactionPrompt("implementor"), workdir: worker.worktreePath,
+    sessionId: worker.sessionId, autoApprove: AUTO_APPROVE });
+  const before = contextView(worker.context, cfg.maxContext);
+  slog("info", "worker.compact.start", { lineId: line.id, workerId: worker.id, reason,
+    tokens: before.tokens, estimated: before.estimated });
+  broadcastContext(line, worker.id, worker);
+  runSummaryTurn(plan, cfg.timeLimit, (child) => { worker.compactChild = child; }, (error, summary) => {
+    worker.compacting = false;
+    if (line.deleted || !line.workers.has(worker.id)) return;
+    if (error) {
+      if (reason === "auto") worker.context.autoFailed = true;
+      slog("warn", "worker.compact.failed", { lineId: line.id, workerId: worker.id, reason,
+        error: preview(error, 500) });
+      broadcast(line, "error", { message: `Context compaction of worker '${worker.name}' failed; it keeps its current session. ${error}` });
+    } else {
+      worker.sessionId = null;
+      worker.handoff = summary;
+      worker.context = resetForFreshSession(worker.context);
+      const entry = { type: "message", role: "system", at: Date.now(),
+        text: `Context compacted (${reason}, ~${before.tokens} tokens). The next continuation starts a fresh session with this summary:\n\n${summary}` };
+      worker.transcript.push(entry);
+      broadcast(line, "worker_entry", { workerId: worker.id, entry });
+      slog("info", "worker.compact.done", { lineId: line.id, workerId: worker.id, reason,
+        summaryChars: summary.length });
+    }
+    saveLine(line);
+    broadcastContext(line, worker.id, worker);
+    then(error);
+  });
+  return true;
+}
+
 const dashboardLive = createDashboardLive({
   log: (event, fields) => slog("info", event, fields),
 });
@@ -781,12 +961,14 @@ const dashboardLive = createDashboardLive({
 function dashboardStateForLine(line) {
   return { id: line.id, name: line.name, status: line.status,
     sessionId: line.sessionId, started: line.started,
-    pipeline: resolvePipeline(line), transcript: line.transcript.slice(-50),
+    pipeline: resolvePipeline(line), pipelineOverrides: line.pipeline || null,
+    transcript: line.transcript.slice(-50),
     planApproved: line.planApproved,
+    ...compactionFields(line),
     workers: [...line.workers.values()].map((w) => ({
       id: w.id, name: w.name, ...completionFields(w), branch: w.branch, role: w.role,
       validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
-      ...changesetFields(w), lastError: w.lastError || null,
+      ...changesetFields(w), lastError: w.lastError || null, ...compactionFields(w, line),
     })) };
 }
 
@@ -802,6 +984,8 @@ function saveLine(line) {
   try {
     writeFileDurable(path.join(line.workdir, "line.json"),
       JSON.stringify({ id: line.id, name: line.name, sessionId: line.sessionId,
+        context: line.context || null, handoff: line.handoff || null,
+        sessionCfg: line.sessionCfg || null,
         repoUrl: line.repoUrl || null,
         pipeline: line.pipeline || null,
         pendingValidations: serializePendingValidations(line.pendingValidations),
@@ -823,6 +1007,9 @@ function saveLine(line) {
           steps: e.steps || [] })),
         workers: [...line.workers.values()].map((w) => ({
           id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch,
+          context: w.context || null, handoff: w.handoff || null,
+          // The brief is kept so a compacted session can be reseeded with it.
+          prompt: w.role === "implementor" ? w.prompt || null : null,
           ...completionFields(w), lastRunText: w.lastRunText || null,
           runGeneration: w.runGeneration || 0,
           activeInvocationId: w.activeInvocationId || null,
@@ -940,23 +1127,42 @@ function entryText(entry) {
 }
 
 function pump(line) {
-  if (line.deleted || line.status === "running" || line.queue.length === 0) return;
+  if (line.deleted || line.status === "running" || line.compacting || line.queue.length === 0) return;
+  if (!line.context) line.context = newContextStats();
+  // A session belongs to the harness that created it. After a pipeline
+  // edit switched the planner harness, compact on the old harness first;
+  // the next run then starts a fresh session on the new one.
+  if (line.sessionId && line.sessionCfg
+    && line.sessionCfg.harness !== resolvePipeline(line).planner.harness
+    && compactPlanner(line, "harness-switch", line.sessionCfg)) return;
+  // A large session is compacted before the next request; compactPlanner
+  // calls pump again when it is done.
+  if (line.sessionId && shouldAutoCompact(line.context, maxContextFor(line, line))
+    && compactPlanner(line, "auto")) return;
   const request = restorePlannerRequest(line.queue.shift());
   if (!request) return pump(line);
   const { text } = request;
   line.activePlannerRequest = request;
-  const prompt = wrapPlannerTurn(text, { lineId: line.id, approved: line.planApproved,
+  // The first run after a compaction starts a fresh session: it needs the
+  // planner brief (router API, rules) again, plus the handoff summary.
+  const reseed = !line.sessionId && !!line.handoff;
+  const turnText = reseed
+    ? plannerBrief(line.name, line.id, `${handoffBlock(line.handoff)}\n\n${text}`, PORT)
+    : text;
+  const prompt = wrapPlannerTurn(turnText, { lineId: line.id, approved: line.planApproved,
     workdir: line.workdir });
   line.lastRun = text;
   saveLine(line);
   line.status = "running";
   broadcast(line, "status", { status: line.status });
   const t0 = Date.now();
-  slog("info", "planner.run.start", { lineId: line.id, resume: !!line.sessionId,
+  slog("info", "planner.run.start", { lineId: line.id, resume: !!line.sessionId, reseed,
     chars: text.length, prompt: preview(text, 400) });
 
   const cfg = resolvePipeline(line).planner;
   line.plannerHarness = cfg.harness;
+  line.sessionCfg = { harness: cfg.harness, model: cfg.model, effort: cfg.effort,
+    timeLimit: cfg.timeLimit };
   const plan = planPlannerRun(cfg, { prompt, workdir: line.workdir,
     sessionId: line.sessionId, autoApprove: AUTO_APPROVE });
   const adapter = plan.adapter;
@@ -979,7 +1185,11 @@ function pump(line) {
     if (!parsed) return;
     const entry = adapter.normalize(parsed);
     if (!entry) return;
-    if (!line.sessionId && entry.sessionId) line.sessionId = entry.sessionId;
+    if (!line.sessionId && entry.sessionId) {
+      line.sessionId = entry.sessionId;
+      // The fresh session has received the handoff summary.
+      line.handoff = null;
+    }
     if (typeof entry.at !== "number") entry.at = Date.now();
     runOutput.add(entry);
     appendTranscript(line.transcript, entry);
@@ -1020,6 +1230,12 @@ function pump(line) {
     slog("info", "planner.run.end", { lineId: line.id, code, result,
       ms: Date.now() - t0,
       error: failure ? preview(failure, 500) : undefined });
+    if (line.sessionId) {
+      recordTurn(line.context, { promptChars: prompt.length,
+        outputChars: runOutput.text().length,
+        tokens: adapter.contextTokens || sessionContextTokens(cfg.harness, line.sessionId) });
+      broadcastContext(line, "planner", line);
+    }
     cleanupStage(line, "planner");
     saveLine(line);
     if (result !== "ok") {
@@ -1180,6 +1396,12 @@ function spawnWorker(line, worker, prompt, resume) {
   worker.harness = effective.harness;
   worker.model = effective.model;
   worker.effort = effective.effort;
+  if (!worker.context) worker.context = newContextStats();
+  // A continuation after a compaction starts a fresh session: it gets the
+  // original brief and the handoff summary before the new instructions.
+  if (resume && !worker.sessionId && worker.handoff && worker.prompt) {
+    prompt = workerReseedPrompt(worker.prompt, worker.handoff, prompt);
+  }
   const plan = planWorkerRun({ ...cfg, ...effective }, {
     phase, prompt, workdir: worker.worktreePath,
     sessionId: resume && worker.sessionId ? worker.sessionId : null,
@@ -1210,7 +1432,10 @@ function spawnWorker(line, worker, prompt, resume) {
     if (!parsed) return;
     const entry = adapter.normalize(parsed);
     if (!entry) return;
-    if (!worker.sessionId && entry.sessionId) worker.sessionId = entry.sessionId;
+    if (!worker.sessionId && entry.sessionId) {
+      worker.sessionId = entry.sessionId;
+      worker.handoff = null;
+    }
     if (typeof entry.at !== "number") entry.at = Date.now();
     workerRunOutput.add(entry);
     worker.transcript.push(entry);
@@ -1244,6 +1469,12 @@ function spawnWorker(line, worker, prompt, resume) {
       broadcast(line, "worker_entry", { workerId: worker.id, entry: finished });
     }
     const outcome = spawnError ? "fail" : adapter.outcome(code, signal);
+    if (worker.sessionId && worker.role === "implementor") {
+      recordTurn(worker.context, { promptChars: prompt.length,
+        outputChars: workerRunOutput.text().length,
+        tokens: adapter.contextTokens || sessionContextTokens(effective.harness, worker.sessionId) });
+      broadcastContext(line, worker.id, worker);
+    }
     // A stop request is not a failure: it needs no error detail.
     worker.lastError = outcome !== "ok" && !worker.stopRequested
       ? describeFailure({ cmd: plan.cmd, code, signal, outcome, spawnError,
@@ -1494,6 +1725,66 @@ const requestHandler = (req, res) => {
     return;
   }
 
+  if (parts[0] === "api" && parts[1] === "pipeline-presets") {
+    if (req.method === "GET" && parts.length === 2) {
+      return json(res, 200, { presets: pipelinePresets.list() });
+    }
+    let name;
+    try { name = parts.length === 3 ? decodeURIComponent(parts[2]) : null; } catch { name = null; }
+    if (name === null) return json(res, 404, { error: "not found" });
+    if (req.method === "DELETE") {
+      if (!pipelinePresets.remove(name)) return json(res, 404, { error: "no such preset" });
+      slog("info", "preset.delete", { name });
+      return json(res, 200, { deleted: true });
+    }
+    if (req.method === "PUT") {
+      readBody(req, (err, body) => {
+        if (err || !body) return json(res, 400, { error: "invalid JSON" });
+        const out = pipelinePresets.put(name, body.pipeline);
+        if (out.error) return json(res, 400, { error: out.error });
+        slog("info", "preset.save", { name: out.preset.name, created: out.created });
+        json(res, out.created ? 201 : 200, { preset: out.preset });
+      });
+      return;
+    }
+    return json(res, 405, { error: "method not allowed" });
+  }
+
+  if (req.method === "PUT" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "pipeline"
+    && parts.length === 4) {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    readBody(req, async (err, body) => {
+      if (err || !body) return json(res, 400, { error: "invalid JSON" });
+      const pipeline = body.pipeline && Object.keys(body.pipeline).length ? body.pipeline : null;
+      const pipelineError = validatePipelineConfig(pipeline);
+      if (pipelineError) return json(res, 400, { error: pipelineError });
+      const wanted = new Set(PHASES.map((p) => pipeline && pipeline[p] && pipeline[p].harness).filter(Boolean));
+      if (!await gateHarnesses([...wanted], res)) return;
+      if (line.deleted) return json(res, 404, { error: "no such line" });
+      // Lines restored from before session config tracking: the current
+      // session belongs to the harness configured until now.
+      if (line.sessionId && !line.sessionCfg) {
+        const before = resolvePipeline(line).planner;
+        line.sessionCfg = { harness: before.harness, model: before.model, effort: before.effort,
+          timeLimit: before.timeLimit };
+      }
+      line.pipeline = pipeline;
+      saveLine(line);
+      const resolved = resolvePipeline(line);
+      slog("info", "line.pipeline.update", { lineId: line.id, pipeline });
+      broadcast(line, "pipeline", { pipeline: resolved, overrides: line.pipeline || null });
+      broadcastContext(line, "planner", line);
+      for (const w of line.workers.values()) {
+        if (w.role === "implementor") broadcastContext(line, w.id, w);
+      }
+      // A harness switch is handled before the next planner run.
+      pump(line);
+      json(res, 200, { pipeline: resolved, overrides: line.pipeline || null });
+    });
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/lines") {
     readBody(req, async (err, body) => {
       body = body || {};
@@ -1532,7 +1823,8 @@ const requestHandler = (req, res) => {
           if (commit.status !== 0) return json(res, 500, { error: "git commit failed", stderr: commit.stderr });
         }
       }
-      const line = { id, name, sessionId: null, workdir, status: "standby",
+      const line = { id, name, sessionId: null, context: newContextStats(), handoff: null,
+        workdir, status: "standby",
         repoUrl, started: false, planApproved: false, workers: new Map(),
         repos: new Map(),
         pipeline: body.pipeline || null,
@@ -1829,7 +2121,8 @@ const requestHandler = (req, res) => {
         effort: body.effort || null,
         prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo, baseCommit,
           baseNote(base, baseResolved)),
-        sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
+        sessionId: null, context: newContextStats(), handoff: null,
+        worktreePath, branch, status: "running", stopRequested: false,
         baseCommit, changeset: null, base, baseResolved,
         child: null, transcript: [] };
       line.workers.set(id, worker);
@@ -1857,6 +2150,9 @@ const requestHandler = (req, res) => {
     if (worker.child) {
       worker.stopRequested = true;
       worker.child.kill("SIGTERM");
+    } else if (worker.compactChild) {
+      worker.stopRequested = true;
+      worker.compactChild.kill("SIGTERM");
     } else {
       const sid = worker.sessionId || "unknown";
       enqueue(line, `WORKER STOPPED - '${worker.name}' (workerId ${worker.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.`);
@@ -2137,6 +2433,38 @@ const requestHandler = (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "compact"
+    && parts.length === 4) {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    if (line.compacting) return json(res, 409, { error: "the planner is already compacting" });
+    if (line.status === "running") return json(res, 409, { error: "the planner is running - compact when it is idle" });
+    if (!line.sessionId) return json(res, 409, { error: "the planner has no session to compact" });
+    compactPlanner(line, "manual");
+    return json(res, 202, { compacting: true });
+  }
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "workers"
+    && parts[4] === "compact") {
+    let line = null, worker = null;
+    for (const l of lines.values()) {
+      const w = l.workers.get(parts[3]);
+      if (w) { line = l; worker = w; break; }
+    }
+    if (!worker) return json(res, 404, { error: "no such worker" });
+    if (worker.role !== "implementor") {
+      return json(res, 409, { error: "validators are fresh each run - nothing to compact" });
+    }
+    if (worker.compacting) return json(res, 409, { error: "worker is already compacting" });
+    if (worker.child) return json(res, 409, { error: "worker is running - compact when it is idle" });
+    if (!worker.sessionId) return json(res, 409, { error: "worker has no session to compact" });
+    if (!worker.prompt) {
+      return json(res, 409, { error: "the worker brief was not kept for this worker (created before compaction support), so a fresh session cannot be seeded" });
+    }
+    compactWorker(line, worker, "manual");
+    return json(res, 202, { compacting: true });
+  }
+
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "workers"
     && parts[4] === "continue") {
     let line = null, worker = null;
@@ -2154,7 +2482,8 @@ const requestHandler = (req, res) => {
         return json(res, 409, { error: "a validator is still checking this implementor" });
       }
     }
-    if (!worker.sessionId) return json(res, 409, { error: "worker has no session yet" });
+    if (worker.compacting) return json(res, 409, { error: "worker is compacting its context" });
+    if (!worker.sessionId && !worker.handoff) return json(res, 409, { error: "worker has no session yet" });
     readBody(req, (err, body) => {
       if (err || !body || typeof body.prompt !== "string" || !body.prompt.trim()) {
         return json(res, 400, { error: "expected {prompt}" });
@@ -2170,8 +2499,18 @@ When done, reply with a report: what you changed, files changed, how you verifie
       saveLine(line);
       slog("info", "worker.continued", { lineId: line.id, workerId: worker.id,
         chars: body.prompt.length, prompt: preview(body.prompt, 400) });
-      spawnWorker(line, worker, prompt, true);
-      json(res, 202, { queued: true });
+      const run = () => spawnWorker(line, worker, prompt, true);
+      const autoCompact = worker.sessionId
+        && shouldAutoCompact(worker.context, maxContextFor(line, worker))
+        && compactWorker(line, worker, "auto", () => {
+          if (line.deleted || !line.workers.has(worker.id)) return;
+          // Stopped during the compaction: finish as a stopped run.
+          if (worker.stopRequested) {
+            workerClosed(line, worker, null, "SIGTERM", new InvocationCapture(), { outcome: "fail" });
+          } else run();
+        });
+      if (!autoCompact) run();
+      json(res, 202, { queued: true, compacting: !!autoCompact });
     });
     return;
   }
@@ -2279,7 +2618,10 @@ function loadLines() {
         if (w.role === "validator") continue;
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
           role: w.role === "validator" && w.kind === "integration" ? "validator" : "implementor",
-          validates: null, prompt: null, kind: w.kind || "standard", verdict: w.verdict || null,
+          validates: null, prompt: typeof w.prompt === "string" ? w.prompt : null,
+          kind: w.kind || "standard", verdict: w.verdict || null,
+          context: restoreContextStats(w.context),
+          handoff: typeof w.handoff === "string" ? w.handoff : null,
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           repo: w.repo || "primary",
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
@@ -2329,6 +2671,9 @@ function loadLines() {
           ref: i.ref, keep: !!i.keep, status: "stopped" });
       }
       const line = { id: meta.id, name: meta.name, sessionId: meta.sessionId,
+        context: restoreContextStats(meta.context),
+        handoff: typeof meta.handoff === "string" ? meta.handoff : null,
+        sessionCfg: meta.sessionCfg && typeof meta.sessionCfg.harness === "string" ? meta.sessionCfg : null,
         repoUrl: meta.repoUrl || null,
         pipeline: meta.pipeline || null,
         repos: new Map((meta.repos || []).map((r) => [r.name,

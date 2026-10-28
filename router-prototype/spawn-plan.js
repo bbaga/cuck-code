@@ -88,6 +88,9 @@ function lineSummary(line) {
     started: line.started,
     workers: line.workers ? line.workers.size : 0,
     pipeline: resolvePipeline(line),
+    // The line's own settings, without defaults: what the pipeline editor
+    // shows and saves.
+    pipelineOverrides: line.pipeline || null,
   };
 }
 

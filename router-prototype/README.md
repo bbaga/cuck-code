@@ -86,6 +86,51 @@ sent in full, without adding punctuation to the report text.
 
 The graph places each standard validator in the lane of the implementor it validates. The first validator shares the implementor row, and later validators use rows below it. Each implementor lane has at least one row. Unmatched validators use an ordered fallback section. Integration validators use a separate final section, with eligible Preview nodes on their integration row. The failed-validator filter runs before row sizing, so hidden validators do not leave empty rows. Graph selection keeps the fixed viewport position.
 
+## Pipeline settings and presets
+
+Each line has a pipeline: per phase (planner, implementor, validator,
+integration) a harness, model, effort, and for the planner and implementor a
+`maxContext` (see Context compaction). Unset fields use the router defaults
+and the `<PHASE>_HARNESS` / `_MODEL` / `_EFFORT` environment variables.
+
+- The create form sets the pipeline of a new line. Presets save the form under
+  a name and fill it again later; they are stored in
+  `<LINES_DIR>/pipeline-presets.json`. API: `GET /api/pipeline-presets`,
+  `PUT /api/pipeline-presets/:name {pipeline}`, `DELETE /api/pipeline-presets/:name`.
+- The Pipeline tab in a line's header shows the effective settings and changes
+  the line's own settings at any time (`PUT /api/lines/:id/pipeline {pipeline}`,
+  `null` resets to the defaults). Changes apply from the next run: running
+  sessions finish unchanged, and existing workers keep the harness, model, and
+  effort they were spawned with. A session belongs to the harness that created
+  it, so after a planner harness change the router compacts the planner session
+  on the old harness and continues in a fresh session on the new one.
+
+## Context compaction
+
+Planner and implementor sessions are resumed on every run, so their context
+grows. The router compacts a session in two steps that work the same on every
+harness: a summary turn on the old session asks for a handoff summary, then the
+router drops the session id. The next run starts a fresh session whose prompt
+carries the role brief (planner brief or the worker's original brief), the
+summary, and the new message. Validators start fresh on every run and are never
+compacted.
+
+Context size comes from the harness itself: `usage` on the claude and pi
+streams, `stats.context_tokens` in vibe's `~/.vibe/logs/session/*/meta.json`
+(`VIBE_HOME`), and the last `token_count` in codex's
+`~/.codex/sessions/**/rollout-*-<session>.jsonl` (`CODEX_HOME`). Without one,
+the router estimates prompt and reply characters / 4. That lower bound ignores
+tool output and is shown as `~` in the UI.
+
+- Automatic: before the next run, a session at or above its threshold is
+  compacted. Set it per line with `pipeline.planner.maxContext` and
+  `pipeline.implementor.maxContext` (tokens; the create form takes `200K`,
+  `50K`, `1M`). The default is `COMPACT_AUTO_TOKENS` (150000; `0` turns it
+  off). A failed automatic compaction is not retried on the same session.
+- Manual: the Compact button next to the context meter of the selected
+  planner or implementor, or `POST /api/lines/:id/compact` and
+  `POST /api/protocol/workers/:id/compact` (idle sessions only).
+
 ## Production lines
 
 Clicking "Create new line" adds a standing-by "Draft line" (work directory under

@@ -1,14 +1,21 @@
 "use strict";
 
 // Pipeline configuration layer: per-phase harness/model/effort/timeLimit
-// resolution and harness availability probes. Pure logic, no I/O except
+// (and maxContext for resumed sessions) resolution and harness availability probes. Pure logic, no I/O except
 // through the injected run() function in probeHarnesses().
+
+const { parseAutoThreshold } = require("./compaction");
 
 const PHASES = ["planner", "implementor", "validator", "integration"];
 const HARNESS_IDS = ["vibe", "pi", "codex", "claude"];
 const EFFORT_LEVELS = ["low", "medium", "high"];
 
-const PIPELINE_FIELDS = ["harness", "model", "effort", "timeLimit"];
+const PIPELINE_FIELDS = ["harness", "model", "effort", "timeLimit", "maxContext"];
+
+// Phases whose sessions are resumed across runs and can be compacted.
+// maxContext (tokens) is the context size at which the router compacts the
+// session; validators start fresh on every run and take no maxContext.
+const CONTEXT_PHASES = ["planner", "implementor"];
 
 // Env var prefix per phase, e.g. PLANNER_HARNESS, IMPLEMENTOR_MODEL.
 const PHASE_ENV_PREFIX = {
@@ -61,6 +68,14 @@ function validatePipelineConfig(raw) {
         && (typeof v !== "number" || !Number.isFinite(v) || v <= 0)) {
         return `pipeline.${key}.timeLimit must be a positive number`;
       }
+      if (field === "maxContext") {
+        if (!CONTEXT_PHASES.includes(key)) {
+          return `pipeline.${key}.maxContext is not supported (only: ${CONTEXT_PHASES.join(", ")})`;
+        }
+        if (!Number.isInteger(v) || v < 1000) {
+          return `pipeline.${key}.maxContext must be an integer number of tokens, at least 1000`;
+        }
+      }
     }
   }
   return null;
@@ -98,6 +113,9 @@ function resolvePipeline(line, env) {
       effort: phaseCfg.effort || e[`${prefix}_EFFORT`] || DEFAULTS.effort,
       timeLimit: phaseCfg.timeLimit || envTimeLimit,
     };
+    if (CONTEXT_PHASES.includes(phase)) {
+      result[phase].maxContext = phaseCfg.maxContext || parseAutoThreshold(e.COMPACT_AUTO_TOKENS);
+    }
   }
   return result;
 }
@@ -413,6 +431,7 @@ function probeResultFor(results, id) {
 
 module.exports = {
   PHASES,
+  CONTEXT_PHASES,
   HARNESS_IDS,
   EFFORT_LEVELS,
   validatePipelineConfig,

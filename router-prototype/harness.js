@@ -10,6 +10,9 @@
 //
 // normalize() returns a common entry:
 //   { type: "message", role, text, sessionId, at }
+// Adapters whose stream reports token usage also keep contextTokens: the
+// size of the session context after the latest model call (null when the
+// harness reports none). The router uses it to decide on compaction.
 // It preserves explicit source roles and uses null when the source omits a
 // role. Only the exact "assistant" role is trusted by report capture.
 //
@@ -105,6 +108,7 @@ class BaseHarness {
   constructor(id) {
     this.id = id;
     this.sessionId = null;
+    this.contextTokens = null;
     this.systemPromptChannel = trustedSystemChannel(id);
   }
 
@@ -159,6 +163,13 @@ class BaseHarness {
 
   errorText() {
     return this.streamErrors && this.streamErrors.length ? this.streamErrors.join('\n') : null;
+  }
+
+  // Latest context size wins. Sums the numeric parts and ignores the
+  // report when it carries nothing (error messages report zero usage).
+  recordContextTokens(...parts) {
+    const total = parts.reduce((sum, n) => sum + (Number.isFinite(n) && n > 0 ? n : 0), 0);
+    if (total > 0) this.contextTokens = total;
   }
 
   // First session id seen on the stream wins.
@@ -273,6 +284,10 @@ class PiHarness extends BaseHarness {
       }
     } else if (obj.type === 'message_end') {
       const message = obj.message || {};
+      if (message.role === 'assistant' && message.usage) {
+        const u = message.usage;
+        this.recordContextTokens(u.input, u.cacheRead, u.cacheWrite, u.output);
+      }
       if (message.stopReason === 'error') {
         this.recordError(typeof message.errorMessage === 'string' && message.errorMessage
           ? message.errorMessage : 'pi reported an error without a message');
@@ -371,6 +386,13 @@ class ClaudeHarness extends BaseHarness {
 
   normalize(obj) {
     if (!obj || typeof obj !== 'object') return null;
+    if (obj.type === 'assistant' && obj.message && obj.message.usage) {
+      // Each assistant event carries the usage of its API call: the input
+      // (fresh and cached) plus the output is the context the next call sees.
+      const u = obj.message.usage;
+      this.recordContextTokens(u.input_tokens, u.cache_creation_input_tokens,
+        u.cache_read_input_tokens, u.output_tokens);
+    }
     if (obj.type === 'system' && obj.subtype === 'init') {
       // Init event: carries the session id, no message text.
       this.captureSessionId(obj.session_id);

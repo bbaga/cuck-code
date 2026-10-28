@@ -13,6 +13,29 @@
 
   const EFFORT_LEVELS = ["low", "medium", "high"];
 
+  // Phases whose sessions are resumed and take a maxContext setting.
+  const CONTEXT_PHASES = ["planner", "implementor"];
+
+  // Parse a max context size typed in thousands: "200K", "50k", "1M",
+  // "1.5M", or a bare "200" (read as 200K). Returns tokens, null for an
+  // empty value, or NaN for anything else.
+  function parseContextSize(text) {
+    const raw = String(text === undefined || text === null ? "" : text).trim();
+    if (!raw) return null;
+    const m = raw.match(/^(\d+(?:\.\d+)?)\s*([kKmM]?)$/);
+    if (!m) return NaN;
+    const unit = m[2].toLowerCase() === "m" ? 1000000 : 1000;
+    const tokens = Math.round(Number(m[1]) * unit);
+    return tokens >= 1000 ? tokens : NaN;
+  }
+
+  // Compact token count for display: 950, 12K, 1.2M.
+  function formatTokens(n) {
+    if (!Number.isFinite(n) || n < 1000) return String(Math.max(0, Math.round(n || 0)));
+    if (n < 1000000) return Math.round(n / 1000) + "K";
+    return (Math.round(n / 100000) / 10) + "M";
+  }
+
   const PI_HARNESS_ID = "pi";
   const VIBE_HARNESS_ID = "vibe";
   const CLAUDE_HARNESS_ID = "claude";
@@ -211,7 +234,7 @@
     for (const { key } of PHASE_ROWS) {
       const row = (rows && rows[key]) || {};
       const phase = {};
-      for (const field of ["harness", "model", "effort", "timeLimit"]) {
+      for (const field of ["harness", "model", "effort", "timeLimit", "maxContext"]) {
         const v = row[field];
         if (v !== undefined && v !== null && String(v).trim() !== "") {
           phase[field] = typeof v === "number" ? v : String(v).trim();
@@ -467,6 +490,9 @@
   return {
     PHASE_ROWS,
     EFFORT_LEVELS,
+    CONTEXT_PHASES,
+    parseContextSize,
+    formatTokens,
     PI_HARNESS_ID,
     VIBE_HARNESS_ID,
     CLAUDE_HARNESS_ID,

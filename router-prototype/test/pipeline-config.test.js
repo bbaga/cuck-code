@@ -86,9 +86,9 @@ test("validatePipelineConfig rejects authMode: model stays a string", () => {
 test("resolvePipeline defaults equal today behavior", () => {
   const r = resolvePipeline({}, {});
   assert.deepStrictEqual(r.planner, {
-    harness: "vibe", model: null, effort: "medium", timeLimit: 1800 });
+    harness: "vibe", model: null, effort: "medium", timeLimit: 1800, maxContext: 150000 });
   assert.deepStrictEqual(r.implementor, {
-    harness: "vibe", model: "glm-5-3-flash", effort: "medium", timeLimit: 3600 });
+    harness: "vibe", model: "glm-5-3-flash", effort: "medium", timeLimit: 3600, maxContext: 150000 });
   assert.deepStrictEqual(r.validator, {
     harness: "vibe", model: "glm-5-3", effort: "medium", timeLimit: 3600 });
   assert.deepStrictEqual(r.integration, {
