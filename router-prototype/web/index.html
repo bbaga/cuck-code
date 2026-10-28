@@ -91,6 +91,10 @@
     font-size: .75rem; user-select: none; }
   .planDetails[open] summary { color: #8fa3bd; }
   .planDetails .planBody { padding: 4px 16px 12px; }
+  .scopeDetails { border-bottom: 1px solid #262b33; }
+  .scopeDetails summary { cursor: pointer; padding: 6px 16px; color: #6c7a8c; font-size: .75rem; }
+  .scopeBody { padding: 4px 16px 12px; max-height: 260px; overflow: auto; }
+  .scopeBody pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: .75rem ui-monospace, monospace; color: #c1cad5; }
   .plan { padding: 12px 16px; border-bottom: 1px solid #262b33;
     max-height: 260px; overflow-y: auto; font-size: .85rem; }
   .plan .waiting { color: #6c7a8c; font-size: .8rem; }
@@ -245,7 +249,7 @@ window.addEventListener("DOMContentLoaded", () => {
     clearHarnessState, clearProviderState, shouldHideValidator,
     shouldShowIntegrationValidator, buildGraphLanes,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
-    evidencePollIsCurrent } = window.pipelineUI;
+    evidencePollIsCurrent, formatScopePanelData } = window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
   const listEl = document.getElementById("linelist");
@@ -550,6 +554,14 @@ window.addEventListener("DOMContentLoaded", () => {
     st.previewPanel.replaceChildren(panel); st.previewPanel.hidden = false; renderGraph(st);
   }
 
+  function renderScopePanel(st) {
+    const worker = st.selected !== null && !String(st.selected).startsWith("preview:") ? st.workers.get(st.selected) : null;
+    const show = !!worker && (worker.role || "implementor") !== "planner";
+    st.scopeDetails.hidden = !show;
+    if (!show) return;
+    st.scopeText.textContent = formatScopePanelData(worker) || "No scope data available.";
+  }
+
   function selectNode(st, id) {
     if (st.previewPanel) st.previewPanel.hidden = true;
     if (st.selected !== id) st.followTranscript = true;
@@ -561,6 +573,7 @@ window.addEventListener("DOMContentLoaded", () => {
     renderGraph(st);
     renderTranscript(st);
     renderContextControls(st);
+    renderScopePanel(st);
   }
 
   // Context meter and Compact button for the selected session: the planner
@@ -729,6 +742,14 @@ window.addEventListener("DOMContentLoaded", () => {
     pipeRevert.textContent = "Revert";
     pipeBtns.append(pipeSave, pipeRevert);
     pipePane.append(pipeEffective, pipeEditTitle, pipeNote, pipePresets.el, pipeForm.el, pipeMsg, pipeBtns);
+    const scopeDetails = document.createElement("details");
+    scopeDetails.className = "scopeDetails";
+    scopeDetails.hidden = true;
+    const scopeSummary = document.createElement("summary"); scopeSummary.textContent = "Scope and goals";
+    const scopeBody = document.createElement("div"); scopeBody.className = "scopeBody";
+    const scopeText = document.createElement("pre"); scopeBody.appendChild(scopeText);
+    scopeDetails.append(scopeSummary, scopeBody);
+
     const planDetails = document.createElement("details");
     planDetails.className = "planDetails";
     planDetails.hidden = true;
@@ -792,12 +813,12 @@ window.addEventListener("DOMContentLoaded", () => {
     const evPane = document.createElement("div");
     evPane.className = "evPane";
     evPane.hidden = true;
-    card.append(head, planDetails, banner, plan, graph, previewPanel, transcriptWrap, row, procPane, evPane, pipePane);
+    card.append(head, planDetails, scopeDetails, banner, plan, graph, previewPanel, transcriptWrap, row, procPane, evPane, pipePane);
     linesEl.appendChild(card);
 
     const st = { id: line.id, dot, banner, transcript, transcriptWrap, scrollBottomBtn, input, send,
       ctxMeter, compactBtn, plannerCtx: null,
-      waiting, planBody, graph, previewPanel, approveBtn, badge, planDetails, planControls: controls,
+      waiting, planBody, graph, previewPanel, scopeDetails, scopeText, approveBtn, badge, planDetails, planControls: controls,
       pipePane, tabPipeBtn, pipeForm, pipePresets, pipeEffective,
       pipeline: line.pipeline || null, pipelineOverrides: line.pipelineOverrides || null,
       tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, plan, row, procPane, evPane,
@@ -929,6 +950,7 @@ window.addEventListener("DOMContentLoaded", () => {
         setStatus(state.status);
         refreshPreview();
         renderTranscript(st);
+        renderScopePanel(st);
       },
       status(data) { setStatus(data.status); },
       entry(entry) {
@@ -949,14 +971,15 @@ window.addEventListener("DOMContentLoaded", () => {
         if (!st.workerTranscripts.has(worker.id)) st.workerTranscripts.set(worker.id, []);
         renderGraph(st); updateListEntry(st); refreshPreview();
       },
-      worker_status({ workerId, status, verdict, error }) {
+      worker_status({ workerId, status, verdict, error, worker }) {
         const w = st.workers.get(workerId);
         if (w) {
+          if (worker) Object.assign(w, worker);
           w.status = status;
           if (verdict) w.verdict = verdict;
           w.lastError = error || null;
           if (error) showError("Worker '" + w.name + "' failed. " + error);
-          if (st.selected === workerId) renderTranscript(st);
+          if (st.selected === workerId) { renderTranscript(st); renderScopePanel(st); }
         }
         renderGraph(st); updateListEntry(st); refreshPreview(); renderContextControls(st);
       },

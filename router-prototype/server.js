@@ -1509,7 +1509,9 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
   }
   if (line.deleted) return;
   saveLine(line);
-  broadcast(line, "worker_status", { ...statusEvent, error: worker.lastError || null });
+  broadcast(line, "worker_status", { ...statusEvent, error: worker.lastError || null,
+    worker: { id: worker.id, role: worker.role, persona: worker.persona,
+      repo: worker.repo, branch: worker.branch, ...scopeFields(worker, line.workers) } });
   const sid = worker.sessionId || "unknown";
   slog("info", "worker.closed", { lineId: line.id, workerId: worker.id, name: worker.name,
     role: worker.role, status: worker.status, verdict: worker.verdict || undefined,

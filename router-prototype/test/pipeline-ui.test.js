@@ -26,6 +26,7 @@ const {
   clearHarnessState,
   clearProviderState,
   buildPipelinePayload,
+  formatScopePanelData,
   authBadge,
   isFailedValidator,
   shouldHideValidator,
@@ -147,6 +148,21 @@ test("filterInstalled tolerates missing or malformed input", () => {
   assert.deepEqual(filterInstalled(undefined), []);
   assert.deepEqual(filterInstalled(null), []);
   assert.deepEqual(filterInstalled([null, { id: "x" }]), []);
+});
+
+test("formatScopePanelData includes worker scope and validator criteria", () => {
+  const text = formatScopePanelData({ role: "validator", persona: "frontend", repo: "app",
+    branch: "feature/x", name: "validator-app", validatesName: "implementor-app",
+    criteria: "Run unit tests\\nCheck keyboard access", prompt: "Validate the changes" });
+  assert.match(text, /Role: validator/);
+  assert.match(text, /Checked implementor: implementor-app/);
+  assert.match(text, /Validation criteria: Run unit tests/);
+  assert.match(text, /Prompt: Validate the changes/);
+});
+
+test("formatScopePanelData returns null for planner or missing worker", () => {
+  assert.equal(formatScopePanelData(null), null);
+  assert.match(formatScopePanelData({ role: "planner", name: "planner" }), /Role: planner/);
 });
 
 test("buildPipelinePayload returns null for all-empty input", () => {
