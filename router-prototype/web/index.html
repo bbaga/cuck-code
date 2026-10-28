@@ -1014,7 +1014,7 @@ window.addEventListener("DOMContentLoaded", () => {
     };
     input.addEventListener("input", () => fitComposer(input));
     input.addEventListener("keydown", (e) => {
-      if (PipelineUI.composerKeyAction(e) === "send") { e.preventDefault(); post(); }
+      if (pipelineUI.composerKeyAction(e) === "send") { e.preventDefault(); post(); }
     });
 
     setStatus(line.status);
