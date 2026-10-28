@@ -419,9 +419,12 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     const W = graph.clientWidth || 440;
     const plannerW = 92, plannerX = 12;
-    const implW = pipelineUI.columnWidth(impls.map((w) => pipelineUI.nodeWidth(w, graphTextMeasure)));
-    const valW = pipelineUI.columnWidth(vals.map((w) => pipelineUI.nodeWidth(w, graphTextMeasure)));
-    const intW = pipelineUI.columnWidth(ints.map((w) => pipelineUI.nodeWidth(w, graphTextMeasure)));
+    const measure = typeof graphTextMeasure === "function"
+      ? graphTextMeasure
+      : (text) => String(text).length * 8;
+    const implW = pipelineUI.columnWidth(impls.map((w) => pipelineUI.nodeWidth(w, measure)));
+    const valW = pipelineUI.columnWidth(vals.map((w) => pipelineUI.nodeWidth(w, measure)));
+    const intW = pipelineUI.columnWidth(ints.map((w) => pipelineUI.nodeWidth(w, measure)));
     const implX = plannerX + plannerW + 46;
     const valX = implX + implW + 46;
     const intX = valX + valW + 46;
