@@ -555,6 +555,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderScopePanel(st) {
+    if (!st.scopeDetails || !st.scopeText) return;
     const worker = st.selected !== null && !String(st.selected).startsWith("preview:") ? st.workers.get(st.selected) : null;
     const show = !!worker && (worker.role || "implementor") !== "planner";
     st.scopeDetails.hidden = !show;
@@ -573,7 +574,7 @@ window.addEventListener("DOMContentLoaded", () => {
     renderGraph(st);
     renderTranscript(st);
     renderContextControls(st);
-    renderScopePanel(st);
+    if (typeof renderScopePanel === "function") renderScopePanel(st);
   }
 
   // Context meter and Compact button for the selected session: the planner

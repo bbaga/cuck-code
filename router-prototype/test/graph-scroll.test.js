@@ -22,6 +22,12 @@ function harness() {
 }
 test("renderGraph restores both offsets after clearing graph content", () => { const {ui,graph}=harness(); const st={graph,workers:new Map(),selected:null}; ui.renderGraph(st); assert.equal(graph.scrollTop,47); assert.equal(graph.scrollLeft,63); });
 test("renderGraph preserves zero initial offsets", () => { const {ui,graph}=harness(); graph.scrollTop=graph.scrollLeft=0; ui.renderGraph({graph,workers:new Map(),selected:null}); assert.equal(graph.scrollTop,0); assert.equal(graph.scrollLeft,0); });
+test("selectNode tolerates the legacy sandbox without scope elements", () => {
+  const h = harness();
+  const st = state(h, [{id:"impl",name:"impl",status:"running"}]);
+  assert.doesNotThrow(() => h.ui.selectNode(st, "impl"));
+  assert.equal(st.selected, "impl");
+});
 test("renderGraph restores offsets and rethrows a rendering failure", () => { const {ui,graph}=harness(); const st={graph,workers:{values(){throw Error("boom")}},selected:null}; assert.throws(()=>ui.renderGraph(st),/boom/); assert.equal(graph.scrollTop,47); assert.equal(graph.scrollLeft,63); });
 function state(h, workers) { return { graph:h.graph, workers:new Map(workers.map(w=>[w.id,w])), selected:null, hideFailedValidators:false, plannerStatus:"idle", previewPanel:{hidden:true,replaceChildren(...x){this.children=x;}}, id:"line", tabEvBtn:{}, followTranscript:true }; }
 function integration(){return {id:"i",kind:"integration",role:"validator",status:"completed",verdict:"pass",validates:"impl"};}
