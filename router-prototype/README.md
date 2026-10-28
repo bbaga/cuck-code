@@ -654,6 +654,12 @@ main/master branch - merging is the integration validator's job:
   `362eff17942182a62baf05ef12423afa2dbf6613`. POST returns
   `{evidenceId, attemptId}`. GET returns `{items, history, currentAttemptId,
   currentAttemptIds}`. The router owns attempt identity.
+  Each record in `items` and `history` has `addedBy: {id, name, role}`.
+  `role` is `integration validator`, `validator`, `implementor`, or null.
+  The router stores the name and role at registration, so they stay correct
+  after the worker is removed. For old records it reads the live worker, and
+  gives null name and role if the worker is gone. `at` is epoch milliseconds.
+  Both lists are sorted by `at`, newest first.
   It reports capture and registration failures. It does not replace a failed
   showcase with short clips. It restarts the router after an API change.
 
