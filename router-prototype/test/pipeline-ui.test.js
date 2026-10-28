@@ -765,3 +765,25 @@ test("buildGraphLanes keeps unvalidated and integration workers separate and fil
   assert.deepEqual(shown.lanes[0].validators.map(v=>v.id), ["bad"]);
   assert.equal(shown.lanes[0].rowCount, 1);
 });
+
+test("composerKeyAction sends on Enter and keeps Shift+Enter as newline", () => {
+  const { composerKeyAction } = require("../web/pipeline-ui.js");
+  assert.strictEqual(composerKeyAction({ key: "Enter" }), "send");
+  assert.strictEqual(composerKeyAction({ key: "Enter", shiftKey: true }), "newline");
+  assert.strictEqual(composerKeyAction({ key: "Enter", code: "Enter", target: { value: "a " } }), "send");
+  assert.strictEqual(composerKeyAction({ key: "Enter", isComposing: true }), "none");
+  assert.strictEqual(composerKeyAction({ key: "Enter", keyCode: 229 }), "none");
+  assert.strictEqual(composerKeyAction({ key: "a" }), "none");
+  assert.strictEqual(composerKeyAction({ key: " " }), "none");
+});
+
+test("composerKeyAction sends on Enter and keeps Shift+Enter as newline", () => {
+  const { composerKeyAction } = require("../web/pipeline-ui.js");
+  assert.strictEqual(composerKeyAction({ key: "Enter" }), "send");
+  assert.strictEqual(composerKeyAction({ key: "Enter", shiftKey: true }), "newline");
+  assert.strictEqual(composerKeyAction({ key: "Enter", target: { value: "a " } }), "send");
+  assert.strictEqual(composerKeyAction({ key: "Enter", isComposing: true }), "none");
+  assert.strictEqual(composerKeyAction({ key: "Enter", keyCode: 229 }), "none");
+  assert.strictEqual(composerKeyAction({ key: "a" }), "none");
+  assert.strictEqual(composerKeyAction({ key: " " }), "none");
+});

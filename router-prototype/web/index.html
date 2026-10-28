@@ -161,8 +161,10 @@
   .transcript pre { margin: 6px 0 0; color: #8b98a8; }
   .liveLabel { color: #6c7a8c; font-size: .75rem; font-family: system-ui, sans-serif; }
   .row { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #262b33; }
-  .row input { flex: 1; min-width: 0; padding: 8px; background: #0d1014; color: inherit;
-    border: 1px solid #2c333d; border-radius: 4px; }
+  .row textarea { flex: 1; min-width: 0; padding: 8px; background: #0d1014; color: inherit;
+    border: 1px solid #2c333d; border-radius: 4px; resize: none; font: inherit;
+    line-height: 1.4; overflow-y: auto; }
+  .row button { align-self: flex-end; }
   .ctxMeter { align-self: center; font-size: .72rem; color: #6c7a8c; white-space: nowrap;
     font-variant-numeric: tabular-nums; }
   .ctxMeter.near { color: #e5a04b; }
@@ -775,7 +777,8 @@ window.addEventListener("DOMContentLoaded", () => {
     transcriptWrap.append(transcript, scrollBottomBtn);
     const row = document.createElement("div");
     row.className = "row";
-    const input = document.createElement("input");
+    const input = document.createElement("textarea");
+    input.rows = 1;
     input.placeholder = "Send a prompt";
     const send = document.createElement("button");
     send.textContent = "Send";
@@ -847,7 +850,7 @@ window.addEventListener("DOMContentLoaded", () => {
         input.placeholder = (st.planContent && !st.approved)
           ? "Plan proposed - type feedback here" : "Send a prompt";
       } else {
-        input.placeholder = "Type the initial prompt and press Enter";
+        input.placeholder = "Type the initial prompt and press Enter (Shift+Enter: new line)";
       }
       renderGraph(st);
       updateListEntry(st);
@@ -992,6 +995,7 @@ window.addEventListener("DOMContentLoaded", () => {
       const text = input.value.trim();
       if (!text) return;
       input.value = "";
+      fitComposer(input);
       if (!st.started) {
         st.started = true;
         input.placeholder = "Send a prompt";
@@ -1002,7 +1006,16 @@ window.addEventListener("DOMContentLoaded", () => {
       });
     };
     send.addEventListener("click", post);
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter") post(); });
+    const fitComposer = (el) => {
+      el.style.height = "auto";
+      const lh = parseFloat(getComputedStyle(el).lineHeight) || 20;
+      const pad = el.offsetHeight - el.clientHeight;
+      el.style.height = Math.min(el.scrollHeight + pad, lh * 8 + pad + 16) + "px";
+    };
+    input.addEventListener("input", () => fitComposer(input));
+    input.addEventListener("keydown", (e) => {
+      if (PipelineUI.composerKeyAction(e) === "send") { e.preventDefault(); post(); }
+    });
 
     setStatus(line.status);
     renderGraph(st);

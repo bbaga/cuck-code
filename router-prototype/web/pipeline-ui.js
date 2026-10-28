@@ -390,6 +390,12 @@
     return Math.max(0, Math.min(Math.floor(step), length - 1));
   }
 
+  function composerKeyAction(e) {
+    if (!e || e.key !== "Enter") return "none";
+    if (e.isComposing || e.keyCode === 229) return "none";
+    return e.shiftKey ? "newline" : "send";
+  }
+
   function evidencePollIsCurrent(st, lineId, generation, selectedLine, currentState) {
     return selectedLine === lineId && currentState === st && generation === st.evidenceGen;
   }
@@ -530,5 +536,6 @@
     clampEvidenceStep,
     renderEvidenceFromState: renderEvidence,
     evidencePollIsCurrent,
+    composerKeyAction,
   };
 });
