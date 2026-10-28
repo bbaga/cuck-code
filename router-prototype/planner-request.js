@@ -18,11 +18,21 @@ function sourceIdentity({ workerId, invocationId, runId, report }) {
   return Object.freeze({ workerId, invocationId, runId, report });
 }
 
-function plannerRequest(text, source = null, noticeId = null) {
+function plannerRequest(text, source = null, noticeId = null, userText = null, recorded = false) {
   const identity = source ? sourceIdentity(source) : null;
   const request = { text, source: identity };
+  if (typeof userText === "string") {
+    request.fromUser = true;
+    request.userText = userText;
+  }
   if (validNoticeId(noticeId)) request.noticeId = noticeId;
+  if (recorded === true) request.recorded = true;
   return Object.freeze(request);
+}
+
+function recordedPlannerRequest(request) {
+  return plannerRequest(request.text, request.source, request.noticeId,
+    request.fromUser ? request.userText : null, true);
 }
 
 function implementorReportRequest(text, worker, invocation, report) {
@@ -36,7 +46,9 @@ function implementorReportRequest(text, worker, invocation, report) {
 
 function restorePlannerRequest(value) {
   if (!value || typeof value.text !== "string") return null;
-  return plannerRequest(value.text, value.source || null, value.noticeId);
+  const userText = value.fromUser && typeof value.userText === "string" ? value.userText : null;
+  return plannerRequest(value.text, value.source || null, value.noticeId, userText,
+    value.recorded === true);
 }
 
 function completePlannerCriteria(request, criteria, {
@@ -82,6 +94,11 @@ function retryPlannerRequest(queue, request) {
 function serializePlannerRequest(request) {
   const out = { text: request.text, source: request.source || null };
   if (validNoticeId(request.noticeId)) out.noticeId = request.noticeId;
+  if (request.fromUser && typeof request.userText === "string") {
+    out.fromUser = true;
+    out.userText = request.userText;
+  }
+  if (request.recorded === true) out.recorded = true;
   return out;
 }
 
@@ -178,6 +195,7 @@ module.exports = {
   plannerRequest,
   implementorReportRequest,
   restorePlannerRequest,
+  recordedPlannerRequest,
   completePlannerCriteria,
   retryPlannerRequest,
   serializePlannerRequests,
