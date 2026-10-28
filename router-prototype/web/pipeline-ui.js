@@ -397,15 +397,132 @@
     const items = Array.isArray(data.items) ? data.items : [];
     const historyItems = Array.isArray(data.history) ? data.history : [];
     const current = currentAttemptId ? items.filter((item) => item && item.attemptId === currentAttemptId) : [];
-    const primary = current.filter((item) => item.kind === "showcase" && item.version === 1)
-      .slice().sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0] || null;
+    const primary = sortEvidenceNewestFirst(current.filter((item) => item.kind === "showcase" && item.version === 1))[0] || null;
     return { currentAttemptId, ambiguous: !currentAttemptId && uniqueIds.length > 1,
-      primary, history: [...items.filter((item) => item !== primary), ...historyItems] };
+      primary, history: sortEvidenceNewestFirst([...items.filter((item) => item !== primary), ...historyItems]) };
   }
 
   function clampEvidenceStep(step, length) {
     if (!Number.isFinite(step) || length <= 0) return 0;
     return Math.max(0, Math.min(Math.floor(step), length - 1));
+  }
+
+  // Newest first by numeric "at"; records with an invalid "at" go last.
+  function sortEvidenceNewestFirst(list) {
+    const time = (item) => { const at = item && item.at; return at === null || at === undefined || at === "" ? NaN : Number(at); };
+    return (Array.isArray(list) ? list : []).slice().sort((a, b) => {
+      const x = time(a); const y = time(b);
+      if (Number.isNaN(x) || Number.isNaN(y)) return Number.isNaN(x) - Number.isNaN(y);
+      return y - x;
+    });
+  }
+
+  function formatEvidenceAuthor(item) {
+    const by = item && item.addedBy;
+    const name = by && typeof by.name === "string" ? by.name.trim() : "";
+    if (!name) return "unknown validator";
+    return by.role ? name + " (" + by.role + ")" : name;
+  }
+
+  function evidenceMeta(item) {
+    const at = item && item.at;
+    const date = at === null || at === undefined || at === "" ? null : new Date(Number(at));
+    const valid = date && !Number.isNaN(date.getTime());
+    return { text: (valid ? date.toLocaleString() : "unknown time") + " \u00b7 added by " + formatEvidenceAuthor(item) + " \u00b7 " + ((item && item.name) || "evidence"),
+      iso: valid ? date.toISOString() : "" };
+  }
+
+  // Maps a keydown event to "prev", "next", "close", or null.
+  // state: { open: large view is open, visible: Evidence tab is visible }.
+  function evidenceKeyAction(event, state) {
+    if (!event || !state || !state.visible || event.altKey || event.ctrlKey || event.metaKey) return null;
+    const t = event.target;
+    if (t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || "") || t.isContentEditable === true)) return null;
+    if (event.key === "Escape") return state.open ? "close" : null;
+    if (event.key === "ArrowRight") return "next";
+    if (event.key === "ArrowLeft") return "prev";
+    return null;
+  }
+
+  function evidenceShift(st, delta) {
+    const response = st.evidenceResponse;
+    const view = st.evidenceView;
+    if (!st.evidenceState || !view) return;
+    const showcase = selectEvidenceAttempt(response).primary;
+    const length = showcase && Array.isArray(showcase.steps) ? showcase.steps.length : 0;
+    st.evidenceState.step = clampEvidenceStep(st.evidenceState.step + delta, length);
+    renderEvidence(st, response);
+  }
+
+  function closeEvidenceLightbox(st, restoreFocus) {
+    const box = st.evidenceLightbox;
+    if (!box) return;
+    box.overlay.remove(); st.evidenceLightbox = null;
+    if (restoreFocus && st.evidenceView && st.evidenceView.image) st.evidenceView.image.focus();
+  }
+
+  function openEvidenceLightbox(st) {
+    if (st.evidenceLightbox || !st.evidenceView || !st.evidenceView.image) return;
+    const doc = st.evPane.ownerDocument || document;
+    const overlay = doc.createElement("div"); overlay.className = "evLightbox";
+    overlay.setAttribute("role", "dialog"); overlay.setAttribute("aria-modal", "true"); overlay.setAttribute("aria-label", "Screenshot viewer");
+    const panel = doc.createElement("div"); panel.className = "evLbPanel";
+    const image = doc.createElement("img"); image.className = "evLbImage";
+    const title = doc.createElement("h3"); const explanation = doc.createElement("p");
+    const bar = doc.createElement("div"); bar.className = "evNav";
+    const mk = (label, fn) => { const b = doc.createElement("button"); b.type = "button"; b.textContent = label; b.addEventListener("click", fn); return b; };
+    const prev = mk("Previous", () => evidenceShift(st, -1));
+    const counter = doc.createElement("span"); counter.className = "evCounter";
+    const next = mk("Next", () => evidenceShift(st, 1));
+    const close = mk("Close", () => closeEvidenceLightbox(st, true));
+    bar.append(prev, counter, next, close); panel.append(image, title, explanation, bar); overlay.appendChild(panel);
+    overlay.addEventListener("click", (event) => { if (event.target === overlay) closeEvidenceLightbox(st, true); });
+    doc.body.appendChild(overlay);
+    st.evidenceLightbox = { overlay, image, title, explanation, counter, prev, next, close, src: null };
+    updateEvidenceLightbox(st);
+    close.focus();
+  }
+
+  function updateEvidenceLightbox(st) {
+    const box = st.evidenceLightbox;
+    const view = st.evidenceView;
+    if (!box || !view) return;
+    const showcase = selectEvidenceAttempt(st.evidenceResponse).primary;
+    const steps = showcase && Array.isArray(showcase.steps) ? showcase.steps : [];
+    const index = st.evidenceState.step;
+    const step = steps[index];
+    if (!step || !step.screenshot) { closeEvidenceLightbox(st, false); return; }
+    if (box.src !== step.screenshot) { box.src = step.screenshot; box.image.src = step.screenshot; }
+    box.image.alt = step.title || "Demonstration screenshot";
+    box.title.textContent = step.title || "Untitled step";
+    box.explanation.textContent = step.explanation || "No explanation provided.";
+    box.counter.textContent = (index + 1) + " of " + steps.length;
+    box.prev.disabled = index === 0; box.next.disabled = index >= steps.length - 1;
+  }
+
+  // One document-level keydown listener serves every render; it finds the latest state.
+  const evidenceKeyStates = new WeakMap();
+  function installEvidenceKeys(doc, st) {
+    const first = !evidenceKeyStates.has(doc);
+    evidenceKeyStates.set(doc, st);
+    if (!first || typeof doc.addEventListener !== "function") return;
+    doc.addEventListener("keydown", (event) => {
+      const cur = evidenceKeyStates.get(doc);
+      if (!cur || !cur.evidenceView) return;
+      if (event.key === "Tab" && cur.evidenceLightbox) {
+        const box = cur.evidenceLightbox;
+        const stops = [box.prev, box.next, box.close].filter((b) => !b.disabled);
+        const at = stops.indexOf(event.target);
+        const edge = event.shiftKey ? at <= 0 : at === stops.length - 1 || at < 0;
+        if (edge) { if (event.preventDefault) event.preventDefault(); stops[event.shiftKey ? stops.length - 1 : 0].focus(); }
+        return;
+      }
+      const action = evidenceKeyAction(event, { open: Boolean(cur.evidenceLightbox), visible: !cur.evPane.hidden });
+      if (!action) return;
+      if (event.preventDefault) event.preventDefault();
+      if (action === "close") closeEvidenceLightbox(cur, true);
+      else evidenceShift(cur, action === "next" ? 1 : -1);
+    });
   }
 
   function evidencePollIsCurrent(st, lineId, generation, selectedLine, currentState) {
@@ -417,6 +534,7 @@
   function renderEvidence(st, response) {
     const doc = st.evPane.ownerDocument || document;
     const pane = st.evPane;
+    installEvidenceKeys(doc, st);
     const selection = selectEvidenceAttempt(response);
     const showcase = selection.primary;
     const previous = st.evidenceState || { itemId: null, step: 0, time: 0 };
@@ -426,6 +544,7 @@
     st.evidenceState = { itemId: showcase ? showcase.id : null, step: selected,
       time: showcase && previous.itemId === showcase.id ? previous.time : 0 };
     if (!showcase) {
+      closeEvidenceLightbox(st, false);
       if (st.evidenceView && st.evidenceView.kind === "showcase") { st.evidenceView.box.remove(); st.evidenceView = null; }
       const message = selection.ambiguous ? "Current evidence attempt is ambiguous; history is shown below." : "No evidence registered for this line yet.";
       if (!st.emptyView || st.emptyView.text !== message) {
@@ -462,7 +581,8 @@
     if (showcase) {
       const view = st.evidenceView;
       view.heading.textContent = showcase.useCase || "Feature demonstration";
-      view.meta.textContent = new Date(showcase.at).toLocaleString() + " - " + (showcase.name || "showcase");
+      const info = evidenceMeta({ ...showcase, name: showcase.name || "showcase" });
+      view.meta.textContent = info.text; view.meta.setAttribute("title", info.iso);
       if (view.videoUrl !== (showcase.video || "")) {
         view.videoUrl = showcase.video || ""; view.video.src = view.videoUrl;
         view.video.hidden = !view.videoUrl; view.videoUnavailable.hidden = Boolean(view.videoUrl);
@@ -473,6 +593,10 @@
         view.slide.innerHTML = "";
         if (step && step.screenshot) {
           const image = doc.createElement("img"); image.className = "evShot"; image.alt = step.title || "Demonstration screenshot";
+          image.setAttribute("tabindex", "0"); image.setAttribute("role", "button");
+          image.setAttribute("aria-label", "Open large view: " + (step.title || "screenshot"));
+          image.addEventListener("click", () => openEvidenceLightbox(st));
+          image.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { if (event.preventDefault) event.preventDefault(); openEvidenceLightbox(st); } });
           const missing = doc.createElement("div"); missing.className = "pEmpty"; missing.textContent = "Screenshot unavailable."; missing.hidden = true;
           image.addEventListener("error", () => { image.hidden = true; missing.hidden = false; }); image.src = step.screenshot;
           view.slide.append(image, view.copy, missing); view.image = image; view.imageMissing = missing;
@@ -486,16 +610,18 @@
       view.explanation.textContent = step ? (step.explanation || "No explanation provided.") : "This showcase has no screenshot steps.";
       view.prev.disabled = selected === 0; view.next.disabled = selected >= steps.length - 1;
       view.counter.textContent = steps.length ? (selected + 1) + " of " + steps.length : "No steps";
+      updateEvidenceLightbox(st);
     }
     const legacy = selection.history;
-    const historyKey = legacy.map((item) => item.id || item.at || item.name).join("|");
+    const historyKey = legacy.map((item) => (item.id || item.at || item.name) + "@" + item.at + "@" + formatEvidenceAuthor(item)).join("|");
     if (legacy.length && (!st.historyView || st.historyView.key !== historyKey || !st.historyView.node.isConnected)) {
       const history = doc.createElement("section"); history.className = "evHistory";
       const heading = doc.createElement("h3"); heading.textContent = showcase ? "Previous evidence" : "Evidence history"; history.appendChild(heading);
       for (const item of legacy) {
         const box = doc.createElement("article"); box.className = "evLegacy";
         const name = doc.createElement("div"); name.className = "uc"; name.textContent = item.useCase || "Legacy recording";
-        const meta = doc.createElement("div"); meta.className = "meta"; meta.textContent = new Date(item.at).toLocaleString() + " - " + (item.name || "evidence"); box.append(name, meta);
+        const meta = doc.createElement("div"); meta.className = "meta";
+        const info = evidenceMeta(item); meta.textContent = info.text; meta.setAttribute("title", info.iso); box.append(name, meta);
         if (item.video) { const oldVideo = doc.createElement("video"); oldVideo.controls = true; oldVideo.preload = "metadata"; oldVideo.src = item.video; box.appendChild(oldVideo); }
         else { const empty = doc.createElement("div"); empty.className = "pEmpty"; empty.textContent = "Video unavailable."; box.appendChild(empty); }
         history.appendChild(box);
@@ -503,6 +629,40 @@
       if (st.historyView) st.historyView.node.replaceWith(history); else pane.appendChild(history);
       st.historyView = { key: historyKey, node: history };
     } else if (!legacy.length && st.historyView) { st.historyView.node.remove(); st.historyView = null; }
+  }
+
+  function clampSize(value, min, max) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return min;
+    return Math.min(Math.max(n, min), Math.max(min, max));
+  }
+
+  function stepSize(size, delta, min, max) {
+    const next = clampSize(size + delta, min, max);
+    return (delta < 0 && next > size) || (delta > 0 && next < size) ? size : next;
+  }
+
+  function chatMaxHeight(windowHeight) {
+    return Math.max(120, Number(windowHeight) || 0);
+  }
+
+  function readStoredSize(storage, key, min, max) {
+    try {
+      const raw = storage && storage.getItem(key);
+      if (raw === null || raw === undefined || raw === "") return null;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0) return null;
+      return clampSize(n, min, max);
+    } catch { return null; }
+  }
+
+  function writeStoredSize(storage, key, value) {
+    try {
+      if (!storage) return false;
+      if (value === null || value === undefined) storage.removeItem(key);
+      else storage.setItem(key, String(Math.round(value)));
+      return true;
+    } catch { return false; }
   }
 
   return {
@@ -546,8 +706,16 @@
     shouldShowIntegrationValidator,
     buildGraphLanes,
     selectEvidenceAttempt,
+    sortEvidenceNewestFirst,
+    formatEvidenceAuthor,
+    evidenceKeyAction,
     clampEvidenceStep,
     renderEvidenceFromState: renderEvidence,
     evidencePollIsCurrent,
+    clampSize,
+    stepSize,
+    chatMaxHeight,
+    readStoredSize,
+    writeStoredSize,
   };
 });

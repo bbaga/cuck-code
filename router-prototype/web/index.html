@@ -37,6 +37,17 @@
   .evCounter { color: #8fa3bd; font-size: .78rem; min-width: 70px; text-align: center; }
   .evHistory { border-top: 1px solid #262b33; margin-top: 24px; padding-top: 12px; }
   .evHistory h3 { color: #8fa3bd; font-size: .82rem; margin: 0 0 12px; }
+  .evShot { cursor: zoom-in; }
+  .evShot:focus-visible { outline: 3px solid #ffd166; outline-offset: 2px; }
+  .evLightbox { position: fixed; inset: 0; z-index: 1000; background: rgba(5, 7, 10, .92);
+    display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .evLbPanel { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 1400px;
+    max-height: 100%; color: #c1cad5; }
+  .evLbImage { flex: 1 1 auto; min-height: 0; max-width: 100%; max-height: 72vh; object-fit: contain; background: #0d1014; }
+  .evLbPanel h3 { margin: 0; font-size: 1rem; color: #d8dee6; }
+  .evLbPanel p { margin: 0; line-height: 1.5; max-height: 14vh; overflow-y: auto; white-space: pre-wrap; }
+  .evLbPanel .evNav { margin-top: 4px; }
+  .evLbPanel .evNav button:focus-visible { outline: 3px solid #ffd166; outline-offset: 2px; }
   .evLegacy { margin-bottom: 14px; }
   .evLegacy video { max-width: 640px; }
   @media (max-width: 640px) {
@@ -112,7 +123,8 @@
   .badge { padding: 3px 10px; border-radius: 10px; background: #14331f;
     color: #58d68d; font-size: .75rem; }
   .graph { position: relative; border-bottom: 1px solid #262b33;
-    overflow: auto; max-height: 300px; min-height: 120px; }
+    overflow: auto; min-height: 80px; }
+  .graph:not(.userSized) { max-height: 300px; min-height: 120px; }
   .invRow { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: .78rem; }
   .invRow .kind { color: #6c7a8c; width: 34px; flex-shrink: 0; }
   .invRow .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -125,6 +137,16 @@
   .previewPanel h2 { font-size: .95rem; margin: 0 0 8px; }
   .previewStep { margin: 8px 0; }
   .previewStep pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #0d1014; padding: 8px; }
+  .graphDetails { border-bottom: 1px solid #262b33; }
+  .graphDetails summary { cursor: pointer; padding: 6px 16px; color: #6c7a8c; font-size: .8rem; }
+  .graphDetails[open] summary { color: #8fa3bd; }
+  .graphDetails .graph { border-bottom: 0; }
+  .card.chatSized { max-height: none; }
+  .card.chatSized .transcriptWrap { flex: none; }
+  .resizeHandle { height: 8px; flex: none; cursor: row-resize; touch-action: none;
+    background: #1d222a; border-top: 1px solid #262b33; border-bottom: 1px solid #262b33; }
+  .resizeHandle:hover, .resizeHandle:focus-visible, .resizeHandle.dragging { background: #2f5d9e; outline: none; }
+  body.resizing { user-select: none; cursor: row-resize; }
   .graph svg { display: block; }
   .graph svg .edge { stroke: #333c48; stroke-width: 1.5; fill: none; }
   .gnode { position: absolute; display: flex; align-items: center; gap: 8px;
@@ -162,6 +184,8 @@
   .ts { color: #5a6675; font-size: .7rem; margin-right: 6px; }
   .transcript details { border-left: 2px solid #333c48; padding-left: 8px; }
   .transcript summary { cursor: pointer; color: #6c7a8c; font-size: .75rem; }
+  .transcript details.routerMessage pre { max-height: 240px; overflow: auto; white-space: pre-wrap;
+    word-break: break-word; }
   .transcript pre { margin: 6px 0 0; color: #8b98a8; }
   .liveLabel { color: #6c7a8c; font-size: .75rem; font-family: system-ui, sans-serif; }
   .row { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #262b33; }
@@ -249,7 +273,7 @@ window.addEventListener("DOMContentLoaded", () => {
     clearHarnessState, clearProviderState, shouldHideValidator,
     shouldShowIntegrationValidator, buildGraphLanes,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
-    evidencePollIsCurrent, formatScopePanelData } = window.pipelineUI;
+    evidencePollIsCurrent, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize } = window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
   const listEl = document.getElementById("linelist");
@@ -286,8 +310,9 @@ window.addEventListener("DOMContentLoaded", () => {
       s.textContent = new Date(entry.at).toLocaleTimeString([], { hour12: false });
       div.appendChild(s);
     };
-    const details = (label, body) => {
+    const details = (label, body, cls) => {
       const d = document.createElement("details");
+      if (cls) d.className = cls;
       const s = document.createElement("summary");
       s.textContent = label;
       const pre = document.createElement("pre");
@@ -295,7 +320,12 @@ window.addEventListener("DOMContentLoaded", () => {
       d.append(s, pre);
       div.appendChild(d);
     };
-    if (entry && entry.type === "message" && entry.role === "user") {
+    if (entry && entry.type === "message" && entry.role === "user" && entry.origin === "router") {
+      stamp();
+      const text = textOf(entry);
+      const first = text.split("\n", 1)[0];
+      details("Router message: " + (first.length > 100 ? first.slice(0, 100) + "…" : first), text, "routerMessage");
+    } else if (entry && entry.type === "message" && entry.role === "user") {
       div.className = "user";
       stamp();
       div.appendChild(document.createTextNode("> " + textOf(entry)));
@@ -390,6 +420,89 @@ window.addEventListener("DOMContentLoaded", () => {
     if (w.lastError) n.title = w.lastError;
     n.addEventListener("click", () => selectNode(st, w.id));
     return n;
+  }
+
+  const RESIZE_STEP = 16;
+
+  function createResizeHandle(label) {
+    const h = document.createElement("div");
+    h.className = "resizeHandle";
+    h.setAttribute("role", "separator");
+    h.setAttribute("aria-orientation", "horizontal");
+    h.setAttribute("aria-label", label);
+    h.tabIndex = 0;
+    return h;
+  }
+
+  function bindResizeHandle(handle, { getSize, apply, limits, reset }) {
+    let drag = null;
+    const end = () => {
+      if (!drag) return;
+      drag = null;
+      handle.classList.remove("dragging");
+      document.body.classList.remove("resizing");
+    };
+    handle.addEventListener("pointerdown", (e) => {
+      if (e.button) return;
+      e.preventDefault();
+      drag = { y: e.clientY, size: getSize() };
+      handle.setPointerCapture(e.pointerId);
+      handle.classList.add("dragging");
+      document.body.classList.add("resizing");
+    });
+    handle.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      const { min, max } = limits();
+      apply(clampSize(drag.size + e.clientY - drag.y, min, max));
+    });
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+    handle.addEventListener("dblclick", reset);
+    handle.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      e.preventDefault();
+      const { min, max } = limits();
+      apply(stepSize(getSize(), e.key === "ArrowDown" ? RESIZE_STEP : -RESIZE_STEP, min, max));
+    });
+  }
+
+  function setupLayoutResize({ lineId, card, graph, graphDetails, graphHandle, transcriptWrap, chatHandle }) {
+    const store = (() => { try { return window.localStorage; } catch { return null; } })();
+    const openKey = "graph-open:" + lineId;
+    const graphKey = "graph-height:" + lineId;
+    const chatKey = "chat-height:" + lineId;
+    const graphLimits = () => ({ min: 80, max: Math.round(window.innerHeight * 0.8) });
+    const chatLimits = () => ({ min: 120, max: chatMaxHeight(window.innerHeight) });
+    const setGraph = (h) => {
+      graph.classList.toggle("userSized", h !== null);
+      graph.style.height = h === null ? "" : h + "px";
+      graph.style.maxHeight = h === null ? "" : "none";
+    };
+    const setChat = (h) => {
+      card.classList.toggle("chatSized", h !== null);
+      transcriptWrap.style.height = h === null ? "" : h + "px";
+    };
+    let storedOpen = null;
+    try { storedOpen = store && store.getItem(openKey); } catch {}
+    graphDetails.open = storedOpen !== "0";
+    graphDetails.addEventListener("toggle", () => {
+      writeStoredSize(store, openKey, graphDetails.open ? null : 0);
+      if (graphDetails.open) {
+        const st = cards.get(lineId);
+        if (st) renderGraph(st);
+      }
+    });
+    const g = readStoredSize(store, graphKey, graphLimits().min, graphLimits().max);
+    if (g !== null) setGraph(g);
+    const c = readStoredSize(store, chatKey, chatLimits().min, chatLimits().max);
+    if (c !== null) setChat(c);
+    const area = (el, set, key) => ({
+      getSize: () => el.getBoundingClientRect().height,
+      apply: (h) => { set(h); writeStoredSize(store, key, h); },
+      reset: () => { set(null); writeStoredSize(store, key, null); },
+    });
+    bindResizeHandle(graphHandle, { ...area(graph, setGraph, graphKey), limits: graphLimits });
+    bindResizeHandle(chatHandle, { ...area(transcriptWrap, setChat, chatKey), limits: chatLimits });
   }
 
   function renderGraph(st) {
@@ -783,6 +896,12 @@ window.addEventListener("DOMContentLoaded", () => {
 
     const graph = document.createElement("div");
     graph.className = "graph";
+    const graphDetails = document.createElement("details");
+    graphDetails.className = "graphDetails";
+    const graphSummary = document.createElement("summary");
+    graphSummary.textContent = "Pipeline";
+    const graphHandle = createResizeHandle("Resize pipeline schematic height");
+    graphDetails.append(graphSummary, graph, graphHandle);
     const previewPanel = document.createElement("div"); previewPanel.className = "previewPanel"; previewPanel.hidden = true;
 
     const transcript = document.createElement("div");
@@ -795,6 +914,7 @@ window.addEventListener("DOMContentLoaded", () => {
     scrollBottomBtn.textContent = "↓ Scroll to bottom";
     scrollBottomBtn.hidden = true;
     transcriptWrap.append(transcript, scrollBottomBtn);
+    const chatHandle = createResizeHandle("Resize chat height");
     const row = document.createElement("div");
     row.className = "row";
     const input = document.createElement("input");
@@ -814,12 +934,13 @@ window.addEventListener("DOMContentLoaded", () => {
     const evPane = document.createElement("div");
     evPane.className = "evPane";
     evPane.hidden = true;
-    card.append(head, planDetails, scopeDetails, banner, plan, graph, previewPanel, transcriptWrap, row, procPane, evPane, pipePane);
+    card.append(head, planDetails, banner, plan, graphDetails, previewPanel, transcriptWrap, chatHandle, row, procPane, evPane, pipePane);
     linesEl.appendChild(card);
+    setupLayoutResize({ lineId: line.id, card, graph, graphDetails, graphHandle, transcriptWrap, chatHandle });
 
     const st = { id: line.id, dot, banner, transcript, transcriptWrap, scrollBottomBtn, input, send,
       ctxMeter, compactBtn, plannerCtx: null,
-      waiting, planBody, graph, previewPanel, scopeDetails, scopeText, approveBtn, badge, planDetails, planControls: controls,
+      waiting, planBody, graph, graphDetails, graphHandle, chatHandle, previewPanel, approveBtn, badge, planDetails, planControls: controls,
       pipePane, tabPipeBtn, pipeForm, pipePresets, pipeEffective,
       pipeline: line.pipeline || null, pipelineOverrides: line.pipelineOverrides || null,
       tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, plan, row, procPane, evPane,
@@ -1111,7 +1232,7 @@ window.addEventListener("DOMContentLoaded", () => {
     st.tabProcBtn.classList.toggle("active", tab === "processes");
     st.tabEvBtn.classList.toggle("active", tab === "evidence");
     st.tabPipeBtn.classList.toggle("active", tab === "pipeline");
-    for (const el of [st.plan, st.planDetails, st.graph, st.previewPanel, st.transcriptWrap, st.row]) {
+    for (const el of [st.plan, st.planDetails, st.graphDetails, st.previewPanel, st.transcriptWrap, st.chatHandle, st.row]) {
       el.hidden = tab !== "line";
     }
     st.procPane.hidden = tab !== "processes";
