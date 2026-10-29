@@ -22,6 +22,11 @@ test('integration brief requires a background server and rejects foreground star
   assert.match(brief, /all standard\s+streams/);
 });
 
+test('integration brief requires headless browsers for testing and evidence', () => {
+  assert.match(brief, /Every browser used for UI\/UX testing, acceptance testing, showcase\s+capture, or related evidence MUST be launched in headless mode/);
+  assert.match(brief, /cannot affect the user's desktop or session/);
+});
+
 test('integration brief requires explicit merge and commit ancestry checks', () => {
   assert.match(brief, /one explicit Git merge command/);
   assert.match(brief, /Do not use a shell loop/);

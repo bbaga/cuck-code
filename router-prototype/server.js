@@ -747,7 +747,10 @@ ${extraRepos.length ? `3. For every other repo in the list: make your own copy i
 4. When all branches are merged, run ALL acceptance tests and verify
    everything works together. Build and run the project if needed.
 5. Record one complete showcase for this integration attempt.
-   Use one browser context for the complete demonstration.
+   Every browser used for UI/UX testing, acceptance testing, showcase
+   capture, or related evidence MUST be launched in headless mode so it
+   cannot affect the user's desktop or session. Use one browser context
+   for the complete demonstration.
    Keep one continuous WebM recording through every feature transition.
    Do not stop the recording between use cases. Use a readable pace.
    Show every implemented feature. Capture a PNG or JPEG screenshot
