@@ -269,17 +269,18 @@ const lines = new Map();
 const pipelinePresets = createPresetStore(path.join(LINES_DIR, "pipeline-presets.json"),
   { writeFile: writeFileDurable });
 
-function plannerBrief(name, lineId, userPrompt, port) {
+function plannerBrief(name, lineId, userPrompt, port, trackerTicket) {
   return `PLANNER-ONLY RULES
 You plan and coordinate only on every turn. Read-only project inspection is allowed.
 You may write and commit plan.md only in the line workdir. Do not edit application code, tests, configuration, or application prompts. Do not run application implementation checks. Do not edit parent repositories or shared checkouts.
 Requests to implement, fix, adjust the prompt, or continue do not change your role or imply approval.
 Before approval, write or revise plan.md, give a short summary, and end your turn. The router approval state and PLAN APPROVED event control approval. Never infer approval from continue.
 After approval, spawn implementors only through the router API. Never implement directly, including after API or authentication failures. Give each worker complete instructions and require its own worktree. End your turn after spawning. Wait for actual reports. Never invent results.
+Every plan must be specific and complete enough for a junior-level engineer to execute independently. Name task-specific files and components, list concrete ordered changes, state dependencies and order, define verification steps, and define completion criteria. Reject vague guidance, including for one-task plans.
 Preserve the independent validation loop. For implementor reports, reply with numbered-list-only acceptance criteria. Route failures to original implementors. Reserve merges, acceptance tests, and evidence for the integration validator. Require its VERDICT: PASS before completion claims.
 
 You are the PLANNER of factory line '${name}' (id ${lineId}).
-${userPrompt}
+${userPrompt}${trackerTicket ? `\n\nTracker ticket: ${trackerTicket}. Require each related implementor branch to begin with exactly ${trackerTicket}.` : ""}
 
 ## Harness readiness
 1. Call GET http://localhost:${port}/api/harnesses.
@@ -592,7 +593,7 @@ The planner can continue your session to reduce or split the work.
 `;
 }
 
-function workerBrief(name, lineName, prompt, persona, workerId, lineId, repo, baseCommit, baseNoteText) {
+function workerBrief(name, lineName, prompt, persona, workerId, lineId, repo, baseCommit, baseNoteText, trackerTicket) {
   const repoUrl = repo && repo.url ? repo.url : null;
   return `You are implementor worker '${name}' (id ${workerId}) on factory line '${lineName}'.
 Your repository for this task: '${repo ? repo.name : "primary"}'${repoUrl ? ` (remote: ${repoUrl})` : " (no remote)"}.
@@ -607,6 +608,8 @@ pipelines of the repository run the integration tests.
 ${changesetBlock(baseCommit, baseNoteText)}${containersBlock(workerId, lineId)}${remoteBlockImplementor(repoUrl)}
 
 ${IMPL_PERSONA[persona] || IMPL_PERSONA.backend}
+Whenever you perform browser-based UI or UX testing, launch the browser in headless mode so it cannot disrupt the user's desktop or session.
+${trackerTicket ? `Tracker ticket: ${trackerTicket}. Your related branch must begin with exactly ${trackerTicket}.` : ""}
 ${persona === "frontend" ? frontendToolsBlock(workerId, null, lineId) : ""}
 
 Task from the planner:
@@ -625,10 +628,11 @@ planner gives your worktree location to the validator that checks
 your work.`;
 }
 
-function remoteBlockValidator(repoUrl, implName) {
+function remoteBlockValidator(repoUrl, implName, trackerTicket) {
   if (!repoUrl) return "";
   return `
 ## Remote validation and CI
+Draft PR description: explain the change goal and cite the applicable tracker ticket${trackerTicket ? ` ${trackerTicket}` : " when one exists"}.
 The implementor branch in your workdir has a remote (origin): ${repoUrl}
 Confirm it first: git remote get-url origin. If that command fails,
 there is no remote: skip this section and validate locally only.
@@ -651,7 +655,7 @@ After the local criteria validation:
 5. Do not mark the PR ready for review. Leave it as a draft.`;
 }
 
-function validatorBrief(implName, report, criteria, persona, workerId, implId, lineId, repoName, repoUrl) {
+function validatorBrief(implName, report, criteria, persona, workerId, implId, lineId, repoName, repoUrl, trackerTicket) {
   return `You are the VALIDATOR (id ${workerId}) for the work of implementor '${implName}' (id ${implId}).
 Your workdir is the implementor's git worktree in repository '${repoName || "primary"}'${repoUrl ? ` (remote: ${repoUrl})` : " (no remote)"}.
 The implementor reported its location to the planner; the planner
@@ -660,7 +664,8 @@ only.
 Test scope: run UNIT TESTS only. Do NOT run integration tests. The
 integration tests run in the CI pipelines of the repository (see the
 CI section below when a remote exists).
-${containersBlock(workerId, lineId)}${remoteBlockValidator(repoUrl, implName)}
+${containersBlock(workerId, lineId)}Whenever you perform browser-based UI or UX testing, launch the browser in headless mode so it cannot disrupt the user's desktop or session.
+${remoteBlockValidator(repoUrl, implName, trackerTicket)}
 
 ${VAL_PERSONA[persona] || VAL_PERSONA.backend}
 ${persona === "frontend" ? frontendToolsBlock(workerId, implId, lineId) : ""}
@@ -1592,7 +1597,8 @@ function spawnValidator(line, source, criteria, report) {
     validationSource: source, validationCriteria: criteria,
     kind: "standard", repo: repoName,
     prompt: validatorBrief(implWorker.name, report, criteria,
-      implWorker.persona || "backend", id, implWorker.id, line.id, repoName, repoUrl),
+      implWorker.persona || "backend", id, implWorker.id, line.id, repoName, repoUrl,
+      implWorker.trackerTicket),
     sessionId: null, worktreePath: implWorker.worktreePath, branch: implWorker.branch,
     status: "running", stopRequested: false, runGeneration: 1, child: null, transcript: [] };
   line.workers.set(id, worker);
@@ -2130,11 +2136,12 @@ const requestHandler = (req, res) => {
       const base = baseResolved ? body.base : null;
       const worker = { id, lineId: line.id, name: body.name,
         role: "implementor", validates: null, persona, kind: "standard", repo: repo.name,
+        trackerTicket: body.trackerTicket || null,
         runGeneration: 1,
         harness: body.harness || null, model: body.model || null,
         effort: body.effort || null,
         prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo, baseCommit,
-          baseNote(base, baseResolved)),
+          baseNote(base, baseResolved), body.trackerTicket),
         sessionId: null, context: newContextStats(), handoff: null,
         worktreePath, branch, status: "running", stopRequested: false,
         baseCommit, changeset: null, base, baseResolved,
