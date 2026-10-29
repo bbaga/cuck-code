@@ -44,6 +44,15 @@ test("attention indicators cover planner and worker states with error precedence
   assert.equal(attentionIndicator({ status: "completed" }), null);
 });
 
+test("planner rendering passes human intervention to the attention indicator", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
+  assert.match(html, /plannerHumanIntervention: line\.humanIntervention === true/);
+  assert.match(html, /humanIntervention: st\.plannerHumanIntervention/);
+  assert.match(html, /const plannerIndicator = pipelineUI\.attentionIndicator\(plannerState\)/);
+  assert.equal(attentionIndicator({ humanIntervention: true }), "attention");
+  assert.equal(attentionIndicator({ humanIntervention: true, error: true }), "error");
+});
+
 test("pipeline markup supports wrapped names", () => {
   const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
   assert.match(html, /\.lineentry \.lname[^}]*overflow-wrap: anywhere/);

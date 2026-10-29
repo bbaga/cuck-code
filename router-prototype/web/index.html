@@ -582,7 +582,7 @@ window.addEventListener("DOMContentLoaded", () => {
     pnLabel.textContent = "planner";
     const pd = document.createElement("span");
     const plannerState = { status: st.plannerStatus, attention: st.plannerAttention,
-      error: st.plannerError };
+      humanIntervention: st.plannerHumanIntervention, error: st.plannerError };
     const plannerIndicator = pipelineUI.attentionIndicator(plannerState);
     pd.className = "dot " + (plannerIndicator || (st.plannerStatus === "running" ? "running" : "idle"));
     pd.setAttribute("aria-label", plannerIndicator === "error" ? "Error" : plannerIndicator === "attention" ? "Needs attention" : st.plannerStatus);
@@ -955,6 +955,7 @@ window.addEventListener("DOMContentLoaded", () => {
       tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, plan, row, procPane, evPane,
       hideFailedValidators: true,
       plannerStatus: line.status, plannerAttention: line.attention === true || line.needsAttention === true,
+      plannerHumanIntervention: line.humanIntervention === true,
       plannerError: line.error === true || !!line.lastError, started: line.started === true,
       planContent: undefined, approved: false,
       workers: new Map(), workerTranscripts: new Map(), previewPayload: null, previewRequest: 0,
