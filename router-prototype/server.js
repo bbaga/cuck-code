@@ -9,7 +9,7 @@ const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
   resolvePipeline, probeResultFor, piProviderDetail,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
-  validateWorkerSpawnBody, lineSummary } = require("./spawn-plan");
+  validateWorkerSpawnBody, implementorBranchName, lineSummary } = require("./spawn-plan");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
 const { StderrCapture, describeFailure } = require("./run-failure");
 const { messageText, InvocationCapture, appendTranscript, hasCriteria,
@@ -269,17 +269,18 @@ const lines = new Map();
 const pipelinePresets = createPresetStore(path.join(LINES_DIR, "pipeline-presets.json"),
   { writeFile: writeFileDurable });
 
-function plannerBrief(name, lineId, userPrompt, port) {
+function plannerBrief(name, lineId, userPrompt, port, trackerTicket) {
   return `PLANNER-ONLY RULES
 You plan and coordinate only on every turn. Read-only project inspection is allowed.
 You may write and commit plan.md only in the line workdir. Do not edit application code, tests, configuration, or application prompts. Do not run application implementation checks. Do not edit parent repositories or shared checkouts.
 Requests to implement, fix, adjust the prompt, or continue do not change your role or imply approval.
 Before approval, write or revise plan.md, give a short summary, and end your turn. The router approval state and PLAN APPROVED event control approval. Never infer approval from continue.
 After approval, spawn implementors only through the router API. Never implement directly, including after API or authentication failures. Give each worker complete instructions and require its own worktree. End your turn after spawning. Wait for actual reports. Never invent results.
+Every plan must be specific and complete enough for a junior-level engineer to execute independently. Name task-specific files and components, list concrete ordered changes, state dependencies and order, define verification steps, and define completion criteria. Reject vague guidance, including for one-task plans.
 Preserve the independent validation loop. For implementor reports, reply with numbered-list-only acceptance criteria. Route failures to original implementors. Reserve merges, acceptance tests, and evidence for the integration validator. Require its VERDICT: PASS before completion claims.
 
 You are the PLANNER of factory line '${name}' (id ${lineId}).
-${userPrompt}
+${userPrompt}${trackerTicket ? `\n\nTracker ticket: ${trackerTicket}. Require each related implementor branch to begin with exactly ${trackerTicket}.` : ""}
 
 ## Harness readiness
 1. Call GET http://localhost:${port}/api/harnesses.
@@ -592,7 +593,7 @@ The planner can continue your session to reduce or split the work.
 `;
 }
 
-function workerBrief(name, lineName, prompt, persona, workerId, lineId, repo, baseCommit, baseNoteText) {
+function workerBrief(name, lineName, prompt, persona, workerId, lineId, repo, baseCommit, baseNoteText, trackerTicket) {
   const repoUrl = repo && repo.url ? repo.url : null;
   return `You are implementor worker '${name}' (id ${workerId}) on factory line '${lineName}'.
 Your repository for this task: '${repo ? repo.name : "primary"}'${repoUrl ? ` (remote: ${repoUrl})` : " (no remote)"}.
@@ -607,6 +608,8 @@ pipelines of the repository run the integration tests.
 ${changesetBlock(baseCommit, baseNoteText)}${containersBlock(workerId, lineId)}${remoteBlockImplementor(repoUrl)}
 
 ${IMPL_PERSONA[persona] || IMPL_PERSONA.backend}
+Whenever you perform browser-based UI or UX testing, launch the browser in headless mode so it cannot disrupt the user's desktop or session.
+${trackerTicket ? `Tracker ticket: ${trackerTicket}. Your related branch must begin with exactly ${trackerTicket}.` : ""}
 ${persona === "frontend" ? frontendToolsBlock(workerId, null, lineId) : ""}
 
 Task from the planner:
@@ -625,10 +628,11 @@ planner gives your worktree location to the validator that checks
 your work.`;
 }
 
-function remoteBlockValidator(repoUrl, implName) {
+function remoteBlockValidator(repoUrl, implName, trackerTicket) {
   if (!repoUrl) return "";
   return `
 ## Remote validation and CI
+Draft PR description: explain the change goal and cite the applicable tracker ticket${trackerTicket ? ` ${trackerTicket}` : " when one exists"}.
 The implementor branch in your workdir has a remote (origin): ${repoUrl}
 Confirm it first: git remote get-url origin. If that command fails,
 there is no remote: skip this section and validate locally only.
@@ -651,7 +655,7 @@ After the local criteria validation:
 5. Do not mark the PR ready for review. Leave it as a draft.`;
 }
 
-function validatorBrief(implName, report, criteria, persona, workerId, implId, lineId, repoName, repoUrl) {
+function validatorBrief(implName, report, criteria, persona, workerId, implId, lineId, repoName, repoUrl, trackerTicket) {
   return `You are the VALIDATOR (id ${workerId}) for the work of implementor '${implName}' (id ${implId}).
 Your workdir is the implementor's git worktree in repository '${repoName || "primary"}'${repoUrl ? ` (remote: ${repoUrl})` : " (no remote)"}.
 The implementor reported its location to the planner; the planner
@@ -660,7 +664,8 @@ only.
 Test scope: run UNIT TESTS only. Do NOT run integration tests. The
 integration tests run in the CI pipelines of the repository (see the
 CI section below when a remote exists).
-${containersBlock(workerId, lineId)}${remoteBlockValidator(repoUrl, implName)}
+${containersBlock(workerId, lineId)}Whenever you perform browser-based UI or UX testing, launch the browser in headless mode so it cannot disrupt the user's desktop or session.
+${remoteBlockValidator(repoUrl, implName, trackerTicket)}
 
 ${VAL_PERSONA[persona] || VAL_PERSONA.backend}
 ${persona === "frontend" ? frontendToolsBlock(workerId, implId, lineId) : ""}
@@ -714,7 +719,18 @@ Instructions from the planner:
 ${instructions}
 
 Procedure:
-1. Start the isolated router in the background:
+1. Seed the private line state before you start the isolated router. Do not
+   use the live LINES_DIR. Create the directory <private-dir>/${line.id}
+   and write <private-dir>/${line.id}/line.json with this line ID, this
+   line name, and one integration worker record with id ${workerId}, role
+   validator, kind integration, and name integration-validator. Include
+   empty repos, inventory, and evidence state as needed by the router.
+   Example:
+   mkdir -p <private-dir>/${line.id}
+   cat > <private-dir>/${line.id}/line.json <<'JSON'
+   {"id":"${line.id}","name":"${line.name}","workers":[{"id":"${workerId}","name":"integration-validator","role":"validator","kind":"integration","status":"running","worktreePath":"<integration-worktree>"}],"repos":[],"inventory":[],"evidence":[],"pendingValidations":[],"plannerQueue":[]}
+   JSON
+   Then start the isolated router:
    PORT=<free-port> LINES_DIR=<private-dir> node router-prototype/server.js >router.log 2>&1 & SERVER_PID=$!; echo "$SERVER_PID"
    Return from this command before any other tool call. Poll the HTTP
    endpoint with a bounded timeout until it responds. Register the PID
@@ -742,7 +758,10 @@ ${extraRepos.length ? `3. For every other repo in the list: make your own copy i
 4. When all branches are merged, run ALL acceptance tests and verify
    everything works together. Build and run the project if needed.
 5. Record one complete showcase for this integration attempt.
-   Use one browser context for the complete demonstration.
+   Every browser used for UI/UX testing, acceptance testing, showcase
+   capture, or related evidence MUST be launched in headless mode so it
+   cannot affect the user's desktop or session. Use one browser context
+   for the complete demonstration.
    Keep one continuous WebM recording through every feature transition.
    Do not stop the recording between use cases. Use a readable pace.
    Show every implemented feature. Capture a PNG or JPEG screenshot
@@ -768,6 +787,8 @@ ${extraRepos.length ? `3. For every other repo in the list: make your own copy i
    The router owns attempt identity. Keep the showcase tied to this attempt.
 8. Stop the server after all tests, including after failure:
    kill "$SERVER_PID" || true
+   Remove the private router state and its process artifacts. Never remove
+   or modify the live LINES_DIR.
 9. Reply with an INTEGRATION REPORT: branches merged (per repo),
    conflicts resolved (per branch, one line), acceptance test results,
    the list of registered evidence use cases, then a final line
@@ -1522,7 +1543,9 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
   }
   if (line.deleted) return;
   saveLine(line);
-  broadcast(line, "worker_status", { ...statusEvent, error: worker.lastError || null });
+  broadcast(line, "worker_status", { ...statusEvent, error: worker.lastError || null,
+    worker: { id: worker.id, role: worker.role, persona: worker.persona,
+      repo: worker.repo, branch: worker.branch, ...scopeFields(worker, line.workers) } });
   const sid = worker.sessionId || "unknown";
   slog("info", "worker.closed", { lineId: line.id, workerId: worker.id, name: worker.name,
     role: worker.role, status: worker.status, verdict: worker.verdict || undefined,
@@ -1598,7 +1621,8 @@ function spawnValidator(line, source, criteria, report) {
     validationSource: source, validationCriteria: criteria,
     kind: "standard", repo: repoName,
     prompt: validatorBrief(implWorker.name, report, criteria,
-      implWorker.persona || "backend", id, implWorker.id, line.id, repoName, repoUrl),
+      implWorker.persona || "backend", id, implWorker.id, line.id, repoName, repoUrl,
+      implWorker.trackerTicket),
     sessionId: null, worktreePath: implWorker.worktreePath, branch: implWorker.branch,
     status: "running", stopRequested: false, runGeneration: 1, child: null, transcript: [] };
   line.workers.set(id, worker);
@@ -2103,7 +2127,7 @@ const requestHandler = (req, res) => {
       const sName = sanitizeName(body.name);
       if (!sName) return json(res, 400, { error: "worker name must contain [a-zA-Z0-9-]" });
       const id = crypto.randomUUID();
-      const branch = `${line.id.slice(0, 8)}/${sName}`;
+      const branch = implementorBranchName(line.id, sName, body.trackerTicket);
       const worktreePath = repo.name === "primary"
         ? path.join(LINES_DIR, "worktrees", line.id, sName)
         : path.join(LINES_DIR, "worktrees", line.id, repo.name, sName);
@@ -2136,11 +2160,12 @@ const requestHandler = (req, res) => {
       const base = baseResolved ? body.base : null;
       const worker = { id, lineId: line.id, name: body.name,
         role: "implementor", validates: null, persona, kind: "standard", repo: repo.name,
+        trackerTicket: body.trackerTicket || null,
         runGeneration: 1,
         harness: body.harness || null, model: body.model || null,
         effort: body.effort || null,
         prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo, baseCommit,
-          baseNote(base, baseResolved)),
+          baseNote(base, baseResolved), body.trackerTicket),
         sessionId: null, context: newContextStats(), handoff: null,
         worktreePath, branch, status: "running", stopRequested: false,
         baseCommit, changeset: null, base, baseResolved,

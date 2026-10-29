@@ -22,6 +22,22 @@ test('integration brief requires a background server and rejects foreground star
   assert.match(brief, /all standard\s+streams/);
 });
 
+test('integration brief bootstraps the private line before registration', () => {
+  assert.match(brief, /Seed the private line state before you start the isolated router/);
+  assert.match(brief, /Create the directory <private-dir>\/\$\{line\.id\}/);
+  assert.match(brief, /line\.json/);
+  assert.match(brief, /integration worker record with id \$\{workerId\}/);
+  assert.match(brief, /role\\?\"?:\\?\"?validator/);
+  assert.match(brief, /kind\\?\"?:\\?\"?integration/);
+  assert.match(brief, /POST \/api\/protocol\/lines\/\$\{line\.id\}\/inventory/);
+  assert.match(brief, /Never remove\s+or modify the live LINES_DIR/);
+});
+
+test('integration brief requires headless browsers for testing and evidence', () => {
+  assert.match(brief, /Every browser used for UI\/UX testing, acceptance testing, showcase\s+capture, or related evidence MUST be launched in headless mode/);
+  assert.match(brief, /cannot affect the user's desktop or session/);
+});
+
 test('integration brief requires explicit merge and commit ancestry checks', () => {
   assert.match(brief, /one explicit Git merge command/);
   assert.match(brief, /Do not use a shell loop/);
