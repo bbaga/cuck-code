@@ -16,6 +16,32 @@
   // Phases whose sessions are resumed and take a maxContext setting.
   const CONTEXT_PHASES = ["planner", "implementor"];
 
+  const NODE_FONT = '0.8rem system-ui, sans-serif';
+  const NODE_CONFIG_FONT = '0.8rem system-ui, sans-serif';
+  const NODE_WIDTH_MARGIN = 8;
+  const NODE_PADDING = 20;
+  const NODE_BORDER = 2;
+  const NODE_GAP = 8;
+
+  function nodeWidth(worker, measureText) {
+    const measure = typeof measureText === "function" ? measureText : (text) => String(text).length * 8;
+    const w = worker || {};
+    const persona = (w.role || "implementor") === "validator" ? "val" : (w.persona || "backend");
+    const config = [w.harness, w.model, w.effort].filter(Boolean).join(" · ");
+    const parts = [persona, w.name || "", config];
+    let content = measure(parts[0]) + 12;
+    content += NODE_GAP + measure(parts[1]);
+    if (config) content += NODE_GAP + measure(config);
+    content += NODE_GAP + 10;
+    if (w.status === "running") content += NODE_GAP + measure("Stop") + 16;
+    return Math.ceil(content + NODE_PADDING + NODE_BORDER + NODE_WIDTH_MARGIN);
+  }
+
+  function columnWidth(widths) {
+    const values = Array.isArray(widths) ? widths.filter(Number.isFinite) : [];
+    return Math.max(0, ...values);
+  }
+
   // Parse a max context size typed in thousands: "200K", "50k", "1M",
   // "1.5M", or a bare "200" (read as 200K). Returns tokens, null for an
   // empty value, or NaN for anything else.
@@ -270,6 +296,34 @@
     return w.kind === "integration"
       && (w.role || "implementor") === "validator"
       && !shouldHideValidator(w, hideFailed);
+  }
+
+  const NODE_FONT_FAMILY = "system-ui, sans-serif";
+  const NODE_FONTS = {
+    name: "12.8px " + NODE_FONT_FAMILY,
+    chip: "10.4px " + NODE_FONT_FAMILY,
+    cfg: "9.92px " + NODE_FONT_FAMILY,
+    stop: "11.2px " + NODE_FONT_FAMILY,
+  };
+  const NODE_MIN_COLUMN_WIDTH = 120;
+
+  function nodeWidth(worker, measureText) {
+    const gap = 8, safety = 6;
+    const validator = (worker.role || "implementor") === "validator";
+    const chipText = validator ? "val" : (worker.persona || "backend");
+    const chip = measureText(chipText.toUpperCase(), NODE_FONTS.chip)
+      + chipText.length * 0.4 + 12 + 6;
+    const parts = [chip, measureText(String(worker.name || ""), NODE_FONTS.name)];
+    const cfg = [worker.harness, worker.model, worker.effort].filter(Boolean).join(" · ");
+    if (cfg) parts.push(measureText(cfg, NODE_FONTS.cfg));
+    parts.push(10);
+    if (worker.status === "running") parts.push(measureText("Stop", NODE_FONTS.stop) + 16 + 4);
+    const content = parts.reduce((sum, w) => sum + w, 0) + gap * (parts.length - 1);
+    return Math.ceil(content + 20 + 2 + safety);
+  }
+
+  function columnWidth(widths) {
+    return Math.max(NODE_MIN_COLUMN_WIDTH, ...widths);
   }
 
   function buildGraphLanes(workers, hideFailed) {
@@ -651,6 +705,11 @@
     PHASE_ROWS,
     EFFORT_LEVELS,
     CONTEXT_PHASES,
+    NODE_FONT,
+    NODE_CONFIG_FONT,
+    NODE_WIDTH_MARGIN,
+    nodeWidth,
+    columnWidth,
     parseContextSize,
     formatTokens,
     PI_HARNESS_ID,
@@ -686,6 +745,9 @@
     shouldHideValidator,
     shouldShowIntegrationValidator,
     buildGraphLanes,
+    nodeWidth,
+    columnWidth,
+    NODE_FONTS,
     selectEvidenceAttempt,
     sortEvidenceNewestFirst,
     formatEvidenceAuthor,
