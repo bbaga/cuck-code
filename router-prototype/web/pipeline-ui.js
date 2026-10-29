@@ -228,6 +228,18 @@
     };
   }
 
+  function formatScopePanelData(worker) {
+    if (!worker || typeof worker !== "object") return null;
+    const validator = (worker.role || "implementor") === "validator";
+    const lines = [["Role", worker.role || "implementor"], ["Persona", worker.persona || "backend"],
+      ["Repository", worker.repo || "primary"], ["Branch", worker.branch || ""], ["Goal", worker.goal || worker.name || ""]];
+    if (validator && worker.validatesName) lines.push(["Checked implementor", worker.validatesName]);
+    if (validator && worker.criteria) lines.push(["Validation criteria", worker.criteria]);
+    if (worker.prompt) lines.push(["Prompt", worker.prompt]);
+    return lines.filter(([, value]) => value !== null && value !== undefined && String(value) !== "")
+      .map(([label, value]) => label + ": " + String(value)).join("\n\n");
+  }
+
   function buildPipelinePayload(rows) {
     const pipeline = {};
     let any = false;
@@ -674,6 +686,7 @@
     clearHarnessState,
     clearProviderState,
     buildPipelinePayload,
+    formatScopePanelData,
     authBadge,
     previewForIntegration,
     isPassingIntegration,
