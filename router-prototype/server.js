@@ -719,7 +719,18 @@ Instructions from the planner:
 ${instructions}
 
 Procedure:
-1. Start the isolated router in the background:
+1. Seed the private line state before you start the isolated router. Do not
+   use the live LINES_DIR. Create the directory <private-dir>/${line.id}
+   and write <private-dir>/${line.id}/line.json with this line ID, this
+   line name, and one integration worker record with id ${workerId}, role
+   validator, kind integration, and name integration-validator. Include
+   empty repos, inventory, and evidence state as needed by the router.
+   Example:
+   mkdir -p <private-dir>/${line.id}
+   cat > <private-dir>/${line.id}/line.json <<'JSON'
+   {"id":"${line.id}","name":"${line.name}","workers":[{"id":"${workerId}","name":"integration-validator","role":"validator","kind":"integration","status":"running","worktreePath":"<integration-worktree>"}],"repos":[],"inventory":[],"evidence":[],"pendingValidations":[],"plannerQueue":[]}
+   JSON
+   Then start the isolated router:
    PORT=<free-port> LINES_DIR=<private-dir> node router-prototype/server.js >router.log 2>&1 & SERVER_PID=$!; echo "$SERVER_PID"
    Return from this command before any other tool call. Poll the HTTP
    endpoint with a bounded timeout until it responds. Register the PID
@@ -776,6 +787,8 @@ ${extraRepos.length ? `3. For every other repo in the list: make your own copy i
    The router owns attempt identity. Keep the showcase tied to this attempt.
 8. Stop the server after all tests, including after failure:
    kill "$SERVER_PID" || true
+   Remove the private router state and its process artifacts. Never remove
+   or modify the live LINES_DIR.
 9. Reply with an INTEGRATION REPORT: branches merged (per repo),
    conflicts resolved (per branch, one line), acceptance test results,
    the list of registered evidence use cases, then a final line
