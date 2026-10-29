@@ -23,6 +23,18 @@
   const NODE_BORDER = 2;
   const NODE_GAP = 8;
 
+  // Explicit error state wins over human intervention state.
+  function attentionIndicator(item) {
+    const value = item || {};
+    const state = String(value.state || value.status || "").toLowerCase();
+    const error = value.error === true || value.hasError === true || !!value.lastError
+      || value.verdict === "fail" || ["error", "failed"].includes(state);
+    if (error) return "error";
+    const attention = value.attention === true || value.needsAttention === true
+      || value.humanIntervention === true || ["attention", "needs_attention", "blocked"].includes(state);
+    return attention ? "attention" : null;
+  }
+
   function nodeWidth(worker, measureText) {
     const measure = typeof measureText === "function" ? measureText : (text) => String(text).length * 8;
     const w = worker || {};
@@ -765,6 +777,7 @@
     shouldHideValidator,
     shouldShowIntegrationValidator,
     buildGraphLanes,
+    attentionIndicator,
     nodeWidth,
     columnWidth,
     NODE_FONTS,

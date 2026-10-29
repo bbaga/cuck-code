@@ -983,6 +983,9 @@ const dashboardLive = createDashboardLive({
 
 function dashboardStateForLine(line) {
   return { id: line.id, name: line.name, status: line.status,
+    attention: line.attention === true, needsAttention: line.needsAttention === true,
+    humanIntervention: line.humanIntervention === true,
+    error: line.error === true, lastError: line.lastError || null,
     sessionId: line.sessionId, started: line.started,
     pipeline: resolvePipeline(line), pipelineOverrides: line.pipeline || null,
     transcript: line.transcript.slice(-50),
@@ -991,7 +994,10 @@ function dashboardStateForLine(line) {
     workers: [...line.workers.values()].map((w) => ({
       id: w.id, name: w.name, ...completionFields(w), branch: w.branch, role: w.role,
       validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
-      ...changesetFields(w), lastError: w.lastError || null, ...compactionFields(w, line),
+      ...changesetFields(w), lastError: w.lastError || null,
+      attention: w.attention === true, needsAttention: w.needsAttention === true,
+      humanIntervention: w.humanIntervention === true,
+      error: w.error === true, ...compactionFields(w, line),
       ...scopeFields(w, line.workers),
     })) };
 }
@@ -2082,7 +2088,7 @@ const requestHandler = (req, res) => {
       return json(res, 200, { workers: [...line.workers.values()].map((w) => ({
         id: w.id, name: w.name, ...completionFields(w), sessionId: w.sessionId, branch: w.branch,
         role: w.role, validates: w.validates, persona: w.persona || "backend",
-        kind: w.kind || "standard",
+        kind: w.kind || "standard", humanIntervention: w.humanIntervention === true,
         ...changesetFields(w), ...baseFields(w),
         lastError: w.lastError || null,
       })) });

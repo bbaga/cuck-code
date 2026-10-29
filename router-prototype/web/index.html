@@ -75,7 +75,7 @@
   .lineentry:hover { background: #0d1014; }
   .lineentry.selected { background: #182335; outline: 1px solid #2d6cdf; }
   .lineentry .dot { margin-left: 0; }
-  .lineentry .lname { flex: 1; white-space: nowrap; }
+  .lineentry .lname { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .lcount { color: #6c7a8c; font-size: .75rem; flex-shrink: 0; }
   .head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px;
     border-bottom: 1px solid #262b33; font-weight: 600; }
@@ -92,6 +92,12 @@
   .dot.failed { background: #ff5f6e; }
   .dot.stopped { background: #6c7a8c; }
   .dot.standby { background: #6c7a8c; }
+  .dot.attention, .dot.error { width: 18px; height: 18px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: #161a20; font-size: 13px; font-weight: 800; }
+  .dot.attention::after, .dot.error::after { content: "!"; }
+  .dot.attention { background: #f2c94c; }
+  .dot.error { background: #ff5f6e; }
   @keyframes pulse { 50% { opacity: .3; } }
   .banner { margin: 8px 16px 0; padding: 8px; border-radius: 4px;
     background: #4d1420; color: #ff8095; font-size: .85rem; white-space: pre-wrap;
@@ -152,7 +158,8 @@
     padding: 0 10px; height: 36px; border: 1px solid #333c48; border-radius: 8px;
     background: #10141a; font-size: .8rem; cursor: pointer; user-select: none; }
   .gnode .dot { margin-left: 0; flex-shrink: 0; }
-  .gnode > span { white-space: nowrap; flex-shrink: 0; }
+  .gnode > span { flex-shrink: 0; }
+  .gnode .nodeName { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .gnode .wcfg { color: #8fa3bd; }
   .gnode.sel { outline: 2px solid #2d6cdf; }
   .gnode.w-running { border-color: #3d8bff; }
@@ -275,7 +282,7 @@ window.addEventListener("DOMContentLoaded", () => {
     shouldShowIntegrationValidator, buildGraphLanes,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
     evidencePollIsCurrent, promptKeyAction, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
-    formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT } = window.pipelineUI;
+    formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator } = window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
   const listEl = document.getElementById("linelist");
@@ -398,7 +405,7 @@ window.addEventListener("DOMContentLoaded", () => {
     n.style.width = width + "px";
     const nm = document.createElement("span");
     nm.textContent = w.name;
-    nm.style.whiteSpace = "nowrap";
+    nm.className = "nodeName";
     const tag = document.createElement("span");
     tag.className = "persona-chip p-" + (w.persona || "backend");
     tag.textContent = validator ? "val" : (w.persona || "backend");
@@ -412,7 +419,9 @@ window.addEventListener("DOMContentLoaded", () => {
       n.appendChild(cfgEl);
     }
     const d = document.createElement("span");
-    d.className = "dot " + w.status;
+    const indicator = pipelineUI.attentionIndicator(w);
+    d.className = "dot " + (indicator || w.status);
+    d.setAttribute("aria-label", indicator === "error" ? "Error" : indicator === "attention" ? "Needs attention" : w.status);
     n.append(d);
     if (w.status === "running") {
       const stop = document.createElement("button");
@@ -576,7 +585,11 @@ window.addEventListener("DOMContentLoaded", () => {
     const pnLabel = document.createElement("span");
     pnLabel.textContent = "planner";
     const pd = document.createElement("span");
-    pd.className = "dot " + (st.plannerStatus === "running" ? "running" : "idle");
+    const plannerState = { status: st.plannerStatus, attention: st.plannerAttention,
+      humanIntervention: st.plannerHumanIntervention, error: st.plannerError };
+    const plannerIndicator = pipelineUI.attentionIndicator(plannerState);
+    pd.className = "dot " + (plannerIndicator || (st.plannerStatus === "running" ? "running" : "idle"));
+    pd.setAttribute("aria-label", plannerIndicator === "error" ? "Error" : plannerIndicator === "attention" ? "Needs attention" : st.plannerStatus);
     pn.append(pnLabel, pd);
     pn.addEventListener("click", () => selectNode(st, null));
     inner.appendChild(pn);
@@ -964,7 +977,9 @@ window.addEventListener("DOMContentLoaded", () => {
       pipeline: line.pipeline || null, pipelineOverrides: line.pipelineOverrides || null,
       tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, plan, row, procPane, evPane,
       hideFailedValidators: true,
-      plannerStatus: line.status, started: line.started === true,
+      plannerStatus: line.status, plannerAttention: line.attention === true || line.needsAttention === true,
+      plannerHumanIntervention: line.humanIntervention === true,
+      plannerError: line.error === true || !!line.lastError, started: line.started === true,
       planContent: undefined, approved: false,
       workers: new Map(), workerTranscripts: new Map(), previewPayload: null, previewRequest: 0,
 
