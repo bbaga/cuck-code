@@ -3,7 +3,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { resolvePipeline } = require("../pipeline-config");
-const { planPlannerRun, planWorkerRun } = require("../spawn-plan");
+const { planPlannerRun, planWorkerRun, implementorBranchName } = require("../spawn-plan");
 
 // Regression guarantee: with the default config (no env overrides, no
 // line.pipeline) the built vibe argv, env, and cwd for planners and
@@ -18,6 +18,15 @@ const WORKER_ARGS_TAIL = [
   "--workdir", "/tmp/wt", "--trust", "--agent", "accept-edits",
   "--output", "streaming", "--time-limit", "3600",
 ];
+
+test("implementor branches use the tracker ticket when present", () => {
+  assert.equal(implementorBranchName("12345678-abcd", "worker-one", "TICKET-123"), "TICKET-123/worker-one");
+});
+
+test("implementor branches keep the line-ID prefix without a ticket", () => {
+  assert.equal(implementorBranchName("12345678-abcd", "worker-one", null), "12345678/worker-one");
+  assert.equal(implementorBranchName("12345678-abcd", "worker-one", ""), "12345678/worker-one");
+});
 
 function defaultPlannerCfg() {
   return resolvePipeline({}, {}).planner;

@@ -61,6 +61,13 @@ function planWorkerRun(cfg, opts) {
   return planRun(cfg, opts);
 }
 
+// Build the implementor branch name. Ticketed branches use the exact ticket
+// ID as their prefix; unticketed branches keep the line-ID prefix.
+function implementorBranchName(lineId, workerName, trackerTicket) {
+  const prefix = trackerTicket ? trackerTicket : lineId.slice(0, 8);
+  return `${prefix}/${workerName}`;
+}
+
 // Validate the optional worker spawn body fields beyond "harness" (which
 // the handler validates and gates separately). Returns an error string
 // or null.
@@ -100,5 +107,6 @@ module.exports = {
   planPlannerRun,
   planWorkerRun,
   validateWorkerSpawnBody,
+  implementorBranchName,
   lineSummary,
 };
