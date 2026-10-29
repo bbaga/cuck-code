@@ -80,7 +80,7 @@ test("line serialization carries the resolved pipeline", () => {
   };
   const summary = lineSummary(line);
   assert.deepEqual(summary, {
-    id: "line-1", name: "demo", status: "idle", queueDepth: 1,
+    id: "line-1", name: "demo", status: "idle", humanIntervention: false, queueDepth: 1,
     sessionId: "s-1", started: true, workers: 2,
     pipeline: {
       planner: { harness: "pi", model: null, effort: "medium", timeLimit: 60, maxContext: 150000 },
@@ -91,6 +91,7 @@ test("line serialization carries the resolved pipeline", () => {
     },
     pipelineOverrides: { planner: { harness: "pi", timeLimit: 60 } },
   });
+  assert.equal(summary.humanIntervention, false);
 });
 
 test("line serialization works without a pipeline override", () => {

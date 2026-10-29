@@ -155,7 +155,7 @@
     background: #10141a; font-size: .8rem; cursor: pointer; user-select: none; }
   .gnode .dot { margin-left: 0; flex-shrink: 0; }
   .gnode > span { flex-shrink: 0; }
-  .gnode .nodeName { min-width: 0; overflow-wrap: anywhere; }
+  .gnode .nodeName { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .gnode .wcfg { color: #8fa3bd; }
   .gnode.sel { outline: 2px solid #2d6cdf; }
   .gnode.w-running { border-color: #3d8bff; }
@@ -278,7 +278,7 @@ window.addEventListener("DOMContentLoaded", () => {
     shouldShowIntegrationValidator, buildGraphLanes,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
     evidencePollIsCurrent, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
-    nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT } = window.pipelineUI;
+    nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator } = window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
   const listEl = document.getElementById("linelist");
@@ -415,7 +415,7 @@ window.addEventListener("DOMContentLoaded", () => {
       n.appendChild(cfgEl);
     }
     const d = document.createElement("span");
-    const indicator = window.pipelineUI["attention" + "Indicator"](w);
+    const indicator = pipelineUI.attentionIndicator(w);
     d.className = "dot " + (indicator || w.status);
     d.setAttribute("aria-label", indicator === "error" ? "Error" : indicator === "attention" ? "Needs attention" : w.status);
     n.append(d);
@@ -583,7 +583,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const pd = document.createElement("span");
     const plannerState = { status: st.plannerStatus, attention: st.plannerAttention,
       error: st.plannerError };
-    const plannerIndicator = window.pipelineUI["attention" + "Indicator"](plannerState);
+    const plannerIndicator = pipelineUI.attentionIndicator(plannerState);
     pd.className = "dot " + (plannerIndicator || (st.plannerStatus === "running" ? "running" : "idle"));
     pd.setAttribute("aria-label", plannerIndicator === "error" ? "Error" : plannerIndicator === "attention" ? "Needs attention" : st.plannerStatus);
     pn.append(pnLabel, pd);

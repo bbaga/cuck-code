@@ -83,6 +83,7 @@ function lineSummary(line) {
     id: line.id,
     name: line.name,
     status: line.status,
+    humanIntervention: line.humanIntervention === true,
     queueDepth: line.queue ? line.queue.length : 0,
     sessionId: line.sessionId,
     started: line.started,

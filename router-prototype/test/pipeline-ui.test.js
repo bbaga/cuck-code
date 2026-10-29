@@ -47,7 +47,7 @@ test("attention indicators cover planner and worker states with error precedence
 test("pipeline markup supports wrapped names", () => {
   const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
   assert.match(html, /\.lineentry \.lname[^}]*overflow-wrap: anywhere/);
-  assert.match(html, /\.gnode \.nodeName[^}]*overflow-wrap: anywhere/);
+  assert.match(html, /\.gnode \.nodeName[^}]*text-overflow: ellipsis/);
 });
 
 test("preview eligibility accepts only available passing integration data", () => {
