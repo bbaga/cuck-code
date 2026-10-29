@@ -30,8 +30,25 @@ const {
   isFailedValidator,
   shouldHideValidator,
   shouldShowIntegrationValidator,
+  attentionIndicator,
 } = require("../web/pipeline-ui.js");
 const pipelineUiModule = require("../web/pipeline-ui.js");
+
+test("attention indicators cover planner and worker states with error precedence", () => {
+  assert.equal(attentionIndicator({ attention: true }), "attention");
+  assert.equal(attentionIndicator({ needsAttention: true }), "attention");
+  assert.equal(attentionIndicator({ humanIntervention: true }), "attention");
+  assert.equal(attentionIndicator({ status: "blocked" }), "attention");
+  assert.equal(attentionIndicator({ status: "failed", attention: true }), "error");
+  assert.equal(attentionIndicator({ lastError: "worker failed", needsAttention: true }), "error");
+  assert.equal(attentionIndicator({ status: "completed" }), null);
+});
+
+test("pipeline markup supports wrapped names", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
+  assert.match(html, /\.lineentry \.lname[^}]*overflow-wrap: anywhere/);
+  assert.match(html, /\.gnode \.nodeName[^}]*overflow-wrap: anywhere/);
+});
 
 test("preview eligibility accepts only available passing integration data", () => {
   const passing = { kind: "integration", status: "completed", verdict: "pass" };

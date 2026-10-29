@@ -962,6 +962,8 @@ const dashboardLive = createDashboardLive({
 
 function dashboardStateForLine(line) {
   return { id: line.id, name: line.name, status: line.status,
+    attention: line.attention === true, needsAttention: line.needsAttention === true,
+    error: line.error === true, lastError: line.lastError || null,
     sessionId: line.sessionId, started: line.started,
     pipeline: resolvePipeline(line), pipelineOverrides: line.pipeline || null,
     transcript: line.transcript.slice(-50),
@@ -970,7 +972,9 @@ function dashboardStateForLine(line) {
     workers: [...line.workers.values()].map((w) => ({
       id: w.id, name: w.name, ...completionFields(w), branch: w.branch, role: w.role,
       validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
-      ...changesetFields(w), lastError: w.lastError || null, ...compactionFields(w, line),
+      ...changesetFields(w), lastError: w.lastError || null,
+      attention: w.attention === true, needsAttention: w.needsAttention === true,
+      error: w.error === true, ...compactionFields(w, line),
       ...scopeFields(w, line.workers),
     })) };
 }
