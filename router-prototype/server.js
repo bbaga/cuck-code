@@ -9,7 +9,7 @@ const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
   resolvePipeline, probeResultFor, piProviderDetail,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
-  validateWorkerSpawnBody, lineSummary } = require("./spawn-plan");
+  validateWorkerSpawnBody, implementorBranchName, lineSummary } = require("./spawn-plan");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
 const { StderrCapture, describeFailure } = require("./run-failure");
 const { messageText, InvocationCapture, appendTranscript, hasCriteria,
@@ -2103,7 +2103,7 @@ const requestHandler = (req, res) => {
       const sName = sanitizeName(body.name);
       if (!sName) return json(res, 400, { error: "worker name must contain [a-zA-Z0-9-]" });
       const id = crypto.randomUUID();
-      const branch = `${line.id.slice(0, 8)}/${sName}`;
+      const branch = implementorBranchName(line.id, sName, body.trackerTicket);
       const worktreePath = repo.name === "primary"
         ? path.join(LINES_DIR, "worktrees", line.id, sName)
         : path.join(LINES_DIR, "worktrees", line.id, repo.name, sName);
