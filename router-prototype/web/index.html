@@ -197,8 +197,8 @@
   .transcript pre { margin: 6px 0 0; color: #8b98a8; }
   .liveLabel { color: #6c7a8c; font-size: .75rem; font-family: system-ui, sans-serif; }
   .row { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #262b33; }
-  .row input { flex: 1; min-width: 0; padding: 8px; background: #0d1014; color: inherit;
-    border: 1px solid #2c333d; border-radius: 4px; }
+  .row textarea { flex: 1; min-width: 0; padding: 8px; background: #0d1014; color: inherit;
+    border: 1px solid #2c333d; border-radius: 4px; resize: none; font: inherit; line-height: 1.35; }
   .ctxMeter { align-self: center; font-size: .72rem; color: #6c7a8c; white-space: nowrap;
     font-variant-numeric: tabular-nums; }
   .ctxMeter.near { color: #e5a04b; }
@@ -281,7 +281,7 @@ window.addEventListener("DOMContentLoaded", () => {
     clearHarnessState, clearProviderState, shouldHideValidator,
     shouldShowIntegrationValidator, buildGraphLanes,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
-    evidencePollIsCurrent, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
+    evidencePollIsCurrent, promptKeyAction, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
     formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator } = window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
@@ -947,8 +947,10 @@ window.addEventListener("DOMContentLoaded", () => {
     const chatHandle = createResizeHandle("Resize chat height");
     const row = document.createElement("div");
     row.className = "row";
-    const input = document.createElement("input");
+    const input = document.createElement("textarea");
+    input.rows = 1;
     input.placeholder = "Send a prompt";
+    input.setAttribute("aria-label", "Message prompt");
     const send = document.createElement("button");
     send.textContent = "Send";
     const ctxMeter = document.createElement("span");
@@ -1022,7 +1024,7 @@ window.addEventListener("DOMContentLoaded", () => {
         input.placeholder = (st.planContent && !st.approved)
           ? "Plan proposed - type feedback here" : "Send a prompt";
       } else {
-        input.placeholder = "Type the initial prompt and press Enter";
+        input.placeholder = "Type the initial prompt. Shift+Enter makes a new line.";
       }
       renderGraph(st);
       updateListEntry(st);
@@ -1165,21 +1167,35 @@ window.addEventListener("DOMContentLoaded", () => {
       },
     };
 
+    const growInput = () => {
+      input.style.height = "auto";
+      const lineHeight = parseFloat(getComputedStyle(input).lineHeight) || 21;
+      const maxHeight = lineHeight * 8 + 16;
+      input.style.height = Math.min(input.scrollHeight, maxHeight) + "px";
+      input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
+    };
     const post = async () => {
       const text = input.value.trim();
       if (!text) return;
+      const response = await fetch("/api/lines/" + st.id + "/prompts", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!response.ok) return;
       input.value = "";
+      input.style.height = "";
+      input.style.overflowY = "hidden";
       if (!st.started) {
         st.started = true;
         input.placeholder = "Send a prompt";
       }
-      await fetch("/api/lines/" + st.id + "/prompts", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
     };
     send.addEventListener("click", post);
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter") post(); });
+    input.addEventListener("input", growInput);
+    input.addEventListener("keydown", (e) => {
+      const action = promptKeyAction(e);
+      if (action === "send") { e.preventDefault(); post(); }
+    });
 
     setStatus(line.status);
     renderGraph(st);

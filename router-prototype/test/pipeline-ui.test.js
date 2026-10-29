@@ -31,6 +31,7 @@ const {
   shouldHideValidator,
   shouldShowIntegrationValidator,
   attentionIndicator,
+  promptKeyAction,
 } = require("../web/pipeline-ui.js");
 const pipelineUiModule = require("../web/pipeline-ui.js");
 
@@ -57,6 +58,14 @@ test("pipeline markup supports wrapped names", () => {
   const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
   assert.match(html, /\.lineentry \.lname[^}]*overflow-wrap: anywhere/);
   assert.match(html, /\.gnode \.nodeName[^}]*text-overflow: ellipsis/);
+});
+
+test("prompt key action handles Enter, newlines, and composition", () => {
+  assert.equal(promptKeyAction({ key: "Enter" }), "send");
+  assert.equal(promptKeyAction({ key: "Enter", shiftKey: true }), "newline");
+  assert.equal(promptKeyAction({ key: "Enter", isComposing: true }), "ignore");
+  assert.equal(promptKeyAction({ key: "Enter", keyCode: 229 }), "ignore");
+  assert.equal(promptKeyAction({ key: "a" }), "ignore");
 });
 
 test("preview eligibility accepts only available passing integration data", () => {
