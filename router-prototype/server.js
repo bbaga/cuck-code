@@ -1160,6 +1160,37 @@ function entryText(entry) {
   return messageText(entry);
 }
 
+function stopPlannerRun(line, runId, timers = {}) {
+  const run = line.activePlannerRun;
+  if (!run || run.runId !== runId || !line.child || line.status !== "running") {
+    return { ok: false, reason: "stale-or-idle" };
+  }
+  if (run.intentionalStop) return { ok: false, reason: "already-stopping" };
+  run.intentionalStop = true;
+  const setTimer = timers.setTimeout || setTimeout;
+  const clearTimer = timers.clearTimeout || clearTimeout;
+  const signal = (name) => {
+    let sent = false;
+    try { sent = line.child === run.child && run.child.kill(name) === true; } catch (error) {
+      broadcast(line, "error", { message: `Planner termination signal ${name} failed: ${error.message}` });
+    }
+    if (!sent) broadcast(line, "error", { message: `Planner termination signal ${name} was not accepted; the planner has not terminated.` });
+  };
+  signal("SIGTERM");
+  run.stopTimer = setTimer(() => {
+    if (line.activePlannerRun === run && line.child === run.child && line.status === "running") {
+      signal("SIGKILL");
+      run.errorTimer = setTimer(() => {
+        if (line.activePlannerRun === run && line.child === run.child && line.status === "running") {
+          broadcast(line, "error", { message: "Planner did not terminate after SIGTERM and SIGKILL. Stop it manually and retry." });
+        }
+      }, 2000);
+    }
+  }, 2000);
+  run.clearTimers = () => { clearTimer(run.stopTimer); clearTimer(run.errorTimer); };
+  return { ok: true, runId };
+}
+
 function pump(line) {
   if (line.deleted || line.status === "running" || line.compacting || line.queue.length === 0) return;
   if (!line.context) line.context = newContextStats();
@@ -1207,7 +1238,12 @@ function pump(line) {
   const child = spawn(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, ...plan.env },
     ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
+  const runId = crypto.randomUUID();
+  const run = { runId, child, intentionalStop: false, stopTimer: null, errorTimer: null };
+  line.activePlannerRun = run;
+  line.runId = runId;
   line.child = child;
+  broadcast(line, "state", dashboardStateForLine(line));
 
   // Harnesses without a native time limit need the server to enforce it.
   let killTimer = null;
@@ -1250,9 +1286,14 @@ function pump(line) {
   child.on("error", (err) => { spawnError = err; });
 
   child.on("close", (code, signal) => {
+    if (line.activePlannerRun !== run || line.child !== child) return;
     if (killTimer) clearTimeout(killTimer);
+    if (run.clearTimers) run.clearTimers();
     line.child = null;
+    line.activePlannerRun = null;
+    line.runId = null;
     if (line.deleted) return;
+    const intentionalStop = run.intentionalStop;
     for (const raw of stdoutRecords.finish()) consumePlannerRecord(raw);
     const finished = adapter.finalize();
     if (finished) {
@@ -1277,7 +1318,7 @@ function pump(line) {
     }
     cleanupStage(line, "planner");
     saveLine(line);
-    if (result !== "ok") {
+    if (result !== "ok" && !intentionalStop) {
       broadcast(line, "error", { message: `Planner run failed. ${failure}` });
       if (isWake(line.lastRun)) {
         line.wakeRetries = line.wakeRetries || {};
@@ -1298,7 +1339,7 @@ function pump(line) {
         }
       }
     }
-    if (result === "ok" && line.activePlannerRequest) {
+    if (!intentionalStop && result === "ok" && line.activePlannerRequest) {
       const request = line.activePlannerRequest;
       if (request.source) {
         const criteria = runOutput.text();
@@ -1338,6 +1379,7 @@ function pump(line) {
     line.activePlannerRequest = null;
     line.status = "idle";
     saveLine(line);
+    broadcast(line, "state", dashboardStateForLine(line));
     broadcast(line, "status", { status: line.status });
     pump(line);
   });
@@ -1871,7 +1913,8 @@ const requestHandler = (req, res) => {
         repos: new Map(),
         pipeline: body.pipeline || null,
         inventory: new Map(),
-        queue: [], clients: new Set(), transcript: [] };
+        queue: [], activePlannerRequest: null, activePlannerRun: null, runId: null,
+        stopPlannerRun, clients: new Set(), transcript: [] };
       lines.set(id, line);
       saveLine(line);
       dashboardLive.publish("line_created", id, lineSummary(line));
@@ -2768,6 +2811,7 @@ function loadLines() {
         workdir: path.join(LINES_DIR, entry.name),
         status: started ? "idle" : "standby",
         queue: restorePlannerRequests(meta.plannerQueue), activePlannerRequest: null,
+        activePlannerRun: null, runId: null, stopPlannerRun,
         knownNoticeIds: restoreKnownNoticeIds(meta.knownNoticeIds),
         started,
         planApproved: meta.planApproved === true, workers, inventory,
