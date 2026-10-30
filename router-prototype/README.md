@@ -56,6 +56,17 @@ PORT=0 node test/fixtures/dashboard-browser.js
 `PORT` is optional; the default `0` selects a free port. The fixture prints
 the URL and stops on SIGINT or SIGTERM. It seeds one idle line.
 
+## Dashboard browser check
+
+This check opens the dashboard fixture in a real headless Chrome and reports JSON:
+
+```
+node test/fixtures/dashboard-browser-check.js
+```
+
+Exit codes: `0` pass, `1` fail, `3` no browser (`BROWSER_UNAVAILABLE`; not a pass).
+The `CHROME_BIN` variable sets the browser path. The default is Google Chrome on macOS.
+
 ## Planner and worker text handoff
 
 The router uses one text contract for a completed message: normalized entries
