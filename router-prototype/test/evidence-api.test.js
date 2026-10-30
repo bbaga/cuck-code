@@ -66,8 +66,14 @@ test.before(async () => {
   ({ child: server, base } = await start(root));
 });
 
-test.after(() => {
-  if (server) server.kill("SIGTERM");
+// Wait for the router to exit: until then it can still write registry temp
+// files into root, and rmSync fails with ENOTEMPTY.
+test.after(async () => {
+  if (server && server.exitCode === null && server.signalCode === null) {
+    const exited = new Promise((resolve) => server.once("exit", resolve));
+    server.kill("SIGTERM");
+    await exited;
+  }
   fs.rmSync(root, { recursive: true, force: true });
 });
 
