@@ -15,7 +15,7 @@ function harness() {
   const make = () => ({ style:{}, children:[], attrs:{}, append(...xs){this.children.push(...xs);}, appendChild(x){this.children.push(x);}, replaceChildren(...xs){this.children=xs;}, setAttribute(k,v){this.attrs[k]=v;}, addEventListener(type,fn){let h=handlers.get(this)||{}; h[type]=fn;handlers.set(this,h);}, className:"", textContent:"", getAttribute(k){return this.attrs[k];} });
   const document = { createElement: make, createElementNS: (_ns,_tag) => make() };
   const pipelineUI = require("../web/pipeline-ui.js");
-  const ui = vm.runInNewContext(source + "\n({ renderGraph, renderGraphContents, selectNode, selectPreview })", { document, SVGNS:"svg", pipelineUI, nodeWidth: pipelineUI.nodeWidth, columnWidth: pipelineUI.columnWidth, workerNode: (st,w,x,y,width)=>{const n=make();n.className="gnode worker"+(st.selected===w.id?" sel":"");n.style={left:x+"px",top:y+"px",width:width+"px"};return n;}, mapPreviewPayload:(_p,w)=>w.kind==="integration"?{eligible:true,availability:"available",steps:[]}:null, previewSelectionKey:id=>`preview:${id}`, sanitizePreviewCommand:x=>x, localStorage:{setItem(){},removeItem(){}}, navigator:{clipboard:{writeText(){}}}, renderTranscript(){}, console });
+  const ui = vm.runInNewContext(source + "\n({ renderGraph, renderGraphContents, selectNode, selectPreview, renderPreviewPanel })", { document, SVGNS:"svg", pipelineUI, nodeWidth: pipelineUI.nodeWidth, columnWidth: pipelineUI.columnWidth, workerNode: (st,w,x,y,width)=>{const n=make();n.className="gnode worker"+(st.selected===w.id?" sel":"");n.style={left:x+"px",top:y+"px",width:width+"px"};return n;}, mapPreviewPayload:(_p,w)=>w.kind==="integration"?{eligible:true,availability:"available",steps:[]}:null, previewSelectionKey:id=>`preview:${id}`, sanitizePreviewCommand:x=>x, localStorage:{setItem(){},removeItem(){}}, navigator:{clipboard:{writeText(){}}}, renderTranscript(){}, console });
   function find(node,predicate){if(predicate(node))return node;for(const child of node.children||[]){const found=find(child,predicate);if(found)return found;}return null;}
   function click(node){handlers.get(node).click();}
   return {ui, graph, make, find, click};
@@ -60,4 +60,15 @@ test("validator SVG paths originate at implementor center and route later rows t
   assert.equal(implValidator.length,2);
   assert.equal(implValidator[0],`M ${implEnd} 32 H ${implEnd+20} V 32 H ${valX}`);
   assert.equal(implValidator[1],`M ${implEnd} 32 H ${implEnd+22} V 78 H ${valX}`);
+});
+
+test("a preview result that resolves after a tab switch stays hidden until Line", async () => {
+  const h=harness(), iv=integration(), st=state(h,[{id:"impl",name:"impl",status:"completed"},iv]);
+  st.selected="preview:i"; st.tab="line";
+  let resolve; const loading=new Promise(r=>{resolve=r;});
+  const refresh=(async()=>{ st.previewPayload=await loading; h.ui.renderPreviewPanel(st,iv,{eligible:true,availability:"available",steps:[]}); h.ui.renderGraph(st); })();
+  st.tab="work"; resolve({eligible:true}); await refresh;
+  assert.equal(st.previewPanel.hidden,true);
+  st.tab="line"; h.ui.renderGraph(st);
+  assert.equal(st.previewPanel.hidden,false);
 });

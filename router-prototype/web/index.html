@@ -657,6 +657,9 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderPreviewPanel(st, worker, data) {
+    // A late preview result must not open the panel on another tab; return to
+    // Line re-renders it from st.previewPayload.
+    if (st.tab && st.tab !== "line") return;
     const panel = document.createElement("section");
     panel.setAttribute("aria-label", "Preview instructions");
     const title = document.createElement("h2"); title.textContent = "Preview instructions (read only)"; panel.appendChild(title);
