@@ -18,8 +18,9 @@ const PRODUCTION_SCRIPTS = [
   "web/pipeline-ui.js",
   "web/registry-ui.js",
   "web/registry-ui-extra.js",
+  "web/registry-line.js",
 ];
-const REQUIRED_WEB_ASSETS = ["web/index.html", "web/pipeline-ui.js", "web/registry-ui.js", "web/registry-ui-extra.js"];
+const REQUIRED_WEB_ASSETS = ["web/index.html", "web/pipeline-ui.js", "web/registry-ui.js", "web/registry-ui-extra.js", "web/registry-line.js"];
 
 function parseJavaScript(source, filename) {
   try {

@@ -17,6 +17,8 @@
     border-radius: 4px; cursor: pointer; font-size: .8rem; }
   .tabBtn.active { background: #182335; color: #d8dee6; outline: 1px solid #2d6cdf; }
   .procPane { flex: 1; overflow-y: auto; padding: 12px 16px; font-size: .78rem; }
+  .workPane label { display: block; margin: 6px 0; }
+  .workPane label > input, .workPane label > select, .workPane label > textarea { margin-left: 8px; }
   .evPane { flex: 1; overflow-y: auto; padding: 12px 16px; }
   .evCase { margin-bottom: 24px; }
   .evCase .uc { font-size: 1rem; margin-bottom: 6px; color: #d8dee6; }
@@ -77,7 +79,7 @@
   .lineentry .dot { margin-left: 0; }
   .lineentry .lname { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .lcount { color: #6c7a8c; font-size: .75rem; flex-shrink: 0; }
-  .head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px;
+  .head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 12px 16px;
     border-bottom: 1px solid #262b33; font-weight: 600; }
   .deleteBtn { margin-left: 8px; padding: 3px 10px; font-size: .7rem;
     background: #4d1420; color: #ff8095; }
@@ -272,6 +274,7 @@
 <script src="pipeline-ui.js"></script>
 <script src="registry-ui-extra.js"></script>
 <script src="registry-ui.js"></script>
+<script src="registry-line.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
   const { PHASE_ROWS, EFFORT_LEVELS, CONTEXT_PHASES, parseContextSize, formatTokens, filterInstalled, buildPipelinePayload, authBadge, previewForIntegration,
@@ -819,6 +822,9 @@ window.addEventListener("DOMContentLoaded", () => {
     const tabProcBtn = document.createElement("button");
     tabProcBtn.className = "tabBtn";
     tabProcBtn.textContent = "Processes";
+    const tabWorkBtn = document.createElement("button");
+    tabWorkBtn.className = "tabBtn";
+    tabWorkBtn.textContent = "Work";
     const tabEvBtn = document.createElement("button");
     tabEvBtn.className = "tabBtn";
     tabEvBtn.textContent = "Evidence";
@@ -849,7 +855,7 @@ window.addEventListener("DOMContentLoaded", () => {
       await fetch("/api/lines/" + line.id, { method: "DELETE" });
       removeCard(line.id);
     });
-    head.append(name, dot, tabLineBtn, tabProcBtn, tabEvBtn, hideFailedToggle, delBtn);
+    head.append(name, dot, tabLineBtn, tabProcBtn, tabEvBtn, tabWorkBtn, hideFailedToggle, delBtn);
     const tabPipeBtn = document.createElement("button");
     tabPipeBtn.className = "tabBtn";
     tabPipeBtn.textContent = "Pipeline";
@@ -966,7 +972,10 @@ window.addEventListener("DOMContentLoaded", () => {
     const evPane = document.createElement("div");
     evPane.className = "evPane";
     evPane.hidden = true;
-    card.append(head, planDetails, banner, plan, graphDetails, scopeDetails, previewPanel, transcriptWrap, chatHandle, row, procPane, evPane, pipePane);
+    const workPane = document.createElement("div");
+    workPane.className = "evPane workPane";
+    workPane.hidden = true;
+    card.append(head, planDetails, banner, plan, graphDetails, scopeDetails, previewPanel, transcriptWrap, chatHandle, row, procPane, evPane, workPane, pipePane);
     linesEl.appendChild(card);
     setupLayoutResize({ lineId: line.id, card, graph, graphDetails, graphHandle, transcriptWrap, chatHandle });
 
@@ -975,7 +984,7 @@ window.addEventListener("DOMContentLoaded", () => {
       waiting, planBody, graph, graphDetails, graphHandle, chatHandle, previewPanel, approveBtn, badge, planDetails, planControls: controls,
       pipePane, tabPipeBtn, pipeForm, pipePresets, pipeEffective,
       pipeline: line.pipeline || null, pipelineOverrides: line.pipelineOverrides || null,
-      tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, plan, row, procPane, evPane,
+      tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, tabWorkBtn, workPane, plan, row, procPane, evPane,
       hideFailedValidators: true,
       plannerStatus: line.status, plannerAttention: line.attention === true || line.needsAttention === true,
       plannerHumanIntervention: line.humanIntervention === true,
@@ -1010,6 +1019,7 @@ window.addEventListener("DOMContentLoaded", () => {
       pipeForm.set(st.pipelineOverrides);
       showPipeMsg("Saved. The settings apply from the next run.", true);
     });
+    tabWorkBtn.addEventListener("click", () => setLineTab(st, "work"));
     hideFailedCheckbox.addEventListener("change", () => {
       st.hideFailedValidators = hideFailedCheckbox.checked;
       renderGraph(st);
@@ -1286,6 +1296,12 @@ window.addEventListener("DOMContentLoaded", () => {
     st.procPane.hidden = tab !== "processes";
     st.evPane.hidden = tab !== "evidence";
     st.pipePane.hidden = tab !== "pipeline";
+    st.workPane.hidden = tab !== "work";
+    st.tabWorkBtn.classList.toggle("active", tab === "work");
+    if (tab === "work") {
+      if (!st.work) st.work = registryLine.mount(document, st.workPane, { fetch: (u, o) => fetch(u, o), window, lineId: st.id });
+      st.work.load();
+    }
     if (tab === "pipeline") {
       st.pipeForm.open();
       reloadPresets();
