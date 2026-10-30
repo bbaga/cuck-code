@@ -82,6 +82,44 @@
     return { token: { type: "list", ordered, items }, next: i };
   }
 
+  const INLINE_MAX = 8;
+  function inlineTokens(value, depth = 0) {
+    const input = text(value), out = [];
+    if (depth >= INLINE_MAX) return [{ type: "text", text: input }];
+    let i = 0, plain = "";
+    const flush = () => { if (plain) { out.push({ type: "text", text: plain }); plain = ""; } };
+    while (i < input.length) {
+      if (input[i] === "\n" && /(?:^| {2})$/.test(plain)) { plain = plain.replace(/ {2}$/, ""); flush(); out.push({ type: "break" }); i++; continue; }
+      if (input[i] === "\\" && input[i + 1] === "\n") { flush(); out.push({ type: "break" }); i += 2; continue; }
+      if (input[i] === "`") { const end = input.indexOf("`", i + 1); if (end > i + 1) { flush(); out.push({ type: "code", text: input.slice(i + 1, end) }); i = end + 1; continue; } }
+      let match = input.slice(i).match(/^\[([^\]]+)\]\(([^\s]+)\)/);
+      if (match) { const href = safeHref(match[2]); if (href) { flush(); out.push({ type: "link", href, children: inlineTokens(match[1], depth + 1) }); i += match[0].length; continue; } }
+      let formatted = false;
+      for (const [mark, type] of [["**", "strong"], ["__", "strong"], ["*", "em"], ["_", "em"]]) {
+        if (input.startsWith(mark, i)) { const end = input.indexOf(mark, i + mark.length); if (end > i + mark.length) { flush(); out.push({ type, children: inlineTokens(input.slice(i + mark.length, end), depth + 1) }); i = end + mark.length; formatted = true; break; } }
+      }
+      if (formatted) continue;
+      plain += input[i++];
+    }
+    flush(); return out;
+  }
+  function safeHref(value) {
+    const href = text(value);
+    if (/[\u0000-\u0020\u007f]/.test(href) || /[<>'"]/.test(href)) return null;
+    const match = href.match(/^([a-z][a-z0-9+.-]*):/i);
+    if (!match || !/^(https?|mailto)$/i.test(match[1])) return null;
+    return href;
+  }
+  function appendInline(document, parent, value) {
+    for (const token of inlineTokens(value)) {
+      if (token.type === "text") parent.appendChild(document.createTextNode(token.text));
+      else if (token.type === "code") { const el = document.createElement("code"); el.appendChild(document.createTextNode(token.text)); parent.appendChild(el); }
+      else if (token.type === "break") parent.appendChild(document.createElement("br"));
+      else if (token.type === "em" || token.type === "strong") { const el = document.createElement(token.type); appendTokens(document, el, token.children); parent.appendChild(el); }
+      else if (token.type === "link") { const el = document.createElement("a"); el.setAttribute("href", token.href); el.setAttribute("rel", "noopener noreferrer"); appendTokens(document, el, token.children); parent.appendChild(el); }
+    }
+  }
+  function appendTokens(document, parent, tokens) { for (const token of tokens || []) { if (token.type === "text") parent.appendChild(document.createTextNode(token.text)); else if (token.type === "code") { const el = document.createElement("code"); el.appendChild(document.createTextNode(token.text)); parent.appendChild(el); } else if (token.type === "break") parent.appendChild(document.createElement("br")); else if (token.type === "em" || token.type === "strong") { const el = document.createElement(token.type); appendTokens(document, el, token.children); parent.appendChild(el); } else if (token.type === "link") { const el = document.createElement("a"); el.setAttribute("href", token.href); el.setAttribute("rel", "noopener noreferrer"); appendTokens(document, el, token.children); parent.appendChild(el); } } }
   function appendText(document, parent, value) { parent.appendChild(document.createTextNode(text(value))); }
   function renderMarkdown(document, source) {
     if (!document || typeof document.createDocumentFragment !== "function") throw new TypeError("A document is required");
@@ -90,8 +128,8 @@
     function renderBlocks(parent, children) {
       for (const token of children || []) {
         let element;
-        if (token.type === "paragraph") { element = document.createElement("p"); appendText(document, element, token.text); }
-        else if (token.type === "heading") { element = document.createElement("h" + Math.min(6, Math.max(1, token.level))); appendText(document, element, token.text); }
+        if (token.type === "paragraph") { element = document.createElement("p"); appendInline(document, element, token.text); }
+        else if (token.type === "heading") { element = document.createElement("h" + Math.min(6, Math.max(1, token.level))); appendInline(document, element, token.text); }
         else if (token.type === "code") { element = document.createElement("pre"); const code = document.createElement("code"); appendText(document, code, token.text); element.appendChild(code); }
         else if (token.type === "quote") { element = document.createElement("blockquote"); renderBlocks(element, token.children); }
         else if (token.type === "list") { element = document.createElement(token.ordered ? "ol" : "ul"); for (const item of token.items) { const li = document.createElement("li"); renderBlocks(li, item.children); element.appendChild(li); } }
