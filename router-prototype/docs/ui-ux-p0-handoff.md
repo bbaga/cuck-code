@@ -201,12 +201,112 @@ Revision: P0 review, 2026-10-30
 16. The planner must approve P0-F1 before lifecycle implementation.
 17. No feature card may start from an unresolved alternative.
 
-## 7. Review result
+## 7. Executable card recipes
 
-1. This document is the reviewed execution handoff for P0.
-2. Changed planning file: `router-prototype/docs/ui-ux-p0-handoff.md`.
-3. No feature code changed.
-4. No tests were run.
-5. No implementation checks were run.
-6. The remaining blockers are P0-F1, the remote asset conflict, and parser approval.
-7. Commit this document before dispatching feature cards.
+Run every command below from the application root: `router-prototype/`.
+Commands marked **now** exist in this checkout. Commands marked **after P0-F1** need the approved fixture. Commands marked **after proposed test file** need the new test file named by that card. Do not run implementation checks during P0.
+
+### A1 — Durable IDs and queue projection
+
+- **Dependencies/readiness/blockers:** Ready. Use `plannerRequest`, `restorePlannerRequest(s)`, `serializePlannerRequest(s)`, `enqueuePlannerRequest`, `submitPrompt`, `dashboardStateForLine`, and `saveLine`. No unresolved blocker; A2 waits for A1.
+- **Files:** `planner-request.js`; `test/planner-request.test.js`; `server.js` sections for `submitPrompt` and `dashboardStateForLine`; `test/dashboard-events-api.test.js` and `test/dashboard-live.test.js`.
+- **Procedure:** (1) Add opaque IDs at construction and legacy normalization during restore. (2) Preserve IDs through serialization and persistence. (3) Add the pure waiting-user projection and use it in initial/SSE state. (4) Add `requestId` while preserving `queued` and `position`. (5) Test duplicate text, interleaved internal requests, and two restore/save cycles.
+- **Commands:** **now** `node --test test/planner-request.test.js test/dashboard-events-api.test.js test/dashboard-live.test.js`. **After proposed test changes:** the same command.
+- **Done:** IDs survive restore and retry; duplicate text has distinct IDs; internal rows stay hidden without reordering; projection has only `id`, `text`, `position`; old response fields remain.
+
+### A2 — Cancel one waiting prompt
+
+- **Dependencies/readiness/blockers:** Depends on accepted A1. Ready after A1; no new fixture. Cancellation must be synchronous and must not cancel active/internal work.
+- **Files:** `planner-request.js` (`enqueuePlannerRequest` and request classification); `server.js` prompt route and `saveLine`/`broadcast`; `test/planner-request.test.js`; `test/dashboard-events-api.test.js`.
+- **Procedure:** (1) Add classification for waiting-user, active/internal, and unknown IDs. (2) Remove one matching waiting request without `await`. (3) Add `DELETE /api/lines/:lineId/prompts/:requestId`. (4) Save and broadcast only after removal. (5) Test middle-row removal and dequeue race.
+- **Commands:** **now** `node --test test/planner-request.test.js test/dashboard-events-api.test.js`. **After proposed test changes:** repeat that command.
+- **Done:** success is `200` with sanitized state; unknown line/ID is `404`; active/internal is `409`; failed requests do not mutate; neighbors and internal order remain unchanged.
+
+### A3 — Run identity and intentional stop
+
+- **Dependencies/readiness/blockers:** Blocked by P0-F1 (`test/fixtures/planner-child.js`, `test/fixtures/fake-clock.js`). P0 must approve the existing lifecycle fallback before implementation. Depends on `pump` and its launch close/error callback.
+- **Files:** `server.js` process lifecycle near `pump`, `line.child`, `compactPlanner`, and `compactWorker`; proposed `test/fixtures/planner-child.js`; proposed `test/fixtures/fake-clock.js`; proposed `test/server-interrupt.test.js`.
+- **Procedure:** (1) Add a fresh run ID per launch and bind child/timers to it. (2) Mark intentional stop before `SIGTERM`; use same-child `SIGKILL` after 2 seconds and bounded error after another 2 seconds. (3) Make close/error cleanup idempotent and pump only after matching close. (4) Ignore stale callbacks and suppress only intentional failure/retry behavior. (5) Test duplicate close, retry IDs, signal failure, and ordinary failure.
+- **Commands:** **now:** no implementation check. **After P0-F1 and proposed test file:** `node --test test/fixtures/planner-child.test.js test/fixtures/fake-clock.test.js test/server-interrupt.test.js`.
+- **Done:** no early pump; exactly one post-close pump; output/order survive; stale callbacks cannot touch a newer run; timers clear; normal failure behavior remains.
+
+### A4 — Interrupt endpoint
+
+- **Dependencies/readiness/blockers:** Blocked by accepted A3 and P0-F1. Use A3's stop operation; do not duplicate lifecycle logic.
+- **Files:** `server.js` interrupt route beside existing line routes; `test/dashboard-events-api.test.js`; proposed `test/server-interrupt-api.test.js`.
+- **Procedure:** (1) Validate exact string `runId` and line existence. (2) Reject idle, compacting, stopping, and stale runs with the agreed `409` convention. (3) Call A3 and return `202` only after stop request acceptance. (4) Check initial state, endpoint response, and SSE use the same projection. (5) Test run X cannot signal run Y.
+- **Commands:** **now** `node --test test/dashboard-events-api.test.js`. **After A3, P0-F1, and proposed test file:** `node --test test/server-interrupt-api.test.js test/dashboard-events-api.test.js`.
+- **Done:** malformed input `400`, unknown line `404`, invalid state `409`, matching run `202`; save/broadcast and queue continuation occur only through A3.
+
+### D1 — Pipeline containment
+
+- **Dependencies/readiness/blockers:** Ready for source work. Browser evidence is required; use the existing `web/index.html` pipeline card. No remote asset approval is implied.
+- **Files:** `web/index.html` pipeline CSS/DOM near pipeline rendering; `test/layout-resize.test.js`; proposed `test/pipeline-overflow.test.js` if the existing layout test cannot express scroll metrics.
+- **Procedure:** (1) Inspect flex/grid ancestors. (2) Add only required `min-width: 0` and card-local overflow. (3) Make the panel body the horizontal scroll container. (4) Use a 2,000-character unbroken value. (5) Capture 1280x800 and 768x800 evidence.
+- **Commands:** **now** `node --test test/layout-resize.test.js`. **After proposed test file:** `node --test test/pipeline-overflow.test.js test/layout-resize.test.js`.
+- **Done:** dashboard/card width changes by at most 1 CSS pixel; no document overflow; panel scrolls; short values remain readable.
+
+### D2 — Pipeline status marker
+
+- **Dependencies/readiness/blockers:** Ready; depends on existing `attentionIndicator`. D1 overflow evidence remains required.
+- **Files:** `web/index.html` pipeline title near line 590 and line-list marker near line 422; `web/pipeline-ui.js:attentionIndicator`; `test/pipeline-ui.test.js`; proposed `test/pipeline-status-dom.test.js` only if existing DOM coverage is insufficient.
+- **Procedure:** (1) Call `attentionIndicator` with line-list state. (2) Put its marker before the pipeline name. (3) Reuse classes and accessibility label. (4) Cover idle, running, and failure states. (5) Recheck D1 long-value behavior.
+- **Commands:** **now** `node --test test/pipeline-ui.test.js test/layout-resize.test.js`. **After proposed test file:** `node --test test/pipeline-status-dom.test.js test/pipeline-ui.test.js test/layout-resize.test.js`.
+- **Done:** marker order, semantics, labels, and failure precedence match the line list; no second status algorithm exists.
+
+### E1 — Markdown blocks and inert code
+
+- **Dependencies/readiness/blockers:** Blocked until the experienced reviewer accepts the parser interface and security boundary in section 5. Remote `marked` remains rejected.
+- **Files:** proposed `web/markdown-renderer.js`; proposed `test/markdown-renderer.test.js`.
+- **Procedure:** (1) Export `parseMarkdown` and `renderMarkdown`. (2) Implement paragraph, heading, list, quote, and fenced-code tokens with nesting limit 8. (3) Keep code opaque; make unfinished fences readable. (4) Render with DOM APIs, never source-derived HTML. (5) Test raw HTML, Unicode, long code, and empty input.
+- **Commands:** **now:** no implementation check. **After proposed test file:** `node --test test/markdown-renderer.test.js`.
+- **Done:** block structure matches the approved interface; `<`, `&`, and Markdown markers in code stay literal; raw HTML is text; no remote parser is used.
+
+### E2 — Inline formatting and safe DOM
+
+- **Dependencies/readiness/blockers:** Blocked by accepted E1 and P0-F1 DOM support. Requires independent security review.
+- **Files:** proposed `web/markdown-renderer.js`; proposed `test/markdown-renderer.test.js`; proposed `test/fixtures/dom.js` only if existing DOM loading is insufficient.
+- **Procedure:** (1) Add inline code, emphasis, strong, links, and breaks without parsing inside code. (2) Allow only `http:`, `https:`, and `mailto:`. (3) Use text nodes and fixed safe attributes; reject controls and entity-obfuscated schemes. (4) Test script, image, iframe, unsafe links, malformed syntax, and repeated rendering.
+- **Commands:** **now:** no implementation check. **After proposed test file:** `node --test test/markdown-renderer.test.js`. **After P0-F1 if DOM fixture is added:** `node --test test/fixtures/dom.test.js test/markdown-renderer.test.js`.
+- **Done:** only approved elements/attributes exist; attack text is inert; code is opaque; security reviewer signs off.
+
+### E3 — Assistant-only Markdown
+
+- **Dependencies/readiness/blockers:** Blocked by accepted E2 and local-asset approval. The current remote `marked` and `mermaid` conflict stays explicit and unresolved until approval/evidence.
+- **Files:** `web/index.html` (`entryEl`, `renderTranscript`, `appendEntry`); `web/markdown-renderer.js`; proposed `test/transcript-markdown.test.js`; `scripts/validate-build.js`; proposed `test/validate-build.test.js` only if the existing convention is absent.
+- **Procedure:** (1) Route only assistant harness entries to the renderer. (2) Keep user/router/error/status entries literal pre-wrapped text. (3) Add scoped spacing, code scrolling, and links without changing follow behavior. (4) Remove remote assets only after approval and use local assets. (5) Test roles, rerendering, and long code.
+- **Commands:** **now** `node scripts/validate-build.js`; **after proposed test file:** `node --test test/transcript-markdown.test.js`; **after local-asset approval:** `node --test test/validate-build.test.js` if added.
+- **Done:** only assistant entries format; malicious user text stays literal; follow behavior and code containment pass; no remote requests remain.
+
+### B1 — Queue UI and submission ownership
+
+- **Dependencies/readiness/blockers:** Blocked by accepted A1, A2, A4, and P0-F1. Stale-response/reconnect revision rules in sections 3 and 6 are mandatory.
+- **Files:** `web/index.html` composer/queue/state sections; `web/pipeline-ui.js` only for pure helpers; proposed `test/queue-ui.test.js`.
+- **Procedure:** (1) Keep input enabled and record submitted text/generation. (2) Clear only a matching unchanged draft after `202`; never retry. (3) Render authoritative rows and disable only the selected Cancel. (4) Capture line/revision identity; ignore old responses and refresh after conflicts/reconnect. (5) Test edits during submission, cancel failure, line switch, and reconnect.
+- **Commands:** **now** `node --test test/pipeline-ui.test.js test/dashboard-live.test.js`. **After P0-F1 and proposed test file:** `node --test test/queue-ui.test.js`.
+- **Done:** two prompts preserve order; one cancellation leaves the other; failures preserve draft/row; late responses cannot corrupt another line.
+
+### B2 — Double Escape interruption UI
+
+- **Dependencies/readiness/blockers:** Blocked by accepted A3/A4 and P0-F1. Overlay, IME, blur, line identity, and stale-run rules are fixed; no retry on `409`.
+- **Files:** proposed pure detector in `web/pipeline-ui.js`; `web/index.html` existing keyboard handler near `pipeline-ui.js` overlay handling; proposed `test/pipeline-ui-interrupt.test.js`.
+- **Procedure:** (1) Add an injected-time detector: two unmodified, non-repeat Escapes within 600 ms. (2) Reset on other keys, modifiers, blur, line/composition changes, overlay consumption, trigger, or ineligibility. (3) Capture line/run identity and call once. (4) Show pending state until authoritative exit/error. (5) Test 599/600/601 ms, held keys, stale `409`, and IME.
+- **Commands:** **now** `node --test test/pipeline-ui.test.js`. **After P0-F1 and proposed test file:** `node --test test/pipeline-ui-interrupt.test.js`.
+- **Done:** one request targets the displayed run; holding Escape does not repeat; stale responses cannot interrupt a newer run; drafting and queue cancellation remain enabled.
+
+### B3 — Fixed composer controls
+
+- **Dependencies/readiness/blockers:** Blocked by P0-F1 and D1 layout evidence. Preserve existing `promptKeyAction`, Enter/Shift+Enter, and IME behavior.
+- **Files:** `web/index.html` composer CSS/resize handling and `promptKeyAction`; proposed `test/composer-layout.test.js`.
+- **Procedure:** (1) Set textarea maximum to `min(12rem, 35vh)` and enable vertical scrolling above it. (2) Keep Send/context controls fixed and aligned. (3) Do not change queue or interrupt logic. (4) Compare short and 30-line drafts at both approved viewports. (5) Recheck keyboard behavior.
+- **Commands:** **now** `node --test test/layout-resize.test.js test/pipeline-ui.test.js`. **After P0-F1 and proposed test file:** `node --test test/composer-layout.test.js test/layout-resize.test.js`.
+- **Done:** only textarea grows; controls differ by at most 1 CSS pixel; maximum and overflow are correct; keyboard and document geometry remain correct.
+
+## 8. Review result
+
+1. This correction changes only `router-prototype/docs/ui-ux-p0-handoff.md`.
+2. No feature code or fixture implementation changed.
+3. No implementation checks were run.
+4. The remaining blockers are P0-F1, parser approval, lifecycle/security review, and the unresolved remote asset conflict.
+5. The change set remains below 500 lines measured from the original base, including this document.
+6. Fresh independent validation is required after this report.
