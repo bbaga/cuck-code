@@ -754,6 +754,31 @@ window.addEventListener("DOMContentLoaded", () => {
       : "Summarize this session and continue in a fresh one.";
   }
 
+  function applyStateWorkers(st, state, { updateListEntry, refreshPreview }) {
+    st.workers = new Map((state.workers || []).map((w) => [w.id, w]));
+    if (st.selected === null) {
+      try {
+        const savedPreview = localStorage.getItem("preview-selection:" + st.id);
+        if (previewSelectionExists(state.workers || [], savedPreview)) st.selected = savedPreview;
+      } catch {}
+    }
+    for (const w of state.workers || []) {
+      if (!st.workerTranscripts.has(w.id)) st.workerTranscripts.set(w.id, []);
+    }
+    if (typeof st.selected === "string" && st.selected.startsWith("preview:")) {
+      if (!previewSelectionExists(state.workers || [], st.selected)) st.selected = null;
+      else {
+        const selectedPreviewId = st.selected.slice("preview:".length);
+        const selectedWorker = (state.workers || []).find((worker) => String(worker.id) === selectedPreviewId);
+        const currentData = selectedWorker && mapPreviewPayload(st.previewPayload, selectedWorker);
+        if (currentData) renderPreviewPanel(st, selectedWorker, currentData);
+      }
+    } else if (st.selected !== null && !st.workers.has(st.selected)) st.selected = null;
+    // Render before the async preview so a slow or failed preview cannot leave the graph empty.
+    renderGraph(st); updateListEntry(st);
+    refreshPreview();
+  }
+
   function syncTranscriptScroll(st) {
     // Hidden lines/tabs have no scroll geometry; retain their follow state.
     if (!st.transcript.clientHeight) return;
@@ -1098,27 +1123,8 @@ window.addEventListener("DOMContentLoaded", () => {
           hasSession: !!state.hasSession, compacted: !!state.compacted } : null;
         if (state.started === true) st.started = true;
         updateControls(st);
-        st.workers = new Map((state.workers || []).map((w) => [w.id, w]));
-        if (st.selected === null) {
-          try {
-            const savedPreview = localStorage.getItem("preview-selection:" + st.id);
-            if (previewSelectionExists(state.workers || [], savedPreview)) st.selected = savedPreview;
-          } catch {}
-        }
-        for (const w of state.workers || []) {
-          if (!st.workerTranscripts.has(w.id)) st.workerTranscripts.set(w.id, []);
-        }
-        if (typeof st.selected === "string" && st.selected.startsWith("preview:")) {
-          if (!previewSelectionExists(state.workers || [], st.selected)) st.selected = null;
-          else {
-            const selectedPreviewId = st.selected.slice("preview:".length);
-            const selectedWorker = (state.workers || []).find((worker) => String(worker.id) === selectedPreviewId);
-            const currentData = selectedWorker && mapPreviewPayload(st.previewPayload, selectedWorker);
-            if (currentData) renderPreviewPanel(st, selectedWorker, currentData);
-          }
-        } else if (st.selected !== null && !st.workers.has(st.selected)) st.selected = null;
+        applyStateWorkers(st, state, { updateListEntry, refreshPreview });
         setStatus(state.status);
-        refreshPreview();
         renderTranscript(st);
         renderScopePanel(st);
       },

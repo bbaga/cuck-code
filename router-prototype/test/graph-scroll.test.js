@@ -72,3 +72,30 @@ test("a preview result that resolves after a tab switch stays hidden until Line"
   st.tab="line"; h.ui.renderGraph(st);
   assert.equal(st.previewPanel.hidden,false);
 });
+
+function stateFn(h, extra = {}) {
+  const src = html.slice(html.indexOf("  function applyStateWorkers("), html.indexOf("  function syncTranscriptScroll(")) + "\napplyStateWorkers";
+  const pipelineUI = require("../web/pipeline-ui.js");
+  const base = html.slice(start, end);
+  return vm.runInNewContext(base + "\n" + src, { document: { createElement: h.make, createElementNS: () => h.make() }, SVGNS: "svg", pipelineUI,
+    nodeWidth: pipelineUI.nodeWidth, columnWidth: pipelineUI.columnWidth, workerNode: (st, w, x, y, width) => { const n = h.make(); n.className = "gnode worker"; n.style = {}; return n; },
+    mapPreviewPayload: () => null, previewSelectionKey: id => `preview:${id}`, previewSelectionExists: () => false, sanitizePreviewCommand: x => x,
+    localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} }, navigator: {}, renderTranscript() {}, console, ...extra });
+}
+const countWorkers = (h) => { let n = 0; (function v(x) { if ((x.className || "").includes("gnode") && (x.className || "").includes("worker")) n++; for (const c of x.children || []) v(c); })(h.graph); return n; };
+const wl = [{ id: "impl", name: "impl", status: "completed" }, { id: "v1", name: "v1", role: "validator", validates: "impl", status: "completed" }, integration()];
+for (const [name, refresh] of [["never resolves", () => new Promise(() => {})], ["rejects", () => Promise.reject(new Error("x"))], ["superseded", () => undefined]]) {
+  test(`state event renders worker nodes when preview ${name}`, () => {
+    const h = harness(), st = state(h, []); st.workerTranscripts = new Map();
+    const apply = stateFn(h);
+    apply(st, { workers: wl }, { updateListEntry() {}, refreshPreview: () => { refresh()?.catch?.(() => {}); } });
+    assert.equal(countWorkers(h) >= 2, true);
+  });
+}
+test("SSE reconnect snapshot keeps all graph nodes", () => {
+  const h = harness(), st = state(h, []); st.workerTranscripts = new Map();
+  const apply = stateFn(h), deps = { updateListEntry() {}, refreshPreview() {} };
+  apply(st, { workers: wl }, deps); const first = countWorkers(h);
+  apply(st, { workers: wl }, deps);
+  assert.equal(countWorkers(h), first); assert.ok(first >= 2);
+});
