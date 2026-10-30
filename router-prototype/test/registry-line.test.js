@@ -190,3 +190,11 @@ test("503 on load shows code and message, not the empty state", async () => {
   assert.ok(find(c, (x) => x.textContent === "Could not load requests"));
   assert.ok(!find(c, (x) => x.textContent === "No claims yet."));
 });
+
+test("claim and request rows carry unique id attributes for scoped locators", async () => {
+  const { c, v } = setup();
+  await v.start();
+  assert.ok(find(c, (x) => x.tag === "li" && x.attrs["data-claim-id"] === claim.id));
+  const q1 = find(c, (x) => x.tag === "li" && x.attrs["data-request-id"] === "q1");
+  assert.ok(q1 && find(q1, (x) => x.tag === "button" && x.textContent === "Accept"));
+});

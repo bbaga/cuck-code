@@ -303,8 +303,13 @@
       st.error = "Registry error: " + err.message;
       st.failed = true;
       st.result = null;
+      st.summary = null;
+      st.events = [];
+      st.evCursor = 0;
+      st.evError = "Unavailable";
     }
     async function load() {
+      const wasFailed = st.failed;
       try {
         const [list, sum] = await Promise.all([
           getJson(listUrl(st.kind, st)), getJson("/api/registry/summary")]);
@@ -315,6 +320,7 @@
         fail(err);
       }
       render();
+      if (wasFailed && !st.failed && X) loadEvents(true);
     }
     function schedule() {
       win.clearTimeout(st.timer);
