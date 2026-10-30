@@ -135,6 +135,7 @@
 
     function claimRow(c) {
       const li = el("li", [c.title, c.status, "rev " + c.revision, c.branch, String(c.commit || "").slice(0, 8)].join(" · "));
+      li.setAttribute("data-claim-id", c.id);
       const out = msg(); const acts = claimActions(c.status);
       const btn = (name, label, fn) => { const b = el("button", label); b.type = "button"; b.addEventListener("click", fn); li.append(" ", b); };
       if (acts.includes("edit")) btn("edit", "Edit", () => { st.editing = c.id; renderClaims(); });
@@ -167,6 +168,7 @@
     function requestRow(r, incoming) {
       const other = incoming ? r.sourceLineId : r.targetLineId;
       const li = el("li", [r.subject, lineName(other), r.state, r.orphaned ? "orphaned" : "", "rev " + r.revision].filter(Boolean).join(" · "));
+      li.setAttribute("data-request-id", r.id);
       if (!incoming) return li;
       const out = msg(); const acts = requestActions(r, lineId);
       const answer = async (state, ref) => { if ((await api("PATCH", base + "/requests/" + enc(r.id), answerBody(state, r.revision, ref), out)).ok) { st.fulfilling = null; load(); } };

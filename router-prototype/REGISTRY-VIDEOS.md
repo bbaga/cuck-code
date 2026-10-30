@@ -29,6 +29,13 @@ EOF
 chmod +x "$WORK/bin/git"
 ```
 
+The isolated router starts a planner agent when a line gets a request notice. Stub the agent CLIs so no
+real agent runs against `$WORK`:
+
+```bash
+for h in vibe pi codex claude; do printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/$h"; chmod +x "$WORK/bin/$h"; done
+```
+
 Start the router in the background and wait for it:
 
 ```bash
@@ -96,15 +103,17 @@ The repo call returns `{"name":"demo","path":...}` with status 201. The claim st
 | --- | --- | --- |
 | `#registryBtn` | Sidebar button that opens or closes the dashboard (`aria-pressed`) | `web/index.html` |
 | `#registry` (`aria-label="Registry"`) | Dashboard section | `web/index.html` |
-| `.lineentry` with `.lname` text | Sidebar entry of a line. Click it to select the line | `web/index.html` |
-| `.card` (visible) button `Work` / `Line` | Tabs of the selected line (class `tabBtn`, no id) | `web/index.html` |
-| `.deleteBtn` | Delete button. First click shows `Sure?`, second click deletes | `web/index.html` |
-| `.workPane` | Work view of the line | `web/index.html`, `web/registry-line.js` |
-| `.workPane` labels `Repo (free text)`, `Title`, `Summary`, `Tags (comma list)`, `Branch`, `Commit (40 hex)`, `Contract`, `Status` | Publish form fields (use `getByLabel`) | `web/registry-line.js` |
+| `.lineentry[data-line-id="<id>"]` | Sidebar entry of one line. Click it to select the line | `web/index.html` |
+| `.card[data-line-id="<id>"]` | The card of one line. Scope every line control to it | `web/index.html` |
+| card button `Work` / `Line` | Tabs of the line (class `tabBtn`, no id) | `web/index.html` |
+| card `.deleteBtn` | Delete button. First click shows `Sure?`, second click deletes | `web/index.html` |
+| card `.workPane` | Work view of the line | `web/index.html`, `web/registry-line.js` |
+| `.workPane li[data-claim-id="<id>"]`, `.workPane li[data-request-id="<id>"]` | One claim or request row. Scope row buttons to it | `web/registry-line.js` |
+| `.workPane` labels (exact) `Repo (free text)`, `Title`, `Summary`, `Tags (comma list)`, `Branch`, `Commit (40 hex)`, `Contract`, `Status` | Publish form fields (use `getByLabel`) | `web/registry-line.js` |
 | `.workPane` buttons `Publish`, `Send request`, `Accept`, `Decline`, `Mark fulfilled`, `Fulfil` | Work view actions (`getByRole('button')`) | `web/registry-line.js` |
-| `.workPane` labels `Target line`, `Claim reference (optional)`, `Subject` | Request form fields |  `web/registry-line.js` |
+| `.workPane label` with text starting `Target line` or `Claim reference (optional)`, then `select`; label `Subject` | Request form fields. The select labels also hold the option text, so exact `getByLabel` fails |  `web/registry-line.js` |
 | `.workPane textarea` | The `Text` field of the request form (only one textarea exists; do not use `getByLabel('Text')`) | `web/registry-line.js` |
-| `.workPane form:has(button:text-is("Fulfil")) select` | The `Claim` select of the fulfil form (its label text includes the option text) | `web/registry-line.js` |
+| request row `form:has(button:text-is("Fulfil")) select` | The `Claim` select of the fulfil form (its label text includes the option text) | `web/registry-line.js` |
 | `.workPane h3:text-is("My claims") + div`, `... "Incoming requests") + div`, `... "Outgoing requests") + div` | The list box of each section (the `ul` is inside it) | `web/registry-line.js` |
 | `.workMsg` (`role=alert`) | Work view error text | `web/registry-line.js` |
 | `#registry .regTabs button` `Claims` / `Archive` (`aria-pressed`) | Dashboard tabs | `web/registry-ui.js` |
@@ -116,7 +125,8 @@ The repo call returns `{"name":"demo","path":...}` with status 201. The claim st
 | `#registry .regSummary` (second) | `By owner line: ... \|\| By repo: ...` | `web/registry-ui.js`, `web/registry-ui-extra.js` |
 | `#registry .regTableWrap` (`table` or `p`) | Claims or archive table; `p` shows `Could not load claims` | `web/registry-ui.js` |
 | `#registry .regTableWrap button` `Details` | Detail row (stale reason, merge fields) | `web/registry-ui.js` |
-| `#registry .regEvents p.regError` | Events panel error text, for example `Unavailable` |
+| `#registry .regEvents p.regError` | Events panel error text, for example `Unavailable` | `web/registry-ui.js` |
+| `#registry .regTableWrap tr` with first `td` text starting `<title>` | One dashboard row. Titles in this guide are unique | `web/registry-ui.js` |
 | `#registry .regEvents li` | Recent events: `<time> <type> <subject>` | `web/registry-ui.js`, `web/registry-ui-extra.js` |
 
 The dashboard shows a deleted owner as `<line name or id> (deleted owner)` in the Owner line column.
@@ -151,18 +161,43 @@ curl -s -X POST "$BASE/api/protocol/workers/$WORKER_ID/evidence" -H "$JSON" \
 
 The answer is 201 with `{evidenceId, attemptId}`. Use one `useCase` title per case.
 
-To select a line in the UI, click `page.locator('.lineentry', { hasText: 'Line A' })`. Then click
-`page.locator('.card:visible').getByRole('button', { name: 'Work', exact: true })`.
-To open the dashboard, click `#registryBtn`.
+Run the six cases in order, on one router, without a reset. Earlier cases leave lines, claims and
+requests behind, so every locator must match exactly one element. Follow these rules:
+
+1. Find a line by its id: `.lineentry[data-line-id="$LINE_A"]` and `.card[data-line-id="$LINE_A"]`.
+   Never find a line by its name, and never use `.card:visible`.
+2. Scope each line control to that card: `card.getByRole('button', { name: 'Work', exact: true })`,
+   then `card.locator('.workPane')` for fields and buttons.
+3. Scope each request button to its row: `workPane.locator('li[data-request-id="<id>"]')`.
+   A page-wide `Accept`, `Mark fulfilled` or `Fulfil` locator is not allowed.
+4. Before each click, fill or select, check that the locator matches exactly one element:
+
+```js
+async function one(loc, what) {
+  await loc.first().waitFor({ state: 'attached', timeout: 10000 }).catch(() => {});
+  const n = await loc.count();
+  if (n !== 1) throw new Error(`${what}: expected 1 match, got ${n}`);
+  return loc;
+}
+const card = (id) => page.locator(`.card[data-line-id="${id}"]`);
+async function openWork(id) {
+  await (await one(page.locator(`.lineentry[data-line-id="${id}"]`), 'entry')).click();
+  await (await one(card(id).getByRole('button', { name: 'Work', exact: true }), 'Work')).click();
+  return card(id).locator('.workPane');
+}
+const section = (w, h) => w.locator(`h3:text-is("${h}") + div`);
+```
+
+Pass the line ids to the script as environment variables. To open the dashboard, click `#registryBtn`.
 
 ## 4. Case 1: publish a claim, see it on the dashboard
 
 Setup: sections 0 and 1. Line A must exist.
 
-1. Click the `Line A` entry. Click the `Work` tab. Expect `My claims` to list `Shared CSV parser`.
-2. Fill `Repo (free text)` with `demo`, `Title` with `Parser v2`, `Branch` with `feature/parser-v2`,
+1. `w = openWork($LINE_A)`. Expect `section(w, 'My claims')` to list `Shared CSV parser`.
+2. In `w`, fill (`getByLabel(..., { exact: true })`) `Repo (free text)` with `demo`, `Title` with `Parser v2`, `Branch` with `feature/parser-v2`,
    and `Commit (40 hex)` with `cccccccccccccccccccccccccccccccccccccccc`. Leave `Status` as `active`.
-3. Click `Publish`.
+3. Click `w.getByRole('button', { name: 'Publish', exact: true })`.
 4. Expect `Parser v2 · active · rev 1 · feature/parser-v2 · cccccccc` in `My claims`. The form fields clear.
 5. Click `#registryBtn`. Expect `#registry .regConn` to read `live`.
 6. Expect a row `Parser v2` with status `active` and owner `Line A` in the table.
@@ -171,10 +206,10 @@ Setup: sections 0 and 1. Line A must exist.
 
 Setup: sections 0 and 1 (`Shared CSV parser` owned by line A).
 
-1. Click the `Line B` entry. Click the `Work` tab. Expect `No claims yet.` under `My claims`.
+1. `w = openWork($LINE_B)`. Expect `No claims yet.` under `My claims`.
 2. Click `#registryBtn`.
 3. Type `parser` into `Search claims`. Wait about 1 second (the box waits 300 ms).
-4. Expect the table to show `Shared CSV parser`, owner `Line A`. Click `Details` for the row.
+4. Expect the table to show `Shared CSV parser`, owner `Line A`. Click `Details` inside that row only.
 5. Expect the Detail list to show `Branch` `feature/parser`. Nothing blocks line B: the result is advice only.
 6. Select `Line B` in `Owner line filter`. Expect `No claims match`.
 
@@ -182,15 +217,19 @@ Setup: sections 0 and 1 (`Shared CSV parser` owned by line A).
 
 Setup: sections 0 and 1. Lines A and B exist, and line A owns `Shared CSV parser`.
 
-1. Click `Line B`, then `Work`. Under `New request`, choose `Line A` in `Target line`.
-   Wait until `Claim reference (optional)` lists `Shared CSV parser`. Choose it.
-2. Fill `Subject` with `Need the parser` and the `textarea` (`Text`) with `Please share the parser branch`. Click `Send request`.
-3. Expect `Need the parser · Line A · open · rev 1` under `Outgoing requests`.
-4. Click `Line A`, then `Work`. Expect `Need the parser · Line B · open` under `Incoming requests`.
-5. Click `Accept`. Expect the row to read `accepted`.
-6. Click `Mark fulfilled`. In the form, choose `Shared CSV parser` in the select of the fulfil form (`.workPane form:has(button:text-is("Fulfil")) select`). Click `Fulfil`.
-7. Expect the row to read `fulfilled`.
-8. Click `Line B`, then `Work`. Expect `Need the parser · Line A · fulfilled` under `Outgoing requests`.
+1. `wb = openWork($LINE_B)`. In `wb`, select the value `$LINE_A` in `label` `^Target line` `select`.
+   Wait until the `^Claim reference (optional)` select lists `Shared CSV parser`. Choose it.
+2. In `wb`, fill `Subject` with `Need the parser` and `textarea` with `Please share the parser branch`.
+   Click `wb.getByRole('button', { name: 'Send request', exact: true })`.
+3. `out = section(wb, 'Outgoing requests').locator('li[data-request-id]', { hasText: 'Need the parser' })`.
+   Expect it to read `Need the parser · Line A · open · rev 1`. Save `RID = out.getAttribute('data-request-id')`.
+4. `wa = openWork($LINE_A)`. `inc = section(wa, 'Incoming requests').locator('li[data-request-id="' + RID + '"]')`.
+   Check `one(inc)`. Expect `Need the parser · Line B · open`.
+5. Check `one(inc.getByRole('button', { name: 'Accept', exact: true }))`, then click it. Expect `inc` to read `accepted`.
+6. Click `Mark fulfilled` in `inc`. Choose `Shared CSV parser` in `inc.locator('form:has(button:text-is("Fulfil")) select')`.
+   Click `Fulfil` in `inc`.
+7. Expect `inc` to read `fulfilled`.
+8. `wb = openWork($LINE_B)`. Expect `li[data-request-id="<RID>"]` under `Outgoing requests` to read `Need the parser · Line A · fulfilled`.
    Line B has no buttons on outgoing rows.
 
 ## 7. Case 4: line deletion
@@ -198,11 +237,11 @@ Setup: sections 0 and 1. Lines A and B exist, and line A owns `Shared CSV parser
 Setup: sections 0 and 1. Line D has `Doomed claim` and an open request `Doomed ask` to line A.
 
 1. Click `#registryBtn`. Select `all` in `Status filter`. Expect `Doomed claim` as `active`, owner `Line D`.
-2. Click `#registryBtn` again. Click the `Line D` entry. Click `.card:visible .deleteBtn` twice.
+2. Click `#registryBtn` again. Click `.lineentry[data-line-id="$LINE_D"]`. Click `.card[data-line-id="$LINE_D"] .deleteBtn` twice.
    The first click shows `Sure?`. Click the second within 4 seconds.
-3. Expect the `Line D` entry to leave the sidebar.
-4. Click `Line A`, then `Work`. Expect `Doomed ask · <line D id> · open · orphaned · rev 2` under
-   `Incoming requests`. Line A cannot accept it. The name shows as the id because the line is gone.
+3. Expect `.lineentry[data-line-id="$LINE_D"]` to leave the sidebar.
+4. `wa = openWork($LINE_A)`. Expect the `li[data-request-id]` with text `Doomed ask` to read `Doomed ask · <line D id> · open · orphaned · rev 2` under
+   `Incoming requests`. The row has no `Accept` button. The name shows as the id because the line is gone.
 5. Click `#registryBtn`. Select `stale` in `Status filter` (or keep `all`).
 6. Expect the row `Doomed claim` with status `stale: owner-gone` and owner `<line D id> (deleted owner)`.
 7. Expect `.regEvents` to list `claim.stale` and `request.orphaned`.

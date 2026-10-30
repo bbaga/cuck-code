@@ -631,6 +631,7 @@ window.addEventListener("DOMContentLoaded", () => {
   function addCard(line) {
     const card = document.createElement("div");
     card.className = "card";
+    card.dataset.lineId = line.id;
     const head = document.createElement("div");
     head.className = "head";
     const name = document.createElement("span");
@@ -1007,6 +1008,7 @@ window.addEventListener("DOMContentLoaded", () => {
     entryCount.className = "lcount";
     const entry = document.createElement("div");
     entry.className = "lineentry";
+    entry.dataset.lineId = line.id;
     entry.append(entryDot, entryName, entryCount);
     entry.addEventListener("click", () => selectLine(st.id));
     listEl.appendChild(entry);
