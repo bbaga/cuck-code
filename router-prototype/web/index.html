@@ -849,7 +849,7 @@ window.addEventListener("DOMContentLoaded", () => {
       await fetch("/api/lines/" + line.id, { method: "DELETE" });
       removeCard(line.id);
     });
-    head.append(name, dot, tabLineBtn, tabProcBtn, tabEvBtn, hideFailedToggle, delBtn);
+    head.append(dot, name, tabLineBtn, tabProcBtn, tabEvBtn, hideFailedToggle, delBtn);
     const tabPipeBtn = document.createElement("button");
     tabPipeBtn.className = "tabBtn";
     tabPipeBtn.textContent = "Pipeline";
@@ -1017,8 +1017,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
     const setStatus = (status) => {
       st.plannerStatus = status;
-      dot.className = "dot " + (status === "running" ? "running"
-        : status === "standby" ? "standby" : "idle");
+      updateStatusMarker(st);
       input.disabled = send.disabled = status === "running";
       if (st.started) {
         input.placeholder = (st.planContent && !st.approved)
@@ -1103,6 +1102,9 @@ window.addEventListener("DOMContentLoaded", () => {
             if (currentData) renderPreviewPanel(st, selectedWorker, currentData);
           }
         } else if (st.selected !== null && !st.workers.has(st.selected)) st.selected = null;
+        st.plannerAttention = state.attention === true || state.needsAttention === true;
+        st.plannerHumanIntervention = state.humanIntervention === true;
+        st.plannerError = state.error === true || !!state.lastError;
         setStatus(state.status);
         refreshPreview();
         renderTranscript(st);
@@ -1239,12 +1241,27 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  function statusMarkerState(st) {
+    return { status: st.plannerStatus, attention: st.plannerAttention,
+      humanIntervention: st.plannerHumanIntervention, error: st.plannerError };
+  }
+
+  function updateStatusMarker(st) {
+    const indicator = pipelineUI.attentionIndicator(statusMarkerState(st));
+    const status = indicator || (st.plannerStatus === "running" ? "running"
+      : st.plannerStatus === "standby" ? "standby" : "idle");
+    const label = indicator === "error" ? "Error" : indicator === "attention"
+      ? "Needs attention" : st.plannerStatus;
+    for (const marker of [st.dot, st.entryDot]) {
+      if (!marker) continue;
+      marker.className = "dot " + status;
+      marker.setAttribute("aria-label", label);
+    }
+  }
+
   function updateListEntry(st) {
     if (!st.entry) return;
-    const anyRunning = st.plannerStatus === "running"
-      || [...st.workers.values()].some((w) => w.status === "running");
-    st.entryDot.className = "dot " + (anyRunning ? "running"
-      : st.plannerStatus === "standby" ? "standby" : "idle");
+    updateStatusMarker(st);
     st.entryCount.textContent = st.workers.size ? st.workers.size + "w" : "";
   }
 
