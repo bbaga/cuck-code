@@ -5,6 +5,7 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
+let spawnProcess = spawn;
 const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
   resolvePipeline, probeResultFor, piProviderDetail,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
@@ -1235,7 +1236,7 @@ function pump(line) {
   const plan = planPlannerRun(cfg, { prompt, workdir: line.workdir,
     sessionId: line.sessionId, autoApprove: AUTO_APPROVE });
   const adapter = plan.adapter;
-  const child = spawn(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
+  const child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, ...plan.env },
     ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
   const runId = crypto.randomUUID();
@@ -2844,6 +2845,7 @@ function loadLines() {
   }
 }
 
+if (require.main === module) {
 loadLines();
 // Boot sweep: remove ONLY orphans - containers labeled for lines that no
 // longer exist (deleted while the router was down). Containers of
@@ -2883,3 +2885,7 @@ if (HTTPS_PORT) {
     slog("info", "server.https_listen", { port: HTTPS_PORT, protocol: "h2" });
   });
 }
+}
+
+module.exports = { stopPlannerRun, pump, dashboardStateForLine, createServer: () => server,
+  setSpawnForTest: (fn) => { spawnProcess = fn; } };
