@@ -26,7 +26,7 @@ const { recordRequestEntry, userEntry, isPromptEcho } = require("./transcript-ec
 const { recordedPlannerRequest, sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests, serializePlannerRequest, restoreKnownNoticeIds,
-  writeFileDurable, enqueuePlannerRequest, submitPrompt } = require("./planner-request");
+  queuedUserPromptProjection, writeFileDurable, enqueuePlannerRequest, submitPrompt } = require("./planner-request");
 const { scopeFields } = require("./scope-fields");
 const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require("./evidence");
@@ -989,6 +989,8 @@ function dashboardStateForLine(line) {
     sessionId: line.sessionId, started: line.started,
     pipeline: resolvePipeline(line), pipelineOverrides: line.pipeline || null,
     transcript: line.transcript.slice(-50),
+    queuedUserPrompts: queuedUserPromptProjection(line.queue),
+    activePlannerRunId: line.runId || null,
     planApproved: line.planApproved,
     ...compactionFields(line),
     workers: [...line.workers.values()].map((w) => ({
@@ -1900,7 +1902,8 @@ const requestHandler = (req, res) => {
           text = `PLAN FEEDBACK from the user: ${body.text}. Revise plan.md accordingly. Do not spawn workers yet.`;
         } catch {}
       }
-      const out = submitPrompt(line, plannerRequest(text, null, null, body.text), {
+      const request = plannerRequest(text, null, null, body.text);
+      const out = submitPrompt(line, request, {
         wasStarted, save: saveLine, pump,
         onQueued: () => slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
           prompt: preview(body.text, 2000) }) });
@@ -1910,6 +1913,7 @@ const requestHandler = (req, res) => {
         appendTranscript(line.transcript, entry);
         broadcast(line, "entry", entry);
       }
+      if (out.status === 202) out.body.requestId = request.id;
       json(res, out.status, out.body);
     });
     return;
@@ -2729,6 +2733,8 @@ function loadLines() {
         inventory.set(i.id, { id: i.id, kind: i.kind, name: i.name, by: i.by,
           ref: i.ref, keep: !!i.keep, status: "stopped" });
       }
+      const hadLegacyRequestIds = (meta.plannerQueue || []).some((request) => !request || typeof request.id !== "string" || !request.id)
+        || (meta.activePlannerRequest && !meta.activePlannerRequest.id);
       const line = { id: meta.id, name: meta.name, sessionId: meta.sessionId,
         context: restoreContextStats(meta.context),
         handoff: typeof meta.handoff === "string" ? meta.handoff : null,
@@ -2765,6 +2771,7 @@ function loadLines() {
           workers: (meta.workers || []).filter((w) => w.status === "running").map((w) => w.name) });
         saveLine(line);
       }
+      if (hadLegacyRequestIds) saveLine(line);
       if (line.queue.length) pump(line);
     } catch {}
   }

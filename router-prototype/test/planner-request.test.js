@@ -10,6 +10,7 @@ const {
   retryPlannerRequest,
   serializePlannerRequests,
   restorePlannerRequests,
+  queuedUserPromptProjection,
 } = require("../planner-request");
 const { flushPendingValidationQueue } = require("../validation-queue");
 
@@ -17,6 +18,26 @@ function completedWorker(id, runId, invocationId, report) {
   return { id, name: id, status: "completed", runGeneration: runId,
     lastCompletedInvocationId: invocationId, lastRunText: report };
 }
+
+test("request IDs survive two restore and save cycles", () => {
+  const original = plannerRequest("wrapped", null, null, "same text");
+  const first = restorePlannerRequests(serializePlannerRequests([original]));
+  const second = restorePlannerRequests(serializePlannerRequests(first));
+  assert.equal(second[0].id, original.id);
+});
+
+test("duplicate user text gets distinct IDs and safe projection hides internal requests", () => {
+  const first = plannerRequest("one", null, null, "same text");
+  const second = plannerRequest("two", null, null, "same text");
+  const internal = plannerRequest("internal");
+  const rows = queuedUserPromptProjection([first, internal, second]);
+  assert.notEqual(first.id, second.id);
+  assert.deepEqual(rows, [
+    { id: first.id, text: "same text", position: 1 },
+    { id: second.id, text: "same text", position: 2 },
+  ]);
+  assert.deepEqual(Object.keys(rows[0]).sort(), ["id", "position", "text"]);
+});
 
 function reportRequest(worker, invocationId, runId, report) {
   return implementorReportRequest(`IMPLEMENTOR REPORT for ${worker.id}: ${report}`,
