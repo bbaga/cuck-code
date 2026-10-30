@@ -11,8 +11,8 @@ const { createFakeChild } = require('./fixtures/planner-child');
 const state = fs.mkdtempSync(path.join(os.tmpdir(), 'router-interrupt-api-'));
 process.env.LINES_DIR = state;
 const server = require('../server');
-const { pump, lines, dashboardStateForLine, setSpawnForTest, setTimerForTest } = server;
-let app; let port; let spawned;
+const { pump, lines, dashboardStateForLine, setSpawnForTest, setTimerForTest, setLifecycleHooksForTest } = server;
+let app; let port; let spawned; let clock; let errors;
 
 function makeLine(id = 'line-api') {
   const item = { id, name: id, status: 'idle', child: null, activePlannerRun: null, runId: null,
@@ -38,12 +38,14 @@ const interrupt = (runId, id = 'line-api') => post(`/api/lines/${id}/interrupt`,
 
 beforeEach(async () => {
   lines.clear(); spawned = [];
-  setTimerForTest(createFakeClock());
+  clock = createFakeClock(); errors = [];
+  setTimerForTest(clock);
+  setLifecycleHooksForTest({ broadcast: (item, event, data) => { if (event === 'error') errors.push(data.message); } });
   setSpawnForTest(() => { const child = createFakeChild(); spawned.push(child); return child; });
   if (!app) await new Promise((resolve) => { app = server.createServer().listen(0, () => { port = app.address().port; resolve(); }); });
 });
 after(async () => {
-  setTimerForTest(null);
+  setTimerForTest(null); setLifecycleHooksForTest(null);
   if (app) await new Promise((resolve) => app.close(resolve));
   fs.rmSync(state, { recursive: true, force: true });
 });
@@ -52,7 +54,7 @@ test('invalid bodies return 400', async () => {
   const item = makeLine(); enqueue(item, 'a'); pump(item);
   const url = '/api/lines/line-api/interrupt';
   for (const raw of [undefined, '', '[]', 'null', '"x"', '7', '{bad', '{}', '{"runId":5}', '{"runId":null}',
-    '{"runId":""}', `{"runId":"${item.runId}","extra":1}`, '{"other":"x"}']) {
+    '{"runId":""}', '{"runId":"   "}', '{"runId":"\\t\\n"}', '{"runId":["a"]}', '{"runId":{"a":1}}', `{"runId":"${item.runId}","extra":1}`, '{"other":"x"}']) {
     const res = await post(url, raw);
     assert.equal(res.status, 400, String(raw));
     assert.equal(typeof res.body.error, 'string');
@@ -116,4 +118,21 @@ test('line stays running after 202 until close, then the queue starts exactly on
   assert.equal(spawned.length, 2);
   assert.equal(item.status, 'running'); assert.equal(item.queue.length, 0);
   assert.deepEqual(spawned[1].signals, []);
+});
+
+test('endpoint stop escalates to SIGKILL, reports nonexit, and close starts the queue once', async () => {
+  const item = makeLine(); enqueue(item, 'a'); enqueue(item, 'b'); pump(item);
+  const first = spawned[0];
+  assert.equal((await interrupt(item.runId)).status, 202);
+  assert.deepEqual(first.signals, ['SIGTERM']);
+  clock.advance(2000);
+  assert.deepEqual(first.signals, ['SIGTERM', 'SIGKILL']);
+  assert.equal(errors.length, 0);
+  clock.advance(2000);
+  assert.equal(errors.length, 1); assert.match(errors[0], /did not terminate.*retry/);
+  first.emitClose(null, 'SIGKILL');
+  clock.advance(10000);
+  assert.deepEqual(first.signals, ['SIGTERM', 'SIGKILL']);
+  assert.equal(errors.length, 1);
+  assert.equal(spawned.length, 2); assert.deepEqual(spawned[1].signals, []);
 });

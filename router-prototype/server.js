@@ -2564,7 +2564,7 @@ const requestHandler = (req, res) => {
     && parts.length === 4) {
     readBody(req, (err, body) => {
       const keys = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body) : [];
-      if (err || keys.length !== 1 || keys[0] !== "runId" || typeof body.runId !== "string" || !body.runId) {
+      if (err || keys.length !== 1 || keys[0] !== "runId" || typeof body.runId !== "string" || !body.runId.trim()) {
         return json(res, 400, { error: "expected {runId} with a non-empty string runId" });
       }
       // Validation and stop run in one synchronous section: no await between them.
