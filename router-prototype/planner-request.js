@@ -115,6 +115,19 @@ function restorePlannerRequests(requests) {
     : [];
 }
 
+function cancelQueuedUserPrompt(line, requestId) {
+  if (!line || typeof requestId !== "string" || !requestId) return { status: "unknown" };
+  if (line.activePlannerRequest && line.activePlannerRequest.id === requestId) {
+    return { status: "active" };
+  }
+  const queue = Array.isArray(line.queue) ? line.queue : [];
+  const index = queue.findIndex((request) => request && request.id === requestId);
+  if (index < 0) return { status: "unknown" };
+  if (queue[index].fromUser !== true) return { status: "internal" };
+  const [request] = queue.splice(index, 1);
+  return { status: "cancellable", request, index };
+}
+
 function queuedUserPromptProjection(requests) {
   let position = 0;
   return (Array.isArray(requests) ? requests : []).reduce((rows, request) => {
@@ -212,4 +225,5 @@ module.exports = {
   serializePlannerRequests,
   restorePlannerRequests,
   queuedUserPromptProjection,
+  cancelQueuedUserPrompt,
 };

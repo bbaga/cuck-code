@@ -11,6 +11,7 @@ const {
   serializePlannerRequests,
   restorePlannerRequests,
   queuedUserPromptProjection,
+  cancelQueuedUserPrompt,
 } = require("../planner-request");
 const { flushPendingValidationQueue } = require("../validation-queue");
 
@@ -38,6 +39,21 @@ test("legacy active and queued identical prompts get separate durable IDs", () =
     { text: "same", fromUser: true, userText: "same" }]);
   assert.equal(restored.length, 2);
   assert.notEqual(restored[0].id, restored[1].id);
+});
+
+test("cancellation removes only the matching waiting user request", () => {
+  const first = plannerRequest("wrapped one", null, null, "same");
+  const internal = plannerRequest("internal");
+  const middle = plannerRequest("wrapped two", null, null, "same");
+  const last = plannerRequest("wrapped three", null, null, "last");
+  const line = { queue: [first, internal, middle, last], activePlannerRequest: null };
+  const result = cancelQueuedUserPrompt(line, middle.id);
+  assert.equal(result.status, "cancellable");
+  assert.deepEqual(line.queue.map((request) => request.id), [first.id, internal.id, last.id]);
+  assert.equal(cancelQueuedUserPrompt(line, middle.id).status, "unknown");
+  assert.equal(cancelQueuedUserPrompt(line, internal.id).status, "internal");
+  line.activePlannerRequest = first;
+  assert.equal(cancelQueuedUserPrompt(line, first.id).status, "active");
 });
 
 test("duplicate user text gets distinct IDs and safe projection hides internal requests", () => {

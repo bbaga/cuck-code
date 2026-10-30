@@ -26,7 +26,8 @@ const { recordRequestEntry, userEntry, isPromptEcho } = require("./transcript-ec
 const { recordedPlannerRequest, sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests, serializePlannerRequest, restoreKnownNoticeIds,
-  queuedUserPromptProjection, writeFileDurable, enqueuePlannerRequest, submitPrompt } = require("./planner-request");
+  queuedUserPromptProjection, writeFileDurable, enqueuePlannerRequest, submitPrompt,
+  cancelQueuedUserPrompt } = require("./planner-request");
 const { scopeFields } = require("./scope-fields");
 const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require("./evidence");
@@ -1879,6 +1880,22 @@ const requestHandler = (req, res) => {
       json(res, 201, { id, name });
     });
     return;
+  }
+
+  if (req.method === "DELETE" && parts[0] === "api" && parts[1] === "lines"
+    && parts[3] === "prompts" && parts.length === 5) {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    const result = cancelQueuedUserPrompt(line, parts[4]);
+    if (result.status === "unknown") return json(res, 404, { error: "unknown prompt request" });
+    if (result.status !== "cancellable") return json(res, 409, { error: `prompt request is ${result.status}` });
+    if (!saveLine(line)) {
+      line.queue.splice(result.index, 0, result.request);
+      return json(res, 500, { error: "could not save prompt cancellation" });
+    }
+    const state = dashboardStateForLine(line);
+    broadcast(line, "state", state);
+    return json(res, 200, { queuedUserPrompts: state.queuedUserPrompts });
   }
 
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "prompts") {
