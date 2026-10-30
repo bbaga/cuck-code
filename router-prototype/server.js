@@ -1905,8 +1905,13 @@ const requestHandler = (req, res) => {
       const request = plannerRequest(text, null, null, body.text);
       const out = submitPrompt(line, request, {
         wasStarted, save: saveLine, pump,
-        onQueued: () => slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
-          prompt: preview(body.text, 2000) }) });
+        onQueued: () => {
+          slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
+            prompt: preview(body.text, 2000) });
+          // Publish the persisted queue projection before pumping. Consumers
+          // therefore see the same authoritative state as the 202 response.
+          broadcast(line, "state", dashboardStateForLine(line));
+        } });
       if (out.status !== 202) console.error(`prompt rejected for line ${line.id}: ${out.body.error}`);
       else {
         const entry = userEntry(body.text);
@@ -2753,10 +2758,11 @@ function loadLines() {
         pendingValidations: restorePendingValidations(meta.pendingValidations),
         clients: new Set(), transcript: [] };
       const activeRequest = restorePlannerRequest(meta.activePlannerRequest);
-      if (activeRequest && !line.queue.some((request) => request.text === activeRequest.text
-        && ((!request.source && !activeRequest.source)
-          || (request.source && activeRequest.source
-            && request.source.invocationId === activeRequest.source.invocationId)))) {
+      // An active request can also be present in the persisted queue when a
+      // save happened between dequeue and dispatch. Deduplicate only by its
+      // durable identity. Text is not an identity: two user submissions may
+      // be identical, and legacy records receive distinct IDs on restore.
+      if (activeRequest && !line.queue.some((request) => request.id === activeRequest.id)) {
         line.queue.unshift(activeRequest);
       }
       lines.set(meta.id, line);

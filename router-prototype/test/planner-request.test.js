@@ -19,11 +19,25 @@ function completedWorker(id, runId, invocationId, report) {
     lastCompletedInvocationId: invocationId, lastRunText: report };
 }
 
-test("request IDs survive two restore and save cycles", () => {
-  const original = plannerRequest("wrapped", null, null, "same text");
-  const first = restorePlannerRequests(serializePlannerRequests([original]));
-  const second = restorePlannerRequests(serializePlannerRequests(first));
-  assert.equal(second[0].id, original.id);
+test("active and queued identical user prompts survive repeated restore with IDs", () => {
+  const active = plannerRequest("wrapped A", null, null, "same text");
+  const queued = plannerRequest("wrapped B", null, null, "same text");
+  let state = { activePlannerRequest: active, plannerQueue: [queued] };
+  for (let cycle = 0; cycle < 2; cycle++) {
+    const restoredActive = restorePlannerRequests([state.activePlannerRequest])[0];
+    const restoredQueue = restorePlannerRequests(state.plannerQueue);
+    assert.deepEqual(restoredQueue.map((request) => request.id), [queued.id]);
+    assert.equal(restoredActive.id, active.id);
+    assert.notEqual(restoredActive.id, restoredQueue[0].id);
+    state = { activePlannerRequest: restoredActive, plannerQueue: restoredQueue };
+  }
+});
+
+test("legacy active and queued identical prompts get separate durable IDs", () => {
+  const restored = restorePlannerRequests([{ text: "same", fromUser: true, userText: "same" },
+    { text: "same", fromUser: true, userText: "same" }]);
+  assert.equal(restored.length, 2);
+  assert.notEqual(restored[0].id, restored[1].id);
 });
 
 test("duplicate user text gets distinct IDs and safe projection hides internal requests", () => {
