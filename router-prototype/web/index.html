@@ -383,12 +383,12 @@ window.addEventListener("DOMContentLoaded", () => {
     st.badge.hidden = !st.approved;
     if (st.approved && st.planBody.parentNode !== st.planDetails) {
       st.planDetails.appendChild(st.planBody);
-      st.planDetails.hidden = false;
+      st.planDetails.hidden = st.tab !== "line";
       st.plan.hidden = true;
     } else if (!st.approved && st.planBody.parentNode === st.planDetails) {
       st.plan.insertBefore(st.planBody, st.planControls);
       st.planDetails.hidden = true;
-      st.plan.hidden = false;
+      st.plan.hidden = st.tab !== "line";
     }
     if (st.started && st.planContent && !st.approved) {
       st.input.placeholder = "Plan proposed - type feedback here";
@@ -719,7 +719,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!st || !st.scopeDetails || !st.scopeText) return;
     const worker = st.selected !== null && typeof st.selected === "string" && !st.selected.startsWith("preview:")
       ? st.workers && st.workers.get(st.selected) : null;
-    const show = !!worker && (worker.role || "implementor") !== "planner";
+    const show = !!worker && (worker.role || "implementor") !== "planner" && (st.tab || "line") === "line";
     st.scopeDetails.hidden = !show;
     if (show) st.scopeText.textContent = formatScopePanelData(worker) || "No scope data available.";
   }
@@ -1290,9 +1290,16 @@ window.addEventListener("DOMContentLoaded", () => {
     st.tabProcBtn.classList.toggle("active", tab === "processes");
     st.tabEvBtn.classList.toggle("active", tab === "evidence");
     st.tabPipeBtn.classList.toggle("active", tab === "pipeline");
-    for (const el of [st.plan, st.planDetails, st.graphDetails, st.previewPanel, st.transcriptWrap, st.chatHandle, st.row]) {
+    for (const el of [st.graphDetails, st.transcriptWrap, st.chatHandle, st.row]) {
       el.hidden = tab !== "line";
     }
+    // Conditional panels: restore only what the line state shows. renderGraph
+    // re-opens the preview panel when a preview node is selected.
+    const planInDetails = st.planBody.parentNode === st.planDetails;
+    st.plan.hidden = tab !== "line" || planInDetails;
+    st.planDetails.hidden = tab !== "line" || !planInDetails;
+    st.previewPanel.hidden = true;
+    renderScopePanel(st);
     st.procPane.hidden = tab !== "processes";
     st.evPane.hidden = tab !== "evidence";
     st.pipePane.hidden = tab !== "pipeline";
