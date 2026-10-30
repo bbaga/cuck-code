@@ -2560,6 +2560,35 @@ const requestHandler = (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "interrupt"
+    && parts.length === 4) {
+    readBody(req, (err, body) => {
+      const keys = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body) : [];
+      if (err || keys.length !== 1 || keys[0] !== "runId" || typeof body.runId !== "string" || !body.runId) {
+        return json(res, 400, { error: "expected {runId} with a non-empty string runId" });
+      }
+      // Validation and stop run in one synchronous section: no await between them.
+      const line = lines.get(parts[2]);
+      if (!line) return json(res, 404, { error: "no such line" });
+      if (line.compacting) return json(res, 409, { error: "the planner is compacting - retry when it is idle" });
+      if (line.status !== "running") return json(res, 409, { error: "the planner is idle - nothing to interrupt" });
+      if (line.activePlannerRun && line.activePlannerRun.intentionalStop) {
+        return json(res, 409, { error: "the planner run is already stopping" });
+      }
+      if (!line.activePlannerRun || line.activePlannerRun.runId !== body.runId) {
+        return json(res, 409, { error: "runId is not the active planner run - refresh the line state and retry" });
+      }
+      const stop = stopPlannerRun(line, body.runId);
+      if (!stop.ok) {
+        return json(res, 409, { error: stop.reason === "already-stopping"
+          ? "the planner run is already stopping"
+          : "the planner run is no longer active - refresh the line state and retry" });
+      }
+      return json(res, 202, { runId: stop.runId });
+    });
+    return;
+  }
+
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "compact"
     && parts.length === 4) {
     const line = lines.get(parts[2]);
