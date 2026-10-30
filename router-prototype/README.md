@@ -25,6 +25,17 @@ router pins each vibe session to its role's model via
 `VIBE_ACTIVE_MODEL` in the spawn environment; planner runs inherit the ambient
 config. Requires Node >= 18 and the `vibe` CLI on PATH.
 
+## Markdown browser fixture
+
+Start the local fixture for browser checks:
+
+```
+node test/fixtures/markdown-browser.js
+```
+
+Set `PORT` for a specific port. The command prints the fixture URL. Stop it
+with Ctrl-C. Tests can call `startMarkdownFixture({ port })` and await `close()`.
+
 ## Tests and static validation
 
 Run these commands from the repository root:
