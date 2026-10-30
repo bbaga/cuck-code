@@ -6,6 +6,8 @@ const os = require("node:os");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
 let spawnProcess = spawn;
+let lifecycleTestHooks = null;
+let timerApi = { setTimeout, clearTimeout };
 const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
   resolvePipeline, probeResultFor, piProviderDetail,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
@@ -1007,6 +1009,7 @@ function dashboardStateForLine(line) {
 }
 
 function broadcast(line, event, data) {
+  if (lifecycleTestHooks && lifecycleTestHooks.broadcast) lifecycleTestHooks.broadcast(line, event, data);
   dashboardLive.publish(event === "error" ? "line_error" : event, line.id, data);
   for (const res of line.clients) {
     try { sseSend(res, event, data); } catch {}
@@ -1014,6 +1017,7 @@ function broadcast(line, event, data) {
 }
 
 function saveLine(line) {
+  if (lifecycleTestHooks && lifecycleTestHooks.save) lifecycleTestHooks.save(line);
   if (line.deleted) return false;
   try {
     writeFileDurable(path.join(line.workdir, "line.json"),
@@ -1168,8 +1172,8 @@ function stopPlannerRun(line, runId, timers = {}) {
   }
   if (run.intentionalStop) return { ok: false, reason: "already-stopping" };
   run.intentionalStop = true;
-  const setTimer = timers.setTimeout || setTimeout;
-  const clearTimer = timers.clearTimeout || clearTimeout;
+  const setTimer = timers.setTimeout || timerApi.setTimeout;
+  const clearTimer = timers.clearTimeout || timerApi.clearTimeout;
   const signal = (name) => {
     let sent = false;
     try { sent = line.child === run.child && run.child.kill(name) === true; } catch (error) {
@@ -1249,7 +1253,7 @@ function pump(line) {
   // Harnesses without a native time limit need the server to enforce it.
   let killTimer = null;
   if (!adapter.supportsNativeTimeLimit) {
-    killTimer = setTimeout(() => { try { child.kill("SIGTERM"); } catch {} },
+    killTimer = timerApi.setTimeout(() => { try { child.kill("SIGTERM"); } catch {} },
       cfg.timeLimit * 1000);
   }
 
@@ -1288,7 +1292,7 @@ function pump(line) {
 
   child.on("close", (code, signal) => {
     if (line.activePlannerRun !== run || line.child !== child) return;
-    if (killTimer) clearTimeout(killTimer);
+    if (killTimer) timerApi.clearTimeout(killTimer);
     if (run.clearTimers) run.clearTimers();
     line.child = null;
     line.activePlannerRun = null;
@@ -2009,7 +2013,10 @@ const requestHandler = (req, res) => {
     line.deleted = true;
     line.queue.length = 0;
     const runningWorkers = [...line.workers.values()].filter((w) => w.child).length;
-    if (line.child) line.child.kill("SIGTERM");
+    if (line.child) {
+      if (line.activePlannerRun && line.activePlannerRun.clearTimers) line.activePlannerRun.clearTimers();
+      if (!(line.activePlannerRun && line.activePlannerRun.intentionalStop)) line.child.kill("SIGTERM");
+    }
     slog("info", "line.delete", { lineId: line.id, runningWorkers,
       plannerKilled: !!line.child });
     for (const w of line.workers.values()) {
@@ -2887,5 +2894,8 @@ if (HTTPS_PORT) {
 }
 }
 
-module.exports = { stopPlannerRun, pump, dashboardStateForLine, createServer: () => server,
-  setSpawnForTest: (fn) => { spawnProcess = fn; } };
+module.exports = { stopPlannerRun, pump, dashboardStateForLine, requestHandler, lines,
+  createServer: () => server,
+  setSpawnForTest: (fn) => { spawnProcess = fn; },
+  setLifecycleHooksForTest: (hooks) => { lifecycleTestHooks = hooks; },
+  setTimerForTest: (clock) => { timerApi = clock || { setTimeout, clearTimeout }; } };

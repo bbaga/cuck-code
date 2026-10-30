@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const http = require('node:http');
 const { createFakeClock } = require('./fixtures/fake-clock');
 const { createFakeChild } = require('./fixtures/planner-child');
 
@@ -21,6 +22,28 @@ function line(child, status = 'running') {
     workdir: state, pipeline: null, lastRun: null, activePlannerRequest: null };
 }
 after(() => fs.rmSync(state, { recursive: true, force: true }));
+function launch(child, queue = []) {
+  setSpawnForTest(() => child);
+  const item = line(null, 'idle'); item.child = null; item.activePlannerRun = null; item.runId = null;
+  item.queue = [{ id: 'active', text: 'active', recorded: true }, ...queue]; pump(item);
+  return item;
+}
+function hooks() {
+  const events = []; return { events,
+    save: (item) => events.push(['save', item.id]),
+    broadcast: (item, event) => events.push(['broadcast', event]) };
+}
+function requestDelete(id) {
+  return new Promise((resolve, reject) => {
+    const app = server.createServer().listen(0, () => {
+      const port = app.address().port;
+      const req = http.request({ port, method: 'DELETE', path: `/api/lines/${id}` }, (res) => {
+        res.resume(); res.on('end', () => app.close(() => resolve(res.statusCode)));
+      });
+      req.on('error', reject); req.end();
+    });
+  });
+}
 
 test('production stop sets intent before SIGTERM and escalates on the fake clock', () => {
   const clock = createFakeClock();
@@ -71,6 +94,71 @@ test('production pump creates a fresh run and close clears state and pumps once'
   assert.equal(item.activePlannerRun, replacement);
   assert.equal(item.runId, replacement.runId);
   assert.deepEqual(replacement.child.signals, []);
+});
+
+test('production stop rejects idle, compacting, wrong-run, and duplicate requests without mutation', () => {
+  for (const setup of [
+    () => line(null, 'idle'),
+    () => { const x = line(createFakeChild()); x.compacting = true; return x; },
+    () => line(createFakeChild()),
+  ]) {
+    const clock = createFakeClock(); const item = setup();
+    const before = item.activePlannerRun && item.activePlannerRun.intentionalStop;
+    const result = stopPlannerRun(item, 'wrong-run', clock);
+    assert.equal(result.ok, false); assert.equal(item.activePlannerRun && item.activePlannerRun.intentionalStop, before);
+    assert.deepEqual(item.child ? item.child.signals : null, item.child ? [] : null);
+  }
+  const clock = createFakeClock(); const child = createFakeChild(); const item = line(child);
+  assert.equal(stopPlannerRun(item, 'run-new', clock).ok, true);
+  const signals = child.signals.slice(); assert.equal(stopPlannerRun(item, 'run-new', clock).ok, false);
+  assert.deepEqual(child.signals, signals);
+});
+
+test('production stop reports bounded nonexit at 4000ms and waits for close', () => {
+  const clock = createFakeClock(); const child = createFakeChild(); const item = launch(child); const h = hooks();
+  server.setLifecycleHooksForTest(h);
+  stopPlannerRun(item, item.runId, clock); child.emitError(new Error('during stop'));
+  clock.advance(2000); assert.deepEqual(child.signals, ['SIGTERM', 'SIGKILL']);
+  clock.advance(1999); assert.equal(h.events.filter((e) => e[0] === 'broadcast' && e[1] === 'error').length, 0);
+  clock.advance(1); assert.equal(h.events.filter((e) => e[0] === 'broadcast' && e[1] === 'error').length, 1);
+  assert.equal(item.activePlannerRun.child, child); assert.equal(item.status, 'running');
+  child.emitClose(0, null); assert.equal(item.status, 'idle');
+  server.setLifecycleHooksForTest(null);
+});
+
+test('production close cancels escalation, preserves queue order, and ignores duplicate error/close', () => {
+  const clock = createFakeClock(); server.setTimerForTest(clock); const child = createFakeChild(); const item = launch(child, [{ id: 'user', text: 'user request' }, { id: 'internal', text: 'internal wake' }]); const h = hooks();
+  server.setLifecycleHooksForTest(h);
+  stopPlannerRun(item, item.runId, clock); const replacement = createFakeChild(); setSpawnForTest(() => replacement);
+  child.stdout.write(JSON.stringify({ type: 'message', role: 'assistant', content: 'visible output' }) + '\\n');
+  child.emitClose(0, null); child.emitClose(1, null); child.emitError(new Error('late'));
+  assert.deepEqual(child.signals, ['SIGTERM']);
+  clock.advance(4000);
+  assert.equal(item.status, 'running'); assert.equal(item.child, replacement); assert.notEqual(item.runId, null);
+  assert.deepEqual(item.queue.map((x) => x.id), ['internal']);
+  assert.deepEqual(child.signals, ['SIGTERM']);
+  assert.ok(h.events.some((e) => e[0] === 'save'));
+  assert.equal(h.events.filter((e) => e[0] === 'broadcast' && e[1] === 'state').length, 2);
+  server.setLifecycleHooksForTest(null); server.setTimerForTest(null);
+});
+
+test('production stale error and timer cannot alter a replacement run', () => {
+  const clock = createFakeClock(); const old = createFakeChild(); const fresh = createFakeChild();
+  const item = launch(old); const h = hooks(); server.setLifecycleHooksForTest(h);
+  stopPlannerRun(item, item.runId, clock); old.emitClose(0, null);
+  item.queue.push({ id: 'replacement', text: 'replacement', recorded: true }); setSpawnForTest(() => fresh); pump(item);
+  old.emitError(new Error('stale')); old.emitClose(1, null); clock.advance(4000);
+  assert.equal(item.activePlannerRun.child, fresh); assert.equal(item.child, fresh); assert.deepEqual(fresh.signals, []);
+  fresh.emitError(new Error('current failure')); assert.equal(item.activePlannerRun.child, fresh);
+  server.setLifecycleHooksForTest(null);
+});
+
+test('production deletion while stopping cancels timers through the HTTP boundary', async () => {
+  const clock = createFakeClock(); server.setTimerForTest(clock); const child = createFakeChild(); const item = launch(child); const h = hooks();
+  server.setLifecycleHooksForTest(h); server.lines.set(item.id, item); stopPlannerRun(item, item.runId, clock);
+  assert.equal(await requestDelete(item.id), 202); clock.advance(4000);
+  assert.deepEqual(child.signals, ['SIGTERM']); assert.equal(server.lines.has(item.id), false);
+  server.setLifecycleHooksForTest(null);
 });
 
 test('dashboard projection is active for a run and null after close', () => {
