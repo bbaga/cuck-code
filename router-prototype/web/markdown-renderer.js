@@ -46,7 +46,7 @@
         continue;
       }
       const list = line.match(/^( {0,3})([-+*]|\d+[.)])[ \t]+(.*)$/);
-      if (list) { const result = parseList(lines, i, depth, list[1].length); out.push(result.token); i = result.next; continue; }
+      if (list) { const result = parseList(lines, i, depth + 1, list[1].length); out.push(result.token); i = result.next; continue; }
       const paragraph = [line]; i++;
       while (i < lines.length && lines[i].trim() && !/^( {0,3})(#{1,6})(?:[ \t]+|$)/.test(lines[i]) && !/^( {0,3})([-+*]|\d+[.)])[ \t]+/.test(lines[i]) && !/^ {0,3}>/.test(lines[i]) && !/^ {0,3}(`{3,}|~{3,})/.test(lines[i])) paragraph.push(lines[i++]);
       out.push({ type: "paragraph", text: paragraph.join("\n") });
@@ -56,17 +56,27 @@
 
   function parseList(lines, start, depth, indent) {
     const first = lines[start].match(/^ {0,3}([-+*]|\d+[.)])[ \t]+(.*)$/);
-    const ordered = /^\d/.test(first[1]), items = [], prefix = /^ {0,3}/;
+    const ordered = /^\d/.test(first[1]), items = [];
     let i = start;
     while (i < lines.length) {
       const match = lines[i].match(/^( *)([-+*]|\d+[.)])[ \t]+(.*)$/);
       if (!match || match[1].length !== indent || (/^\d/.test(match[2])) !== ordered) break;
       const item = { type: "listItem", children: [{ type: "paragraph", text: match[3] }] }; i++;
       const nested = [];
-      while (i < lines.length && (lines[i].trim() === "" || lines[i].match(/^ +/)) && !lines[i].match(new RegExp("^ {0," + indent + "}" + (ordered ? "\\d+[.)]" : "[-+*]") + "[ \\t]+"))) {
-        if (lines[i].trim()) nested.push(lines[i].slice(Math.min(lines[i].search(/\S/), lines[i].length))); else nested.push(""); i++;
+      while (i < lines.length) {
+        if (lines[i].trim() === "") { nested.push(""); i++; continue; }
+        const spaces = lines[i].match(/^ */)[0].length;
+        if (spaces <= indent) break;
+        nested.push(lines[i]);
+        i++;
       }
-      if (nested.length && depth + 1 < MAX_NESTING) item.children.push(...parseBlocks(nested, depth + 1));
+      if (nested.length) {
+        // depth counts list levels: the first list is 1, so level 8 is supported.
+        const childIndent = nested.find(line => line.trim())?.match(/^ */)[0].length || indent + 1;
+        const childLines = nested.map(line => line.trim() ? line.slice(Math.min(childIndent, line.length)) : "");
+        if (depth < MAX_NESTING) item.children.push(...parseBlocks(childLines, depth));
+        else item.children.push({ type: "paragraph", text: childLines.join("\n") });
+      }
       items.push(item);
     }
     return { token: { type: "list", ordered, items }, next: i };

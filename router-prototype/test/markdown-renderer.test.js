@@ -42,3 +42,31 @@ test("renders only fixed elements and text nodes", () => {
   assert.equal(fragment.children[0].textContent, "<script>");
   assert.equal(fragment.children[2].textContent, "<img> &");
 });
+
+test("preserves eight nested list levels in tokens and DOM hierarchy", () => {
+  const lines = Array.from({ length: 8 }, (_, level) => `${"  ".repeat(level)}- level-${level + 1}`);
+  const tree = parseMarkdown(lines.join("\n"));
+  let list = tree.children[0];
+  for (let level = 1; level <= 8; level++) {
+    assert.equal(list.type, "list");
+    assert.equal(list.items[0].children[0].text, `level-${level}`);
+    if (level < 8) list = list.items[0].children[1];
+  }
+  const fragment = renderMarkdown(documentFixture(), tree);
+  let element = fragment.children[0];
+  for (let level = 1; level <= 8; level++) {
+    assert.equal(element.tag, level === 1 ? "ul" : "ul");
+    const li = element.children[0];
+    assert.equal(li.children[0].textContent, `level-${level}`);
+    if (level < 8) element = li.children[1];
+  }
+});
+
+test("supports list depths 1, 2, 3, and keeps depth 9 as literal fallback", () => {
+  const lines = Array.from({ length: 9 }, (_, level) => `${"  ".repeat(level)}- level-${level + 1}`);
+  const tree = parseMarkdown(lines.join("\n"));
+  let list = tree.children[0];
+  for (let level = 1; level <= 8; level++) list = level === 8 ? list.items[0].children[1] : list.items[0].children[1];
+  assert.equal(list.type, "paragraph");
+  assert.match(list.text, /level-9/);
+});
