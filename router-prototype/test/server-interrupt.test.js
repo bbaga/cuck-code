@@ -29,10 +29,12 @@ function launch(child, queue = []) {
   return item;
 }
 function hooks() {
-  const events = []; return { events,
+  const events = []; return { events, pumps: 0,
     save: (item) => events.push(['save', item.id]),
-    broadcast: (item, event) => events.push(['broadcast', event]) };
+    broadcast: (item, event) => events.push(['broadcast', event]),
+    pump: () => { if (hooks.current) hooks.current.pumps += 1; } };
 }
+hooks.current = null;
 function requestDelete(id) {
   return new Promise((resolve, reject) => {
     const app = server.createServer().listen(0, () => {
@@ -114,6 +116,18 @@ test('production stop rejects idle, compacting, wrong-run, and duplicate request
   assert.deepEqual(child.signals, signals);
 });
 
+test('production error before interruption remains an ordinary live failure', () => {
+  const child = createFakeChild(); const item = launch(child); const h = hooks(); hooks.current = h;
+  server.setLifecycleHooksForTest(h);
+  child.emitError(new Error('ordinary failure'));
+  assert.equal(item.child, child); assert.equal(item.status, 'running');
+  assert.equal(h.pumps, 0); assert.equal(child.signals.length, 0);
+  child.emitClose(1, null);
+  assert.equal(item.child, null); assert.equal(item.status, 'idle');
+  assert.ok(h.events.some((e) => e[0] === 'broadcast' && e[1] === 'error'));
+  server.setLifecycleHooksForTest(null); hooks.current = null;
+});
+
 test('production stop reports bounded nonexit at 4000ms and waits for close', () => {
   const clock = createFakeClock(); const child = createFakeChild(); const item = launch(child); const h = hooks();
   server.setLifecycleHooksForTest(h);
@@ -127,19 +141,25 @@ test('production stop reports bounded nonexit at 4000ms and waits for close', ()
 });
 
 test('production close cancels escalation, preserves queue order, and ignores duplicate error/close', () => {
-  const clock = createFakeClock(); server.setTimerForTest(clock); const child = createFakeChild(); const item = launch(child, [{ id: 'user', text: 'user request' }, { id: 'internal', text: 'internal wake' }]); const h = hooks();
+  const clock = createFakeClock(); server.setTimerForTest(clock); const child = createFakeChild(); const item = launch(child, [{ id: 'user', text: 'user request' }, { id: 'internal', text: 'internal wake' }]); const h = hooks(); hooks.current = h;
   server.setLifecycleHooksForTest(h);
   stopPlannerRun(item, item.runId, clock); const replacement = createFakeChild(); setSpawnForTest(() => replacement);
-  child.stdout.write(JSON.stringify({ type: 'message', role: 'assistant', content: 'visible output' }) + '\\n');
-  child.emitClose(0, null); child.emitClose(1, null); child.emitError(new Error('late'));
+  child.stdout.write(JSON.stringify({ type: 'message', role: 'assistant', content: [{ type: 'text', text: 'output-before-stop' }] }) + '\n');
+  stopPlannerRun(item, item.runId, clock);
+  child.stdout.write(JSON.stringify({ type: 'message', role: 'assistant', content: [{ type: 'text', text: 'output-during-stop' }] }) + '\n');
+  assert.equal(h.pumps, 0);
+  child.emitClose(0, null); child.emitClose(1, null); child.emitError(new Error('late')); child.emitError(new Error('late-again'));
   assert.deepEqual(child.signals, ['SIGTERM']);
   clock.advance(4000);
   assert.equal(item.status, 'running'); assert.equal(item.child, replacement); assert.notEqual(item.runId, null);
   assert.deepEqual(item.queue.map((x) => x.id), ['internal']);
-  assert.deepEqual(child.signals, ['SIGTERM']);
+  const visible = JSON.stringify(item.transcript);
+  assert.match(visible, /output-before-stop/); assert.match(visible, /output-during-stop/);
+  assert.ok(visible.indexOf('output-before-stop') < visible.indexOf('output-during-stop'));
+  assert.equal(h.pumps, 1); assert.deepEqual(child.signals, ['SIGTERM']);
   assert.ok(h.events.some((e) => e[0] === 'save'));
   assert.equal(h.events.filter((e) => e[0] === 'broadcast' && e[1] === 'state').length, 2);
-  server.setLifecycleHooksForTest(null); server.setTimerForTest(null);
+  server.setLifecycleHooksForTest(null); server.setTimerForTest(null); hooks.current = null;
 });
 
 test('production stale error and timer cannot alter a replacement run', () => {
@@ -147,7 +167,7 @@ test('production stale error and timer cannot alter a replacement run', () => {
   const item = launch(old); const h = hooks(); server.setLifecycleHooksForTest(h);
   stopPlannerRun(item, item.runId, clock); old.emitClose(0, null);
   item.queue.push({ id: 'replacement', text: 'replacement', recorded: true }); setSpawnForTest(() => fresh); pump(item);
-  old.emitError(new Error('stale')); old.emitClose(1, null); clock.advance(4000);
+  old.emitError(new Error('stale')); old.emitError(new Error('stale-again')); old.emitClose(1, null); clock.advance(4000);
   assert.equal(item.activePlannerRun.child, fresh); assert.equal(item.child, fresh); assert.deepEqual(fresh.signals, []);
   fresh.emitError(new Error('current failure')); assert.equal(item.activePlannerRun.child, fresh);
   server.setLifecycleHooksForTest(null);

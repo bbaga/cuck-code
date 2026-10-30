@@ -1197,6 +1197,7 @@ function stopPlannerRun(line, runId, timers = {}) {
 }
 
 function pump(line) {
+  if (lifecycleTestHooks && lifecycleTestHooks.pump) lifecycleTestHooks.pump(line);
   if (line.deleted || line.status === "running" || line.compacting || line.queue.length === 0) return;
   if (!line.context) line.context = newContextStats();
   // A session belongs to the harness that created it. After a pipeline
