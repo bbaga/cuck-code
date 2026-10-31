@@ -5,6 +5,12 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
+// The router and its workers run unattended. Keep existing credentials usable,
+// but fail on missing credentials instead of prompting on the server's TTY.
+// Set this before loading modules or starting children so background Git checks
+// and Git commands launched by planner/worker processes inherit the same policy.
+process.env.GIT_TERMINAL_PROMPT = "0";
+process.env.GCM_INTERACTIVE = "Never";
 let spawnProcess = spawn;
 let lifecycleTestHooks = null;
 let timerApi = { setTimeout, clearTimeout };
