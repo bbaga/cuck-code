@@ -985,8 +985,18 @@ const dashboardLive = createDashboardLive({
   log: (event, fields) => slog("info", event, fields),
 });
 
+// Revisions are in memory only; the epoch tells a browser when counters restarted.
+const stateEpoch = crypto.randomUUID();
+const stateRevisions = new Map();
+
+function currentStateStamp(line) {
+  return { stateEpoch, stateRevision: stateRevisions.get(line.id) || 0 };
+}
+
 function dashboardStateForLine(line) {
-  return { id: line.id, name: line.name, status: line.status,
+  const stateRevision = (stateRevisions.get(line.id) || 0) + 1;
+  stateRevisions.set(line.id, stateRevision);
+  return { stateEpoch, stateRevision, id: line.id, name: line.name, status: line.status,
     attention: line.attention === true, needsAttention: line.needsAttention === true,
     humanIntervention: line.humanIntervention === true,
     error: line.error === true, lastError: line.lastError || null,
@@ -1944,7 +1954,8 @@ const requestHandler = (req, res) => {
     }
     const state = dashboardStateForLine(line);
     broadcast(line, "state", state);
-    return json(res, 200, { queuedUserPrompts: state.queuedUserPrompts });
+    return json(res, 200, { queuedUserPrompts: state.queuedUserPrompts,
+      stateEpoch: state.stateEpoch, stateRevision: state.stateRevision });
   }
 
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "prompts") {
@@ -1984,7 +1995,7 @@ const requestHandler = (req, res) => {
         appendTranscript(line.transcript, entry);
         broadcast(line, "entry", entry);
       }
-      if (out.status === 202) out.body.requestId = request.id;
+      if (out.status === 202) Object.assign(out.body, { requestId: request.id }, currentStateStamp(line));
       json(res, out.status, out.body);
     });
     return;
@@ -2047,6 +2058,7 @@ const requestHandler = (req, res) => {
     for (const res2 of line.clients) { try { res2.end(); } catch {} }
     line.clients.clear();
     lines.delete(line.id);
+    stateRevisions.delete(line.id);
     dashboardLive.publish("line_deleted", line.id, { id: line.id });
     if (!registryUnavailable) {
       registryRoutes.onLineDeleted(line.id).catch((err) => {

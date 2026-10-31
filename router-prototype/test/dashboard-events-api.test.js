@@ -201,7 +201,10 @@ test("DELETE queued prompt uses HTTP, authoritative SSE, persistence, conflicts,
   const deletion = await fetch(`${base}/api/lines/line-cancel/prompts/user-middle`, { method: "DELETE" });
   assert.equal(deletion.status, 200);
   const deletionBody = await deletion.json();
-  assert.deepEqual(deletionBody, { queuedUserPrompts: [
+  const { stateEpoch, stateRevision, ...deletionFields } = deletionBody;
+  assert.equal(typeof stateEpoch, "string");
+  assert.equal(Number.isInteger(stateRevision), true);
+  assert.deepEqual(deletionFields, { queuedUserPrompts: [
     { id: "user-first", text: "duplicate", position: 1 },
     { id: "user-last", text: "last", position: 2 },
   ] });
