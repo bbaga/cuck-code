@@ -187,6 +187,19 @@
   .transcript > div { margin-bottom: 10px; }
   .user { color: #8fa3bd; }
   .assistant { color: #d8dee6; }
+  .transcript .assistant p, .transcript .assistant h1, .transcript .assistant h2,
+  .transcript .assistant h3, .transcript .assistant h4, .transcript .assistant h5,
+  .transcript .assistant h6, .transcript .assistant ul, .transcript .assistant ol,
+  .transcript .assistant blockquote, .transcript .assistant pre { white-space: normal; margin: 0 0 8px; }
+  .transcript .assistant h1, .transcript .assistant h2, .transcript .assistant h3,
+  .transcript .assistant h4, .transcript .assistant h5, .transcript .assistant h6 { font-size: .9rem; }
+  .transcript .assistant ul, .transcript .assistant ol { padding-left: 22px; }
+  .transcript .assistant blockquote { padding-left: 10px; border-left: 2px solid #333c48; color: #aab4c0; }
+  .transcript .assistant pre { white-space: pre; overflow-x: auto; max-width: 100%; padding: 6px 8px;
+    background: #0d1014; color: #d8dee6; }
+  .transcript .assistant a, .transcript .assistant code { overflow-wrap: anywhere; }
+  .transcript .assistant a { color: #7db7ff; }
+  .transcript .assistant a:focus-visible { outline: 2px solid #7db7ff; outline-offset: 2px; }
   .runError { padding: 8px; border-radius: 4px; background: #4d1420; color: #ff8095;
     font-size: .85rem; white-space: pre-wrap; }
   .ts { color: #5a6675; font-size: .7rem; margin-right: 6px; }
@@ -270,6 +283,7 @@
 </main>
 <section id="registry" hidden aria-label="Registry"></section>
 <script src="pipeline-ui.js"></script>
+<script src="markdown-renderer.js"></script>
 <script src="registry-ui-extra.js"></script>
 <script src="registry-ui.js"></script>
 <script>
@@ -348,7 +362,9 @@ window.addEventListener("DOMContentLoaded", () => {
     } else if (entry && entry.type === "message" && entry.role === "assistant") {
       div.className = "assistant";
       stamp();
-      div.appendChild(document.createTextNode(textOf(entry)));
+      const md = window.markdownRenderer;
+      if (md && typeof md.renderMarkdown === "function") div.appendChild(md.renderMarkdown(document, textOf(entry)));
+      else div.appendChild(document.createTextNode(textOf(entry)));
     } else if (entry && entry.type === "message" && entry.role === "system") {
       div.className = "compacted";
       stamp();
