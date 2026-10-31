@@ -88,12 +88,15 @@
     display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
     font-weight: 400; user-select: none; }
   .dot { width: 10px; height: 10px; border-radius: 50%; margin-left: auto; flex-shrink: 0; }
-  .dot.idle { background: #35c46a; }
+  .dot.marker-green { background: #35c46a; }
+  .dot.marker-blue { background: #3d8bff; }
+  .dot.marker-running { animation: pulse 1.2s infinite; }
+  .dot.marker-red { background: #ff5f6e; }
+  .dot.marker-gray { background: #6c7a8c; }
+  .dot.idle, .dot.completed { background: #35c46a; }
   .dot.running { background: #3d8bff; animation: pulse 1.2s infinite; }
-  .dot.completed { background: #35c46a; }
   .dot.failed { background: #ff5f6e; }
-  .dot.stopped { background: #6c7a8c; }
-  .dot.standby { background: #6c7a8c; }
+  .dot.stopped, .dot.standby { background: #6c7a8c; }
   .dot.attention, .dot.error { width: 18px; height: 18px; border-radius: 50%;
     display: inline-flex; align-items: center; justify-content: center;
     color: #161a20; font-size: 13px; font-weight: 800; }
@@ -299,7 +302,7 @@ window.addEventListener("DOMContentLoaded", () => {
     shouldShowIntegrationValidator, buildGraphLanes,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
     evidencePollIsCurrent, promptKeyAction, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
-    formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator } = window.pipelineUI;
+    formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator, markerState } = window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
   const listEl = document.getElementById("linelist");
@@ -438,9 +441,9 @@ window.addEventListener("DOMContentLoaded", () => {
       n.appendChild(cfgEl);
     }
     const d = document.createElement("span");
-    const indicator = pipelineUI.attentionIndicator(w);
-    d.className = "dot " + (indicator || w.status);
-    d.setAttribute("aria-label", indicator === "error" ? "Error" : indicator === "attention" ? "Needs attention" : w.status);
+    const marker = markerState(w);
+    d.className = "dot " + marker.className;
+    d.setAttribute("aria-label", marker.label);
     n.append(d);
     if (w.status === "running") {
       const stop = document.createElement("button");
@@ -1159,6 +1162,7 @@ window.addEventListener("DOMContentLoaded", () => {
         if (state.started === true) st.started = true;
         updateControls(st);
         applyStateWorkers(st, state, { updateListEntry, refreshPreview });
+        // Full state is authoritative and replaces all stale marker flags.
         st.plannerAttention = state.attention === true || state.needsAttention === true;
         st.plannerHumanIntervention = state.humanIntervention === true;
         st.plannerError = state.error === true || !!state.lastError;
@@ -1166,7 +1170,12 @@ window.addEventListener("DOMContentLoaded", () => {
         renderTranscript(st);
         renderScopePanel(st);
       },
-      status(data) { setStatus(data.status); },
+      status(data) {
+        st.plannerAttention = data.attention === true || data.needsAttention === true;
+        st.plannerHumanIntervention = data.humanIntervention === true;
+        st.plannerError = data.error === true || !!data.lastError || data.status === "failed" || data.status === "error";
+        setStatus(data.status);
+      },
       entry(entry) {
         st.plannerTranscript.push(entry);
         if (st.selected === null) appendEntry(st, entryEl(entry));
@@ -1240,6 +1249,7 @@ window.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify({ text }),
       });
       if (!response.ok) return;
+      if (!st.started) setStatus("running");
       input.value = "";
       input.style.height = "";
       input.style.overflowY = "hidden";
@@ -1304,15 +1314,11 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function updateStatusMarker(st) {
-    const indicator = pipelineUI.attentionIndicator(statusMarkerState(st));
-    const status = indicator || (st.plannerStatus === "running" ? "running"
-      : st.plannerStatus === "standby" ? "standby" : "idle");
-    const label = indicator === "error" ? "Error" : indicator === "attention"
-      ? "Needs attention" : st.plannerStatus;
+    const markerStateValue = markerState(statusMarkerState(st));
     for (const marker of [st.dot, st.entryDot]) {
       if (!marker) continue;
-      marker.className = "dot " + status;
-      marker.setAttribute("aria-label", label);
+      marker.className = "dot " + markerStateValue.className;
+      marker.setAttribute("aria-label", markerStateValue.label);
     }
   }
 

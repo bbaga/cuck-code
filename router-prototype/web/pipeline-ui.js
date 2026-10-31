@@ -23,6 +23,22 @@
   const NODE_BORDER = 2;
   const NODE_GAP = 8;
 
+  // Return one visual marker for a planner or worker state.
+  // Error states always take priority over attention states.
+  function markerState(item) {
+    const value = item || {};
+    const state = String(value.state || value.status || "").toLowerCase();
+    const failed = value.error === true || value.hasError === true || !!value.lastError
+      || value.verdict === "fail" || state === "error" || state === "failed";
+    if (failed) return { className: "marker-red", color: "red", label: "Failed" };
+    const attention = value.attention === true || value.needsAttention === true
+      || value.humanIntervention === true || ["attention", "needs_attention", "blocked"].includes(state);
+    if (attention) return { className: "marker-yellow", color: "yellow", label: "Needs attention" };
+    if (state === "running") return { className: "marker-blue marker-running", color: "blue", label: "Running" };
+    if (state === "idle" || state === "completed") return { className: "marker-green", color: "green", label: "Idle" };
+    return { className: "marker-gray", color: "gray", label: "Standby" };
+  }
+
   // Explicit error state wins over human intervention state.
   function attentionIndicator(item) {
     const value = item || {};
@@ -778,6 +794,7 @@
     shouldShowIntegrationValidator,
     buildGraphLanes,
     attentionIndicator,
+    markerState,
     nodeWidth,
     columnWidth,
     NODE_FONTS,

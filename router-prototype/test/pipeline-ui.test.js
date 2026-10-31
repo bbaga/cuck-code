@@ -58,13 +58,14 @@ test("pipeline marker precedes the name and shares line-list state", () => {
   const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
   assert.match(html, /head\.append\(dot, name,/);
   assert.match(html, /for \(const marker of \[st\.dot, st\.entryDot\]\)/);
-  assert.match(html, /const indicator = pipelineUI\.attentionIndicator\(statusMarkerState\(st\)\)/);
+  assert.match(html, /const markerStateValue = markerState\(statusMarkerState\(st\)\)/);
   assert.deepEqual([
-    attentionIndicator({ status: "idle" }),
-    attentionIndicator({ status: "running" }),
-    attentionIndicator({ attention: true }),
-    attentionIndicator({ status: "failed", attention: true }),
-  ], [null, null, "attention", "error"]);
+    pipelineUiModule.markerState({ status: "standby" }).color,
+    pipelineUiModule.markerState({ status: "idle" }).color,
+    pipelineUiModule.markerState({ status: "running" }).color,
+    pipelineUiModule.markerState({ attention: true }).color,
+    pipelineUiModule.markerState({ status: "failed", attention: true }).color,
+  ], ["gray", "green", "blue", "yellow", "red"]);
 });
 
 test("pipeline markup supports wrapped names", () => {
