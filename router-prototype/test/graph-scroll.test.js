@@ -15,7 +15,7 @@ function harness() {
   const make = () => ({ style:{}, children:[], attrs:{}, append(...xs){this.children.push(...xs);}, appendChild(x){this.children.push(x);}, replaceChildren(...xs){this.children=xs;}, setAttribute(k,v){this.attrs[k]=v;}, addEventListener(type,fn){let h=handlers.get(this)||{}; h[type]=fn;handlers.set(this,h);}, className:"", textContent:"", getAttribute(k){return this.attrs[k];} });
   const document = { createElement: make, createElementNS: (_ns,_tag) => make() };
   const pipelineUI = require("../web/pipeline-ui.js");
-  const ui = vm.runInNewContext(source + "\n({ renderGraph, renderGraphContents, selectNode, selectPreview })", { document, SVGNS:"svg", pipelineUI, nodeWidth: pipelineUI.nodeWidth, columnWidth: pipelineUI.columnWidth, workerNode: (st,w,x,y,width)=>{const n=make();n.className="gnode worker"+(st.selected===w.id?" sel":"");n.style={left:x+"px",top:y+"px",width:width+"px"};return n;}, mapPreviewPayload:(_p,w)=>w.kind==="integration"?{eligible:true,availability:"available",steps:[]}:null, previewSelectionKey:id=>`preview:${id}`, sanitizePreviewCommand:x=>x, localStorage:{setItem(){},removeItem(){}}, navigator:{clipboard:{writeText(){}}}, renderTranscript(){}, console });
+  const ui = vm.runInNewContext(source + "\n({ renderGraph, renderGraphContents, selectNode, selectPreview, renderPreviewPanel })", { document, SVGNS:"svg", pipelineUI, nodeWidth: pipelineUI.nodeWidth, columnWidth: pipelineUI.columnWidth, workerNode: (st,w,x,y,width)=>{const n=make();n.className="gnode worker"+(st.selected===w.id?" sel":"");n.style={left:x+"px",top:y+"px",width:width+"px"};return n;}, mapPreviewPayload:(_p,w)=>w.kind==="integration"?{eligible:true,availability:"available",steps:[]}:null, previewSelectionKey:id=>`preview:${id}`, sanitizePreviewCommand:x=>x, localStorage:{setItem(){},removeItem(){}}, navigator:{clipboard:{writeText(){}}}, renderTranscript(){}, console });
   function find(node,predicate){if(predicate(node))return node;for(const child of node.children||[]){const found=find(child,predicate);if(found)return found;}return null;}
   function click(node){handlers.get(node).click();}
   return {ui, graph, make, find, click};
@@ -60,4 +60,73 @@ test("validator SVG paths originate at implementor center and route later rows t
   assert.equal(implValidator.length,2);
   assert.equal(implValidator[0],`M ${implEnd} 32 H ${implEnd+20} V 32 H ${valX}`);
   assert.equal(implValidator[1],`M ${implEnd} 32 H ${implEnd+22} V 78 H ${valX}`);
+});
+
+test("a preview result that resolves after a tab switch stays hidden until Line", async () => {
+  const h=harness(), iv=integration(), st=state(h,[{id:"impl",name:"impl",status:"completed"},iv]);
+  st.selected="preview:i"; st.tab="line";
+  let resolve; const loading=new Promise(r=>{resolve=r;});
+  const refresh=(async()=>{ st.previewPayload=await loading; h.ui.renderPreviewPanel(st,iv,{eligible:true,availability:"available",steps:[]}); h.ui.renderGraph(st); })();
+  st.tab="work"; resolve({eligible:true}); await refresh;
+  assert.equal(st.previewPanel.hidden,true);
+  st.tab="line"; h.ui.renderGraph(st);
+  assert.equal(st.previewPanel.hidden,false);
+});
+
+function stateFn(h, extra = {}) {
+  const src = html.slice(html.indexOf("  function applyStateWorkers("), html.indexOf("  function syncTranscriptScroll(")) + "\napplyStateWorkers";
+  const pipelineUI = require("../web/pipeline-ui.js");
+  const base = html.slice(start, end);
+  return vm.runInNewContext(base + "\n" + src, { document: { createElement: h.make, createElementNS: () => h.make() }, SVGNS: "svg", pipelineUI,
+    nodeWidth: pipelineUI.nodeWidth, columnWidth: pipelineUI.columnWidth, workerNode: (st, w, x, y, width) => { const n = h.make(); n.className = "gnode worker"; n.style = {}; return n; },
+    mapPreviewPayload: () => null, previewSelectionKey: id => `preview:${id}`, previewSelectionExists: () => false, sanitizePreviewCommand: x => x,
+    localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} }, navigator: {}, renderTranscript() {}, console, ...extra });
+}
+const countWorkers = (h) => { let n = 0; (function v(x) { if ((x.className || "").includes("gnode") && (x.className || "").includes("worker")) n++; for (const c of x.children || []) v(c); })(h.graph); return n; };
+const wl = [{ id: "impl", name: "impl", status: "completed" }, { id: "v1", name: "v1", role: "validator", validates: "impl", status: "completed" }, integration()];
+for (const [name, refresh] of [["never resolves", () => new Promise(() => {})], ["rejects", () => Promise.reject(new Error("x"))], ["superseded", () => undefined]]) {
+  test(`state event renders worker nodes when preview ${name}`, () => {
+    const h = harness(), st = state(h, []); st.workerTranscripts = new Map();
+    const apply = stateFn(h);
+    apply(st, { workers: wl }, { updateListEntry() {}, refreshPreview: () => { refresh()?.catch?.(() => {}); } });
+    assert.equal(countWorkers(h) >= 2, true);
+  });
+}
+test("SSE reconnect snapshot keeps all graph nodes", () => {
+  const h = harness(), st = state(h, []); st.workerTranscripts = new Map();
+  const apply = stateFn(h), deps = { updateListEntry() {}, refreshPreview() {} };
+  apply(st, { workers: wl }, deps); const first = countWorkers(h);
+  apply(st, { workers: wl }, deps);
+  assert.equal(countWorkers(h), first); assert.ok(first >= 2);
+});
+
+function countNodes(h) { let n = 0; (function v(x) { n++; for (const c of x.children || []) v(c); })(h.graph); return n; }
+function sigHarness(payloadFor) {
+  const h = harness(); let builds = 0;
+  const orig = h.graph.appendChild.bind(h.graph);
+  h.graph.appendChild = (x) => { builds++; orig(x); };
+  const wl2 = [{ id: "impl", name: "impl", status: "running" }, integration()];
+  const st = state(h, wl2); st.previewPayload = { eligible: true };
+  return { h, st, builds: () => builds, wl2 };
+}
+test("equal data does not rebuild the graph", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); const b = builds();
+  h.ui.renderGraph(st); assert.equal(builds(), b);
+});
+test("changed worker status rebuilds the graph", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); const b = builds();
+  st.workers.get("impl").status = "completed"; h.ui.renderGraph(st); assert.equal(builds(), b + 1);
+});
+test("changed graph width rebuilds the graph", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); const b = builds();
+  h.graph.clientWidth = 500; h.ui.renderGraph(st); assert.equal(builds(), b + 1);
+});
+test("changed preview eligibility rebuilds the graph", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); const b = builds();
+  const orig = st.workers.get("i"); st.workers.set("i", { ...orig, kind: "standard" });
+  h.ui.renderGraph(st); assert.equal(builds(), b + 1);
+});
+test("first render always builds nodes", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); assert.equal(builds(), 1); assert.ok(countNodes(h) > 3);
+  h.graph.innerHTML = ""; h.ui.renderGraph(st); assert.equal(builds(), 2);
 });

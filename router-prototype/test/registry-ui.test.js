@@ -277,7 +277,7 @@ test("events load, append on stream message, and reload when too old", async () 
 
 test("summary breakdown uses line names", () => {
   const b = X.breakdown({ claimsByOwner: { l1: 2, gone: 1 }, claimsByRepo: { r: 3 } }, [{ id: "l1", name: "Line A" }]);
-  assert.deepStrictEqual(b.owners, ["gone: 1", "Line A: 2"]);
+  assert.deepStrictEqual(b.owners, ["gone (deleted line): 1", "Line A: 2"]);
   assert.deepStrictEqual(b.repos, ["r: 3"]);
   assert.deepStrictEqual(X.repoOptions({ claimsByRepo: { b: 1, a: 1 } }), ["a", "b"]);
 });
@@ -345,4 +345,37 @@ test("browser scripts load as plain scripts without require or module", async ()
   assert.ok(!/unavailable/.test(c.children[7].textContent));
   const only = await mountIn(load(["registry-ui.js"]));
   assert.match(only.children[7].textContent, /Extra panels unavailable/);
+});
+
+test("breakdown keeps raw ids when no lines are known", () => {
+  assert.deepStrictEqual(X.breakdown({ claimsByOwner: { gone: 1 } }, []).owners, ["gone: 1"]);
+});
+
+test("failure clears breakdown and events; recovery refills them", async () => {
+  const lines = { ok: true, json: async () => [{ id: "l1", name: "Line A" }] };
+  const sum = { claimsByStatus: {}, claimsByOwner: { l1: 1, gone: 1 }, snapshotRevision: 5, eventCursor: 1 };
+  const evs = { items: [{ id: "e1", cursor: 1, type: "claim.created", at: "t" }], hasMore: false };
+  let down = false;
+  const e = env((u) => {
+    if (down) return errRes(503, "corrupt", "REGISTRY_UNAVAILABLE");
+    if (u.includes("/api/lines")) return lines;
+    if (u.includes("summary")) return { ok: true, json: async () => sum };
+    if (u.includes("/events")) return { ok: true, json: async () => evs };
+    return okRes(u);
+  });
+  e.v.start();
+  await flush();
+  const bar = () => e.c.children[7].textContent;
+  const evBox = () => e.c.children[8].children[1];
+  assert.match(bar(), /gone \(deleted line\): 1/);
+  assert.strictEqual(evBox().children.length, 1);
+  down = true;
+  await e.v.load();
+  assert.strictEqual(bar(), "");
+  assert.strictEqual(evBox().textContent, "Unavailable");
+  down = false;
+  await e.v.load();
+  await flush();
+  assert.match(bar(), /Line A: 1/);
+  assert.strictEqual(evBox().children.length, 1);
 });

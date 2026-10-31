@@ -47,7 +47,8 @@
   function breakdown(sm, lines) {
     const names = {};
     for (const l of lines || []) names[l.id] = l.name || l.id;
-    return { owners: countList(sm && sm.claimsByOwner, (k) => names[k] || k),
+    const known = Array.isArray(lines) && lines.length > 0;
+    return { owners: countList(sm && sm.claimsByOwner, (k) => names[k] || (known ? k + " (deleted line)" : k)),
       repos: countList(sm && sm.claimsByRepo, (k) => k) };
   }
   const repoOptions = (sm) => Object.keys((sm && sm.claimsByRepo) || {}).sort();
