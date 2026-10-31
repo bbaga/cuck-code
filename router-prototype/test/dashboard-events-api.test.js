@@ -33,16 +33,20 @@ function openStream(base) {
   });
 }
 
-test.skip("restart recovers stale running lines without changing never-started standby", async (t) => {
+test("restart recovers stale running lines and persists idle state", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-stale-running-"));
   const { child, base } = await start(root);
   const created = await fetch(base + "/api/lines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "stale" }) });
   const stale = await created.json();
-  const staleDir = path.join(root, "stale");
+  const staleDir = path.join(root, stale.id);
   const persisted = JSON.parse(fs.readFileSync(path.join(staleDir, "line.json")));
   persisted.started = true; persisted.status = "running"; persisted.plannerQueue = []; persisted.activePlannerRequest = null;
   fs.writeFileSync(path.join(staleDir, "line.json"), JSON.stringify(persisted));
-  child.kill("SIGKILL"); await wait(100);
+  child.kill("SIGTERM");
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("server did not terminate cleanly")), 3000);
+    child.once("exit", () => { clearTimeout(timer); resolve(); });
+  });
   const restarted = await start(root);
   t.after(() => { restarted.child.kill("SIGTERM"); fs.rmSync(root, { recursive: true, force: true }); });
   let lines;
@@ -53,6 +57,12 @@ test.skip("restart recovers stale running lines without changing never-started s
   }
   assert.equal(lines.find((line) => line.id === stale.id).status, "idle");
   assert.equal(JSON.parse(fs.readFileSync(path.join(staleDir, "line.json"))).status, "idle");
+  restarted.child.kill("SIGKILL");
+  await wait(100);
+  const second = await start(root);
+  t.after(() => { second.child.kill("SIGKILL"); fs.rmSync(root, { recursive: true, force: true }); });
+  const secondLines = (await (await fetch(second.base + "/api/lines")).json()).lines;
+  assert.equal(secondLines.find((line) => line.id === stale.id).status, "idle");
 });
 
 test("completed planner wait for approval publishes and persists attention", async (t) => {

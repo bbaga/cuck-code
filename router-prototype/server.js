@@ -2915,7 +2915,10 @@ function loadLines() {
       const resumable = !!activeRequest || line.queue.length > 0;
       if (resumable) transitionPlannerStatus(line, "running", null, { broadcastState: false });
       else if (!started) transitionPlannerStatus(line, "standby", null, { broadcastState: false });
-      else if (line.status === "running") transitionPlannerStatus(line, "idle", null, { broadcastState: false });
+      else if (started) {
+        transitionPlannerStatus(line, "idle", null, { broadcastState: false });
+        saveLine(line);
+      }
       if (line.queue.length) pump(line);
     } catch {}
   }
