@@ -99,3 +99,34 @@ test("SSE reconnect snapshot keeps all graph nodes", () => {
   apply(st, { workers: wl }, deps);
   assert.equal(countWorkers(h), first); assert.ok(first >= 2);
 });
+
+function countNodes(h) { let n = 0; (function v(x) { n++; for (const c of x.children || []) v(c); })(h.graph); return n; }
+function sigHarness(payloadFor) {
+  const h = harness(); let builds = 0;
+  const orig = h.graph.appendChild.bind(h.graph);
+  h.graph.appendChild = (x) => { builds++; orig(x); };
+  const wl2 = [{ id: "impl", name: "impl", status: "running" }, integration()];
+  const st = state(h, wl2); st.previewPayload = { eligible: true };
+  return { h, st, builds: () => builds, wl2 };
+}
+test("equal data does not rebuild the graph", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); const b = builds();
+  h.ui.renderGraph(st); assert.equal(builds(), b);
+});
+test("changed worker status rebuilds the graph", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); const b = builds();
+  st.workers.get("impl").status = "completed"; h.ui.renderGraph(st); assert.equal(builds(), b + 1);
+});
+test("changed graph width rebuilds the graph", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); const b = builds();
+  h.graph.clientWidth = 500; h.ui.renderGraph(st); assert.equal(builds(), b + 1);
+});
+test("changed preview eligibility rebuilds the graph", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); const b = builds();
+  const orig = st.workers.get("i"); st.workers.set("i", { ...orig, kind: "standard" });
+  h.ui.renderGraph(st); assert.equal(builds(), b + 1);
+});
+test("first render always builds nodes", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); assert.equal(builds(), 1); assert.ok(countNodes(h) > 3);
+  h.graph.innerHTML = ""; h.ui.renderGraph(st); assert.equal(builds(), 2);
+});

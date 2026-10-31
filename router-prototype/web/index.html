@@ -527,7 +527,27 @@ window.addEventListener("DOMContentLoaded", () => {
   function renderGraph(st) {
     const graph = st.graph;
     const top = graph.scrollTop, left = graph.scrollLeft;
-    try { renderGraphContents(st); } finally { graph.scrollTop = top; graph.scrollLeft = left; }
+    try {
+      const sig = graphSignature(st);
+      if (graph.children && graph.children.length && st.graphSig === sig) return;
+      st.graphSig = null;
+      renderGraphContents(st);
+      st.graphSig = sig;
+    } finally { graph.scrollTop = top; graph.scrollLeft = left; }
+  }
+
+  // Everything renderGraphContents draws or reads; equal signature means an identical graph.
+  function graphSignature(st) {
+    const fields = ["id", "name", "role", "kind", "status", "state", "verdict", "validates", "persona", "harness",
+      "model", "effort", "attention", "needsAttention", "humanIntervention", "error", "hasError", "lastError"];
+    const workers = [...st.workers.values()];
+    return JSON.stringify([
+      workers.map((w) => fields.map((f) => w[f])),
+      workers.map((w) => !!mapPreviewPayload(st.previewPayload, w)),
+      st.plannerStatus, st.plannerAttention, st.plannerHumanIntervention, st.plannerError,
+      st.selected, !!st.hideFailedValidators, st.graph.clientWidth, st.tab,
+      !!(st.previewPanel && st.previewPanel.hidden),
+    ]);
   }
 
   function graphTextMeasurer() {
