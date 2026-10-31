@@ -49,7 +49,8 @@ test("planner rendering passes human intervention to the attention indicator", (
   const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
   assert.match(html, /plannerHumanIntervention: line\.humanIntervention === true/);
   assert.match(html, /humanIntervention: st\.plannerHumanIntervention/);
-  assert.match(html, /const plannerIndicator = pipelineUI\.attentionIndicator\(plannerState\)/);
+  assert.match(html, /const plannerMarker = markerState\(plannerState\)/);
+  assert.match(html, /pd\.className = "dot " \+ plannerMarker\.className/);
   assert.equal(attentionIndicator({ humanIntervention: true }), "attention");
   assert.equal(attentionIndicator({ humanIntervention: true, error: true }), "error");
 });
@@ -59,6 +60,7 @@ test("pipeline marker precedes the name and shares line-list state", () => {
   assert.match(html, /head\.append\(dot, name,/);
   assert.match(html, /for \(const marker of \[st\.dot, st\.entryDot\]\)/);
   assert.match(html, /const markerStateValue = markerState\(statusMarkerState\(st\)\)/);
+  assert.match(html, /\.dot\.marker-yellow \{ background:/);
   assert.deepEqual([
     pipelineUiModule.markerState({ status: "standby" }).color,
     pipelineUiModule.markerState({ status: "idle" }).color,
@@ -66,6 +68,14 @@ test("pipeline marker precedes the name and shares line-list state", () => {
     pipelineUiModule.markerState({ attention: true }).color,
     pipelineUiModule.markerState({ status: "failed", attention: true }).color,
   ], ["gray", "green", "blue", "yellow", "red"]);
+});
+
+test("narrow status events preserve omitted marker flags and full state replaces them", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
+  assert.match(html, /Narrow status events may omit marker fields/);
+  assert.match(html, /hasOwnProperty\.call\(data, "attention"\)/);
+  assert.match(html, /hasOwnProperty\.call\(data, "error"\)/);
+  assert.match(html, /Full state is authoritative and replaces all stale marker flags/);
 });
 
 test("pipeline markup supports wrapped names", () => {

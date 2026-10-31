@@ -92,6 +92,7 @@
   .dot.marker-blue { background: #3d8bff; }
   .dot.marker-running { animation: pulse 1.2s infinite; }
   .dot.marker-red { background: #ff5f6e; }
+  .dot.marker-yellow { background: #f2c94c; }
   .dot.marker-gray { background: #6c7a8c; }
   .dot.idle, .dot.completed { background: #35c46a; }
   .dot.running { background: #3d8bff; animation: pulse 1.2s infinite; }
@@ -629,9 +630,9 @@ window.addEventListener("DOMContentLoaded", () => {
     const pd = document.createElement("span");
     const plannerState = { status: st.plannerStatus, attention: st.plannerAttention,
       humanIntervention: st.plannerHumanIntervention, error: st.plannerError };
-    const plannerIndicator = pipelineUI.attentionIndicator(plannerState);
-    pd.className = "dot " + (plannerIndicator || (st.plannerStatus === "running" ? "running" : "idle"));
-    pd.setAttribute("aria-label", plannerIndicator === "error" ? "Error" : plannerIndicator === "attention" ? "Needs attention" : st.plannerStatus);
+    const plannerMarker = markerState(plannerState);
+    pd.className = "dot " + plannerMarker.className;
+    pd.setAttribute("aria-label", plannerMarker.label);
     pn.append(pnLabel, pd);
     pn.addEventListener("click", () => selectNode(st, null));
     inner.appendChild(pn);
@@ -1171,9 +1172,18 @@ window.addEventListener("DOMContentLoaded", () => {
         renderScopePanel(st);
       },
       status(data) {
-        st.plannerAttention = data.attention === true || data.needsAttention === true;
-        st.plannerHumanIntervention = data.humanIntervention === true;
-        st.plannerError = data.error === true || !!data.lastError || data.status === "failed" || data.status === "error";
+        // Narrow status events may omit marker fields; omitted fields must not clear state.
+        if (Object.prototype.hasOwnProperty.call(data, "attention") || Object.prototype.hasOwnProperty.call(data, "needsAttention")) {
+          st.plannerAttention = data.attention === true || data.needsAttention === true;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, "humanIntervention")) {
+          st.plannerHumanIntervention = data.humanIntervention === true;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, "error") || Object.prototype.hasOwnProperty.call(data, "lastError")) {
+          st.plannerError = data.error === true || !!data.lastError;
+        } else if (data.status === "failed" || data.status === "error") {
+          st.plannerError = true;
+        }
         setStatus(data.status);
       },
       entry(entry) {
