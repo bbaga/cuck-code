@@ -72,3 +72,61 @@ test("a preview result that resolves after a tab switch stays hidden until Line"
   st.tab="line"; h.ui.renderGraph(st);
   assert.equal(st.previewPanel.hidden,false);
 });
+
+function stateFn(h, extra = {}) {
+  const src = html.slice(html.indexOf("  function applyStateWorkers("), html.indexOf("  function syncTranscriptScroll(")) + "\napplyStateWorkers";
+  const pipelineUI = require("../web/pipeline-ui.js");
+  const base = html.slice(start, end);
+  return vm.runInNewContext(base + "\n" + src, { document: { createElement: h.make, createElementNS: () => h.make() }, SVGNS: "svg", pipelineUI,
+    nodeWidth: pipelineUI.nodeWidth, columnWidth: pipelineUI.columnWidth, workerNode: (st, w, x, y, width) => { const n = h.make(); n.className = "gnode worker"; n.style = {}; return n; },
+    mapPreviewPayload: () => null, previewSelectionKey: id => `preview:${id}`, previewSelectionExists: () => false, sanitizePreviewCommand: x => x,
+    localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} }, navigator: {}, renderTranscript() {}, console, ...extra });
+}
+const countWorkers = (h) => { let n = 0; (function v(x) { if ((x.className || "").includes("gnode") && (x.className || "").includes("worker")) n++; for (const c of x.children || []) v(c); })(h.graph); return n; };
+const wl = [{ id: "impl", name: "impl", status: "completed" }, { id: "v1", name: "v1", role: "validator", validates: "impl", status: "completed" }, integration()];
+for (const [name, refresh] of [["never resolves", () => new Promise(() => {})], ["rejects", () => Promise.reject(new Error("x"))], ["superseded", () => undefined]]) {
+  test(`state event renders worker nodes when preview ${name}`, () => {
+    const h = harness(), st = state(h, []); st.workerTranscripts = new Map();
+    const apply = stateFn(h);
+    apply(st, { workers: wl }, { updateListEntry() {}, refreshPreview: () => { refresh()?.catch?.(() => {}); } });
+    assert.equal(countWorkers(h) >= 2, true);
+  });
+}
+test("SSE reconnect snapshot keeps all graph nodes", () => {
+  const h = harness(), st = state(h, []); st.workerTranscripts = new Map();
+  const apply = stateFn(h), deps = { updateListEntry() {}, refreshPreview() {} };
+  apply(st, { workers: wl }, deps); const first = countWorkers(h);
+  apply(st, { workers: wl }, deps);
+  assert.equal(countWorkers(h), first); assert.ok(first >= 2);
+});
+
+function countNodes(h) { let n = 0; (function v(x) { n++; for (const c of x.children || []) v(c); })(h.graph); return n; }
+function sigHarness(payloadFor) {
+  const h = harness(); let builds = 0;
+  const orig = h.graph.appendChild.bind(h.graph);
+  h.graph.appendChild = (x) => { builds++; orig(x); };
+  const wl2 = [{ id: "impl", name: "impl", status: "running" }, integration()];
+  const st = state(h, wl2); st.previewPayload = { eligible: true };
+  return { h, st, builds: () => builds, wl2 };
+}
+test("equal data does not rebuild the graph", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); const b = builds();
+  h.ui.renderGraph(st); assert.equal(builds(), b);
+});
+test("changed worker status rebuilds the graph", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); const b = builds();
+  st.workers.get("impl").status = "completed"; h.ui.renderGraph(st); assert.equal(builds(), b + 1);
+});
+test("changed graph width rebuilds the graph", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); const b = builds();
+  h.graph.clientWidth = 500; h.ui.renderGraph(st); assert.equal(builds(), b + 1);
+});
+test("changed preview eligibility rebuilds the graph", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); const b = builds();
+  const orig = st.workers.get("i"); st.workers.set("i", { ...orig, kind: "standard" });
+  h.ui.renderGraph(st); assert.equal(builds(), b + 1);
+});
+test("first render always builds nodes", () => {
+  const { h, st, builds } = sigHarness(); h.ui.renderGraph(st); assert.equal(builds(), 1); assert.ok(countNodes(h) > 3);
+  h.graph.innerHTML = ""; h.ui.renderGraph(st); assert.equal(builds(), 2);
+});

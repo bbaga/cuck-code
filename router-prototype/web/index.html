@@ -527,7 +527,27 @@ window.addEventListener("DOMContentLoaded", () => {
   function renderGraph(st) {
     const graph = st.graph;
     const top = graph.scrollTop, left = graph.scrollLeft;
-    try { renderGraphContents(st); } finally { graph.scrollTop = top; graph.scrollLeft = left; }
+    try {
+      const sig = graphSignature(st);
+      if (graph.children && graph.children.length && st.graphSig === sig) return;
+      st.graphSig = null;
+      renderGraphContents(st);
+      st.graphSig = sig;
+    } finally { graph.scrollTop = top; graph.scrollLeft = left; }
+  }
+
+  // Everything renderGraphContents draws or reads; equal signature means an identical graph.
+  function graphSignature(st) {
+    const fields = ["id", "name", "role", "kind", "status", "state", "verdict", "validates", "persona", "harness",
+      "model", "effort", "attention", "needsAttention", "humanIntervention", "error", "hasError", "lastError"];
+    const workers = [...st.workers.values()];
+    return JSON.stringify([
+      workers.map((w) => fields.map((f) => w[f])),
+      workers.map((w) => !!mapPreviewPayload(st.previewPayload, w)),
+      st.plannerStatus, st.plannerAttention, st.plannerHumanIntervention, st.plannerError,
+      st.selected, !!st.hideFailedValidators, st.graph.clientWidth, st.tab,
+      !!(st.previewPanel && st.previewPanel.hidden),
+    ]);
   }
 
   function graphTextMeasurer() {
@@ -752,6 +772,31 @@ window.addEventListener("DOMContentLoaded", () => {
     st.compactBtn.title = target.compacted && !target.hasSession
       ? "Compacted; the next run starts a fresh session with the summary."
       : "Summarize this session and continue in a fresh one.";
+  }
+
+  function applyStateWorkers(st, state, { updateListEntry, refreshPreview }) {
+    st.workers = new Map((state.workers || []).map((w) => [w.id, w]));
+    if (st.selected === null) {
+      try {
+        const savedPreview = localStorage.getItem("preview-selection:" + st.id);
+        if (previewSelectionExists(state.workers || [], savedPreview)) st.selected = savedPreview;
+      } catch {}
+    }
+    for (const w of state.workers || []) {
+      if (!st.workerTranscripts.has(w.id)) st.workerTranscripts.set(w.id, []);
+    }
+    if (typeof st.selected === "string" && st.selected.startsWith("preview:")) {
+      if (!previewSelectionExists(state.workers || [], st.selected)) st.selected = null;
+      else {
+        const selectedPreviewId = st.selected.slice("preview:".length);
+        const selectedWorker = (state.workers || []).find((worker) => String(worker.id) === selectedPreviewId);
+        const currentData = selectedWorker && mapPreviewPayload(st.previewPayload, selectedWorker);
+        if (currentData) renderPreviewPanel(st, selectedWorker, currentData);
+      }
+    } else if (st.selected !== null && !st.workers.has(st.selected)) st.selected = null;
+    // Render before the async preview so a slow or failed preview cannot leave the graph empty.
+    renderGraph(st); updateListEntry(st);
+    refreshPreview();
   }
 
   function syncTranscriptScroll(st) {
@@ -1098,27 +1143,8 @@ window.addEventListener("DOMContentLoaded", () => {
           hasSession: !!state.hasSession, compacted: !!state.compacted } : null;
         if (state.started === true) st.started = true;
         updateControls(st);
-        st.workers = new Map((state.workers || []).map((w) => [w.id, w]));
-        if (st.selected === null) {
-          try {
-            const savedPreview = localStorage.getItem("preview-selection:" + st.id);
-            if (previewSelectionExists(state.workers || [], savedPreview)) st.selected = savedPreview;
-          } catch {}
-        }
-        for (const w of state.workers || []) {
-          if (!st.workerTranscripts.has(w.id)) st.workerTranscripts.set(w.id, []);
-        }
-        if (typeof st.selected === "string" && st.selected.startsWith("preview:")) {
-          if (!previewSelectionExists(state.workers || [], st.selected)) st.selected = null;
-          else {
-            const selectedPreviewId = st.selected.slice("preview:".length);
-            const selectedWorker = (state.workers || []).find((worker) => String(worker.id) === selectedPreviewId);
-            const currentData = selectedWorker && mapPreviewPayload(st.previewPayload, selectedWorker);
-            if (currentData) renderPreviewPanel(st, selectedWorker, currentData);
-          }
-        } else if (st.selected !== null && !st.workers.has(st.selected)) st.selected = null;
+        applyStateWorkers(st, state, { updateListEntry, refreshPreview });
         setStatus(state.status);
-        refreshPreview();
         renderTranscript(st);
         renderScopePanel(st);
       },
