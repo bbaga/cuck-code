@@ -429,6 +429,33 @@
       : { ok: false, availability: "unavailable", message: "Preview response was invalid." };
   }
 
+  // Accept a state only when it is newer than the stored stamp (same epoch) or from a new epoch.
+  function acceptStateStamp(current, incoming) {
+    if (!incoming || typeof incoming.epoch !== "string" || !incoming.epoch
+      || !Number.isInteger(incoming.revision)) return false;
+    if (!current || current.epoch !== incoming.epoch) return true;
+    return incoming.revision > current.revision;
+  }
+
+  function queueRowLabel(row) {
+    const r = row || {};
+    const text = String(r.text || "").replace(/\s+/g, " ").trim();
+    const short = text.length > 40 ? text.slice(0, 40) + "\u2026" : text;
+    return "Cancel queued prompt " + r.position + ": " + short;
+  }
+
+  // Tracks edits so a response clears the draft only when the user did not touch it.
+  function createDraftOwner() {
+    let generation = 0;
+    return {
+      touch() { generation += 1; },
+      begin(text) { return { text: String(text).trim(), generation }; },
+      canClear(ticket, currentText) {
+        return !!ticket && ticket.generation === generation && String(currentText).trim() === ticket.text;
+      },
+    };
+  }
+
   function promptKeyAction({ key, shiftKey = false, isComposing = false, keyCode } = {}) {
     if (isComposing || keyCode === 229) return "ignore";
     if (key !== "Enter") return "ignore";
@@ -773,6 +800,9 @@
     fetchLinePreview,
     sanitizePreviewCommand,
     promptKeyAction,
+    acceptStateStamp,
+    queueRowLabel,
+    createDraftOwner,
     isFailedValidator,
     shouldHideValidator,
     shouldShowIntegrationValidator,
