@@ -1022,6 +1022,21 @@ function broadcast(line, event, data) {
   }
 }
 
+// This is the only path that changes the visible planner status.
+function transitionPlannerStatus(line, status, detail = null, { broadcastState = true } = {}) {
+  const visible = ["standby", "idle", "running", "attention", "failed"];
+  if (!visible.includes(status)) throw new Error(`invalid planner status: ${status}`);
+  line.status = status;
+  line.lastError = status === "failed" ? (detail || "Planner run failed") : null;
+  line.error = status === "failed";
+  line.attention = status === "attention";
+  line.needsAttention = status === "attention";
+  if (broadcastState) {
+    broadcast(line, "state", dashboardStateForLine(line));
+    broadcast(line, "status", { status });
+  }
+}
+
 function saveLine(line) {
   if (lifecycleTestHooks && lifecycleTestHooks.save) lifecycleTestHooks.save(line);
   if (line.deleted) return false;
@@ -1041,6 +1056,7 @@ function saveLine(line) {
         repos: [...(line.repos || new Map()).values()].map((r) => ({
           name: r.name, url: r.url, path: r.path })),
         started: line.started, planApproved: line.planApproved,
+        status: line.status, error: line.error === true, lastError: line.lastError || null,
         inventory: [...(line.inventory || new Map()).values()].map((i) => ({
           id: i.id, kind: i.kind, name: i.name, by: i.by, ref: i.ref,
           keep: i.keep, status: i.status })),
@@ -1204,7 +1220,9 @@ function stopPlannerRun(line, runId, timers = {}) {
 
 function pump(line) {
   if (lifecycleTestHooks && lifecycleTestHooks.pump) lifecycleTestHooks.pump(line);
-  if (line.deleted || line.status === "running" || line.compacting || line.queue.length === 0) return;
+  if (line.deleted || (line.status === "running"
+    && (line.activePlannerRun || line.activePlannerRequest)) || line.compacting
+    || line.queue.length === 0) return;
   if (!line.context) line.context = newContextStats();
   // A session belongs to the harness that created it. After a pipeline
   // edit switched the planner harness, compact on the old harness first;
@@ -1233,9 +1251,8 @@ function pump(line) {
   const prompt = wrapPlannerTurn(turnText, { lineId: line.id, approved: line.planApproved,
     workdir: line.workdir });
   line.lastRun = text;
+  transitionPlannerStatus(line, "running", null, { broadcastState: false });
   saveLine(line);
-  line.status = "running";
-  broadcast(line, "status", { status: line.status });
   const t0 = Date.now();
   slog("info", "planner.run.start", { lineId: line.id, resume: !!line.sessionId, reseed,
     chars: text.length, prompt: preview(text, 400) });
@@ -1331,6 +1348,7 @@ function pump(line) {
     cleanupStage(line, "planner");
     saveLine(line);
     if (result !== "ok" && !intentionalStop) {
+      transitionPlannerStatus(line, "failed", failure, { broadcastState: false });
       broadcast(line, "error", { message: `Planner run failed. ${failure}` });
       if (isWake(line.lastRun)) {
         line.wakeRetries = line.wakeRetries || {};
@@ -1389,7 +1407,8 @@ function pump(line) {
     }
     line.lastRun = null;
     line.activePlannerRequest = null;
-    line.status = "idle";
+    if (result === "ok" && line.queue.length === 0) transitionPlannerStatus(line, "idle", null, { broadcastState: false });
+    else if (result === "ok") transitionPlannerStatus(line, "idle", null, { broadcastState: false });
     saveLine(line);
     broadcast(line, "state", dashboardStateForLine(line));
     broadcast(line, "status", { status: line.status });
@@ -1975,6 +1994,10 @@ const requestHandler = (req, res) => {
         } catch {}
       }
       const request = plannerRequest(text, null, null, body.text);
+      const previousStatus = line.status;
+      const shouldStart = previousStatus === "standby" || previousStatus === "idle"
+        || previousStatus === "attention" || previousStatus === "failed";
+      if (shouldStart) transitionPlannerStatus(line, "running", null, { broadcastState: false });
       const out = submitPrompt(line, request, {
         wasStarted, save: saveLine, pump,
         onQueued: () => {
@@ -1984,8 +2007,10 @@ const requestHandler = (req, res) => {
           // therefore see the same authoritative state as the 202 response.
           broadcast(line, "state", dashboardStateForLine(line));
         } });
-      if (out.status !== 202) console.error(`prompt rejected for line ${line.id}: ${out.body.error}`);
-      else {
+      if (out.status !== 202) {
+        if (shouldStart) transitionPlannerStatus(line, previousStatus, null, { broadcastState: false });
+        console.error(`prompt rejected for line ${line.id}: ${out.body.error}`);
+      } else {
         const entry = userEntry(body.text);
         appendTranscript(line.transcript, entry);
         broadcast(line, "entry", entry);
@@ -2854,7 +2879,9 @@ function loadLines() {
         repos: new Map((meta.repos || []).map((r) => [r.name,
           { name: r.name, url: r.url, path: r.path }])),
         workdir: path.join(LINES_DIR, entry.name),
-        status: started ? "idle" : "standby",
+        status: ["standby", "idle", "running", "attention", "failed"].includes(meta.status)
+          ? meta.status : (started ? "idle" : "standby"),
+        error: meta.error === true, lastError: meta.lastError || null,
         queue: restorePlannerRequests(meta.plannerQueue), activePlannerRequest: null,
         activePlannerRun: null, runId: null, stopPlannerRun,
         knownNoticeIds: restoreKnownNoticeIds(meta.knownNoticeIds),
@@ -2884,6 +2911,9 @@ function loadLines() {
         saveLine(line);
       }
       if (hadLegacyRequestIds) saveLine(line);
+      const resumable = !!activeRequest || line.queue.length > 0;
+      if (resumable) transitionPlannerStatus(line, "running", null, { broadcastState: false });
+      else if (!started) transitionPlannerStatus(line, "standby", null, { broadcastState: false });
       if (line.queue.length) pump(line);
     } catch {}
   }
