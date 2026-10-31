@@ -100,6 +100,23 @@ test("SSE reconnect snapshot keeps all graph nodes", () => {
   assert.equal(countWorkers(h), first); assert.ok(first >= 2);
 });
 
+test("state snapshots hydrate separate worker transcripts without duplication", () => {
+  const h = harness(), st = state(h, []); st.workerTranscripts = new Map([
+    ["impl", [{ text: "stale" }]], ["removed", [{ text: "old" }]],
+  ]);
+  const apply = stateFn(h), deps = { updateListEntry() {}, refreshPreview() {} };
+  const snapshot = { workers: [
+    { id: "impl", name: "impl", transcript: [{ text: "impl-1" }] },
+    { id: "v1", name: "validator", role: "validator", transcript: [{ text: "validator-1" }] },
+  ] };
+  apply(st, snapshot, deps);
+  apply(st, snapshot, deps);
+  st.workerTranscripts.get("impl").push({ text: "live" });
+  assert.deepEqual(st.workerTranscripts.get("impl").map((entry) => entry.text), ["impl-1", "live"]);
+  assert.deepEqual(st.workerTranscripts.get("v1").map((entry) => entry.text), ["validator-1"]);
+  assert.deepEqual(st.workerTranscripts.get("removed").map((entry) => entry.text), ["old"]);
+});
+
 function countNodes(h) { let n = 0; (function v(x) { n++; for (const c of x.children || []) v(c); })(h.graph); return n; }
 function sigHarness(payloadFor) {
   const h = harness(); let builds = 0;

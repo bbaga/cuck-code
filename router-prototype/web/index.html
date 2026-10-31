@@ -798,8 +798,10 @@ window.addEventListener("DOMContentLoaded", () => {
         if (previewSelectionExists(state.workers || [], savedPreview)) st.selected = savedPreview;
       } catch {}
     }
+    // A state snapshot is authoritative for each worker it contains.
+    // Copy entries so later worker_entry events append without mutating state.
     for (const w of state.workers || []) {
-      if (!st.workerTranscripts.has(w.id)) st.workerTranscripts.set(w.id, []);
+      st.workerTranscripts.set(w.id, Array.isArray(w.transcript) ? w.transcript.slice() : []);
     }
     if (typeof st.selected === "string" && st.selected.startsWith("preview:")) {
       if (!previewSelectionExists(state.workers || [], st.selected)) st.selected = null;
@@ -854,7 +856,7 @@ window.addEventListener("DOMContentLoaded", () => {
       const label = document.createElement("div");
       label.className = "liveLabel";
       label.textContent = "worker '" + (w ? w.name : st.selected)
-        + "' - live view (since page load)";
+        + "' - transcript";
       st.transcript.appendChild(label);
       for (const e of st.workerTranscripts.get(st.selected) || []) {
         st.transcript.appendChild(entryEl(e));
