@@ -54,6 +54,30 @@ bundling build; static validation is not a compile or integration test.
 Evidence validation requires `ffmpeg` on `PATH` or `EVIDENCE_FFMPEG`; it uses
 fixed arguments, one decoded frame, a timeout, and bounded output. Tests generate real media in temporary folders and fail when `ffmpeg` is missing.
 
+## Dashboard browser fixture
+
+A tester can serve the real dashboard page and the real server code on
+`127.0.0.1` with a fake planner child and a fake clock. No real planner or
+provider runs. Start it from `router-prototype/`:
+
+```
+PORT=0 node test/fixtures/dashboard-browser.js
+```
+
+`PORT` is optional; the default `0` selects a free port. The fixture prints
+the URL and stops on SIGINT or SIGTERM. It seeds one idle line.
+
+## Dashboard browser check
+
+This check opens the dashboard fixture in a real headless Chrome and reports JSON:
+
+```
+node test/fixtures/dashboard-browser-check.js
+```
+
+Exit codes: `0` pass, `1` fail, `3` no browser (`BROWSER_UNAVAILABLE`; not a pass).
+The `CHROME_BIN` variable sets the browser path. The default is Google Chrome on macOS.
+
 ## Planner and worker text handoff
 
 The router uses one text contract for a completed message: normalized entries

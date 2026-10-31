@@ -5,6 +5,9 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
+let spawnProcess = spawn;
+let lifecycleTestHooks = null;
+let timerApi = { setTimeout, clearTimeout };
 const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
   resolvePipeline, probeResultFor, piProviderDetail,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
@@ -26,7 +29,8 @@ const { recordRequestEntry, userEntry, isPromptEcho } = require("./transcript-ec
 const { recordedPlannerRequest, sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests, serializePlannerRequest, restoreKnownNoticeIds,
-  writeFileDurable, enqueuePlannerRequest, submitPrompt } = require("./planner-request");
+  queuedUserPromptProjection, writeFileDurable, enqueuePlannerRequest, submitPrompt,
+  cancelQueuedUserPrompt } = require("./planner-request");
 const { scopeFields } = require("./scope-fields");
 const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require("./evidence");
@@ -989,6 +993,8 @@ function dashboardStateForLine(line) {
     sessionId: line.sessionId, started: line.started,
     pipeline: resolvePipeline(line), pipelineOverrides: line.pipeline || null,
     transcript: line.transcript.slice(-50),
+    queuedUserPrompts: queuedUserPromptProjection(line.queue),
+    activePlannerRunId: line.runId || null,
     planApproved: line.planApproved,
     ...compactionFields(line),
     workers: [...line.workers.values()].map((w) => ({
@@ -1003,6 +1009,7 @@ function dashboardStateForLine(line) {
 }
 
 function broadcast(line, event, data) {
+  if (lifecycleTestHooks && lifecycleTestHooks.broadcast) lifecycleTestHooks.broadcast(line, event, data);
   dashboardLive.publish(event === "error" ? "line_error" : event, line.id, data);
   for (const res of line.clients) {
     try { sseSend(res, event, data); } catch {}
@@ -1010,6 +1017,7 @@ function broadcast(line, event, data) {
 }
 
 function saveLine(line) {
+  if (lifecycleTestHooks && lifecycleTestHooks.save) lifecycleTestHooks.save(line);
   if (line.deleted) return false;
   try {
     writeFileDurable(path.join(line.workdir, "line.json"),
@@ -1157,7 +1165,39 @@ function entryText(entry) {
   return messageText(entry);
 }
 
+function stopPlannerRun(line, runId, timers = {}) {
+  const run = line.activePlannerRun;
+  if (!run || run.runId !== runId || !line.child || line.status !== "running") {
+    return { ok: false, reason: "stale-or-idle" };
+  }
+  if (run.intentionalStop) return { ok: false, reason: "already-stopping" };
+  run.intentionalStop = true;
+  const setTimer = timers.setTimeout || timerApi.setTimeout;
+  const clearTimer = timers.clearTimeout || timerApi.clearTimeout;
+  const signal = (name) => {
+    let sent = false;
+    try { sent = line.child === run.child && run.child.kill(name) === true; } catch (error) {
+      broadcast(line, "error", { message: `Planner termination signal ${name} failed: ${error.message}` });
+    }
+    if (!sent) broadcast(line, "error", { message: `Planner termination signal ${name} was not accepted; the planner has not terminated.` });
+  };
+  signal("SIGTERM");
+  run.stopTimer = setTimer(() => {
+    if (line.activePlannerRun === run && line.child === run.child && line.status === "running") {
+      signal("SIGKILL");
+      run.errorTimer = setTimer(() => {
+        if (line.activePlannerRun === run && line.child === run.child && line.status === "running") {
+          broadcast(line, "error", { message: "Planner did not terminate after SIGTERM and SIGKILL. Stop it manually and retry." });
+        }
+      }, 2000);
+    }
+  }, 2000);
+  run.clearTimers = () => { clearTimer(run.stopTimer); clearTimer(run.errorTimer); };
+  return { ok: true, runId };
+}
+
 function pump(line) {
+  if (lifecycleTestHooks && lifecycleTestHooks.pump) lifecycleTestHooks.pump(line);
   if (line.deleted || line.status === "running" || line.compacting || line.queue.length === 0) return;
   if (!line.context) line.context = newContextStats();
   // A session belongs to the harness that created it. After a pipeline
@@ -1201,15 +1241,20 @@ function pump(line) {
   const plan = planPlannerRun(cfg, { prompt, workdir: line.workdir,
     sessionId: line.sessionId, autoApprove: AUTO_APPROVE });
   const adapter = plan.adapter;
-  const child = spawn(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
+  const child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, ...plan.env },
     ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
+  const runId = crypto.randomUUID();
+  const run = { runId, child, intentionalStop: false, stopTimer: null, errorTimer: null };
+  line.activePlannerRun = run;
+  line.runId = runId;
   line.child = child;
+  broadcast(line, "state", dashboardStateForLine(line));
 
   // Harnesses without a native time limit need the server to enforce it.
   let killTimer = null;
   if (!adapter.supportsNativeTimeLimit) {
-    killTimer = setTimeout(() => { try { child.kill("SIGTERM"); } catch {} },
+    killTimer = timerApi.setTimeout(() => { try { child.kill("SIGTERM"); } catch {} },
       cfg.timeLimit * 1000);
   }
 
@@ -1247,9 +1292,14 @@ function pump(line) {
   child.on("error", (err) => { spawnError = err; });
 
   child.on("close", (code, signal) => {
-    if (killTimer) clearTimeout(killTimer);
+    if (line.activePlannerRun !== run || line.child !== child) return;
+    if (killTimer) timerApi.clearTimeout(killTimer);
+    if (run.clearTimers) run.clearTimers();
     line.child = null;
+    line.activePlannerRun = null;
+    line.runId = null;
     if (line.deleted) return;
+    const intentionalStop = run.intentionalStop;
     for (const raw of stdoutRecords.finish()) consumePlannerRecord(raw);
     const finished = adapter.finalize();
     if (finished) {
@@ -1274,7 +1324,7 @@ function pump(line) {
     }
     cleanupStage(line, "planner");
     saveLine(line);
-    if (result !== "ok") {
+    if (result !== "ok" && !intentionalStop) {
       broadcast(line, "error", { message: `Planner run failed. ${failure}` });
       if (isWake(line.lastRun)) {
         line.wakeRetries = line.wakeRetries || {};
@@ -1295,7 +1345,7 @@ function pump(line) {
         }
       }
     }
-    if (result === "ok" && line.activePlannerRequest) {
+    if (!intentionalStop && result === "ok" && line.activePlannerRequest) {
       const request = line.activePlannerRequest;
       if (request.source) {
         const criteria = runOutput.text();
@@ -1335,6 +1385,7 @@ function pump(line) {
     line.activePlannerRequest = null;
     line.status = "idle";
     saveLine(line);
+    broadcast(line, "state", dashboardStateForLine(line));
     broadcast(line, "status", { status: line.status });
     pump(line);
   });
@@ -1868,7 +1919,8 @@ const requestHandler = (req, res) => {
         repos: new Map(),
         pipeline: body.pipeline || null,
         inventory: new Map(),
-        queue: [], clients: new Set(), transcript: [] };
+        queue: [], activePlannerRequest: null, activePlannerRun: null, runId: null,
+        stopPlannerRun, clients: new Set(), transcript: [] };
       lines.set(id, line);
       saveLine(line);
       dashboardLive.publish("line_created", id, lineSummary(line));
@@ -1877,6 +1929,22 @@ const requestHandler = (req, res) => {
       json(res, 201, { id, name });
     });
     return;
+  }
+
+  if (req.method === "DELETE" && parts[0] === "api" && parts[1] === "lines"
+    && parts[3] === "prompts" && parts.length === 5) {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    const result = cancelQueuedUserPrompt(line, parts[4]);
+    if (result.status === "unknown") return json(res, 404, { error: "unknown prompt request" });
+    if (result.status !== "cancellable") return json(res, 409, { error: `prompt request is ${result.status}` });
+    if (!saveLine(line)) {
+      line.queue.splice(result.index, 0, result.request);
+      return json(res, 500, { error: "could not save prompt cancellation" });
+    }
+    const state = dashboardStateForLine(line);
+    broadcast(line, "state", state);
+    return json(res, 200, { queuedUserPrompts: state.queuedUserPrompts });
   }
 
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "prompts") {
@@ -1900,16 +1968,23 @@ const requestHandler = (req, res) => {
           text = `PLAN FEEDBACK from the user: ${body.text}. Revise plan.md accordingly. Do not spawn workers yet.`;
         } catch {}
       }
-      const out = submitPrompt(line, plannerRequest(text, null, null, body.text), {
+      const request = plannerRequest(text, null, null, body.text);
+      const out = submitPrompt(line, request, {
         wasStarted, save: saveLine, pump,
-        onQueued: () => slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
-          prompt: preview(body.text, 2000) }) });
+        onQueued: () => {
+          slog("info", "line.prompt", { lineId: line.id, kind, chars: text.length,
+            prompt: preview(body.text, 2000) });
+          // Publish the persisted queue projection before pumping. Consumers
+          // therefore see the same authoritative state as the 202 response.
+          broadcast(line, "state", dashboardStateForLine(line));
+        } });
       if (out.status !== 202) console.error(`prompt rejected for line ${line.id}: ${out.body.error}`);
       else {
         const entry = userEntry(body.text);
         appendTranscript(line.transcript, entry);
         broadcast(line, "entry", entry);
       }
+      if (out.status === 202) out.body.requestId = request.id;
       json(res, out.status, out.body);
     });
     return;
@@ -1939,7 +2014,10 @@ const requestHandler = (req, res) => {
     line.deleted = true;
     line.queue.length = 0;
     const runningWorkers = [...line.workers.values()].filter((w) => w.child).length;
-    if (line.child) line.child.kill("SIGTERM");
+    if (line.child) {
+      if (line.activePlannerRun && line.activePlannerRun.clearTimers) line.activePlannerRun.clearTimers();
+      if (!(line.activePlannerRun && line.activePlannerRun.intentionalStop)) line.child.kill("SIGTERM");
+    }
     slog("info", "line.delete", { lineId: line.id, runningWorkers,
       plannerKilled: !!line.child });
     for (const w of line.workers.values()) {
@@ -2482,6 +2560,35 @@ const requestHandler = (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "interrupt"
+    && parts.length === 4) {
+    readBody(req, (err, body) => {
+      const keys = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body) : [];
+      if (err || keys.length !== 1 || keys[0] !== "runId" || typeof body.runId !== "string" || !body.runId.trim()) {
+        return json(res, 400, { error: "expected {runId} with a non-empty string runId" });
+      }
+      // Validation and stop run in one synchronous section: no await between them.
+      const line = lines.get(parts[2]);
+      if (!line) return json(res, 404, { error: "no such line" });
+      if (line.compacting) return json(res, 409, { error: "the planner is compacting - retry when it is idle" });
+      if (line.status !== "running") return json(res, 409, { error: "the planner is idle - nothing to interrupt" });
+      if (line.activePlannerRun && line.activePlannerRun.intentionalStop) {
+        return json(res, 409, { error: "the planner run is already stopping" });
+      }
+      if (!line.activePlannerRun || line.activePlannerRun.runId !== body.runId) {
+        return json(res, 409, { error: "runId is not the active planner run - refresh the line state and retry" });
+      }
+      const stop = stopPlannerRun(line, body.runId);
+      if (!stop.ok) {
+        return json(res, 409, { error: stop.reason === "already-stopping"
+          ? "the planner run is already stopping"
+          : "the planner run is no longer active - refresh the line state and retry" });
+      }
+      return json(res, 202, { runId: stop.runId });
+    });
+    return;
+  }
+
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "compact"
     && parts.length === 4) {
     const line = lines.get(parts[2]);
@@ -2730,6 +2837,8 @@ function loadLines() {
         inventory.set(i.id, { id: i.id, kind: i.kind, name: i.name, by: i.by,
           ref: i.ref, keep: !!i.keep, status: "stopped" });
       }
+      const hadLegacyRequestIds = (meta.plannerQueue || []).some((request) => !request || typeof request.id !== "string" || !request.id)
+        || (meta.activePlannerRequest && !meta.activePlannerRequest.id);
       const line = { id: meta.id, name: meta.name, sessionId: meta.sessionId,
         context: restoreContextStats(meta.context),
         handoff: typeof meta.handoff === "string" ? meta.handoff : null,
@@ -2741,6 +2850,7 @@ function loadLines() {
         workdir: path.join(LINES_DIR, entry.name),
         status: started ? "idle" : "standby",
         queue: restorePlannerRequests(meta.plannerQueue), activePlannerRequest: null,
+        activePlannerRun: null, runId: null, stopPlannerRun,
         knownNoticeIds: restoreKnownNoticeIds(meta.knownNoticeIds),
         started,
         planApproved: meta.planApproved === true, workers, inventory,
@@ -2748,10 +2858,11 @@ function loadLines() {
         pendingValidations: restorePendingValidations(meta.pendingValidations),
         clients: new Set(), transcript: [] };
       const activeRequest = restorePlannerRequest(meta.activePlannerRequest);
-      if (activeRequest && !line.queue.some((request) => request.text === activeRequest.text
-        && ((!request.source && !activeRequest.source)
-          || (request.source && activeRequest.source
-            && request.source.invocationId === activeRequest.source.invocationId)))) {
+      // An active request can also be present in the persisted queue when a
+      // save happened between dequeue and dispatch. Deduplicate only by its
+      // durable identity. Text is not an identity: two user submissions may
+      // be identical, and legacy records receive distinct IDs on restore.
+      if (activeRequest && !line.queue.some((request) => request.id === activeRequest.id)) {
         line.queue.unshift(activeRequest);
       }
       lines.set(meta.id, line);
@@ -2766,11 +2877,13 @@ function loadLines() {
           workers: (meta.workers || []).filter((w) => w.status === "running").map((w) => w.name) });
         saveLine(line);
       }
+      if (hadLegacyRequestIds) saveLine(line);
       if (line.queue.length) pump(line);
     } catch {}
   }
 }
 
+if (require.main === module) {
 loadLines();
 // Boot sweep: remove ONLY orphans - containers labeled for lines that no
 // longer exist (deleted while the router was down). Containers of
@@ -2810,3 +2923,10 @@ if (HTTPS_PORT) {
     slog("info", "server.https_listen", { port: HTTPS_PORT, protocol: "h2" });
   });
 }
+}
+
+module.exports = { stopPlannerRun, pump, dashboardStateForLine, requestHandler, lines,
+  createServer: () => server,
+  setSpawnForTest: (fn) => { spawnProcess = fn; },
+  setLifecycleHooksForTest: (hooks) => { lifecycleTestHooks = hooks; },
+  setTimerForTest: (clock) => { timerApi = clock || { setTimeout, clearTimeout }; } };

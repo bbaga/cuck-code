@@ -10,6 +10,8 @@ const {
   retryPlannerRequest,
   serializePlannerRequests,
   restorePlannerRequests,
+  queuedUserPromptProjection,
+  cancelQueuedUserPrompt,
 } = require("../planner-request");
 const { flushPendingValidationQueue } = require("../validation-queue");
 
@@ -17,6 +19,55 @@ function completedWorker(id, runId, invocationId, report) {
   return { id, name: id, status: "completed", runGeneration: runId,
     lastCompletedInvocationId: invocationId, lastRunText: report };
 }
+
+test("active and queued identical user prompts survive repeated restore with IDs", () => {
+  const active = plannerRequest("wrapped A", null, null, "same text");
+  const queued = plannerRequest("wrapped B", null, null, "same text");
+  let state = { activePlannerRequest: active, plannerQueue: [queued] };
+  for (let cycle = 0; cycle < 2; cycle++) {
+    const restoredActive = restorePlannerRequests([state.activePlannerRequest])[0];
+    const restoredQueue = restorePlannerRequests(state.plannerQueue);
+    assert.deepEqual(restoredQueue.map((request) => request.id), [queued.id]);
+    assert.equal(restoredActive.id, active.id);
+    assert.notEqual(restoredActive.id, restoredQueue[0].id);
+    state = { activePlannerRequest: restoredActive, plannerQueue: restoredQueue };
+  }
+});
+
+test("legacy active and queued identical prompts get separate durable IDs", () => {
+  const restored = restorePlannerRequests([{ text: "same", fromUser: true, userText: "same" },
+    { text: "same", fromUser: true, userText: "same" }]);
+  assert.equal(restored.length, 2);
+  assert.notEqual(restored[0].id, restored[1].id);
+});
+
+test("cancellation removes only the matching waiting user request", () => {
+  const first = plannerRequest("wrapped one", null, null, "same");
+  const internal = plannerRequest("internal");
+  const middle = plannerRequest("wrapped two", null, null, "same");
+  const last = plannerRequest("wrapped three", null, null, "last");
+  const line = { queue: [first, internal, middle, last], activePlannerRequest: null };
+  const result = cancelQueuedUserPrompt(line, middle.id);
+  assert.equal(result.status, "cancellable");
+  assert.deepEqual(line.queue.map((request) => request.id), [first.id, internal.id, last.id]);
+  assert.equal(cancelQueuedUserPrompt(line, middle.id).status, "unknown");
+  assert.equal(cancelQueuedUserPrompt(line, internal.id).status, "internal");
+  line.activePlannerRequest = first;
+  assert.equal(cancelQueuedUserPrompt(line, first.id).status, "active");
+});
+
+test("duplicate user text gets distinct IDs and safe projection hides internal requests", () => {
+  const first = plannerRequest("one", null, null, "same text");
+  const second = plannerRequest("two", null, null, "same text");
+  const internal = plannerRequest("internal");
+  const rows = queuedUserPromptProjection([first, internal, second]);
+  assert.notEqual(first.id, second.id);
+  assert.deepEqual(rows, [
+    { id: first.id, text: "same text", position: 1 },
+    { id: second.id, text: "same text", position: 2 },
+  ]);
+  assert.deepEqual(Object.keys(rows[0]).sort(), ["id", "position", "text"]);
+});
 
 function reportRequest(worker, invocationId, runId, report) {
   return implementorReportRequest(`IMPLEMENTOR REPORT for ${worker.id}: ${report}`,

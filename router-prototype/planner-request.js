@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { isSkipValidation } = require("./handoff");
 
 const NOTICE_ID_RE = /^[A-Za-z0-9:_.-]{1,128}$/;
@@ -18,9 +19,9 @@ function sourceIdentity({ workerId, invocationId, runId, report }) {
   return Object.freeze({ workerId, invocationId, runId, report });
 }
 
-function plannerRequest(text, source = null, noticeId = null, userText = null, recorded = false) {
+function plannerRequest(text, source = null, noticeId = null, userText = null, recorded = false, id = null) {
   const identity = source ? sourceIdentity(source) : null;
-  const request = { text, source: identity };
+  const request = { id: typeof id === "string" && id ? id : crypto.randomUUID(), text, source: identity };
   if (typeof userText === "string") {
     request.fromUser = true;
     request.userText = userText;
@@ -32,7 +33,7 @@ function plannerRequest(text, source = null, noticeId = null, userText = null, r
 
 function recordedPlannerRequest(request) {
   return plannerRequest(request.text, request.source, request.noticeId,
-    request.fromUser ? request.userText : null, true);
+    request.fromUser ? request.userText : null, true, request.id);
 }
 
 function implementorReportRequest(text, worker, invocation, report) {
@@ -48,7 +49,7 @@ function restorePlannerRequest(value) {
   if (!value || typeof value.text !== "string") return null;
   const userText = value.fromUser && typeof value.userText === "string" ? value.userText : null;
   return plannerRequest(value.text, value.source || null, value.noticeId, userText,
-    value.recorded === true);
+    value.recorded === true, value.id);
 }
 
 function completePlannerCriteria(request, criteria, {
@@ -92,7 +93,7 @@ function retryPlannerRequest(queue, request) {
 }
 
 function serializePlannerRequest(request) {
-  const out = { text: request.text, source: request.source || null };
+  const out = { id: request.id, text: request.text, source: request.source || null };
   if (validNoticeId(request.noticeId)) out.noticeId = request.noticeId;
   if (request.fromUser && typeof request.userText === "string") {
     out.fromUser = true;
@@ -112,6 +113,29 @@ function restorePlannerRequests(requests) {
   return Array.isArray(requests)
     ? requests.map(restorePlannerRequest).filter(Boolean)
     : [];
+}
+
+function cancelQueuedUserPrompt(line, requestId) {
+  if (!line || typeof requestId !== "string" || !requestId) return { status: "unknown" };
+  if (line.activePlannerRequest && line.activePlannerRequest.id === requestId) {
+    return { status: "active" };
+  }
+  const queue = Array.isArray(line.queue) ? line.queue : [];
+  const index = queue.findIndex((request) => request && request.id === requestId);
+  if (index < 0) return { status: "unknown" };
+  if (queue[index].fromUser !== true) return { status: "internal" };
+  const [request] = queue.splice(index, 1);
+  return { status: "cancellable", request, index };
+}
+
+function queuedUserPromptProjection(requests) {
+  let position = 0;
+  return (Array.isArray(requests) ? requests : []).reduce((rows, request) => {
+    if (request && request.fromUser === true) {
+      rows.push({ id: request.id, text: request.userText || request.text, position: ++position });
+    }
+    return rows;
+  }, []);
 }
 
 function restoreKnownNoticeIds(ids) {
@@ -200,4 +224,6 @@ module.exports = {
   retryPlannerRequest,
   serializePlannerRequests,
   restorePlannerRequests,
+  queuedUserPromptProjection,
+  cancelQueuedUserPrompt,
 };
