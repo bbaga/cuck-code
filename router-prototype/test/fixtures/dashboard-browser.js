@@ -53,9 +53,9 @@ async function startDashboardFixture({ port = 0 } = {}) {
     emitOutput(text) {
       const child = active();
       if (!child) throw new Error('no active fake child');
-      child.stdout.write(JSON.stringify({ type: 'assistant', session_id: 'fixture-session',
-        message: { id: `msg_${children.length}_${Date.now()}`, type: 'message', role: 'assistant',
-          content: [{ type: 'text', text: String(text) }] } }) + '\n');
+      // The seeded line uses the default vibe harness: one JSON message per line.
+      child.stdout.write(JSON.stringify({ type: 'message', role: 'assistant', content: String(text),
+        sessionId: 'fixture-session' }) + '\n');
     },
     closeActive(code = 0) {
       const child = active();

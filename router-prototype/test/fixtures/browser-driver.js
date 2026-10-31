@@ -42,15 +42,27 @@ async function openPage(url, options = {}) {
   let ws = null; let closing = null;
   const pending = new Map(); const seen = []; const blockedIds = new Set(); const urlById = new Map(); let nextId = 1;
   const exited = new Promise((r) => proc.once('exit', r));
+  const commandTimeoutMs = options.commandTimeoutMs || 15000;
+  const killGroup = () => { try { process.kill(-proc.pid, 'SIGKILL'); } catch { try { proc.kill('SIGKILL'); } catch {} } };
+  const onExit = () => { killGroup(); try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
+  const signalHandlers = ['SIGTERM', 'SIGINT'].map((sig) => {
+    const handler = () => {
+      onExit(); process.off(sig, handler);
+      // Re-raise only when no other handler would end the process.
+      if (process.listenerCount(sig) === 0) process.kill(process.pid, sig);
+    };
+    process.on(sig, handler);
+    return [sig, handler];
+  });
+  process.on('exit', onExit);
 
   function close() {
     if (closing) return closing;
     closing = (async () => {
+      for (const [sig, handler] of signalHandlers) process.off(sig, handler);
+      process.off('exit', onExit);
       try { if (ws) ws.close(); } catch {}
-      if (proc.exitCode === null) {
-        try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
-        await exited;
-      }
+      if (proc.exitCode === null) { killGroup(); await exited; }
       for (const { reject } of pending.values()) reject(new Error('page closed'));
       pending.clear();
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -60,7 +72,7 @@ async function openPage(url, options = {}) {
 
   try {
     const port = await readDevToolsPort(dir, proc);
-    const res = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' });
+    const res = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT', signal: AbortSignal.timeout(START_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`cannot open page target: HTTP ${res.status}`);
     const target = await res.json();
     ws = new WebSocket(target.webSocketDebuggerUrl);
@@ -79,9 +91,14 @@ async function openPage(url, options = {}) {
       } else if (msg.method === 'Network.loadingFailed' && msg.params.blockedReason) blockedIds.add(msg.params.requestId);
       else if (msg.method === 'Page.loadEventFired' && onLoad) onLoad();
     });
-    const send = (method, params = {}) => new Promise((resolve, reject) => {
-      const id = nextId++; pending.set(id, { resolve, reject });
-      ws.send(JSON.stringify({ id, method, params }));
+    const send = (method, params = {}, timeoutMs = commandTimeoutMs) => new Promise((resolve, reject) => {
+      const id = nextId++;
+      const timer = setTimeout(() => {
+        pending.delete(id); reject(new Error(`CDP ${method} timed out after ${timeoutMs} ms`));
+      }, timeoutMs);
+      pending.set(id, { resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); } });
+      try { ws.send(JSON.stringify({ id, method, params })); } catch (e) { pending.get(id).reject(e); pending.delete(id); }
     });
     for (const domain of ['Page', 'Runtime', 'Network']) await send(`${domain}.enable`);
     const loaded = new Promise((resolve, reject) => {
@@ -91,13 +108,22 @@ async function openPage(url, options = {}) {
     await send('Page.navigate', { url });
     await loaded;
 
-    async function evaluate(expression) {
-      const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+    async function evaluate(expression, timeoutMs) {
+      const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, timeoutMs);
       if (r.exceptionDetails) {
         const d = r.exceptionDetails;
         throw new Error((d.exception && (d.exception.description || d.exception.value)) || d.text);
       }
       return r.result.value;
+    }
+    async function waitFor(expression, { timeoutMs = 10000, intervalMs = 50 } = {}) {
+      const end = Date.now() + timeoutMs; let last;
+      while (Date.now() < end) {
+        try { last = await evaluate(expression, Math.min(commandTimeoutMs, Math.max(100, end - Date.now()))); if (last) return last; }
+        catch (e) { last = e.message; }
+        await sleep(intervalMs);
+      }
+      throw new Error(`waitFor timed out after ${timeoutMs} ms: ${expression} (last: ${JSON.stringify(last)})`);
     }
     async function press(key, { modifiers = 0, repeat = false } = {}) {
       const known = KEYS[key];
@@ -110,8 +136,8 @@ async function openPage(url, options = {}) {
     }
     const setViewport = (width, height) => send('Emulation.setDeviceMetricsOverride',
       { width, height, deviceScaleFactor: 1, mobile: false });
-    return { evaluate, press, setViewport, requests: () => [...seen],
-      blocked: () => [...blockedIds].map((id) => urlById.get(id)), close, browser: exe };
+    return { evaluate, waitFor, press, setViewport, requests: () => [...seen],
+      blocked: () => [...blockedIds].map((id) => urlById.get(id)), close, browser: exe, pid: proc.pid };
   } catch (err) {
     await close();
     throw err;
