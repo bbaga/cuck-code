@@ -54,6 +54,19 @@ test("planner rendering passes human intervention to the attention indicator", (
   assert.equal(attentionIndicator({ humanIntervention: true, error: true }), "error");
 });
 
+test("pipeline marker precedes the name and shares line-list state", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
+  assert.match(html, /head\.append\(dot, name,/);
+  assert.match(html, /for \(const marker of \[st\.dot, st\.entryDot\]\)/);
+  assert.match(html, /const indicator = pipelineUI\.attentionIndicator\(statusMarkerState\(st\)\)/);
+  assert.deepEqual([
+    attentionIndicator({ status: "idle" }),
+    attentionIndicator({ status: "running" }),
+    attentionIndicator({ attention: true }),
+    attentionIndicator({ status: "failed", attention: true }),
+  ], [null, null, "attention", "error"]);
+});
+
 test("pipeline markup supports wrapped names", () => {
   const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
   assert.match(html, /\.lineentry \.lname[^}]*overflow-wrap: anywhere/);
