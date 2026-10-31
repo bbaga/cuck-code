@@ -212,6 +212,13 @@
   .row { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #262b33; }
   .row textarea { flex: 1; min-width: 0; padding: 8px; background: #0d1014; color: inherit;
     border: 1px solid #2c333d; border-radius: 4px; resize: none; font: inherit; line-height: 1.35; }
+  .queuePane { padding: 8px 16px; border-top: 1px solid #262b33; font-size: .82rem; }
+  .queuePane ol { list-style: none; margin: 0; padding: 0; max-height: 160px; overflow-y: auto; }
+  .queuePane li { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; padding: 4px 0; }
+  .queuePane .qpos { color: #8b98a8; min-width: 1.5em; font-variant-numeric: tabular-nums; }
+  .queuePane .qtext { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; max-height: 4.5em; overflow-y: auto; }
+  .queuePane .qerr, .composerError { color: #f0a0a0; flex-basis: 100%; font-size: .78rem; }
+  .composerError { padding: 0 16px 8px; }
   .ctxMeter { align-self: center; font-size: .72rem; color: #6c7a8c; white-space: nowrap;
     font-variant-numeric: tabular-nums; }
   .ctxMeter.near { color: #e5a04b; }
@@ -295,7 +302,7 @@ window.addEventListener("DOMContentLoaded", () => {
     clearHarnessState, clearProviderState, shouldHideValidator,
     shouldShowIntegrationValidator, buildGraphLanes,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
-    evidencePollIsCurrent, promptKeyAction, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
+    evidencePollIsCurrent, promptKeyAction, acceptStateStamp, queueRowLabel, createDraftOwner, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
     formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator } = window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
@@ -976,18 +983,29 @@ window.addEventListener("DOMContentLoaded", () => {
     compactBtn.textContent = "Compact";
     compactBtn.hidden = true;
     row.append(input, send, ctxMeter, compactBtn);
+    const queuePane = document.createElement("div");
+    queuePane.className = "queuePane";
+    queuePane.setAttribute("role", "region");
+    queuePane.setAttribute("aria-label", "Waiting prompts");
+    queuePane.hidden = true;
+    const composerError = document.createElement("div");
+    composerError.className = "composerError";
+    composerError.setAttribute("role", "alert");
+    composerError.hidden = true;
     const procPane = document.createElement("div");
     procPane.className = "procPane";
     procPane.hidden = true;
     const evPane = document.createElement("div");
     evPane.className = "evPane";
     evPane.hidden = true;
-    card.append(head, planDetails, banner, plan, graphDetails, scopeDetails, previewPanel, transcriptWrap, chatHandle, row, procPane, evPane, pipePane);
+    card.append(head, planDetails, banner, plan, graphDetails, scopeDetails, previewPanel, transcriptWrap, queuePane, chatHandle, row, composerError, procPane, evPane, pipePane);
     linesEl.appendChild(card);
     setupLayoutResize({ lineId: line.id, card, graph, graphDetails, graphHandle, transcriptWrap, chatHandle });
 
     const st = { id: line.id, dot, banner, transcript, transcriptWrap, scrollBottomBtn, input, send,
-      ctxMeter, compactBtn, plannerCtx: null,
+      ctxMeter, compactBtn, plannerCtx: null, queuePane, composerError,
+      stamp: null, draft: createDraftOwner(), submitting: false, cancelling: new Set(),
+      queueErrors: new Map(), queued: [],
       waiting, planBody, graph, graphDetails, graphHandle, chatHandle, previewPanel, approveBtn, badge, planDetails, planControls: controls,
       pipePane, tabPipeBtn, pipeForm, pipePresets, pipeEffective,
       pipeline: line.pipeline || null, pipelineOverrides: line.pipelineOverrides || null,
@@ -1034,7 +1052,6 @@ window.addEventListener("DOMContentLoaded", () => {
     const setStatus = (status) => {
       st.plannerStatus = status;
       updateStatusMarker(st);
-      input.disabled = send.disabled = status === "running";
       if (st.started) {
         input.placeholder = (st.planContent && !st.approved)
           ? "Plan proposed - type feedback here" : "Send a prompt";
@@ -1093,6 +1110,12 @@ window.addEventListener("DOMContentLoaded", () => {
 
     st.handlers = {
       state(state) {
+        if (state.stateEpoch !== undefined || state.stateRevision !== undefined) {
+          const stamp = { epoch: state.stateEpoch, revision: state.stateRevision };
+          if (!acceptStateStamp(st.stamp, stamp)) return;
+          st.stamp = stamp;
+        }
+        if (Array.isArray(state.queuedUserPrompts)) setQueue(st, state.queuedUserPrompts);
         st.plannerTranscript = state.transcript || [];
         st.approved = !!state.planApproved;
         st.plannerCtx = state.context ? { context: state.context, compacting: !!state.compacting,
@@ -1194,22 +1217,39 @@ window.addEventListener("DOMContentLoaded", () => {
     };
     const post = async () => {
       const text = input.value.trim();
-      if (!text) return;
-      const response = await fetch("/api/lines/" + st.id + "/prompts", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (!response.ok) return;
-      input.value = "";
-      input.style.height = "";
-      input.style.overflowY = "hidden";
-      if (!st.started) {
-        st.started = true;
-        input.placeholder = "Send a prompt";
+      if (!text || st.submitting) return;
+      const ticket = st.draft.begin(text);
+      st.submitting = true;
+      try {
+        const response = await fetch("/api/lines/" + st.id + "/prompts", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (cards.get(st.id) !== st) return;
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        await response.json().catch(() => null);
+        if (cards.get(st.id) !== st) return;
+        if (st.draft.canClear(ticket, input.value)) {
+          input.value = "";
+          input.style.height = "";
+          input.style.overflowY = "hidden";
+        }
+        composerError.hidden = true;
+        // The 202 stamp is not stored: the stream state with the same revision may arrive later.
+        if (!st.started) {
+          st.started = true;
+          input.placeholder = "Send a prompt";
+        }
+      } catch {
+        if (cards.get(st.id) !== st) return;
+        composerError.textContent = "Could not send the prompt. Your text is kept.";
+        composerError.hidden = false;
+      } finally {
+        st.submitting = false;
       }
     };
     send.addEventListener("click", post);
-    input.addEventListener("input", growInput);
+    input.addEventListener("input", () => { st.draft.touch(); composerError.hidden = true; growInput(); });
     input.addEventListener("keydown", (e) => {
       const action = promptKeyAction(e);
       if (action === "send") { e.preventDefault(); post(); }
@@ -1239,6 +1279,79 @@ window.addEventListener("DOMContentLoaded", () => {
     cards.set(line.id, st);
     updateListEntry(st);
     if (selectedLine === null) selectLine(line.id);
+  }
+
+  function setQueue(st, list) {
+    st.queued = list;
+    const ids = new Set(list.map((r) => r.id));
+    for (const id of [...st.cancelling]) if (!ids.has(id)) st.cancelling.delete(id);
+    for (const id of [...st.queueErrors.keys()]) if (!ids.has(id)) st.queueErrors.delete(id);
+    renderQueue(st);
+  }
+
+  function renderQueue(st) {
+    const pane = st.queuePane;
+    pane.textContent = "";
+    pane.hidden = st.queued.length === 0 || st.tab !== "line";
+    if (st.queued.length === 0) return;
+    const ol = document.createElement("ol");
+    for (const row of st.queued) {
+      const li = document.createElement("li");
+      const pos = document.createElement("span");
+      pos.className = "qpos";
+      pos.textContent = row.position + ".";
+      const text = document.createElement("span");
+      text.className = "qtext";
+      text.textContent = row.text;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "Cancel";
+      btn.setAttribute("aria-label", queueRowLabel(row));
+      btn.disabled = st.cancelling.has(row.id);
+      btn.addEventListener("click", () => cancelQueued(st, row));
+      li.append(pos, text, btn);
+      if (st.queueErrors.has(row.id)) {
+        const err = document.createElement("div");
+        err.className = "qerr";
+        err.setAttribute("role", "alert");
+        err.textContent = st.queueErrors.get(row.id);
+        li.append(err);
+      }
+      ol.append(li);
+    }
+    pane.append(ol);
+  }
+
+  async function cancelQueued(st, row) {
+    const id = row.id;
+    if (st.cancelling.has(id)) return;
+    st.cancelling.add(id);
+    st.queueErrors.delete(id);
+    renderQueue(st);
+    let failed = true;
+    try {
+      const res = await fetch("/api/lines/" + st.id + "/prompts/" + encodeURIComponent(id), { method: "DELETE" });
+      if (cards.get(st.id) !== st) return;
+      if (res.ok) {
+        failed = false;
+        const body = await res.json().catch(() => null);
+        if (cards.get(st.id) !== st) return;
+        const stamp = body && { epoch: body.stateEpoch, revision: body.stateRevision };
+        if (stamp && Array.isArray(body.queuedUserPrompts) && acceptStateStamp(st.stamp, stamp)) {
+          st.stamp = stamp;
+          st.cancelling.delete(id);
+          setQueue(st, body.queuedUserPrompts);
+          return;
+        }
+      }
+    } catch {}
+    if (cards.get(st.id) !== st) return;
+    st.cancelling.delete(id);
+    if (failed) {
+      st.queueErrors.set(id, "Could not cancel: the prompt may have started.");
+      refreshStream();
+    }
+    renderQueue(st);
   }
 
   function removeCard(id) {
@@ -1316,6 +1429,7 @@ window.addEventListener("DOMContentLoaded", () => {
     for (const el of [st.plan, st.planDetails, st.graphDetails, st.previewPanel, st.transcriptWrap, st.chatHandle, st.row]) {
       el.hidden = tab !== "line";
     }
+    renderQueue(st);
     st.procPane.hidden = tab !== "processes";
     st.evPane.hidden = tab !== "evidence";
     st.pipePane.hidden = tab !== "pipeline";
@@ -1984,32 +2098,46 @@ window.addEventListener("DOMContentLoaded", () => {
     if (id) selectLine(id);
   });
 
-  const dashboardStream = new EventSource("/api/events");
-  dashboardStream.addEventListener("dashboard", (e) => {
-    let envelope;
-    try { envelope = JSON.parse(e.data); } catch { return; }
-    if (!envelope || envelope.version !== 1) return;
-    if (envelope.type === "snapshot_begin") {
-      const present = new Set((envelope.data.lines || []).map((line) => line.id));
-      for (const id of [...cards.keys()]) if (!present.has(id)) removeCard(id);
-      for (const line of envelope.data.lines || []) if (!cards.has(line.id)) addCard(line);
-      return;
-    }
-    if (envelope.type === "line_created") {
-      if (!cards.has(envelope.lineId)) addCard(envelope.data);
-      return;
-    }
-    if (envelope.type === "line_deleted") {
-      removeCard(envelope.lineId || envelope.data.id);
-      return;
-    }
-    const st = cards.get(envelope.lineId);
-    const handler = st && st.handlers && st.handlers[envelope.type];
-    if (handler) handler(envelope.data);
-  });
-  dashboardStream.addEventListener("error", () => {
-    // EventSource reconnects automatically; do not present a transport failure as a line error.
-  });
+  let dashboardStream = null;
+  let lastStreamRefresh = 0;
+  function openStream() {
+    const stream = new EventSource("/api/events");
+    dashboardStream = stream;
+    stream.addEventListener("dashboard", (e) => {
+      let envelope;
+      try { envelope = JSON.parse(e.data); } catch { return; }
+      if (!envelope || envelope.version !== 1) return;
+      if (envelope.type === "snapshot_begin") {
+        const present = new Set((envelope.data.lines || []).map((line) => line.id));
+        for (const id of [...cards.keys()]) if (!present.has(id)) removeCard(id);
+        for (const line of envelope.data.lines || []) if (!cards.has(line.id)) addCard(line);
+        return;
+      }
+      if (envelope.type === "line_created") {
+        if (!cards.has(envelope.lineId)) addCard(envelope.data);
+        return;
+      }
+      if (envelope.type === "line_deleted") {
+        removeCard(envelope.lineId || envelope.data.id);
+        return;
+      }
+      const st = cards.get(envelope.lineId);
+      const handler = st && st.handlers && st.handlers[envelope.type];
+      if (handler) handler(envelope.data);
+    });
+    stream.addEventListener("error", () => {
+      // EventSource reconnects automatically; do not present a transport failure as a line error.
+    });
+  }
+  // Reconnect so the server sends fresh state for every line. At most once each 2 seconds.
+  function refreshStream() {
+    const now = Date.now();
+    if (now - lastStreamRefresh < 2000) return;
+    lastStreamRefresh = now;
+    if (dashboardStream) dashboardStream.close();
+    openStream();
+  }
+  openStream();
   refresh();
   setInterval(pollPlans, 3000);
   setInterval(pollInventory, 3000);
