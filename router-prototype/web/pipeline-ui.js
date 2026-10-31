@@ -537,6 +537,36 @@
     return null;
   }
 
+  // Detects two quick unmodified, non-repeat Escape presses. The caller injects the clock.
+  function createEscapeDetector(windowMs = 600) {
+    let armedAt = null;
+    return {
+      reset() { armedAt = null; },
+      step(event, nowMs, eligible) {
+        const none = { trigger: false };
+        if (!eligible || !event || event.isComposing || event.keyCode === 229 || event.key !== "Escape"
+          || event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) { armedAt = null; return none; }
+        if (event.repeat) return none;
+        if (armedAt !== null && nowMs - armedAt >= 0 && nowMs - armedAt <= windowMs) {
+          armedAt = null;
+          return { trigger: true };
+        }
+        armedAt = nowMs;
+        return none;
+      },
+    };
+  }
+
+  function interruptEligibility(st) {
+    return Boolean(st) && st.plannerStatus === "running" && typeof st.activePlannerRunId === "string"
+      && st.activePlannerRunId !== "" && !(st.plannerCtx && st.plannerCtx.compacting)
+      && !st.stopPending && st.tab === "line";
+  }
+
+  function interruptOutcome(statusCode) {
+    return { 202: "pending", 409: "stale", 404: "gone", 400: "bad" }[statusCode] || "failed";
+  }
+
   function evidenceShift(st, delta) {
     const response = st.evidenceResponse;
     const view = st.evidenceView;
@@ -800,6 +830,9 @@
     fetchLinePreview,
     sanitizePreviewCommand,
     promptKeyAction,
+    createEscapeDetector,
+    interruptEligibility,
+    interruptOutcome,
     acceptStateStamp,
     queueRowLabel,
     createDraftOwner,

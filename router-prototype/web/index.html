@@ -212,6 +212,9 @@
   .row { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #262b33; }
   .row textarea { flex: 1; min-width: 0; padding: 8px; background: #0d1014; color: inherit;
     border: 1px solid #2c333d; border-radius: 4px; resize: none; font: inherit; line-height: 1.35; }
+.stopStatus { display: flex; gap: 8px; align-items: center; padding: 6px 16px; border-top: 1px solid #262b33; font-size: .82rem; color: #8fa3bd; }
+  .stopStatus[role="alert"] { color: #f0a0a0; }
+  .stopStatus button { margin-left: auto; padding: 2px 8px; font-size: .75rem; }
   .queuePane { padding: 8px 16px; border-top: 1px solid #262b33; font-size: .82rem; }
   .queuePane ol { list-style: none; margin: 0; padding: 0; max-height: 160px; overflow-y: auto; }
   .queuePane li { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; padding: 4px 0; }
@@ -302,7 +305,7 @@ window.addEventListener("DOMContentLoaded", () => {
     clearHarnessState, clearProviderState, shouldHideValidator,
     shouldShowIntegrationValidator, buildGraphLanes,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
-    evidencePollIsCurrent, promptKeyAction, acceptStateStamp, queueRowLabel, createDraftOwner, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
+    evidencePollIsCurrent, promptKeyAction, createEscapeDetector, interruptEligibility, interruptOutcome, acceptStateStamp, queueRowLabel, createDraftOwner, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
     formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator } = window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
@@ -988,6 +991,9 @@ window.addEventListener("DOMContentLoaded", () => {
     queuePane.setAttribute("role", "region");
     queuePane.setAttribute("aria-label", "Waiting prompts");
     queuePane.hidden = true;
+    const stopStatus = document.createElement("div");
+    stopStatus.className = "stopStatus";
+    stopStatus.hidden = true;
     const composerError = document.createElement("div");
     composerError.className = "composerError";
     composerError.setAttribute("role", "alert");
@@ -998,12 +1004,13 @@ window.addEventListener("DOMContentLoaded", () => {
     const evPane = document.createElement("div");
     evPane.className = "evPane";
     evPane.hidden = true;
-    card.append(head, planDetails, banner, plan, graphDetails, scopeDetails, previewPanel, transcriptWrap, queuePane, chatHandle, row, composerError, procPane, evPane, pipePane);
+    card.append(head, planDetails, banner, plan, graphDetails, scopeDetails, previewPanel, transcriptWrap, stopStatus, queuePane, chatHandle, row, composerError, procPane, evPane, pipePane);
     linesEl.appendChild(card);
     setupLayoutResize({ lineId: line.id, card, graph, graphDetails, graphHandle, transcriptWrap, chatHandle });
 
     const st = { id: line.id, dot, banner, transcript, transcriptWrap, scrollBottomBtn, input, send,
-      ctxMeter, compactBtn, plannerCtx: null, queuePane, composerError,
+      ctxMeter, compactBtn, plannerCtx: null, queuePane, composerError, stopStatus,
+      activePlannerRunId: null, stopPending: null, stopMessage: null,
       stamp: null, draft: createDraftOwner(), submitting: false, cancelling: new Set(),
       queueErrors: new Map(), queued: [],
       waiting, planBody, graph, graphDetails, graphHandle, chatHandle, previewPanel, approveBtn, badge, planDetails, planControls: controls,
@@ -1115,6 +1122,11 @@ window.addEventListener("DOMContentLoaded", () => {
           if (!acceptStateStamp(st.stamp, stamp)) return;
           st.stamp = stamp;
         }
+        if ("activePlannerRunId" in state) st.activePlannerRunId = state.activePlannerRunId || null;
+        if (st.stopPending && ((state.status !== undefined && state.status !== "running")
+          || st.activePlannerRunId !== st.stopPending.runId)) st.stopPending = null;
+        if (!st.stopPending && (!st.stopMessage || st.stopMessage.kind === "status"
+          || st.stopMessage.runId !== st.activePlannerRunId)) setStopMessage(st, null);
         if (Array.isArray(state.queuedUserPrompts)) setQueue(st, state.queuedUserPrompts);
         st.plannerTranscript = state.transcript || [];
         st.approved = !!state.planApproved;
@@ -1188,7 +1200,10 @@ window.addEventListener("DOMContentLoaded", () => {
         if (st.selected !== null && !st.workers.has(st.selected)) selectNode(st, null);
         renderGraph(st); updateListEntry(st);
       },
-      line_error({ message }) { if (message) showError(message); },
+      line_error({ message }) {
+        if (message) showError(message);
+        if (message && st.stopPending) { st.stopPending = null; setStopMessage(st, { kind: "alert", text: message }); }
+      },
       pipeline({ pipeline, overrides }) {
         const changed = JSON.stringify(overrides || null) !== JSON.stringify(st.pipelineOverrides || null);
         st.pipeline = pipeline;
@@ -1354,6 +1369,70 @@ window.addEventListener("DOMContentLoaded", () => {
     renderQueue(st);
   }
 
+  // The stop message is independent of composerError and the queue. textContent only.
+  function setStopMessage(st, msg) {
+    const box = st.stopStatus;
+    st.stopMessage = msg ? { ...msg, runId: st.activePlannerRunId } : null;
+    box.textContent = "";
+    box.hidden = !msg;
+    if (!msg) { box.removeAttribute("role"); return; }
+    box.setAttribute("role", msg.kind === "alert" ? "alert" : "status");
+    const text = document.createElement("span");
+    text.textContent = msg.text;
+    box.appendChild(text);
+    if (msg.kind === "alert") {
+      const dismiss = document.createElement("button");
+      dismiss.type = "button";
+      dismiss.textContent = "Dismiss";
+      dismiss.addEventListener("click", () => setStopMessage(st, null));
+      box.appendChild(dismiss);
+    }
+  }
+
+  async function sendInterrupt(st) {
+    const target = st;
+    const runId = st.activePlannerRunId;
+    target.stopPending = { runId };
+    setStopMessage(target, { kind: "status", text: "Stopping the planner run..." });
+    let code = 0;
+    try {
+      const res = await fetch("/api/lines/" + target.id + "/interrupt", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ runId }) });
+      code = res.status;
+    } catch {}
+    if (cards.get(target.id) !== target) return;
+    const outcome = interruptOutcome(code);
+    if (outcome === "pending") {
+      if (target.stopPending) setStopMessage(target, { kind: "status", text: "Stopping the planner run..." });
+      return;
+    }
+    target.stopPending = null;
+    const text = { stale: "The planner run has changed or is not running. Press Escape twice again to stop the current run.",
+      gone: "This line no longer exists.", bad: "The stop request was rejected.",
+      failed: "Could not stop the planner run." }[outcome];
+    setStopMessage(target, { kind: "alert", text });
+    if (outcome === "stale" || outcome === "gone") refreshStream();
+  }
+
+  // One page-wide detector. Overlays consume Escape first.
+  const escapeDetector = createEscapeDetector(600);
+  const resetEscape = () => escapeDetector.reset();
+  document.addEventListener("keydown", (event) => {
+    const st = cards.get(selectedLine);
+    if (!st) return;
+    if (st.evidenceLightbox || !createPanel.hidden) { resetEscape(); return; }
+    const now = event.timeStamp > 0 ? event.timeStamp : performance.now();
+    if (escapeDetector.step(event, now, interruptEligibility(st)).trigger) {
+      event.preventDefault();
+      resetEscape();
+      sendInterrupt(st);
+    }
+  }, true);
+  window.addEventListener("blur", resetEscape);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") resetEscape(); });
+  document.addEventListener("compositionstart", resetEscape, true);
+  document.addEventListener("compositionend", resetEscape, true);
+
   function removeCard(id) {
     const st = cards.get(id);
     if (st) {
@@ -1458,6 +1537,7 @@ window.addEventListener("DOMContentLoaded", () => {
   function selectLine(id) {
     registryToggle.hide();
     selectedLine = id;
+    resetEscape();
     for (const st of cards.values()) {
       const show = st.id === id;
       st.card.style.display = show ? "flex" : "none";
