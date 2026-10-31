@@ -1,7 +1,10 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
 const { clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize } = require("../web/pipeline-ui.js");
+
+const page = fs.readFileSync(require.resolve("../web/index.html"), "utf8");
 
 const memory = (init = {}) => {
   const m = new Map(Object.entries(init));
@@ -61,4 +64,11 @@ test("chatMaxHeight equals the window height with a floor", () => {
   assert.equal(chatMaxHeight(800), 800);
   assert.equal(chatMaxHeight(50), 120);
   assert.equal(chatMaxHeight(undefined), 120);
+});
+
+test("pipeline content stays inside a horizontally scrolling panel", () => {
+  assert.match(page, /#lines \{[^}]*min-width: 0;/s);
+  assert.match(page, /\.card \{[^}]*min-width: 0;/s);
+  assert.match(page, /\.pipePane \{[^}]*min-width: 0;[^}]*overflow-x: auto;/s);
+  assert.match(page, /\.pipePane \.pipeCfg \{[^}]*min-width: max-content;/s);
 });
