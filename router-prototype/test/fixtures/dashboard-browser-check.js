@@ -1,5 +1,4 @@
 'use strict';
-// Real-browser smoke check of the dashboard fixture. Exit 0 pass, 1 fail, 3 no browser.
 const { startDashboardFixture } = require('./dashboard-browser');
 const { openPage } = require('./browser-driver');
 

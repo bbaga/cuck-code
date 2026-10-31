@@ -1,7 +1,5 @@
 'use strict';
-// Serves the real dashboard and server code on 127.0.0.1 with a fake planner
-// child and a fake clock, so a browser can test the queue, cancel and
-// interrupt controls without a real planner or provider call.
+// Real dashboard and server on 127.0.0.1 with a fake planner child and fake clock.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');

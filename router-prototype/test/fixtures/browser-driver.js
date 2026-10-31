@@ -1,5 +1,4 @@
 'use strict';
-// Minimal headless Chrome driver over the DevTools Protocol. Built-in APIs only.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
