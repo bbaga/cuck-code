@@ -1407,8 +1407,9 @@ function pump(line) {
     }
     line.lastRun = null;
     line.activePlannerRequest = null;
-    if (result === "ok" && line.queue.length === 0) transitionPlannerStatus(line, "idle", null, { broadcastState: false });
-    else if (result === "ok") transitionPlannerStatus(line, "idle", null, { broadcastState: false });
+    if (result === "ok" && line.queue.length === 0) {
+      transitionPlannerStatus(line, !line.planApproved ? "attention" : "idle", null, { broadcastState: false });
+    } else if (result === "ok") transitionPlannerStatus(line, "idle", null, { broadcastState: false });
     saveLine(line);
     broadcast(line, "state", dashboardStateForLine(line));
     broadcast(line, "status", { status: line.status });
@@ -2914,6 +2915,7 @@ function loadLines() {
       const resumable = !!activeRequest || line.queue.length > 0;
       if (resumable) transitionPlannerStatus(line, "running", null, { broadcastState: false });
       else if (!started) transitionPlannerStatus(line, "standby", null, { broadcastState: false });
+      else if (line.status === "running") transitionPlannerStatus(line, "idle", null, { broadcastState: false });
       if (line.queue.length) pump(line);
     } catch {}
   }
