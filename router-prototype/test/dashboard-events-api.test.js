@@ -33,6 +33,58 @@ function openStream(base) {
   });
 }
 
+test("restart recovers stale running lines and persists idle state", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-stale-running-"));
+  const { child, base } = await start(root);
+  const created = await fetch(base + "/api/lines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "stale" }) });
+  const stale = await created.json();
+  const staleDir = path.join(root, stale.id);
+  const persisted = JSON.parse(fs.readFileSync(path.join(staleDir, "line.json")));
+  persisted.started = true; persisted.status = "running"; persisted.plannerQueue = []; persisted.activePlannerRequest = null;
+  fs.writeFileSync(path.join(staleDir, "line.json"), JSON.stringify(persisted));
+  child.kill("SIGTERM");
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("server did not terminate cleanly")), 3000);
+    child.once("exit", () => { clearTimeout(timer); resolve(); });
+  });
+  const restarted = await start(root);
+  t.after(() => { restarted.child.kill("SIGTERM"); fs.rmSync(root, { recursive: true, force: true }); });
+  let lines;
+  for (let i = 0; i < 100; i++) {
+    lines = (await (await fetch(restarted.base + "/api/lines")).json()).lines;
+    if (lines.find((line) => line.id === stale.id)?.status === "idle") break;
+    await wait(25);
+  }
+  assert.equal(lines.find((line) => line.id === stale.id).status, "idle");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(staleDir, "line.json"))).status, "idle");
+  restarted.child.kill("SIGKILL");
+  await wait(100);
+  const second = await start(root);
+  t.after(() => { second.child.kill("SIGKILL"); fs.rmSync(root, { recursive: true, force: true }); });
+  const secondLines = (await (await fetch(second.base + "/api/lines")).json()).lines;
+  assert.equal(secondLines.find((line) => line.id === stale.id).status, "idle");
+});
+
+test("completed planner wait for approval publishes and persists attention", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-attention-"));
+  const bin = path.join(root, "bin"); fs.mkdirSync(bin, { recursive: true });
+  const fake = path.join(bin, "vibe"); fs.writeFileSync(fake, "#!/bin/sh\nexit 0\n"); fs.chmodSync(fake, 0o755);
+  const { child, base } = await start(root, { PATH: `${bin}:${process.env.PATH}` });
+  t.after(() => { child.kill("SIGTERM"); fs.rmSync(root, { recursive: true, force: true }); });
+  const created = await fetch(base + "/api/lines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "needs approval" }) });
+  const line = await created.json();
+  const result = await fetch(`${base}/api/lines/${line.id}/prompts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "create the plan" }) });
+  assert.equal(result.status, 202);
+  for (let i = 0; i < 100; i++) {
+    const current = (await (await fetch(base + "/api/lines")).json()).lines.find((item) => item.id === line.id);
+    if (current.status === "attention") break;
+    await wait(25);
+  }
+  const current = (await (await fetch(base + "/api/lines")).json()).lines.find((item) => item.id === line.id);
+  assert.equal(current.status, "attention");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, line.id, "line.json"))).status, "attention");
+});
+
 test("shared dashboard stream bootstraps and publishes line lifecycle events", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-events-api-"));
   const { child, base } = await start(root);
