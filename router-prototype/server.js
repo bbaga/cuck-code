@@ -2729,7 +2729,7 @@ When done, reply with a report: what you changed, files changed, how you verifie
   }
 
   if (req.method === "GET" && (url.pathname === "/pipeline-ui.js" || url.pathname === "/registry-ui.js"
-    || url.pathname === "/registry-ui-extra.js"
+    || url.pathname === "/markdown-renderer.js" || url.pathname === "/registry-ui-extra.js"
     || url.pathname === "/registry-line.js")) {
     try {
       res.writeHead(200, { "Content-Type": "application/javascript" });

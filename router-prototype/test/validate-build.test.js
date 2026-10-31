@@ -12,7 +12,7 @@ function fixture() {
   for (const file of [
     "server.js", "harness.js", "pipeline-config.js", "planner-turn.js", "spawn-plan.js",
     "handoff.js", "jsonl.js", "validation-queue.js", "planner-request.js",
-    "web/pipeline-ui.js", "web/registry-ui.js", "web/registry-ui-extra.js", "web/registry-line.js", "web/index.html",
+    "web/pipeline-ui.js", "web/markdown-renderer.js", "web/registry-ui.js", "web/registry-ui-extra.js", "web/registry-line.js", "web/index.html",
   ]) {
     const filename = path.join(root, file);
     fs.mkdirSync(path.dirname(filename), { recursive: true });
@@ -37,7 +37,7 @@ function withFixture(run) {
 
 test("accepts valid production scripts, inline scripts, and local assets", () => {
   withFixture((root) => {
-    assert.equal(validateBuild(root).length, 15);
+    assert.equal(validateBuild(root).length, 16);
   });
 });
 
@@ -59,5 +59,19 @@ test("rejects missing required local web assets", () => {
   withFixture((root) => {
     fs.rmSync(path.join(root, "web/pipeline-ui.js"));
     assert.throws(() => validateBuild(root), /Missing required web asset: web\/pipeline-ui\.js/);
+  });
+});
+
+test("rejects a missing registry line asset", () => {
+  withFixture((root) => {
+    fs.rmSync(path.join(root, "web/registry-line.js"));
+    assert.throws(() => validateBuild(root), /Missing required web asset: web\/registry-line\.js/);
+  });
+});
+
+test("rejects a missing markdown renderer asset", () => {
+  withFixture((root) => {
+    fs.rmSync(path.join(root, "web/markdown-renderer.js"));
+    assert.throws(() => validateBuild(root), /Missing required web asset: web\/markdown-renderer\.js/);
   });
 });

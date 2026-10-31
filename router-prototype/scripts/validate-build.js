@@ -16,11 +16,12 @@ const PRODUCTION_SCRIPTS = [
   "validation-queue.js",
   "planner-request.js",
   "web/pipeline-ui.js",
+  "web/markdown-renderer.js",
   "web/registry-ui.js",
   "web/registry-ui-extra.js",
   "web/registry-line.js",
 ];
-const REQUIRED_WEB_ASSETS = ["web/index.html", "web/pipeline-ui.js", "web/registry-ui.js", "web/registry-ui-extra.js", "web/registry-line.js"];
+const REQUIRED_WEB_ASSETS = ["web/index.html", "web/pipeline-ui.js", "web/markdown-renderer.js", "web/registry-ui.js", "web/registry-ui-extra.js", "web/registry-line.js"];
 
 function parseJavaScript(source, filename) {
   try {
