@@ -17,6 +17,8 @@
     border-radius: 4px; cursor: pointer; font-size: .8rem; }
   .tabBtn.active { background: #182335; color: #d8dee6; outline: 1px solid #2d6cdf; }
   .procPane { flex: 1; overflow-y: auto; padding: 12px 16px; font-size: .78rem; }
+  .workPane label { display: block; margin: 6px 0; }
+  .workPane label > input, .workPane label > select, .workPane label > textarea { margin-left: 8px; }
   .evPane { flex: 1; overflow-y: auto; padding: 12px 16px; }
   .evCase { margin-bottom: 24px; }
   .evCase .uc { font-size: 1rem; margin-bottom: 6px; color: #d8dee6; }
@@ -64,9 +66,9 @@
   button { padding: 8px 14px; background: #2d6cdf; color: #fff; border: 0;
     border-radius: 4px; cursor: pointer; }
   button:disabled { opacity: .4; cursor: default; }
-  #lines { flex: 1; padding: 24px; }
+  #lines { flex: 1; min-width: 0; padding: 24px; }
   .card { border: 1px solid #262b33; border-radius: 8px; background: #161a20;
-    display: flex; flex-direction: column; width: 100%;
+    display: flex; flex-direction: column; width: 100%; min-width: 0;
     max-height: calc(100vh - 110px); }
   #empty { color: #6c7a8c; font-size: .9rem; }
   #linelist { margin-top: 20px; border-top: 1px solid #262b33; padding-top: 12px; }
@@ -77,7 +79,7 @@
   .lineentry .dot { margin-left: 0; }
   .lineentry .lname { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .lcount { color: #6c7a8c; font-size: .75rem; flex-shrink: 0; }
-  .head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px;
+  .head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 12px 16px;
     border-bottom: 1px solid #262b33; font-weight: 600; }
   .deleteBtn { margin-left: 8px; padding: 3px 10px; font-size: .7rem;
     background: #4d1420; color: #ff8095; }
@@ -221,9 +223,9 @@
   .pipeCfg { padding: 6px 16px; border-bottom: 1px solid #262b33; font-size: .72rem;
     color: #8fa3bd; }
   .pipeCfg .pipeRow { padding: 1px 0; }
-  .pipePane { flex: 1; overflow-y: auto; padding: 12px 16px; max-width: 720px; }
+  .pipePane { flex: 1 1 auto; width: 100%; min-width: 0; overflow-x: auto; overflow-y: auto; padding: 12px 16px; max-width: 720px; }
   .pipePane h3 { font-size: .85rem; margin: 14px 0 6px; color: #d8dee6; }
-  .pipePane .pipeCfg { padding: 0; border: 0; }
+  .pipePane .pipeCfg { padding: 0; border: 0; min-width: max-content; }
   .pipeNote { font-size: .72rem; color: #6c7a8c; margin: 0 0 8px; }
   .presetBar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
     gap: 6px; align-items: center; margin: 4px 0 8px; }
@@ -272,6 +274,7 @@
 <script src="pipeline-ui.js"></script>
 <script src="registry-ui-extra.js"></script>
 <script src="registry-ui.js"></script>
+<script src="registry-line.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
   const { PHASE_ROWS, EFFORT_LEVELS, CONTEXT_PHASES, parseContextSize, formatTokens, filterInstalled, buildPipelinePayload, authBadge, previewForIntegration,
@@ -380,12 +383,12 @@ window.addEventListener("DOMContentLoaded", () => {
     st.badge.hidden = !st.approved;
     if (st.approved && st.planBody.parentNode !== st.planDetails) {
       st.planDetails.appendChild(st.planBody);
-      st.planDetails.hidden = false;
+      st.planDetails.hidden = st.tab !== "line";
       st.plan.hidden = true;
     } else if (!st.approved && st.planBody.parentNode === st.planDetails) {
       st.plan.insertBefore(st.planBody, st.planControls);
       st.planDetails.hidden = true;
-      st.plan.hidden = false;
+      st.plan.hidden = st.tab !== "line";
     }
     if (st.started && st.planContent && !st.approved) {
       st.input.placeholder = "Plan proposed - type feedback here";
@@ -524,7 +527,27 @@ window.addEventListener("DOMContentLoaded", () => {
   function renderGraph(st) {
     const graph = st.graph;
     const top = graph.scrollTop, left = graph.scrollLeft;
-    try { renderGraphContents(st); } finally { graph.scrollTop = top; graph.scrollLeft = left; }
+    try {
+      const sig = graphSignature(st);
+      if (graph.children && graph.children.length && st.graphSig === sig) return;
+      st.graphSig = null;
+      renderGraphContents(st);
+      st.graphSig = sig;
+    } finally { graph.scrollTop = top; graph.scrollLeft = left; }
+  }
+
+  // Everything renderGraphContents draws or reads; equal signature means an identical graph.
+  function graphSignature(st) {
+    const fields = ["id", "name", "role", "kind", "status", "state", "verdict", "validates", "persona", "harness",
+      "model", "effort", "attention", "needsAttention", "humanIntervention", "error", "hasError", "lastError"];
+    const workers = [...st.workers.values()];
+    return JSON.stringify([
+      workers.map((w) => fields.map((f) => w[f])),
+      workers.map((w) => !!mapPreviewPayload(st.previewPayload, w)),
+      st.plannerStatus, st.plannerAttention, st.plannerHumanIntervention, st.plannerError,
+      st.selected, !!st.hideFailedValidators, st.graph.clientWidth, st.tab,
+      !!(st.previewPanel && st.previewPanel.hidden),
+    ]);
   }
 
   function graphTextMeasurer() {
@@ -654,6 +677,9 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderPreviewPanel(st, worker, data) {
+    // A late preview result must not open the panel on another tab; return to
+    // Line re-renders it from st.previewPayload.
+    if (st.tab && st.tab !== "line") return;
     const panel = document.createElement("section");
     panel.setAttribute("aria-label", "Preview instructions");
     const title = document.createElement("h2"); title.textContent = "Preview instructions (read only)"; panel.appendChild(title);
@@ -716,7 +742,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!st || !st.scopeDetails || !st.scopeText) return;
     const worker = st.selected !== null && typeof st.selected === "string" && !st.selected.startsWith("preview:")
       ? st.workers && st.workers.get(st.selected) : null;
-    const show = !!worker && (worker.role || "implementor") !== "planner";
+    const show = !!worker && (worker.role || "implementor") !== "planner" && (st.tab || "line") === "line";
     st.scopeDetails.hidden = !show;
     if (show) st.scopeText.textContent = formatScopePanelData(worker) || "No scope data available.";
   }
@@ -746,6 +772,31 @@ window.addEventListener("DOMContentLoaded", () => {
     st.compactBtn.title = target.compacted && !target.hasSession
       ? "Compacted; the next run starts a fresh session with the summary."
       : "Summarize this session and continue in a fresh one.";
+  }
+
+  function applyStateWorkers(st, state, { updateListEntry, refreshPreview }) {
+    st.workers = new Map((state.workers || []).map((w) => [w.id, w]));
+    if (st.selected === null) {
+      try {
+        const savedPreview = localStorage.getItem("preview-selection:" + st.id);
+        if (previewSelectionExists(state.workers || [], savedPreview)) st.selected = savedPreview;
+      } catch {}
+    }
+    for (const w of state.workers || []) {
+      if (!st.workerTranscripts.has(w.id)) st.workerTranscripts.set(w.id, []);
+    }
+    if (typeof st.selected === "string" && st.selected.startsWith("preview:")) {
+      if (!previewSelectionExists(state.workers || [], st.selected)) st.selected = null;
+      else {
+        const selectedPreviewId = st.selected.slice("preview:".length);
+        const selectedWorker = (state.workers || []).find((worker) => String(worker.id) === selectedPreviewId);
+        const currentData = selectedWorker && mapPreviewPayload(st.previewPayload, selectedWorker);
+        if (currentData) renderPreviewPanel(st, selectedWorker, currentData);
+      }
+    } else if (st.selected !== null && !st.workers.has(st.selected)) st.selected = null;
+    // Render before the async preview so a slow or failed preview cannot leave the graph empty.
+    renderGraph(st); updateListEntry(st);
+    refreshPreview();
   }
 
   function syncTranscriptScroll(st) {
@@ -806,6 +857,7 @@ window.addEventListener("DOMContentLoaded", () => {
   function addCard(line) {
     const card = document.createElement("div");
     card.className = "card";
+    card.dataset.lineId = line.id;
     const head = document.createElement("div");
     head.className = "head";
     const name = document.createElement("span");
@@ -819,6 +871,9 @@ window.addEventListener("DOMContentLoaded", () => {
     const tabProcBtn = document.createElement("button");
     tabProcBtn.className = "tabBtn";
     tabProcBtn.textContent = "Processes";
+    const tabWorkBtn = document.createElement("button");
+    tabWorkBtn.className = "tabBtn";
+    tabWorkBtn.textContent = "Work";
     const tabEvBtn = document.createElement("button");
     tabEvBtn.className = "tabBtn";
     tabEvBtn.textContent = "Evidence";
@@ -849,7 +904,7 @@ window.addEventListener("DOMContentLoaded", () => {
       await fetch("/api/lines/" + line.id, { method: "DELETE" });
       removeCard(line.id);
     });
-    head.append(name, dot, tabLineBtn, tabProcBtn, tabEvBtn, hideFailedToggle, delBtn);
+    head.append(dot, name, tabLineBtn, tabProcBtn, tabEvBtn, tabWorkBtn, hideFailedToggle, delBtn);
     const tabPipeBtn = document.createElement("button");
     tabPipeBtn.className = "tabBtn";
     tabPipeBtn.textContent = "Pipeline";
@@ -966,7 +1021,10 @@ window.addEventListener("DOMContentLoaded", () => {
     const evPane = document.createElement("div");
     evPane.className = "evPane";
     evPane.hidden = true;
-    card.append(head, planDetails, banner, plan, graphDetails, scopeDetails, previewPanel, transcriptWrap, chatHandle, row, procPane, evPane, pipePane);
+    const workPane = document.createElement("div");
+    workPane.className = "evPane workPane";
+    workPane.hidden = true;
+    card.append(head, planDetails, banner, plan, graphDetails, scopeDetails, previewPanel, transcriptWrap, chatHandle, row, procPane, evPane, workPane, pipePane);
     linesEl.appendChild(card);
     setupLayoutResize({ lineId: line.id, card, graph, graphDetails, graphHandle, transcriptWrap, chatHandle });
 
@@ -975,7 +1033,7 @@ window.addEventListener("DOMContentLoaded", () => {
       waiting, planBody, graph, graphDetails, graphHandle, chatHandle, previewPanel, approveBtn, badge, planDetails, planControls: controls,
       pipePane, tabPipeBtn, pipeForm, pipePresets, pipeEffective,
       pipeline: line.pipeline || null, pipelineOverrides: line.pipelineOverrides || null,
-      tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, plan, row, procPane, evPane,
+      tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, tabWorkBtn, workPane, plan, row, procPane, evPane,
       hideFailedValidators: true,
       plannerStatus: line.status, plannerAttention: line.attention === true || line.needsAttention === true,
       plannerHumanIntervention: line.humanIntervention === true,
@@ -1010,6 +1068,7 @@ window.addEventListener("DOMContentLoaded", () => {
       pipeForm.set(st.pipelineOverrides);
       showPipeMsg("Saved. The settings apply from the next run.", true);
     });
+    tabWorkBtn.addEventListener("click", () => setLineTab(st, "work"));
     hideFailedCheckbox.addEventListener("change", () => {
       st.hideFailedValidators = hideFailedCheckbox.checked;
       renderGraph(st);
@@ -1017,8 +1076,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
     const setStatus = (status) => {
       st.plannerStatus = status;
-      dot.className = "dot " + (status === "running" ? "running"
-        : status === "standby" ? "standby" : "idle");
+      updateStatusMarker(st);
       input.disabled = send.disabled = status === "running";
       if (st.started) {
         input.placeholder = (st.planContent && !st.approved)
@@ -1084,27 +1142,11 @@ window.addEventListener("DOMContentLoaded", () => {
           hasSession: !!state.hasSession, compacted: !!state.compacted } : null;
         if (state.started === true) st.started = true;
         updateControls(st);
-        st.workers = new Map((state.workers || []).map((w) => [w.id, w]));
-        if (st.selected === null) {
-          try {
-            const savedPreview = localStorage.getItem("preview-selection:" + st.id);
-            if (previewSelectionExists(state.workers || [], savedPreview)) st.selected = savedPreview;
-          } catch {}
-        }
-        for (const w of state.workers || []) {
-          if (!st.workerTranscripts.has(w.id)) st.workerTranscripts.set(w.id, []);
-        }
-        if (typeof st.selected === "string" && st.selected.startsWith("preview:")) {
-          if (!previewSelectionExists(state.workers || [], st.selected)) st.selected = null;
-          else {
-            const selectedPreviewId = st.selected.slice("preview:".length);
-            const selectedWorker = (state.workers || []).find((worker) => String(worker.id) === selectedPreviewId);
-            const currentData = selectedWorker && mapPreviewPayload(st.previewPayload, selectedWorker);
-            if (currentData) renderPreviewPanel(st, selectedWorker, currentData);
-          }
-        } else if (st.selected !== null && !st.workers.has(st.selected)) st.selected = null;
+        applyStateWorkers(st, state, { updateListEntry, refreshPreview });
+        st.plannerAttention = state.attention === true || state.needsAttention === true;
+        st.plannerHumanIntervention = state.humanIntervention === true;
+        st.plannerError = state.error === true || !!state.lastError;
         setStatus(state.status);
-        refreshPreview();
         renderTranscript(st);
         renderScopePanel(st);
       },
@@ -1210,6 +1252,7 @@ window.addEventListener("DOMContentLoaded", () => {
     entryCount.className = "lcount";
     const entry = document.createElement("div");
     entry.className = "lineentry";
+    entry.dataset.lineId = line.id;
     entry.append(entryDot, entryName, entryCount);
     entry.addEventListener("click", () => selectLine(st.id));
     listEl.appendChild(entry);
@@ -1239,12 +1282,27 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  function statusMarkerState(st) {
+    return { status: st.plannerStatus, attention: st.plannerAttention,
+      humanIntervention: st.plannerHumanIntervention, error: st.plannerError };
+  }
+
+  function updateStatusMarker(st) {
+    const indicator = pipelineUI.attentionIndicator(statusMarkerState(st));
+    const status = indicator || (st.plannerStatus === "running" ? "running"
+      : st.plannerStatus === "standby" ? "standby" : "idle");
+    const label = indicator === "error" ? "Error" : indicator === "attention"
+      ? "Needs attention" : st.plannerStatus;
+    for (const marker of [st.dot, st.entryDot]) {
+      if (!marker) continue;
+      marker.className = "dot " + status;
+      marker.setAttribute("aria-label", label);
+    }
+  }
+
   function updateListEntry(st) {
     if (!st.entry) return;
-    const anyRunning = st.plannerStatus === "running"
-      || [...st.workers.values()].some((w) => w.status === "running");
-    st.entryDot.className = "dot " + (anyRunning ? "running"
-      : st.plannerStatus === "standby" ? "standby" : "idle");
+    updateStatusMarker(st);
     st.entryCount.textContent = st.workers.size ? st.workers.size + "w" : "";
   }
 
@@ -1280,12 +1338,25 @@ window.addEventListener("DOMContentLoaded", () => {
     st.tabProcBtn.classList.toggle("active", tab === "processes");
     st.tabEvBtn.classList.toggle("active", tab === "evidence");
     st.tabPipeBtn.classList.toggle("active", tab === "pipeline");
-    for (const el of [st.plan, st.planDetails, st.graphDetails, st.previewPanel, st.transcriptWrap, st.chatHandle, st.row]) {
+    for (const el of [st.graphDetails, st.transcriptWrap, st.chatHandle, st.row]) {
       el.hidden = tab !== "line";
     }
+    // Conditional panels: restore only what the line state shows. renderGraph
+    // re-opens the preview panel when a preview node is selected.
+    const planInDetails = st.planBody.parentNode === st.planDetails;
+    st.plan.hidden = tab !== "line" || planInDetails;
+    st.planDetails.hidden = tab !== "line" || !planInDetails;
+    st.previewPanel.hidden = true;
+    renderScopePanel(st);
     st.procPane.hidden = tab !== "processes";
     st.evPane.hidden = tab !== "evidence";
     st.pipePane.hidden = tab !== "pipeline";
+    st.workPane.hidden = tab !== "work";
+    st.tabWorkBtn.classList.toggle("active", tab === "work");
+    if (tab === "work") {
+      if (!st.work) st.work = registryLine.mount(document, st.workPane, { fetch: (u, o) => fetch(u, o), window, lineId: st.id });
+      st.work.load();
+    }
     if (tab === "pipeline") {
       st.pipeForm.open();
       reloadPresets();
