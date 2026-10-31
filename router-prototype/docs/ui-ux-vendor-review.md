@@ -116,7 +116,7 @@ Searches on `marked.min.js` (`grep -oE PATTERN FILE | wc -l`):
 
 ### mermaid 10.9.1
 
-Source: field `dependencies` in `https://registry.npmjs.org/mermaid/10.9.1`. It lists 20 runtime dependencies.
+Source: field `dependencies` in `https://registry.npmjs.org/mermaid/10.9.1`. It lists 20 runtime dependencies (count: `len(dependencies)` in the JSON; 9 Included, 9 NOT VERIFIED, 2 type-only).
 
 Searches on `dist/mermaid.min.js` (`grep -oE PATTERN FILE | wc -l`):
 
@@ -159,9 +159,11 @@ Inclusion per dependency. "Included" means the name or a distinct code marker is
 
 Conclusion on self-containment: the searches found no external load of any dependency. The searches found no import call, no script tag, and no script URL.
 
-The bundle is self-contained for loading: NOT VERIFIED as complete. Reason: 10 dependencies have no unique marker in minified text. A browser test with blocked requests must confirm it.
+The bundle is self-contained for loading: NOT VERIFIED as complete. Reason: 9 dependencies have no unique marker in minified text. A browser test with blocked requests must confirm it.
 
-The Mermaid archive contains 157 files in `dist/` (`tar -tzf mermaid.tgz | grep -c '^package/dist/'`). The bundle does not name them. They are not loaded by the bundle (0 `import(` matches). The review does not approve them.
+The Mermaid archive contains 364 files (`tar -tzf mermaid.tgz | wc -l`). This equals `dist.fileCount` 364 in the metadata. Of these, 360 are under `dist/` (`tar -tzf mermaid.tgz | grep -c '^package/dist/'`). The bundle does not load them: `grep -oF 'import(' dist/mermaid.min.js | wc -l` returns 0. The review does not approve them.
+
+The marked archive contains 16 files (`tar -tzf marked.tgz | wc -l`). This equals `dist.fileCount` 16 in the metadata. None is under `dist/` (`tar -tzf marked.tgz | grep -c '^package/dist/'` returns 0).
 
 Files a browser loads, in order:
 
@@ -208,7 +210,7 @@ Choice: for each range, the newest stable version that the range allows. Source:
 
 ### License banners in the bundle
 
-Command: a read-only Python scan (`python3 -I`) for the byte string `/*!` in `dist/mermaid.min.js`. It found 8 banner openers.
+Command: `grep -oF '/*!' dist/mermaid.min.js | wc -l` returns 8 banner openers. A read-only `python3 -I` scan lists each opener with its offset.
 
 1. DOMPurify 3.0.9 (Apache-2.0 and MPL-2.0 text named).
 2. js-yaml 4.1.0 (MIT). This package is not a runtime dependency in the metadata.
@@ -225,7 +227,7 @@ The bundle has 6 license banners.
 1. Confirmed by archive: the MIT text of mermaid (`package/LICENSE`) and of marked (`package/LICENSE.md`).
 2. Banner names confirm code from DOMPurify, js-yaml, Thenable, jQuery events, Bezier, and Runge-Kutta. Full license texts for these are NOT VERIFIED: the archive does not contain them.
 3. Texts for cytoscape (MIT), katex (MIT), lodash-es (MIT), mdast-util-from-markdown (MIT), sanitize-url (MIT), cose-bilkent (MIT), elkjs (EPL-2.0), and web-worker (Apache-2.0) are NOT VERIFIED. The archive does not contain them.
-4. Texts for the 10 dependencies with inclusion NOT VERIFIED are also NOT VERIFIED.
+4. Texts for the 9 dependencies with inclusion NOT VERIFIED are also NOT VERIFIED.
 5. The text for khroma is NOT VERIFIED: the metadata has no license field.
 6. The implementation card must keep the bundled comments and both package license files.
 
