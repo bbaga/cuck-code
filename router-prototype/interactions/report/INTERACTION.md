@@ -18,42 +18,42 @@ REPORT BODY (complete):
 
 FINAL VERDICT: PASS.
 
-Decide: accept the work, send follow-up instructions to the original implementor (POST /api/protocol/workers/{{source.id}}/continue with {"prompt": ...}), or spawn a new implementor with a corrected prompt.{{/from.type.validator}}{{#from.type.integration}}INTEGRATION REPORT - integration validator '{{from.name}}' finished. The merged result is on branch {{from.branch}} in its worktree; main/master is untouched.
+Decide: accept the work, send feedback to the original implementor (instance {{source.id}}), or start a new implementor with a corrected task.{{/from.type.validator}}{{#from.type.integration}}INTEGRATION REPORT - integration validator '{{from.name}}' finished. The merged result is on branch {{from.branch}} in its worktree; main/master is untouched.
 
 REPORT BODY (complete):
 {{report}}
 
 FINAL VERDICT: PASS.
 
-Decide: report completion to the user, or route fixes to the ORIGINAL implementors (continue endpoint) and start a new integration validator after they pass again.{{/from.type.integration}}{{/outcome.pass}}{{#outcome.reject}}{{#from.type.validator}}VALIDATION REPORT - validator '{{from.name}}' checked the work of implementor '{{source.name}}' (workerId {{source.id}}, {{source.harness}} session {{source.session}}, branch {{from.branch}}).
+Decide: report completion to the user, or send feedback to the ORIGINAL implementors and, after they pass again, start the integration node again.{{/from.type.integration}}{{/outcome.pass}}{{#outcome.reject}}{{#from.type.validator}}VALIDATION REPORT - validator '{{from.name}}' checked the work of implementor '{{source.name}}' (workerId {{source.id}}, {{source.harness}} session {{source.session}}, branch {{from.branch}}).
 
 REPORT BODY (complete):
 {{report}}
 
 FINAL VERDICT: FAIL.
 
-Decide: accept the work, send follow-up instructions to the original implementor (POST /api/protocol/workers/{{source.id}}/continue with {"prompt": ...}), or spawn a new implementor with a corrected prompt.{{/from.type.validator}}{{#from.type.integration}}INTEGRATION REPORT - integration validator '{{from.name}}' finished. The merged result is on branch {{from.branch}} in its worktree; main/master is untouched.
+Decide: accept the work, send feedback to the original implementor (instance {{source.id}}), or start a new implementor with a corrected task.{{/from.type.validator}}{{#from.type.integration}}INTEGRATION REPORT - integration validator '{{from.name}}' finished. The merged result is on branch {{from.branch}} in its worktree; main/master is untouched.
 
 REPORT BODY (complete):
 {{report}}
 
 FINAL VERDICT: FAIL.
 
-Decide: report completion to the user, or route fixes to the ORIGINAL implementors (continue endpoint) and start a new integration validator after they pass again.{{/from.type.integration}}{{/outcome.reject}}{{#outcome.missing}}{{#from.type.validator}}VALIDATION REPORT - validator '{{from.name}}' checked the work of implementor '{{source.name}}' (workerId {{source.id}}, {{source.harness}} session {{source.session}}, branch {{from.branch}}).
+Decide: report completion to the user, or send feedback to the ORIGINAL implementors and, after they pass again, start the integration node again.{{/from.type.integration}}{{/outcome.reject}}{{#outcome.missing}}{{#from.type.validator}}VALIDATION REPORT - validator '{{from.name}}' checked the work of implementor '{{source.name}}' (workerId {{source.id}}, {{source.harness}} session {{source.session}}, branch {{from.branch}}).
 
 REPORT BODY (complete):
 {{report}}
 
 DIAGNOSTIC: no explicit final VERDICT: PASS or VERDICT: FAIL line was found, or this run did not complete successfully.
 
-Decide: accept the work, send follow-up instructions to the original implementor (POST /api/protocol/workers/{{source.id}}/continue with {"prompt": ...}), or spawn a new implementor with a corrected prompt.{{/from.type.validator}}{{#from.type.integration}}INTEGRATION REPORT - integration validator '{{from.name}}' finished. The merged result is on branch {{from.branch}} in its worktree; main/master is untouched.
+Decide: accept the work, send feedback to the original implementor (instance {{source.id}}), or start a new implementor with a corrected task.{{/from.type.validator}}{{#from.type.integration}}INTEGRATION REPORT - integration validator '{{from.name}}' finished. The merged result is on branch {{from.branch}} in its worktree; main/master is untouched.
 
 REPORT BODY (complete):
 {{report}}
 
 DIAGNOSTIC: no explicit final VERDICT: PASS or VERDICT: FAIL line was found, or this run did not complete successfully.
 
-Decide: report completion to the user, or route fixes to the ORIGINAL implementors (continue endpoint) and start a new integration validator after they pass again.{{/from.type.integration}}{{/outcome.missing}}{{#outcome.timeout}}{{#from.type.implementor}}WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: POST /api/protocol/workers/{{from.id}}/continue with {"prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.{{/from.type.implementor}}{{#from.type.validator}}VALIDATOR TIMEOUT - the validator hit the run time limit and was interrupted. Validators are fresh sessions each time: the implementor work is unchanged, decide how to proceed (usually nothing - validation repeats after the next implementor completion).{{/from.type.validator}}{{#from.type.integration}}INTEGRATION TIMEOUT - integration validator '{{from.name}}' hit the run time limit. The merged work is on branch {{from.branch}}. Decide how to proceed.{{/from.type.integration}}
+Decide: report completion to the user, or send feedback to the ORIGINAL implementors and, after they pass again, start the integration node again.{{/from.type.integration}}{{/outcome.missing}}{{#outcome.timeout}}{{#from.type.implementor}}WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: send feedback to instance {{from.id}} with the instructions "Finish the work from where the run was interrupted. Then report." After it completes, the validation loop runs as usual.{{/from.type.implementor}}{{#from.type.validator}}VALIDATOR TIMEOUT - the validator hit the run time limit and was interrupted. Validators are fresh sessions each time: the implementor work is unchanged, decide how to proceed (usually nothing - validation repeats after the next implementor completion).{{/from.type.validator}}{{#from.type.integration}}INTEGRATION TIMEOUT - integration validator '{{from.name}}' hit the run time limit. The merged work is on branch {{from.branch}}. Decide how to proceed.{{/from.type.integration}}
 
 RUN OUTPUT (complete):
 {{report}}{{#from.error}}

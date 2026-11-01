@@ -108,7 +108,7 @@ test("the report template uses router variables only and renders the old sentenc
     "Start a validator with the criteria. If the work needs no validation, accept it.");
   const val = as("validator", "pass");
   assert.match(val, /^VALIDATION REPORT - validator 'api' checked the work of implementor 'api' \(workerId w1, vibe session s1, branch feat\/x\)\./);
-  assert.match(val, /\n\nFINAL VERDICT: PASS\.\n\nDecide: accept the work, send follow-up instructions to the original implementor \(POST \/api\/protocol\/workers\/w1\/continue with \{"prompt": \.\.\.\}\)/);
+  assert.match(val, /\n\nFINAL VERDICT: PASS\.\n\nDecide: accept the work, send feedback to the original implementor \(instance w1\), or start a new implementor with a corrected task\./);
   assert.match(as("validator", "reject"), /FINAL VERDICT: FAIL\./);
   assert.match(as("validator", "missing"), /DIAGNOSTIC: no explicit final VERDICT/);
   assert.match(as("integration", "pass"), /^INTEGRATION REPORT - integration validator 'api' finished\./);

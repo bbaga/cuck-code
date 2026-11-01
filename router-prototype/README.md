@@ -197,7 +197,9 @@ until approval.
 On approval the planner spawns workers by calling the router's protocol API
 (agents reach it with curl from bash):
 
-- `POST /api/protocol/lines/:id/workers {name, persona, repo, prompt, base?}` — spawn a
+- `POST /api/protocol/lines/:id/workers {name, persona, repo, prompt, base?}` —
+  **deprecated**; use `POST /api/protocol/lines/:id/interactions/start {to: "backend-impl", name, task, repo, base?}`
+  (see Interactions API). Spawn a
   worker (role implementor). Optional `base` is a full 40-character commit SHA
   or the name of a non-running implementor of the same line and repo (its
   branch head, `origin/<branch>` first, is used). The worktree starts there;
@@ -243,7 +245,9 @@ On approval the planner spawns workers by calling the router's protocol API
   branches stay on the remote. 409 while the worker (or a validator of it)
   is still running. The planner brief documents the command and the
   semantics.
-- `POST /api/protocol/workers/:id/continue {prompt}` — resume the ORIGINAL
+- `POST /api/protocol/workers/:id/continue {prompt}` — **deprecated**; use
+  `POST /api/protocol/lines/:id/interactions/feedback {instance: "<id>", instructions}`.
+  Resume the ORIGINAL
   implementor session in its worktree with follow-up instructions. 404 unknown
   worker; 409 for validators, while the worker is running, or before it has a
   session. When the continued run finishes, the report and validation loop run
@@ -260,6 +264,50 @@ On approval the planner spawns workers by calling the router's protocol API
   scenarios instead: unique ports, isolated containers or headless browsers,
   no shared fixtures. Each worker session has its own playwright MCP server
   and therefore its own browser.
+
+### Interactions API
+
+The planner talks to its pipeline through interactions. The old routes
+`/workers`, `/continue` and `/integration` are deprecated aliases for the
+`default` pipeline (see below).
+
+- `POST /api/protocol/lines/:id/interactions/:name {to, ...fields}` — the one
+  call for every request-triggered interaction. For interactions whose target
+  is `chosen` (for example `feedback` and `accept`), `instance` replaces
+  `to`. The `start` interaction answers 201 `{instance: {...}}`; `feedback`
+  answers 202 `{queued, compacting}`. 404 for an unknown line, interaction,
+  node or instance; 403 `NO_EDGE` when the pipeline has no edge from the
+  planner to that node for that interaction; 409 before plan approval.
+- `GET /api/protocol/lines/:id/interactions` — what the planner may do, with
+  the field list of every call.
+- A call with missing, invalid or unexpected fields answers 400:
+
+```json
+{ "error": "start of node 'B' is incomplete: fill every listed field",
+  "code": "INTERACTION_FIELDS", "interaction": "start", "to": "B",
+  "missing": [{ "field": "task", "description": "...", "requiredBy": "..." }],
+  "invalid": [{ "field": "task", "reason": "longer than 20000 characters" }],
+  "unexpected": ["persona"],
+  "expected": { "task": "text, required" } }
+```
+
+- `accept` records that the planner accepts the latest finished run of an
+  instance: `POST .../interactions/accept {instance, reason}` answers 200
+  `{accepted, instance, runId}`, or 409 while the instance is running.
+
+Deprecated aliases. Every response of these three routes (success and error)
+carries `Deprecation: true` and a `Link` header with
+`rel="successor-version"` that points to the interactions route. Request
+validation, response bodies and status codes stay as before.
+
+| Old call | New call |
+|---|---|
+| `POST /api/protocol/lines/:id/workers {name, persona, repo, prompt, base?}` | `POST .../interactions/start {to: "backend-impl" or "frontend-impl", name, task, repo, base?}` |
+| `POST /api/protocol/workers/:id/continue {prompt}` | `POST .../interactions/feedback {instance, instructions}` |
+| `POST /api/protocol/lines/:id/integration {prompt}` | `POST .../interactions/start {to: "integration", instructions}` |
+
+A line whose pipeline has no matching node or edge answers the old routes with
+409 `this pipeline does not support <route>; use POST /api/protocol/lines/:id/interactions/<name>`.
 
 ### Container lifecycle
 
@@ -674,7 +722,8 @@ local paths and `file://` URLs. The pipeline then extends past validation:
 
 When the planner accepts every implementor result, it starts the integration
 validator (`POST /api/protocol/lines/:id/integration` with the integration
-instructions). The call is the planner's acceptance. The planner itself NEVER
+instructions; **deprecated**, use `POST /api/protocol/lines/:id/interactions/start
+{to: "integration", instructions}`). The call is the planner's acceptance. The planner itself NEVER
 commits to or pushes the main/master branch - merging is the integration
 validator's job:
 

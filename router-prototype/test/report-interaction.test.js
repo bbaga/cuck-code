@@ -37,6 +37,15 @@ function newText(worker, report, { source = null, timedOut = false } = {}) {
 }
 
 const OLD_CRITERIA_TAIL = "Now give the acceptance criteria for the validation of this work.\nReply with a numbered list of criteria only. Use the imperative. If\nthe work needs no validation, reply with SKIP VALIDATION.";
+// The planner decision sentences name the interaction calls now.
+function newDecisions(oldText) {
+  return oldText
+    .replace(/Decide: accept the work, send follow-up instructions to the original implementor \(POST \/api\/protocol\/workers\/([^/]+)\/continue with \{"prompt": \.\.\.\}\), or spawn a new implementor with a corrected prompt\./,
+      "Decide: accept the work, send feedback to the original implementor (instance $1), or start a new implementor with a corrected task.")
+    .replace("Decide: report completion to the user, or route fixes to the ORIGINAL implementors (continue endpoint) and start a new integration validator after they pass again.",
+      "Decide: report completion to the user, or send feedback to the ORIGINAL implementors and, after they pass again, start the integration node again.");
+}
+
 const NEW_CRITERIA_TAIL = "Now give the acceptance criteria for the validation of this work.\nStart a validator with the criteria. If the work needs no validation, accept it.";
 
 test("completed implementor: equals buildImplementorNotification except one sentence", () => {
@@ -57,7 +66,7 @@ test("completed validator: equals buildValidationNotification for pass, reject a
     for (const verdict of ["pass", "fail", null]) {
       for (const report of ["Checked.\nVERDICT: PASS", ""]) {
         const w = { ...val, verdict };
-        assert.equal(newText(w, report, { source: s }), buildValidationNotification(w, s, report),
+        assert.equal(newText(w, report, { source: s }), newDecisions(buildValidationNotification(w, s, report)),
           `${verdict} ${s && s.sessionId} ${report}`);
       }
     }
@@ -68,7 +77,7 @@ test("completed integration validator: equals buildIntegrationNotification", () 
   for (const verdict of ["pass", "fail", null]) {
     for (const report of ["Merged.", ""]) {
       const w = { ...integ, verdict };
-      assert.equal(newText(w, report), buildIntegrationNotification(w, report), `${verdict} ${report}`);
+      assert.equal(newText(w, report), newDecisions(buildIntegrationNotification(w, report)), `${verdict} ${report}`);
     }
   }
 });
@@ -78,7 +87,7 @@ const note = (w) => (w.lastError ? `\n\nFAILURE DETAIL:\n${w.lastError}` : "");
 const oldImplementor = (w, status, timedOut, report) => {
   const sid = w.sessionId || "unknown";
   const tail = runOutputNote(report, "implementor run output") + note(w);
-  if (timedOut) return `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: POST /api/protocol/workers/${w.id}/continue with {"prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.` + tail;
+  if (timedOut) return `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: send feedback to instance ${w.id} with the instructions "Finish the work from where the run was interrupted. Then report." After it completes, the validation loop runs as usual.` + tail;
   if (status === "failed") return `WORKER FAILURE - '${w.name}' (workerId ${w.id}, session ${sid}): ${w.harness || "vibe"} failed (see FAILURE DETAIL). Decide whether to restart it with a corrected prompt (new name, e.g. ${w.name}-2) or to proceed without it.` + tail;
   return `WORKER STOPPED - '${w.name}' (workerId ${w.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.` + tail;
 };

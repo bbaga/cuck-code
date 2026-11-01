@@ -1722,6 +1722,65 @@ function deliverBlocker(line, worker) {
   return null;
 }
 
+// Shared by the interaction endpoint and the deprecated alias routes.
+function graphHasEdge(graph, from, to, interactionName) {
+  return !!graph && (graph.edges || []).some((e) => e.from === from && e.to === to
+    && (e.interactions || []).includes(interactionName));
+}
+
+// Renders the message of a deliver interaction.
+function renderDeliverMessage(interaction, body, caller, targetId) {
+  return renderTemplate(interaction.body, { ...body, from: { node: caller }, to: { node: targetId } });
+}
+
+// Performs a create-effect interaction on a node. `overrides` carries
+// per-instance run settings (harness, model, effort) that the alias
+// routes pass through. Returns { ok: true, worker, response } or
+// { ok: false, status, error, ...extra }.
+function startInstance(line, targetId, body, overrides = {}) {
+  const graph = line.graph;
+  const node = graph.nodes[targetId];
+  const type = graph.types[node.type];
+  if (type.workspace === "own-worktree") {
+    let wname = body.name;
+    if (!wname) {
+      let n = 1;
+      while ([...line.workers.values()].some((w) => w.name === `${targetId}-${n}`)) n++;
+      wname = `${targetId}-${n}`;
+    }
+    return createOwnWorktree(line, targetId, { name: wname, prompt: body.task,
+      persona: node.type.startsWith("frontend") ? "frontend" : "backend",
+      repo: body.repo, base: body.base, trackerTicket: body.trackerTicket, ...overrides });
+  }
+  if (type.workspace === "source") {
+    const impl = line.workers.get(body.source);
+    if (!impl) return { ok: false, status: 404, error: `no such instance: '${body.source}'` };
+    const source = sourceIdentity({ workerId: impl.id, invocationId: impl.lastCompletedInvocationId,
+      runId: impl.runGeneration, report: impl.lastRunText });
+    return createSourceChecker(line, targetId, impl, { source, criteria: body.criteria,
+      report: reportForValidation(null, impl.lastRunText) });
+  }
+  if (type.workspace === "integration") {
+    return createIntegration(line, targetId, { instructions: body.instructions });
+  }
+  return { ok: false, status: 400, error: `the node '${targetId}' cannot be started: workspace '${type.workspace}'` };
+}
+
+// Deprecated alias routes: the headers go on every response, and a
+// pipeline that cannot serve the old call answers 409.
+function markDeprecated(res, lineId) {
+  res.setHeader("Deprecation", "true");
+  res.setHeader("Link", `</api/protocol/lines/${lineId || ":id"}/interactions>; rel="successor-version"`);
+}
+
+function unsupportedAlias(res, route, name) {
+  return json(res, 409, { error: `this pipeline does not support ${route}; use POST /api/protocol/lines/:id/interactions/${name}` });
+}
+
+function aliasSupportsStart(graph, nodeId) {
+  return !!nodeId && !!graph && graphHasEdge(graph, graph.start, nodeId, "start");
+}
+
 function deliverToInstance(line, worker, message, { logText } = {}) {
   const blocked = deliverBlocker(line, worker);
   if (blocked) return blocked;
@@ -2544,6 +2603,7 @@ const routeRequest = (req, res) => {
   if (parts[0] === "api" && parts[1] === "protocol" && parts[2] === "lines" && parts[4] === "workers"
     && (req.method === "GET" || req.method === "POST")) {
     const line = lines.get(parts[3]);
+    if (req.method === "POST") markDeprecated(res, parts[3]);
     if (!line) return json(res, 404, { error: "no such line" });
     if (req.method === "GET") {
       return json(res, 200, { workers: [...line.workers.values()].map((w) => ({
@@ -2574,14 +2634,18 @@ const routeRequest = (req, res) => {
         return json(res, 400, { error: `persona must be one of: ${PERSONAS.join(", ")}` });
       }
       const implNode = implementorNodeFor(line.graph, persona);
-      if (!implNode) return json(res, 500, { error: `pipeline has no node for ${persona} implementor` });
+      if (!aliasSupportsStart(line.graph, implNode)) {
+        return unsupportedAlias(res, "POST /api/protocol/lines/:id/workers", "start");
+      }
       if (typeof body.repo !== "string" || !body.repo) {
         const names = [...(line.repos || new Map()).keys()];
         return json(res, 400, { error: `repo is required: name one of the registered repos (${names.length ? names.join(", ") : "none - register one with POST /api/protocol/lines/" + line.id + "/repos"})` });
       }
-      const out = createOwnWorktree(line, implNode, { name: body.name, prompt: body.prompt,
-        persona, repo: body.repo, base: body.base, harness: body.harness, model: body.model,
-        effort: body.effort, trackerTicket: body.trackerTicket });
+      // Alias of the start interaction: prompt becomes task. The per-worker
+      // run settings are not interaction fields; they pass through.
+      const out = startInstance(line, implNode, { name: body.name, task: body.prompt,
+        repo: body.repo, base: body.base, trackerTicket: body.trackerTicket },
+      { harness: body.harness, model: body.model, effort: body.effort });
       if (!out.ok) return sendFailure(res, out);
       json(res, 201, out.response);
     });
@@ -2825,7 +2889,7 @@ const routeRequest = (req, res) => {
         if (!target) return json(res, 404, { error: `no such instance: '${body.instance}'` });
         let message;
         try {
-          message = renderTemplate(interaction.body, { ...body, from: { node: caller }, to: { node: targetId } });
+          message = renderDeliverMessage(interaction, body, caller, targetId);
         } catch (e) {
           return json(res, 500, { error: `the interaction '${name}' cannot be rendered: ${e.message}` });
         }
@@ -2849,31 +2913,7 @@ const routeRequest = (req, res) => {
       if (interaction.effect !== "create") {
         return json(res, 501, { error: "not implemented", code: "NOT_IMPLEMENTED" });
       }
-      const node = graph.nodes[targetId];
-      const type = graph.types[node.type];
-      let out;
-      if (type.workspace === "own-worktree") {
-        let wname = body.name;
-        if (!wname) {
-          let n = 1;
-          while ([...line.workers.values()].some((w) => w.name === `${targetId}-${n}`)) n++;
-          wname = `${targetId}-${n}`;
-        }
-        out = createOwnWorktree(line, targetId, { name: wname, prompt: body.task,
-          persona: node.type.startsWith("frontend") ? "frontend" : "backend",
-          repo: body.repo, base: body.base, trackerTicket: body.trackerTicket });
-      } else if (type.workspace === "source") {
-        const impl = line.workers.get(body.source);
-        if (!impl) return json(res, 404, { error: `no such instance: '${body.source}'` });
-        const source = sourceIdentity({ workerId: impl.id, invocationId: impl.lastCompletedInvocationId,
-          runId: impl.runGeneration, report: impl.lastRunText });
-        out = createSourceChecker(line, targetId, impl, { source, criteria: body.criteria,
-          report: reportForValidation(null, impl.lastRunText) });
-      } else if (type.workspace === "integration") {
-        out = createIntegration(line, targetId, { instructions: body.instructions });
-      } else {
-        return json(res, 400, { error: `the node '${targetId}' cannot be started: workspace '${type.workspace}'` });
-      }
+      const out = startInstance(line, targetId, body);
       if (!out.ok) return sendFailure(res, out);
       json(res, 201, { instance: out.response });
     });
@@ -2883,6 +2923,7 @@ const routeRequest = (req, res) => {
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "lines"
     && parts[4] === "integration") {
     const line = lines.get(parts[3]);
+    markDeprecated(res, parts[3]);
     if (!line) return json(res, 404, { error: "no such line" });
     if (!line.planApproved) return json(res, 409, { error: "plan not approved" });
     if (runningCount(line) >= WORKER_CAP) {
@@ -2896,8 +2937,10 @@ const routeRequest = (req, res) => {
       // here: this callback is synchronous until line.workers.set.
       if (line.deleted || lines.get(line.id) !== line) return json(res, 404, { error: "no such line" });
       const integrationNode = integrationNodeFor(line.graph);
-      if (!integrationNode) return json(res, 500, { error: "pipeline has no node for integration validator" });
-      const out = createIntegration(line, integrationNode, { instructions: body.prompt });
+      if (!aliasSupportsStart(line.graph, integrationNode)) {
+        return unsupportedAlias(res, "POST /api/protocol/lines/:id/integration", "start");
+      }
+      const out = startInstance(line, integrationNode, { instructions: body.prompt });
       if (!out.ok) return sendFailure(res, out);
       json(res, 201, out.response);
     });
@@ -3089,17 +3132,29 @@ const routeRequest = (req, res) => {
       const w = l.workers.get(parts[3]);
       if (w) { line = l; worker = w; break; }
     }
+    markDeprecated(res, line ? line.id : null);
     if (!worker) return json(res, 404, { error: "no such worker" });
     const blockedNow = deliverBlocker(line, worker);
     if (blockedNow) return json(res, blockedNow.status, { error: blockedNow.error });
+    const feedback = line.graph && line.graph.interactions
+      && Object.prototype.hasOwnProperty.call(line.graph.interactions, "feedback")
+      ? line.graph.interactions.feedback : null;
+    if (!feedback || feedback.effect !== "deliver"
+      || !graphHasEdge(line.graph, line.graph.start, worker.node, "feedback")) {
+      return unsupportedAlias(res, "POST /api/protocol/workers/:id/continue", "feedback");
+    }
     readBody(req, res, (err, body) => {
       if (err || !body || typeof body.prompt !== "string" || !body.prompt.trim()) {
         return json(res, 400, { error: "expected {prompt}" });
       }
-      const prompt = `Follow-up instructions from the planner (write them in ASD-STE100):
-${body.prompt}
-
-When done, reply with a report: what you changed, files changed, how you verified it, open issues. That report goes back to the planner verbatim.`;
+      // Alias of the feedback interaction: prompt becomes instructions.
+      let prompt;
+      try {
+        prompt = renderDeliverMessage(feedback, { instance: worker.id, instructions: body.prompt },
+          line.graph.start, worker.node);
+      } catch (e) {
+        return json(res, 500, { error: `the interaction 'feedback' cannot be rendered: ${e.message}` });
+      }
       const out = deliverToInstance(line, worker, prompt, { logText: body.prompt });
       if (!out.ok) return json(res, out.status, { error: out.error });
       json(res, 202, { queued: true, compacting: out.compacting });
