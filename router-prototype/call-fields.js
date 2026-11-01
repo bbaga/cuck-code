@@ -168,4 +168,31 @@ function checkLineValues(line, required, body) {
   return problems;
 }
 
-module.exports = { requiredFields, checkCall, checkLineValues };
+// What the start node may do: { caller, interactions: [{ name, description, effect, target,
+// to: [{ node, fields: { field: { description, expected } } }] }] }. Only request-triggered
+// interactions with an edge from the start node count. The order follows the edges.
+// `fields` comes from requiredFields, the function the router enforces.
+function introspect(resolved) {
+  const caller = resolved.start;
+  const byName = new Map();
+  for (const edge of resolved.edges || []) {
+    if (edge.from !== caller) continue;
+    for (const name of edge.interactions || []) {
+      const def = has(resolved.interactions, name) ? resolved.interactions[name] : undefined;
+      if (!def || def.trigger !== "request") continue;
+      if (!byName.has(name)) {
+        byName.set(name, { name, description: def.description, effect: def.effect, target: def.target, to: [] });
+      }
+      const entry = byName.get(name);
+      if (entry.to.some((t) => t.node === edge.to)) continue;
+      const fields = {};
+      for (const [field, { decl }] of Object.entries(requiredFields(resolved, name, edge.to))) {
+        fields[field] = { description: decl.description, expected: describe(decl) };
+      }
+      entry.to.push({ node: edge.to, fields });
+    }
+  }
+  return { caller, interactions: [...byName.values()] };
+}
+
+module.exports = { requiredFields, checkCall, checkLineValues, introspect, describe };

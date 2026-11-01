@@ -24,7 +24,7 @@ const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
 const { loadBuiltinPipeline, migrateLine, nodeSettingsFromPipeline, pipelineFromNodeSettings,
   nodeSettingsFields, builtinPipelineNames,
   implementorNodeFor, validatorNodeFor, integrationNodeFor } = require("./line-graph");
-const { checkCall, checkLineValues, requiredFields } = require("./call-fields");
+const { checkCall, checkLineValues, requiredFields, introspect } = require("./call-fields");
 const { renderReports, kindOfNode } = require("./report-interaction");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
 const { StderrCapture, describeFailure } = require("./run-failure");
@@ -2935,6 +2935,14 @@ const routeRequest = (req, res) => {
     if (!worker) return json(res, 404, { error: "no such worker" });
     releaseUiSlot(worker.id);
     return json(res, 202, { released: true });
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "lines"
+    && parts[4] === "interactions" && parts.length === 5) {
+    const line = lines.get(parts[3]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    if (!line.graph) return json(res, 404, { error: "this line has no pipeline" });
+    return json(res, 200, introspect(line.graph));
   }
 
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "lines"
