@@ -60,8 +60,8 @@ function readJsonBody(req, maxBytes = BODY_MAX) {
 
 // Run handler(null, body) one time. A body error goes to respond with its
 // own status. A handler error goes to onError and never reaches the process.
-function withJsonBody(req, res, handler, { respond, onError }) {
-  return readJsonBody(req).then((body) => handler(null, body), (err) => {
+function withJsonBody(req, res, handler, { respond, onError, maxBytes }) {
+  return readJsonBody(req, maxBytes).then((body) => handler(null, body), (err) => {
     if (!(err instanceof BodyError)) throw err;
     respond(res, err.status, { error: err.message });
   }).catch((err) => onError(req, res, err));

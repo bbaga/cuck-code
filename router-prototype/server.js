@@ -57,6 +57,8 @@ const { createDashboardLive } = require("./dashboard-live");
 const { readClaudeConfig } = require("./claude-config");
 const { sessionContextTokens } = require("./context-probe");
 const { migratePresets } = require("./preset-migration");
+const { nameError, textError, validateText, graphPreview, buildListing, resolveSafe, readManagedText,
+  renameInText, writeManagedPipeline, deleteManagedPipeline, MAX_BODY_BYTES } = require("./pipelines-api");
 const { isSignalablePid } = require("./process-ref");
 const { newContextStats, restoreContextStats, recordTurn, resetForFreshSession,
   contextView, shouldAutoCompact, parseAutoThreshold, compactionPrompt, acceptSummary,
@@ -988,6 +990,111 @@ function catalogPipeline(name) {
   return CATALOG_GRAPHS.get(name);
 }
 
+// The /api/pipelines routes. Writes go to <LINES_DIR>/plugins/pipelines/ only
+// (pipelines-api.js builds the path from a checked name).
+const BUILTIN_PIPELINE_NAMES = builtinPipelineNames(fs, __dirname);
+function pipelineValidation(text, expectName) {
+  return validateText({ text, expectName, catalog: CATALOG, managedDir: MANAGED_PLUGINS_DIR,
+    builtInNames: BUILTIN_PIPELINE_NAMES });
+}
+function pipelinesApi(req, res, parts) {
+  const own = (name) => Object.prototype.hasOwnProperty.call(CATALOG.pipelines, name);
+  const sendErrors = (status, errors) => json(res, status, {
+    error: errors.map((e) => `${e.rule}: ${e.message}`).join("; "), errors });
+  const textOf = (name) => {
+    if (own(name)) {
+      try { return defaultReadFile(CATALOG.pipelines[name].file); } catch { return null; }
+    }
+    return readManagedText(fs, MANAGED_PLUGINS_DIR, name);
+  };
+  // Read { text } from the body; answers and returns null when the text is not usable.
+  const withText = (handler) => readBody(req, res, (err, body) => {
+    const bad = textError(body.text);
+    if (bad) return json(res, bad.status, { error: bad.message });
+    return handler(body.text);
+  }, MAX_BODY_BYTES);
+
+  if (parts.length === 2) {
+    if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });
+    return json(res, 200, buildListing(CATALOG, catalogPipeline));
+  }
+  if (parts.length === 3 && parts[2] === "validate") {
+    if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+    return withText((text) => {
+      const v = pipelineValidation(text);
+      json(res, 200, { errors: v.errors, graph: graphPreview(v.resolved) });
+    });
+  }
+  let name;
+  try { name = decodeURIComponent(parts[2]); } catch { name = null; }
+  const nameMessage = nameError(name);
+  const action = parts.length === 4 ? parts[3] : null;
+  if (parts.length > 4 || (parts.length === 4 && action !== "duplicate")) return json(res, 404, { error: "not found" });
+
+  if (req.method === "GET" && parts.length === 3) {
+    if (nameMessage) return json(res, 404, { error: "no such pipeline" });
+    const text = textOf(name);
+    if (text === null) return json(res, 404, { error: "no such pipeline" });
+    if (own(name)) {
+      const entry = CATALOG.pipelines[name];
+      const { resolved, errors } = resolveSafe(catalogPipeline, name);
+      return json(res, 200, { name, layer: entry.layer, editable: entry.layer === "managed", text, resolved, errors });
+    }
+    const v = pipelineValidation(text, name);
+    return json(res, 200, { name, layer: "managed", editable: true, text, resolved: null,
+      errors: v.errors.length ? v.errors : [{ rule: "LOAD", message: "the pipeline file is not loaded by the catalog" }] });
+  }
+
+  if (nameMessage) return json(res, 400, { error: nameMessage });
+  const entry = own(name) ? CATALOG.pipelines[name] : null;
+  const locked = BUILTIN_PIPELINE_NAMES.includes(name) || (entry !== null && entry.layer !== "managed");
+
+  if (req.method === "PUT" && parts.length === 3) {
+    if (locked) return json(res, 403, { error: `'${name}' is not in the managed layer and cannot be changed; duplicate it first` });
+    return withText((text) => {
+      const v = pipelineValidation(text, name);
+      if (v.errors.length) return sendErrors(400, v.errors);
+      const out = writeManagedPipeline({ fs, managedDir: MANAGED_PLUGINS_DIR, name, text, write: writeFileDurable });
+      rebuildCatalog();
+      slog("info", "pipeline.save", { name, created: out.created });
+      json(res, out.created ? 201 : 200, { name, layer: "managed", editable: true });
+    });
+  }
+
+  if (req.method === "DELETE" && parts.length === 3) {
+    if (locked) return json(res, 403, { error: `'${name}' is not in the managed layer and cannot be deleted` });
+    if (!deleteManagedPipeline({ fs, managedDir: MANAGED_PLUGINS_DIR, name })) {
+      return json(res, entry ? 403 : 404, { error: entry ? "pipeline is not in the managed layer" : "no such pipeline" });
+    }
+    rebuildCatalog();
+    slog("info", "pipeline.delete", { name });
+    return json(res, 200, { deleted: true });
+  }
+
+  if (req.method === "POST" && action === "duplicate") {
+    return readBody(req, res, (err, body) => {
+      const sourceText = textOf(name);
+      if (sourceText === null) return json(res, 404, { error: "no such pipeline" });
+      const newMessage = nameError(body.newName);
+      if (newMessage) return json(res, 400, { error: `newName: ${newMessage}` });
+      const newName = body.newName;
+      if (own(newName) || BUILTIN_PIPELINE_NAMES.includes(newName)
+        || readManagedText(fs, MANAGED_PLUGINS_DIR, newName) !== null) {
+        return json(res, 409, { error: `a pipeline named '${newName}' exists` });
+      }
+      let text;
+      try { text = renameInText(sourceText, newName); } catch (e) { return json(res, 400, { error: e.message }); }
+      const v = pipelineValidation(text, newName);
+      if (v.errors.length) return sendErrors(400, v.errors);
+      writeManagedPipeline({ fs, managedDir: MANAGED_PLUGINS_DIR, name: newName, text, write: writeFileDurable });
+      rebuildCatalog();
+      slog("info", "pipeline.duplicate", { from: name, name: newName });
+      json(res, 201, { name: newName, layer: "managed", editable: true });
+    });
+  }
+  return json(res, 405, { error: "method not allowed" });
+}
+
 function saveLine(line) {
   if (lifecycleTestHooks && lifecycleTestHooks.save) lifecycleTestHooks.save(line);
   if (line.deleted) return false;
@@ -1052,8 +1159,8 @@ function saveLine(line) {
 
 // Body errors get their own status. The handler runs one time. A handler
 // error gets one 500 response and does not stop the router.
-function readBody(req, res, handler) {
-  withJsonBody(req, res, handler, { respond: json, onError: handlerFailed });
+function readBody(req, res, handler, maxBytes) {
+  withJsonBody(req, res, handler, { respond: json, onError: handlerFailed, maxBytes });
 }
 
 function handlerFailed(req, res, err) {
@@ -2234,6 +2341,8 @@ const routeRequest = (req, res) => {
     }).catch(() => json(res, 500, { error: "harness probe failed" }));
     return;
   }
+
+  if (parts[0] === "api" && parts[1] === "pipelines") return pipelinesApi(req, res, parts);
 
   if (parts[0] === "api" && parts[1] === "pipeline-presets") {
     return json(res, 410, { error: "pipeline presets are replaced by pipelines", use: "/api/pipelines" });
