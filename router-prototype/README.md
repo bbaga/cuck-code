@@ -627,16 +627,11 @@ security defects and has one extra field of its own, `riskLevel`.
    with the reason `must be one of: low, medium, high`. The field list also
    shows in `GET /api/protocol/lines/:id/interactions` and in the planner prompt.
 
-**Limit of this version.** The router checks every declared field of a call, but
-for the nodes it starts it passes only fixed values to the prompt: `task` (and
-`trackerTicket`) for an implementor, `criteria` (and `trackerTicket` from the
-implementor) for a validator, and `instructions` for an integration validator.
-A node type that uses another caller field in its template, like `riskLevel`
-above, passes the format checks and the call checks, but the start of the node
-fails with 500 (`Missing value "riskLevel"` in the prompt build) because the
-value is not forwarded yet. Until the router forwards custom fields, use only
-`criteria` in the template of an extended validator. The design says that the
-declared fields become part of the prompt; this part is not built.
+**Fields declared on a node.** A caller field that a pipeline node declares
+under its own `fields`, like `riskLevel` above, is required by every `start`
+of that node, checked like any other field, and passed to the prompt of the
+new instance, so the node's `prompt` can use it (`{{riskLevel}}`). The same
+holds for the fields a node type declares in its `NODE.md`.
 
 ## Pipelines HTTP API
 
