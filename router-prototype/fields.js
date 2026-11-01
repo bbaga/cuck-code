@@ -3,7 +3,7 @@
 const ROUTER_VARIABLES = [
   "line.*", "node.*", "instance.*", "from.*",
   "repo.url", "repo.name", "router.url",
-  "source.name", "source.report", "report", "outcome",
+  "source.name", "source.report", "source.id", "report", "outcome",
 ];
 
 const TYPES = ["string", "text", "enum", "commit", "instance", "repo"];
