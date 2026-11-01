@@ -4,6 +4,7 @@ const ROUTER_VARIABLES = [
   "line.*", "node.*", "instance.*", "from.*",
   "repo.url", "repo.name", "router.url",
   "source.name", "source.report", "report", "outcome",
+  "integration.*",
 ];
 
 const TYPES = ["string", "text", "enum", "commit", "instance", "repo"];

@@ -160,6 +160,8 @@ function resolveTypes(types) {
       const { vars, varSections } = placeholders(t.body);
       for (const v of vars) {
         if (isRouterVariable(v)) continue;
+        // A section over a router variable (a list the router builds) sets the names inside it.
+        if ((varSections.get(v) || []).some(isRouterVariable)) continue;
         if (!(v in out.fields)) {
           throw new NodeTypeError(t.file, lineOf(t, v), `declare field \`${v}\` in NODE.md fields`);
         }
