@@ -108,10 +108,16 @@ message, the adapter flushes the buffered block text.
 The JSONL decoder handles split records, LF or CRLF framing, and a final record
 without LF. It does not split on Unicode line separators.
 
-The planner criteria for validation come only from the current planner run.
+The planner gives the criteria for validation in an explicit `start` call of a
+validator node, with `criteria` and `source` (see "Validation loop"). It
+accepts work without a check with the `accept` interaction; the text
+`SKIP VALIDATION` is no longer the way to do this. The rest of this
+paragraph describes the older flow, which the router keeps only for a planner
+request that already waits for criteria (it is removed in a later release, task
+D9). In that flow the criteria come only from the current planner run.
 Empty criteria produce a `VALIDATION NOT STARTED` diagnostic. They do not use
-old transcript text and do not start a validator. `SKIP VALIDATION` remains an
-explicit planner response. Each implementor report enters the planner queue
+old transcript text and do not start a validator. `SKIP VALIDATION` is
+still understood there. Each implementor report enters the planner queue
 with trusted internal source metadata: worker ID, invocation ID, run generation,
 and the immutable report body. Planner dispatch and wake retries preserve that
 metadata. Criteria are accepted only for that exact source, never by parsing
@@ -129,24 +135,566 @@ sent in full, without adding punctuation to the report text.
 
 The graph places each standard validator in the lane of the implementor it validates. The first validator shares the implementor row, and later validators use rows below it. Each implementor lane has at least one row. Unmatched validators use an ordered fallback section. Integration validators use a separate final section, with eligible Preview nodes on their integration row. The failed-validator filter runs before row sizing, so hidden validators do not leave empty rows. Graph selection keeps the fixed viewport position.
 
-## Pipeline settings and presets
+## Pipelines, node types and interactions
 
-Each line has a pipeline: per phase (planner, implementor, validator,
-integration) a harness, model, effort, and for the planner and implementor a
-`maxContext` (see Context compaction). Unset fields use the router defaults
-and the `<PHASE>_HARNESS` / `_MODEL` / `_EFFORT` environment variables.
+The shape of a line is data, not code. A **pipeline file** lists the nodes of a
+line, the one start node (the planner) and which **interactions** each node may
+have with which other node. A **node type** (`NODE.md`) defines a role and its
+system prompt. An **interaction** (`INTERACTION.md`) defines one kind of
+communication: what it does, which values the caller must supply, and the
+message it delivers. The built-in files live in `router-prototype/pipelines/`,
+`node-types/` and `interactions/`. The design is in
+`docs/pipeline-graph-design.md`.
 
-- The create form sets the pipeline of a new line. Presets save the form under
-  a name and fill it again later; they are stored in
-  `<LINES_DIR>/pipeline-presets.json`. API: `GET /api/pipeline-presets`,
-  `PUT /api/pipeline-presets/:name {pipeline}`, `DELETE /api/pipeline-presets/:name`.
-- The Pipeline tab in a line's header shows the effective settings and changes
-  the line's own settings at any time (`PUT /api/lines/:id/pipeline {pipeline}`,
-  `null` resets to the defaults). Changes apply from the next run: running
-  sessions finish unchanged, and existing workers keep the harness, model, and
-  effort they were spawned with. A session belongs to the harness that created
-  it, so after a planner harness change the router compacts the planner session
-  on the old harness and continues in a fresh session on the new one.
+**Status.** The router, the files, the plugin layers, the strict calls and the
+pipelines HTTP API are built. The web UI is not: the create-panel pipeline
+picker, the Pipeline tab with the graph view and the `/pipelines` page (tasks D4
+to D6) do not exist yet. The web UI still shows the four per-phase rows, and it
+sends the old per-phase `pipeline` shape (the router still accepts it).
+Pipelines are managed today through the HTTP API below or by files on disk.
+
+### Concepts
+
+| Term | Meaning |
+|---|---|
+| Node type | A reusable role: prompt plus runtime behavior. Example: `validator`. |
+| Node | One use of a type in a pipeline, with its own id and run settings. Example: `backend-val`. |
+| Instance | One running agent of a node (a worker). A node can have many. |
+| Interaction | A kind of communication: `start`, `feedback`, `accept`, `report`. |
+| Edge | Permission for one node to use one or more interactions toward another node. |
+
+A line stores the resolved pipeline in `line.json` as `graph` when it is
+created (`POST /api/lines {pipelineName}`, default `default`; an unknown name is
+400 and lists the known names). Editing a file later does not change a running
+line. A line saved before this feature gets the `default` graph when it loads;
+its `pipeline` overrides become `nodeSettings`, each worker gets a `node`, and
+an earlier `validationSkipped` becomes an entry in `acceptedRuns`.
+
+### Pipeline file
+
+A pipeline is a YAML file `<name>.yaml` in a `pipelines/` folder. This is the
+built-in `pipelines/minimal.yaml`:
+
+```yaml
+name: minimal
+description: One planner, one implementor, one validator and an integration validator.
+start: planner
+
+nodes:
+  planner:     { type: planner }
+  impl:        { type: implementor }
+  val:         { type: validator, checks: [impl] }
+  integration: { type: integration-validator }
+
+edges:
+  - planner -> impl: start, feedback, accept
+  - impl -> planner: report
+  - planner -> val: start
+  - val -> planner: report
+  - planner -> integration: start
+  - integration -> planner: report
+```
+
+Top-level keys: `name` (required), `description`, `start` (required),
+`defaults` (only `prompt`), `nodes`, `edges`. A node has `type` (required), the
+run settings `harness`, `model`, `effort`, `timeLimit`, `maxContext`, plus
+`prompt`, `fields` and `checks`. Any other key is an error.
+
+- An edge is `<from> -> <to>: <interaction>[, <interaction>...]`. Either side
+  can be a list: `"[a, b] -> c: report"`. An edge that starts with `[` must be
+  quoted, because YAML would read it as a list. The names after the colon are
+  interaction names; their meaning is in the interaction files. Two edges for
+  the same `from` and `to` are an error.
+- `checks: [impl]` on a node whose type has `workspace: source` names the
+  implementor nodes it checks. The `source` of a `start` call must be an
+  instance of one of them.
+- A pipeline name is 1 to 60 characters of `a-z`, `0-9` and `-`, and starts
+  with a letter or digit (`^[a-z0-9][a-z0-9-]{0,59}$`).
+
+### Node type: `NODE.md`
+
+A node type is a folder with a `NODE.md`: YAML frontmatter, then the prompt
+template. Like an agent skill it holds instructions and data only, no code.
+This is the head of the built-in `node-types/backend-validator/NODE.md`:
+
+```markdown
+---
+name: backend-validator
+description: Validator with the backend and architecture persona.
+extends: validator
+---
+Your validation persona: backend / architecture.
+...
+
+<!-- task -->
+The implementor reported:
+{{source.report}}
+
+The planner gave these acceptance criteria:
+{{criteria}}
+```
+
+The folder name must equal `name` (`^[a-z][a-z0-9-]{0,63}$`). Frontmatter keys:
+
+| Key | Values |
+|---|---|
+| `description` | Text. Shown in the generated protocol text of the planner. |
+| `extends` | The name of a parent type. The bodies are joined (parent first), the `fields` are merged, and the child overrides the other keys. A child cannot declare a field of its parent in a different way. A loop is an error. |
+| `session` | `resume`: a long-lived session that can be compacted and can receive `feedback`. `fresh`: a new session on every run. |
+| `workspace` | `coordinator`: the line workdir. `own-worktree`: a new worktree on one repository and branch. `source`: the worktree of the instance it checks. `integration`: one worktree per repository, built from the accepted commits. |
+| `outcome` | `none`, or `verdict`: the router reads the final `VERDICT: PASS` or `VERDICT: FAIL` line. A run without it is reported as `missing`, never as a pass. |
+| `coordinator` | `true`: the node gets the generated protocol text for its outgoing edges. Default `false`. |
+| `requires` | A list. The only value is `accepted-work`. It is parsed and stored; the router enforces the accepted-work rule when it starts an integration node (409 with `blockers`, see "Remote pipeline"). |
+| `fields` | The caller fields the template uses (see "Fields"). |
+
+A type without `extends` must set `session`, `workspace` and `outcome`. The
+built-in types: `planner` (resume, coordinator), `implementor` (resume,
+own-worktree), `validator` (fresh, source, verdict), `integration-validator`
+(fresh, integration, verdict), and the personas `backend-implementor`,
+`frontend-implementor`, `backend-validator`, `frontend-validator`. The planner
+picks a persona by starting the node of that persona.
+
+### Interaction: `INTERACTION.md`
+
+An interaction is a folder with an `INTERACTION.md`. The frontmatter says what it
+does and what values it needs; the body is the message template. This is the
+built-in `interactions/feedback/INTERACTION.md`:
+
+```markdown
+---
+name: feedback
+description: Send follow-up instructions to an existing instance. It resumes its session.
+effect: deliver
+trigger: request
+target: chosen
+fields:
+  instructions:
+    description: The corrected or additional instructions, written for the instance.
+    type: text
+    maxLength: 20000
+---
+Follow-up instructions from the planner (write them in ASD-STE100):
+{{instructions}}
+
+When done, reply with a report: what you changed, files changed, how you verified it, open issues. That report goes back to the planner verbatim.
+```
+
+| Key | Values |
+|---|---|
+| `effect` | `create`: a new instance of the target node; the message is its first turn. `deliver`: the message goes into an existing instance and wakes it. `accept`: records an acceptance and sends no message (the body must be empty); only built-in interactions may use it. |
+| `trigger` | `request`: the planner calls the router API. `complete`: the router acts when a run of the sender ends. |
+| `target` | `new` (only with `create`), `chosen` (an instance the caller names; needs `request`), `starter` (the instance that created the sender), `source` (the instance whose work the sender checks). |
+
+The built-in interactions:
+
+| Name | effect | trigger | target | Caller fields |
+|---|---|---|---|---|
+| `start` | create | request | new | whatever the target node needs, see "Strict calls" |
+| `feedback` | deliver | request | chosen | `instance`, `instructions` |
+| `accept` | accept | request | chosen | `instance`, `reason` |
+| `report` | deliver | complete | starter | none; the router fills `report` and `outcome` |
+
+A `complete`-triggered interaction has no caller. It declares no `fields` and
+its template may use router variables only. Its text depends on the outcome
+(`outcome.done`, `outcome.pass`, `outcome.reject`, `outcome.missing`,
+`outcome.timeout`, `outcome.failed`, `outcome.stopped`) and on the type of the
+sender (`from.type.implementor`, `from.type.validator`, `from.type.integration`).
+
+### Plugin layers
+
+The router reads three folders, highest priority first. Each can hold
+`node-types/`, `interactions/` and `pipelines/`.
+
+| Layer | Where | Notes |
+|---|---|---|
+| managed | `<LINES_DIR>/plugins/` (default `./lines/plugins`) | The pipelines API writes here (`pipelines/` only). Migrated presets land here. |
+| user | `$CUCK_HOME`, else `~/.cuck` | Your own plugins. Read-only for the API. |
+| built-in | `router-prototype/` | Read-only. |
+
+- A name in a higher layer wins over the same name in a lower plugin layer (the
+  lower file is ignored).
+- A plugin may **not** reuse a built-in name. The built-in one is kept, the
+  plugin file is skipped, and the clash is listed under `problems` of
+  `GET /api/pipelines` and in the boot log. Use `extends` to build on a built-in
+  type instead. `extends` works across layers, so a user type can extend
+  `validator`.
+- A file that does not load (a format error, a broken template) is skipped and
+  listed under `problems`. The other files still work.
+- The catalog is read at boot and again after each write through the pipelines
+  API. After you edit a file on disk by hand, restart the router.
+- A `.cuck/` folder inside a project repository is not read.
+
+### Templates
+
+Templates use a small mustache subset, with no logic and no escaping:
+
+- `{{name}}` and `{{a.b}}` insert a value. A missing value is an error. The
+  router never sends a prompt with an unfilled placeholder.
+- `{{#name}}...{{/name}}` renders its content when the value is set (not
+  missing, not empty, not `false`). For a list, it renders once per item.
+- `{{^name}}...{{/name}}` renders its content when the value is not set.
+- The marker `<!-- task -->` splits a type body into a role part (before) and a
+  task part (after). A prompt has at most one marker. The marker is removed
+  from the text. On harnesses with a trusted system-prompt channel (`claude`,
+  `codex`, `pi`), the role part, together with the prompt extensions (below), is
+  sent through that channel and the task part is the first turn. On `vibe`,
+  which has none, the whole prompt is the first turn.
+
+**Router variables and caller fields.** The router fills these and never
+accepts them from a caller: `line.*`, `node.*`, `instance.*`, `from.*`,
+`repo.url`, `repo.name`, `router.url`, `router.workerCap`, `source.name`,
+`source.id`, `source.report`, `source.harness`, `source.session`, `report`,
+`outcome`, `outcome.*`, `integration.*`, `protocol`. Every other `{{name}}` is
+a **caller field**: the caller supplies it, and it must be declared.
+
+### Fields
+
+Every caller field must be declared under `fields` in the interaction, the node
+type or the pipeline node that uses it. A placeholder without a declaration
+fails loading. A declaration:
+
+```yaml
+fields:
+  criteria:
+    description: Numbered acceptance criteria, one check per line, in the imperative.
+    type: text
+  trackerTicket:
+    description: Ticket id that every branch name must start with.
+    type: string
+    pattern: "^[A-Z]+-[0-9]+$"
+    optional: true
+```
+
+Keys: `description` (required, 1 to 300 characters), `type` (required), and
+for some types `maxLength`, `pattern`, `values`, `node`, `optional`. Types:
+`string` (one line, at most 200 characters unless `maxLength` is set, optional
+`pattern`), `text` (at most 20000 characters unless `maxLength` is set), `enum`
+(needs `values`), `instance` (an instance of the line; `node` narrows it),
+`repo` (a registered repository of the line) and `commit` (40 lowercase hex
+characters that exist in the repository). A field is required and must be
+non-empty, unless it has `optional: true`. An optional field may be used only
+inside a section for that field (`{{#trackerTicket}}...{{/trackerTicket}}`),
+so an optional value can never leave a hole in a prompt.
+
+### Strict calls
+
+`POST /api/protocol/lines/:id/interactions/:name` rejects any call that does
+not supply exactly the values it needs. The **required fields** of a call are
+the union of:
+
+1. The caller fields in the interaction template.
+2. For `effect: create`: the caller fields in everything the new instance's
+   prompt is built from: the `NODE.md` of the target type and its parents, and
+   the prompt extensions of the pipeline file.
+3. The fields the effect needs: `instance` for a `chosen` target; `repo` (and
+   the optional `base`) when the target type has `workspace: own-worktree`;
+   `source` when it has `workspace: source`; and the optional `name` of every
+   new instance.
+
+A call with missing, invalid or unexpected fields answers one 400 that lists
+every problem, so the caller can fix all of them in one retry. This is a real
+answer from the `default` pipeline for
+`{"to": "backend-impl", "persona": "x"}`:
+
+```json
+{
+  "error": "start of node 'backend-impl' is incomplete: fill every listed field",
+  "code": "INTERACTION_FIELDS",
+  "interaction": "start",
+  "to": "backend-impl",
+  "missing": [
+    { "field": "task", "description": "The complete task for the implementor, as the planner writes it.", "requiredBy": "node type backend-implementor" },
+    { "field": "repo", "description": "The registered repository the new instance works in.", "requiredBy": "workspace: own-worktree" }
+  ],
+  "invalid": [],
+  "unexpected": ["persona"],
+  "expected": {
+    "trackerTicket": "string ^[A-Z]+-[0-9]+$, optional",
+    "task": "text, required",
+    "repo": "repo, required",
+    "base": "string, optional",
+    "name": "string, optional"
+  }
+}
+```
+
+Other answers: 403 `NO_EDGE` (with `allowed`: the calls the planner may make
+instead) when no edge allows that interaction toward that node; 404 for an
+unknown line, interaction, node or instance; 405 for a `complete`-triggered
+interaction (the router performs those itself); 409 `plan not approved` before
+plan approval. A field of type `instance` must name an existing, idle instance
+of the right node. `GET /api/protocol/lines/:id/interactions` lists what the
+planner may do, per target node, with the field list of each call.
+
+### Pipeline validation rules
+
+The router rejects a pipeline that breaks a rule when a line is created and
+when the pipelines API saves or validates it. Each error has a `rule` and a
+`message` that names the node, edge or field.
+
+| Rule | Meaning |
+|---|---|
+| R1 | The `start` node exists in `nodes`. |
+| R2 | Every node can be reached from the start node through `create` interactions. |
+| R3 | The `create` edges form no cycle. Loops happen between instances (feedback, a fresh instance), never in the graph. |
+| R4 | The result of every other node cannot get lost: following `complete`-triggered interactions from any node ends at the start node. |
+| R5 | Only the start node may use `request`-triggered interactions. |
+| R6 | A `deliver` interaction needs a target node whose type has `session: resume`. |
+| R7 | The prompt extensions (`defaults.prompt`, node `prompt`) parse, every caller field in them is declared, optional fields are used only in their own sections, and the node `fields` declarations are valid. |
+| R8 | No unknown node type, unknown node (in an edge or in `checks`), unknown interaction or duplicate edge. |
+| R9 | A node with `checks` has a type with `workspace: source`, and each node it checks has a type with `workspace: own-worktree`. |
+| R10 | A `complete`-triggered interaction does not have `effect: create`. |
+
+Two more error codes can appear: `LOAD` (the text, a node type, an interaction
+or a prompt file does not parse or load) and `NAME` (the name is not allowed,
+differs from the file name, or is a built-in name).
+
+### Prompt extensions
+
+A node's system prompt can be extended in the pipeline file, without a new type
+file. `defaults.prompt` applies to every node; a node's `prompt` is added after
+it. A prompt is inline text or `{ file: <path> }`. The file is relative to the
+folder of the pipeline file and must stay inside it.
+
+```yaml
+defaults:
+  prompt: |
+    The product is a payments service. Never log card numbers or tokens.
+
+nodes:
+  A:
+    type: implementor
+    prompt: |
+      Follow the error-handling rules in docs/errors.md.
+  B:
+    type: security-reviewer
+    prompt:
+      file: prompts/pci-checks.md
+    fields:
+      riskLevel:
+        description: The risk level of the change, from the planner's assessment.
+        type: enum
+        values: [low, medium, high]
+```
+
+An extension is a template: router variables work, and a caller field must be
+declared under the node's `fields` (or the type's). It then becomes a required
+field of every `start` of that node. An extension adds text only: it cannot
+change the runtime behavior of the type.
+
+### How the prompts are built
+
+The prompt of an instance is the rendered `NODE.md` bodies (parents first), then
+`defaults.prompt`, then the node `prompt`. The built-in bodies carry the router
+rules (container and process hygiene, report format). The planner prompt has
+the placeholder `{{protocol}}`. The router fills it for a node whose type has
+`coordinator: true` with a section "Calls", generated from the edges that leave
+that node and the interaction definitions: for each call that the planner may
+make, a short description, the exact `curl` command with the required fields,
+and the list of all fields with their type and description. It comes from the
+same data as `GET /api/protocol/lines/:id/interactions`, so the planner prompt
+documents the fields the router enforces. A node that is not a coordinator gets
+no such section.
+
+### Presets are now pipelines
+
+The old pipeline presets are gone. At boot, the router converts each entry of
+`<LINES_DIR>/pipeline-presets.json` to `<LINES_DIR>/plugins/pipelines/<name>.yaml`:
+the `default` pipeline with the preset settings placed on the nodes of each phase,
+and the description `Migrated from preset '<old name>'`. A preset name that is
+not a safe file name is changed (lowercase, `a-z0-9-`, at most 60 characters,
+`-2`, `-3` ... for a clash) and the boot log shows `preset migrated: '<old>' ->
+'<new>'`. The old file is renamed to `pipeline-presets.json.migrated`. The
+routes `GET`, `PUT` and `DELETE /api/pipeline-presets*` answer 410
+`{error, use: "/api/pipelines"}`.
+
+## Write a node type
+
+This example adds a `security-reviewer`: a validator that checks the work for
+security defects and has one extra field of its own, `riskLevel`.
+
+1. **Make the folder.** Put it in the user layer, for example
+   `~/.cuck/node-types/security-reviewer/NODE.md` (or in
+   `<LINES_DIR>/plugins/node-types/`). The folder name must equal `name`.
+
+   ```markdown
+   ---
+   name: security-reviewer
+   description: Reviews the work of an implementor for security defects and gives a verdict.
+   extends: validator
+   fields:
+     riskLevel:
+       description: The risk level of the change, from the planner's assessment.
+       type: enum
+       values: [low, medium, high]
+   ---
+   Your role: SECURITY REVIEWER. The risk level of this change is {{riskLevel}}.
+   Check the work for injection, broken access control, secrets in code or logs,
+   unsafe deserialization, and missing input validation. For risk level high,
+   also check every new dependency.
+
+   <!-- task -->
+   The implementor reported:
+   {{source.report}}
+
+   The planner gave these security checks:
+   {{criteria}}
+
+   Tasks:
+   1. Check the work against each security check. For each check, record PASS
+      or FAIL with one sentence of evidence.
+   2. Reply with a SECURITY REPORT: one line per check with PASS or FAIL, then
+      a final line "VERDICT: PASS" or "VERDICT: FAIL".
+   ```
+
+   `extends: validator` gives the type `session: fresh`, `workspace: source`,
+   `outcome: verdict`, the field `criteria`, and the validator rules (hygiene,
+   remote and CI section). The `<!-- task -->` marker puts the role text
+   before it into the system prompt and the rest into the first turn.
+   `{{source.report}}` is a router variable; `{{criteria}}` comes from the
+   parent; `{{riskLevel}}` is a caller field and so it is declared.
+
+2. **Add it to a pipeline.** Put the node in a pipeline file, and let the
+   planner start it on the work of an implementor. Name the node it checks with
+   `checks`. Save this as `review-gate.yaml`:
+
+   ```yaml
+   name: review-gate
+   description: Implement, check the work, then a security review of the same work.
+   start: planner
+
+   nodes:
+     planner: { type: planner }
+     impl:    { type: implementor }
+     val:     { type: validator, checks: [impl] }
+     sec:     { type: security-reviewer, checks: [impl] }
+
+   edges:
+     - planner -> impl: start, feedback, accept
+     - impl -> planner: report
+     - planner -> [val, sec]: start
+     - "[val, sec] -> planner: report"
+   ```
+
+   The `report` edge from `sec` to the planner satisfies rule R4: the verdict
+   of the reviewer goes back to the planner, which decides.
+
+3. **Check it.** Restart the router so that it reads the user layer. Then send
+   the text to the validator. It writes nothing:
+
+   ```
+   curl -s -X POST http://localhost:7788/api/pipelines/validate \
+     -H 'Content-Type: application/json' \
+     -d "$(node -e 'console.log(JSON.stringify({text: require("fs").readFileSync("review-gate.yaml", "utf8")}))')"
+   ```
+
+   A good file answers 200 with `"errors": []` and the graph:
+
+   ```json
+   {"errors":[],"graph":{"nodes":[{"id":"planner","type":"planner","phase":"planner"},
+     {"id":"impl","type":"implementor","phase":"implementor"},
+     {"id":"val","type":"validator","phase":"validator"},
+     {"id":"sec","type":"security-reviewer","phase":"validator"}],
+    "edges":[{"from":"planner","to":"impl","interactions":["start","feedback","accept"]},
+     {"from":"impl","to":"planner","interactions":["report"]},
+     {"from":"planner","to":"val","interactions":["start"]},
+     {"from":"planner","to":"sec","interactions":["start"]},
+     {"from":"val","to":"planner","interactions":["report"]},
+     {"from":"sec","to":"planner","interactions":["report"]}]}}
+   ```
+
+   A broken file answers 200 as well, with the list of errors and
+   `"graph": null`. If you remove the edge `planner -> [val, sec]: start`, the
+   answer is `{"errors":[{"rule":"R2","message":"node 'sec' cannot be reached
+   from start node 'planner' through create interactions"}],"graph":null}`.
+   A node type that does not load is not in the catalog: the answer then
+   has `R8` (`unknown node type`), and the load error is under `problems` of
+   `GET /api/pipelines`.
+
+4. **Save and use it.** `PUT /api/pipelines/review-gate {text}` saves the file
+   to the managed layer (201), and `POST /api/lines {pipelineName:
+   "review-gate"}` creates a line with it. The call that starts the reviewer
+   needs three fields besides `to`:
+
+   ```
+   POST /api/protocol/lines/:id/interactions/start
+   {"to": "sec", "source": "<implementor id>", "criteria": "1. No secrets in logs.", "riskLevel": "high"}
+   ```
+
+   Without `riskLevel` and `source`, the router answers 400
+   `INTERACTION_FIELDS` with both in `missing` and the description of each. A
+   `riskLevel` that is not `low`, `medium` or `high` is listed under `invalid`
+   with the reason `must be one of: low, medium, high`. The field list also
+   shows in `GET /api/protocol/lines/:id/interactions` and in the planner prompt.
+
+**Limit of this version.** The router checks every declared field of a call, but
+for the nodes it starts it passes only fixed values to the prompt: `task` (and
+`trackerTicket`) for an implementor, `criteria` (and `trackerTicket` from the
+implementor) for a validator, and `instructions` for an integration validator.
+A node type that uses another caller field in its template, like `riskLevel`
+above, passes the format checks and the call checks, but the start of the node
+fails with 500 (`Missing value "riskLevel"` in the prompt build) because the
+value is not forwarded yet. Until the router forwards custom fields, use only
+`criteria` in the template of an extended validator. The design says that the
+declared fields become part of the prompt; this part is not built.
+
+## Pipelines HTTP API
+
+These routes read and write pipeline files. Only the managed layer
+(`<LINES_DIR>/plugins/pipelines/<name>.yaml`) can be changed. Built-in and user
+pipelines are read-only: duplicate one to edit it. A pipeline name follows the
+rules above. A running line keeps its own resolved copy, so changing or
+deleting a file never changes a running line. The web UI for these routes (the
+`/pipelines` page) is not built yet (task D6).
+
+| Route | Answer |
+|---|---|
+| `GET /api/pipelines` | 200 `{pipelines: [{name, description, layer, editable, problems}], nodeTypes: [{name, layer}], interactions: [{name, layer}], problems: [{layer, path, errors}]}`. `layer` is `managed`, `user` or `built-in`; `editable` is true for `managed` only. A pipeline that does not resolve has its errors in its own `problems`. Other methods: 405. |
+| `GET /api/pipelines/:name` | 200 `{name, layer, editable, text, resolved, errors}`: the file text, and the resolved definition (`resolved` is `null` and `errors` is filled when it does not resolve). 404 for an unknown or malformed name. |
+| `POST /api/pipelines/validate {text}` | 200 `{errors: [{rule, message}], graph}` where `graph` is `{nodes: [{id, type, phase}], edges: [{from, to, interactions}]}`, or `null` when `errors` is not empty. It runs the same validation as line creation and writes nothing. A name that clashes with a built-in or user pipeline is a `NAME` error. 400 when `text` is not a string or the body is not JSON; 413 when `text` is larger than 256 KB. |
+| `PUT /api/pipelines/:name {text}` | Validates, then writes the file atomically and reloads the catalog. 201 when the file is new, 200 when it replaced one: `{name, layer: "managed", editable: true}`. 400 `{error}` for a bad name or a body without a text; 400 `{error, errors}` for a validation error (the `name` in the text must equal `:name`); 403 when `:name` is built-in or in the user layer; 413 for text over 256 KB. |
+| `DELETE /api/pipelines/:name` | 200 `{deleted: true}`. 403 for a built-in or user pipeline; 404 when there is no such file. |
+| `POST /api/pipelines/:name/duplicate {newName}` | Copies a pipeline of any layer into the managed layer under `newName`; only the `name:` value in the text changes. 201 `{name, layer: "managed", editable: true}`. 404 for an unknown source; 400 for a bad `newName` or a copy that does not validate; 409 when `newName` already exists. |
+
+Errors of the write routes carry `error` (a one-line text of the rules) and
+`errors` (the list of `{rule, message}`). Any other method or path below
+`/api/pipelines` answers 405 or 404.
+
+## Pipeline settings
+
+Every node of a line has run settings: `harness`, `model`, `effort`,
+`timeLimit` and, for a node whose type has `session: resume`, `maxContext` (see
+Context compaction). Unset fields use the router defaults and the
+`<PHASE>_HARNESS` / `_MODEL` / `_EFFORT` environment variables. The phase of a
+node comes from its type: `planner` is `planner`; `implementor` and every type
+that extends it are `implementor`; `validator` and its children are
+`validator`; `integration-validator` is `integration`. An environment variable
+applies to every node of its phase.
+
+- Settings of a new line: `POST /api/lines {pipelineName?, nodeSettings?}`.
+  `nodeSettings` is `{ "<nodeId>": {harness?, model?, effort?, timeLimit?,
+  maxContext?} }`. An unknown node or an unknown key is 400. The pipeline file
+  can also hold the settings of its nodes (`harness`, `model`, ...); the line
+  settings win over them.
+- The old per-phase shape `pipeline: {<phase>: settings}` is still accepted on
+  `POST /api/lines` and `PUT /api/lines/:id/pipeline`; the router maps it to the
+  nodes of that phase. Send either `nodeSettings` or `pipeline`, not both (400).
+- Change a running line with `PUT /api/lines/:id/pipeline {nodeSettings}` (or
+  `{pipeline}`). The new map replaces the old one; `pipeline: null` resets to the
+  defaults. Only the run settings can change, never the graph. Changes apply
+  from the next run: running sessions finish unchanged, and existing workers
+  keep the harness, model, and effort they were spawned with. A session belongs
+  to the harness that created it, so after a planner harness change the router
+  compacts the planner session on the old harness and continues in a fresh
+  session on the new one.
+- Line state and the `PUT` answer carry `graph`, `nodeSettings`,
+  `effectiveNodeSettings` (the result per node), and the old per-phase view
+  `pipeline` (effective) and `pipelineOverrides`. The old per-phase view uses
+  the first node of each phase.
+- Presets (named settings in `pipeline-presets.json`) no longer exist; they
+  became pipeline files (see "Presets are now pipelines").
+- The web UI still shows the per-phase rows and the Pipeline tab of the old
+  design. It does not show nodes or the graph yet (see the Status note above).
 
 ## Context compaction
 
@@ -166,9 +714,10 @@ the router estimates prompt and reply characters / 4. That lower bound ignores
 tool output and is shown as `~` in the UI.
 
 - Automatic: before the next run, a session at or above its threshold is
-  compacted. Set it per line with `pipeline.planner.maxContext` and
-  `pipeline.implementor.maxContext` (tokens; the create form takes `200K`,
-  `50K`, `1M`). The default is `COMPACT_AUTO_TOKENS` (150000; `0` turns it
+  compacted. Set it per line with `nodeSettings.<node>.maxContext` for a node
+  whose type has `session: resume` (the old shape `pipeline.planner.maxContext`
+  and `pipeline.implementor.maxContext` still works; tokens; the create form
+  takes `200K`, `50K`, `1M`). The default is `COMPACT_AUTO_TOKENS` (150000; `0` turns it
   off). A failed automatic compaction is not retried on the same session.
 - Manual: the Compact button next to the context meter of the selected
   planner or implementor, or `POST /api/lines/:id/compact` and
@@ -361,19 +910,36 @@ steps for procedures, active voice, no idioms or jargon.
 ### Validation loop
 
 When an implementor finishes, the router wakes the planner with the
-IMPLEMENTOR REPORT and asks for acceptance criteria. The planner replies with
-a numbered list of criteria (or SKIP VALIDATION, which skips the loop). The
-router then spawns a VALIDATOR: a fresh vibe session pinned to the
-full-effort model, running in the implementor's worktree (no new worktree, no
-new branch), with a brief containing the implementor's report and the
-criteria. The validator checks the work — it may run the code, the unit
-tests, and headless UI tests through the playwright browser tools — and
-replies with a
-VALIDATION REPORT ending in `VERDICT: PASS` or `VERDICT: FAIL`. The router
-wakes the planner with that report, and the planner decides: accept the work,
-send follow-up instructions to the original implementor session via the
-continue endpoint (the implementor keeps its session memory and worktree, and
-validation repeats after it finishes again), or spawn a new implementor.
+IMPLEMENTOR REPORT (the `report` interaction of the pipeline). The report tells
+the planner to start a validator with acceptance criteria, or to accept the
+work. Both are explicit calls to the interactions API; the router no longer
+reads the criteria from the planner's reply:
+
+- `POST /api/protocol/lines/:id/interactions/start {to: "<validator node>",
+  criteria, source: "<implementor id>"}` starts a VALIDATOR. `source` must be
+  an idle instance of a node that the validator node `checks` (in the `default`
+  pipeline `backend-val` checks `backend-impl`, and `frontend-val` checks
+  `frontend-impl`); `criteria` is a numbered list. The call is checked like
+  every other call (see "Strict calls").
+- `POST /api/protocol/lines/:id/interactions/accept {instance, reason}`
+  accepts the latest run of an instance without a check. It replaces the old
+  `SKIP VALIDATION` reply, and the integration rule counts it like a `PASS`.
+
+The validator is a fresh session, running in the implementor's worktree (no new
+worktree, no new branch), with a brief containing the implementor's report and
+the criteria; its harness and model come from the node settings of the validator
+node (by default the full-effort model). The validator checks the work — it may
+run the code, the unit tests, and headless UI tests through the playwright
+browser tools — and replies with a VALIDATION REPORT ending in `VERDICT: PASS`
+or `VERDICT: FAIL`. The router wakes the planner with that report, and the
+planner decides: accept the work, send follow-up instructions to the original
+implementor session through the `feedback` interaction (the implementor keeps
+its session memory and worktree, and validation repeats after it finishes
+again), or start a new implementor.
+
+A planner request that already waits for criteria when the router is updated
+keeps the old flow once: the router reads the criteria (or `SKIP VALIDATION`)
+from the reply. New implementor reports use the explicit calls only.
 
 Validators are never resumed: each validation is a fresh session by
 construction, so no validator state can pollute later runs. A second
@@ -402,7 +968,7 @@ validation handoff: the router does not request criteria and does not spawn a
 validator, and instead wakes the planner with `CHANGESET LIMIT EXCEEDED`
 (worker and session IDs, base and head commits, additions, deletions, total,
 binary/dirty/untracked paths, and per-file values). The implementor session
-and worktree are preserved for the continue endpoint: the planner can
+and worktree are preserved for the `feedback` interaction: the planner can
 continue the original session to reduce or split the work. The base commit
 and the limit rule are part of the implementor brief; the latest result is
 persisted in `line.json` and exposed in the worker API responses
@@ -454,9 +1020,11 @@ planner at any time and stop any worker from the UI.
 
 ## Harness configuration
 
-A line can configure, per phase (`planner`, `implementor`, `validator`,
-`integration`), which agent harness runs it and with which model, effort
-level, and time limit.
+A line can configure, per node of its pipeline, which agent harness runs it and
+with which model, effort level, and time limit (see "Pipeline settings"). The
+environment variables and the code defaults are per phase (`planner`,
+`implementor`, `validator`, `integration`); the phase of a node comes from its
+type.
 
 Supported harnesses: `vibe`, `pi`, `codex`, `claude`. Effort levels:
 `low`, `medium`, `high`.
@@ -468,12 +1036,16 @@ Precedence, most specific wins:
    `PLANNER_TIME_LIMIT` (planner) and `WORKER_TIME_LIMIT` (other phases).
    The default models are Vibe models: every other harness defaults to no
    model, and the router omits `--model` so the CLI uses its own default.
-2. Environment variables, read at resolve time.
-3. The line's `pipeline` config (set at line creation, persisted in
-   `line.json`).
-4. A per-worker override: `harness`, `model`, and `effort` fields on the
-   worker spawn body (they win over the phase config and are stored on
-   the worker record).
+2. Environment variables, read at resolve time. Each applies to every node
+   of its phase.
+3. The settings in the node of the pipeline file (`harness`, `model`, ...).
+4. The line settings: `nodeSettings.<node>` (set at line creation or with
+   `PUT /api/lines/:id/pipeline`, persisted in `line.json`). A line that has
+   no `nodeSettings`, only the old per-phase `pipeline` overrides, applies those
+   overrides over the pipeline file settings.
+5. A per-worker override: `harness`, `model`, and `effort` fields on the body of
+   the deprecated `POST .../workers` call (they win over the node settings and
+   are stored on the worker record).
 
 Environment variables per phase (`PLANNER_`, `IMPLEMENTOR_`, `VALIDATOR_`,
 `INTEGRATION_`): `<PHASE>_HARNESS`, `<PHASE>_MODEL`, `<PHASE>_EFFORT`.
@@ -487,17 +1059,21 @@ in the UI (empty values are ignored); it does not change the resolved
 `pipeline.<phase>.model`, which stays a plain string. `authMode` is never
 saved in the pipeline.
 
-Example pipeline config on `POST /api/lines`:
+Example settings on `POST /api/lines` (node ids of the `default` pipeline):
 
 ```json
 {
   "name": "my line",
-  "pipeline": {
-    "implementor": { "harness": "pi", "model": "glm-5-3-flash", "effort": "high" },
-    "validator": { "harness": "vibe", "timeLimit": 900 }
+  "pipelineName": "default",
+  "nodeSettings": {
+    "backend-impl": { "harness": "pi", "model": "glm-5-3-flash", "effort": "high" },
+    "backend-val": { "harness": "vibe", "timeLimit": 900 }
   }
 }
 ```
+
+The old per-phase shape is still accepted: `"pipeline": {"implementor": {...},
+"validator": {...}}` sets the same settings on every node of that phase.
 
 `GET /api/harnesses` probes every harness (version and auth commands, 2 s
 timeout each) and returns `{ harnesses: [...], probedAt }`. Results are
@@ -659,7 +1235,7 @@ Single user, no authentication, and prompts on a line execute strictly one at
 a time. Plan approval is a router-side gate only — the router blocks worker
 spawning until a human approves, but does not check the plan's content. The
 validation loop trusts the planner's criteria and the validator's verdict;
-the router does not interpret the report beyond the SKIP VALIDATION marker.
+the router does not interpret the report beyond the final `VERDICT:` line.
 Lines (id, name, session, planApproved, worker list with role and validates)
 persist to `lines/<id>/line.json` and are rehydrated on restart; transcripts
 are in memory and do not survive a restart; workers that were running when the
@@ -711,7 +1287,7 @@ local paths and `file://` URLs. The pipeline then extends past validation:
   them ready for review.
 - On a FAIL verdict (local or CI), the planner receives the failure feedback
   and routes the revised task back to the ORIGINAL implementor session via
-  the continue endpoint; the implementor pushes again and the loop repeats.
+  the `feedback` interaction; the implementor pushes again and the loop repeats.
 - Repositories without a remote keep the local-only flow.
 
 ## Preview instructions
@@ -728,8 +1304,9 @@ commits to or pushes the main/master branch - merging is the integration
 validator's job:
 
 - **Accepted work only.** Every implementor must have an accepted result for
-  its latest run: a validator with `VERDICT: PASS` for that run, or a
-  `SKIP VALIDATION` decision for that run. Otherwise the router answers 409
+  its latest run: a validator with `VERDICT: PASS` for that run, or an
+  `accept` call for that run (`POST .../interactions/accept`; before this
+  feature, a `SKIP VALIDATION` decision, which old lines keep as an accepted run). Otherwise the router answers 409
   with `blockers: [{workerId, name, reason}]`; reasons are `running`,
   `not-completed`, `validation-queued`, `validation-running`,
   `awaiting-criteria`, `verdict-fail`, and `verdict-missing`. The planner
