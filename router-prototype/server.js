@@ -44,6 +44,7 @@ const { recordedPlannerRequest, sourceIdentity, plannerRequest, implementorRepor
   queuedUserPromptProjection, writeFileDurable, enqueuePlannerRequest, submitPrompt,
   cancelQueuedUserPrompt } = require("./planner-request");
 const { scopeFields, scopeSummary } = require("./scope-fields");
+const { render: renderTemplate } = require("./template");
 const { REPO_NAME, sanitizeRepoName, repoNameFromUrl, repoIdentity, adoptLegacyWorkdir,
   integrationSelection, prepareIntegrationWorkspace } = require("./line-repos");
 const { loadTranscript } = require("./transcript-history");
@@ -1878,6 +1879,49 @@ function sendFailure(res, out) {
 
 // Creates an implementor with its own worktree and branch. Returns
 // { ok: true, worker, response } or { ok: false, status, error, ...extra }.
+// Deliver a message to an existing implementor-type instance: resume its
+// session with the message as the next turn. Returns
+// { ok: true, compacting } or { ok: false, status: 409, error }.
+function deliverBlocker(line, worker) {
+  if (worker.role === "validator") {
+    return { ok: false, status: 409, error: "validators are fresh each run - spawn a new task instead" };
+  }
+  if (worker.child) return { ok: false, status: 409, error: "worker is currently running" };
+  for (const w of line.workers.values()) {
+    if (w.role === "validator" && w.validates === worker.id && w.status === "running") {
+      return { ok: false, status: 409, error: "a validator is still checking this implementor" };
+    }
+  }
+  if (worker.compacting) return { ok: false, status: 409, error: "worker is compacting its context" };
+  if (!worker.sessionId && !worker.handoff) return { ok: false, status: 409, error: "worker has no session yet" };
+  return null;
+}
+
+function deliverToInstance(line, worker, message, { logText } = {}) {
+  const blocked = deliverBlocker(line, worker);
+  if (blocked) return blocked;
+  const shown = typeof logText === "string" ? logText : message;
+  worker.status = "running";
+  worker.stopRequested = false;
+  worker.runGeneration = (worker.runGeneration || 0) + 1;
+  broadcast(line, "worker_status", { workerId: worker.id, status: "running" });
+  saveLine(line);
+  slog("info", "worker.continued", { lineId: line.id, workerId: worker.id,
+    chars: shown.length, prompt: preview(shown, 400) });
+  const run = () => spawnWorker(line, worker, message, true);
+  const autoCompact = worker.sessionId
+    && shouldAutoCompact(worker.context, maxContextFor(line, worker))
+    && compactWorker(line, worker, "auto", () => {
+      if (line.deleted || !line.workers.has(worker.id)) return;
+      // Stopped during the compaction: finish as a stopped run.
+      if (worker.stopRequested) {
+        workerClosed(line, worker, null, "SIGTERM", new InvocationCapture(), { outcome: "fail" });
+      } else run();
+    });
+  if (!autoCompact) run();
+  return { ok: true, compacting: !!autoCompact };
+}
+
 function createOwnWorktree(line, nodeId, fields) {
   const fail = (status, error, extra) => ({ ok: false, status, error, ...extra });
   const persona = fields.persona;
@@ -1980,7 +2024,7 @@ function createIntegration(line, nodeId, fields) {
   }
   // The call is the planner's acceptance: every implementor must have
   // accepted work for its latest run. Nothing may still be in flight.
-  const selection = integrationSelection(line.workers.values(), line.pendingValidations);
+  const selection = integrationSelection(line.workers.values(), line.pendingValidations, line.graph);
   if (selection.blockers.length) {
     return fail(409, "not all implementor work is accepted: "
       + selection.blockers.map((b) => b.text).join("; "),
@@ -2943,6 +2987,19 @@ const routeRequest = (req, res) => {
       if ((interaction.effect === "create" || interaction.effect === "deliver") && !line.planApproved) {
         return json(res, 409, { error: "plan not approved" });
       }
+      if (interaction.effect === "deliver") {
+        const target = line.workers.get(body.instance);
+        if (!target) return json(res, 404, { error: `no such instance: '${body.instance}'` });
+        let message;
+        try {
+          message = renderTemplate(interaction.body, { ...body, from: { node: caller }, to: { node: targetId } });
+        } catch (e) {
+          return json(res, 500, { error: `the interaction '${name}' cannot be rendered: ${e.message}` });
+        }
+        const sent = deliverToInstance(line, target, message);
+        if (!sent.ok) return json(res, sent.status, { error: sent.error });
+        return json(res, 202, { queued: true, compacting: sent.compacting });
+      }
       if (interaction.effect !== "create") {
         return json(res, 501, { error: "not implemented", code: "NOT_IMPLEMENTED" });
       }
@@ -3187,17 +3244,8 @@ const routeRequest = (req, res) => {
       if (w) { line = l; worker = w; break; }
     }
     if (!worker) return json(res, 404, { error: "no such worker" });
-    if (worker.role === "validator") {
-      return json(res, 409, { error: "validators are fresh each run - spawn a new task instead" });
-    }
-    if (worker.child) return json(res, 409, { error: "worker is currently running" });
-    for (const w of line.workers.values()) {
-      if (w.role === "validator" && w.validates === worker.id && w.status === "running") {
-        return json(res, 409, { error: "a validator is still checking this implementor" });
-      }
-    }
-    if (worker.compacting) return json(res, 409, { error: "worker is compacting its context" });
-    if (!worker.sessionId && !worker.handoff) return json(res, 409, { error: "worker has no session yet" });
+    const blockedNow = deliverBlocker(line, worker);
+    if (blockedNow) return json(res, blockedNow.status, { error: blockedNow.error });
     readBody(req, res, (err, body) => {
       if (err || !body || typeof body.prompt !== "string" || !body.prompt.trim()) {
         return json(res, 400, { error: "expected {prompt}" });
@@ -3206,25 +3254,9 @@ const routeRequest = (req, res) => {
 ${body.prompt}
 
 When done, reply with a report: what you changed, files changed, how you verified it, open issues. That report goes back to the planner verbatim.`;
-      worker.status = "running";
-      worker.stopRequested = false;
-      worker.runGeneration = (worker.runGeneration || 0) + 1;
-      broadcast(line, "worker_status", { workerId: worker.id, status: "running" });
-      saveLine(line);
-      slog("info", "worker.continued", { lineId: line.id, workerId: worker.id,
-        chars: body.prompt.length, prompt: preview(body.prompt, 400) });
-      const run = () => spawnWorker(line, worker, prompt, true);
-      const autoCompact = worker.sessionId
-        && shouldAutoCompact(worker.context, maxContextFor(line, worker))
-        && compactWorker(line, worker, "auto", () => {
-          if (line.deleted || !line.workers.has(worker.id)) return;
-          // Stopped during the compaction: finish as a stopped run.
-          if (worker.stopRequested) {
-            workerClosed(line, worker, null, "SIGTERM", new InvocationCapture(), { outcome: "fail" });
-          } else run();
-        });
-      if (!autoCompact) run();
-      json(res, 202, { queued: true, compacting: !!autoCompact });
+      const out = deliverToInstance(line, worker, prompt, { logText: body.prompt });
+      if (!out.ok) return json(res, out.status, { error: out.error });
+      json(res, 202, { queued: true, compacting: out.compacting });
     });
     return;
   }

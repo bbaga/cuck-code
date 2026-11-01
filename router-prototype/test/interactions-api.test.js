@@ -22,9 +22,11 @@ async function call(base, method, pathname, body) {
 let root, router, base, src;
 const ok = "ia-ok";
 const pending = "ia-pending";
+const fbLine = "ia-feedback";
+const accLine = "ia-accept";
 const post = (line, name, body) => call(base, "POST", `/api/protocol/lines/${line}/interactions/${name}`, body);
 
-function seedLine(linesDir, id, planApproved) {
+function seedLine(linesDir, id, planApproved, extra = {}) {
   const lineDir = path.join(linesDir, id);
   fs.mkdirSync(lineDir);
   const clone = path.join(lineDir, "repos", "api");
@@ -33,7 +35,7 @@ function seedLine(linesDir, id, planApproved) {
     persona: node === "frontend-impl" ? "frontend" : "backend", role: "implementor", status: "completed",
     repo: "api", branch: `b/${name}`, runGeneration: 1, lastCompletedInvocationId: `inv-${wid}`,
     lastRunText: `report of ${name}`,
-    worktreePath: path.join(linesDir, "worktrees", id, "api", name) });
+    worktreePath: path.join(linesDir, "worktrees", id, "api", name), ...(extra[wid] || {}) });
   fs.writeFileSync(path.join(lineDir, "line.json"), JSON.stringify({
     id, name: id, layout: 2, started: true, planApproved,
     repos: [{ name: "api", url: src, path: clone }],
@@ -52,10 +54,17 @@ test.before(async () => {
   git(src, "commit", "-qm", "init");
   seedLine(linesDir, ok, true);
   seedLine(linesDir, pending, false);
+  git(src, "branch", "b/impl");
+  git(src, "branch", "b/front");
+  // Lines with idle instances that have a session (the fake agent logs its arguments).
+  for (const id of [fbLine, accLine]) {
+    seedLine(linesDir, id, true, { i1: { sessionId: "sess-1", harness: "claude",
+      worktreePath: path.join(linesDir, id, "repos", "api") } });
+  }
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin);
   for (const agent of ["claude", "vibe", "codex", "pi"]) {
-    fs.writeFileSync(path.join(bin, agent), "#!/bin/sh\nsleep 60\n");
+    fs.writeFileSync(path.join(bin, agent), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${path.join(root, "agent-args.log")}"\nsleep 60\n`);
     fs.chmodSync(path.join(bin, agent), 0o755);
   }
   router = await startRouter(linesDir, { ROUTER_ALLOW_LOCAL_REPOS: "1",
@@ -130,10 +139,49 @@ test("an unapproved plan is 409", async () => {
   assert.equal(out.body.error, "plan not approved");
 });
 
-test("a good call of an interaction without an implementation answers 501", async () => {
-  const out = await post(ok, "feedback", { instance: "i1", instructions: "x" });
-  assert.equal(out.status, 501);
-  assert.equal(out.body.code, "NOT_IMPLEMENTED");
+// The saved line file holds the full record of an instance.
+const stateOf = async (line, id) => JSON.parse(fs.readFileSync(path.join(root, "lines", line, "line.json"), "utf8"))
+  .workers.find((w) => w.id === id);
+
+test("C4: feedback through the endpoint runs the implementor again with the rendered text", async () => {
+  const out = await post(fbLine, "feedback", { instance: "i1", instructions: "Fix the header." });
+  assert.equal(out.status, 202, JSON.stringify(out.body));
+  assert.deepEqual(out.body, { queued: true, compacting: false });
+  const w = await stateOf(fbLine, "i1");
+  assert.equal(w.status, "running");
+  assert.equal(w.runGeneration, 2);
+  const logFile = path.join(root, "agent-args.log");
+  for (let i = 0; i < 50 && !fs.existsSync(logFile); i++) await new Promise((r) => setTimeout(r, 100));
+  const log = fs.readFileSync(logFile, "utf8");
+  assert.ok(log.includes("Follow-up instructions from the planner (write them in ASD-STE100):\nFix the header.\n\nWhen done, reply with a report"), log);
+  const again = await post(fbLine, "feedback", { instance: "i1", instructions: "More." });
+  assert.equal(again.status, 400, "a running instance is refused by the field check");
+});
+
+test("C4: the old /continue route sends the same message as the feedback interaction", async () => {
+  const { loadInteraction } = require("../interactions");
+  const { render } = require("../template");
+  const fb = loadInteraction("interactions/feedback", (f) => fs.readFileSync(path.join(__dirname, "..", f), "utf8"));
+  const expected = render(fb.body, { instructions: "Same text." });
+  const legacy = `Follow-up instructions from the planner (write them in ASD-STE100):
+Same text.
+
+When done, reply with a report: what you changed, files changed, how you verified it, open issues. That report goes back to the planner verbatim.`;
+  assert.equal(expected, legacy);
+});
+
+test("C4: feedback to a node without an edge is 403", async () => {
+  const val = await post(ok, "start", { to: "backend-val", criteria: "1. x", source: "i1" });
+  assert.equal(val.status, 201, JSON.stringify(val.body));
+  const out = await post(ok, "feedback", { instance: val.body.instance.validatorId, instructions: "x" });
+  assert.equal(out.status, 403);
+  assert.equal(out.body.code, "NO_EDGE");
+});
+
+test("C4: feedback to an instance without a session is 409", async () => {
+  const out = await post(ok, "feedback", { instance: "f1", instructions: "x" });
+  assert.equal(out.status, 409);
+  assert.match(out.body.error, /no session/);
 });
 
 test("a good start of an implementor is 201 with the instance", async () => {
