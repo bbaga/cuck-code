@@ -8,3 +8,7 @@ Status: prototype phase — building both orchestrator variants (A: Temporal,
 B: own process manager) over a shared event facade; Temporal first.
 See [docs/prototype-plan.md](docs/prototype-plan.md) and
 [docs/adr/](docs/adr/).
+
+## Setup
+
+Run `npm ci` in `router-prototype/` before you start the router or run the tests.
