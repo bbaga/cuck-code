@@ -286,7 +286,7 @@
     if (!worker || typeof worker !== "object") return null;
     const validator = (worker.role || "implementor") === "validator";
     const lines = [["Role", worker.role || "implementor"], ["Persona", worker.persona || "backend"],
-      ["Repository", worker.repo || "primary"], ["Branch", worker.branch || ""], ["Goal", worker.goal || worker.name || ""]];
+      ["Repository", worker.repo || (worker.kind === "integration" ? "all accepted repositories" : "unknown")], ["Branch", worker.branch || ""], ["Goal", worker.goal || worker.name || ""]];
     if (validator && worker.validatesName) lines.push(["Checked implementor", worker.validatesName]);
     if (validator && worker.criteria) lines.push(["Validation criteria", worker.criteria]);
     if (worker.prompt) lines.push(["Prompt", worker.prompt]);

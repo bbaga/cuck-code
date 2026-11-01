@@ -7,6 +7,7 @@ const claimRules = require('./work-claims');
 const requestRules = require('./work-requests');
 
 const BODY_MAX = 64 * 1024;
+const OVERLAP_MAX = 10;
 
 // Thrown inside a mutation to abort the transaction without a write.
 class Abort extends Error {
@@ -40,7 +41,9 @@ function readJson(req) {
   });
 }
 
-function createWriteRoutes({ store, lineExists, now, newId, onOutbox = () => {} }) {
+// resolveRepo(lineId, value) -> { ok: true, repo, repoName } | { ok: false, status, code, message }.
+// When given, it turns the repo the owner names into an identity that every line shares.
+function createWriteRoutes({ store, lineExists, now, newId, onOutbox = () => {}, resolveRepo = null }) {
   const eventId = () => newId();
 
   // Append a rule event with a unique id and the next cursor.
@@ -98,7 +101,7 @@ function createWriteRoutes({ store, lineExists, now, newId, onOutbox = () => {} 
   });
 
   const routes = {
-    createClaim: (lineId, body) => run(snapshot => {
+    createClaim: (lineId, body) => runNotifying(snapshot => {
       const { idempotencyKey, ...input } = body;
       checkKey(idempotencyKey);
       const scope = `claim:${lineId}`;
@@ -114,10 +117,29 @@ function createWriteRoutes({ store, lineExists, now, newId, onOutbox = () => {} 
       }
       const r = claimRules.validateNewClaim(input, lineId, now());
       if (!r.ok) abortRule(r);
-      const claim = { ...r.claim, id: newId(), revision: 1 };
+      let repoFields = {};
+      if (resolveRepo) {
+        const resolved = resolveRepo(lineId, r.claim.repo);
+        if (!resolved || !resolved.ok) abortRule(resolved || { status: 400, code: 'UNKNOWN_REPO', message: 'repo is not registered on this line' });
+        repoFields = { repo: resolved.repo, repoName: resolved.repoName };
+      }
+      const claim = { ...r.claim, ...repoFields, id: newId(), revision: 1 };
+      // Overlap: current claims of other lines on the same repository. Only a
+      // resolved repo identity is comparable across lines.
+      const overlapping = resolveRepo ? snapshot.claims.filter(c => c.repo === claim.repo
+        && c.ownerLineId !== lineId && claimRules.CURRENT_STATUSES.includes(c.status)) : [];
       snapshot.claims.push(claim);
       if (idempotencyKey !== undefined) rememberIdempotent(snapshot, scope, idempotencyKey, fingerprint, { claimId: claim.id });
-      return { status: 201, body: { claim, snapshotRevision: snapshot.revision + 1 } };
+      const t = now();
+      const byLine = new Map();
+      for (const c of overlapping) byLine.set(c.ownerLineId, [...(byLine.get(c.ownerLineId) || []), c.id]);
+      for (const [recipient, claimIds] of byLine) {
+        snapshot.outbox.push({ noticeId: `${claim.id}:overlap:${recipient}`, type: 'claim.overlap',
+          recipientLineId: recipient, claimId: claim.id, ownerLineId: lineId, repo: claim.repo,
+          branch: claim.branch, title: claim.title, yourClaimIds: claimIds, createdAt: t, deliveredAt: null });
+      }
+      const overlaps = overlapping.slice(0, OVERLAP_MAX).map(c => ({ claimId: c.id, ownerLineId: c.ownerLineId, branch: c.branch, title: c.title }));
+      return { status: 201, body: { claim, overlaps, snapshotRevision: snapshot.revision + 1 } };
     }),
     patchClaim: (lineId, claimId, body) => claimUpdate(lineId, claimId, body,
       (claim, patch) => claimRules.applyOwnerPatch(claim, patch, lineId, now())),

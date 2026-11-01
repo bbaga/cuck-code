@@ -55,6 +55,15 @@ test('matchRepo: name, url, primary, no match', () => {
   assert.equal(matchRepo([{ name: 'x', path: '/x' }], 'x'), null);
 });
 
+test('matchRepo: a stored repository identity matches any remote form of the same repo', () => {
+  const repos = [{ name: 'svc', path: '/svc', url: 'ssh://git@github.com/o/svc.git' }];
+  const want = { repoPath: '/svc', repositoryUrl: 'https://github.com/o/svc.git' };
+  assert.deepEqual(matchRepo(repos, 'https://github.com/o/svc'), want);
+  assert.deepEqual(matchRepo(repos, 'git@github.com:o/svc.git'), want);
+  assert.deepEqual(matchRepo(repos, 'svc'), want);
+  assert.equal(matchRepo(repos, 'https://github.com/o/other'), null);
+});
+
 test('unregistered repo is recorded as unverified', async () => {
   const t = await setup([claim(1, { repo: 'nope' })]);
   const r = await t.refresh.refreshClaim('c1');

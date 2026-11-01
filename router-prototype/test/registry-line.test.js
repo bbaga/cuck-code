@@ -90,7 +90,7 @@ function setup(overrides = {}) {
       { id: "q1", subject: "Need X", sourceLineId: "o", targetLineId: "me", state: "open", revision: 1 },
       { id: "q2", subject: "Ask Y", sourceLineId: "me", targetLineId: "o", state: "open", revision: 2 }] });
     if (u === "/api/lines") return json(200, { lines: [{ id: "me", name: "Me" }, { id: "o", name: "Other" }] });
-    if (u.includes("/repos")) return json(200, { repos: [{ name: "primary" }] });
+    if (u.includes("/repos")) return json(200, { repos: [{ name: "web" }, { name: "api" }] });
     return json(404, {});
   };
   const c = fakeDoc().createElement("div");
@@ -138,7 +138,9 @@ test("publish form validates, then reuses the idempotency key on retry", async (
   const form = c.children[4];
   const inputs = [];
   walk(form, (x) => { if (x.tag === "input" || x.tag === "select") inputs.push(x); });
-  const [, repoTxt, title, , , branch, commit] = inputs;
+  const [repoSel, title, , , branch, commit] = inputs;
+  assert.strictEqual(repoSel.tag, "select");
+  assert.strictEqual(inputs.filter((x) => x.tag === "input").length, 6, "no free-text repo input");
   const submit = () => form.listeners.submit({ preventDefault() {} });
   await submit();
   assert.match(find(form, (x) => x.attrs.role === "alert").textContent, /title is required/);
@@ -149,8 +151,7 @@ test("publish form validates, then reuses the idempotency key on retry", async (
   const posts = calls.filter((x) => x.u === "/api/registry/lines/me/claims" && x.o.method === "POST").map((x) => JSON.parse(x.o.body));
   assert.strictEqual(posts.length, 3);
   assert.deepStrictEqual(new Set(posts.map((p) => p.idempotencyKey)), new Set(["key1"]));
-  assert.strictEqual(posts[0].repo, "primary");
-  assert.ok(repoTxt);
+  assert.strictEqual(posts[0].repo, "web");
 });
 
 test("plain-script vm load (no require/module) and mount", async () => {

@@ -208,3 +208,34 @@ test('onLineDeleted stales claims, orphans requests, appends events, is idempote
   assert.equal(s.events.length, 4);
   assert.equal(s.revision, rev);
 });
+
+test('a new claim on a repo with current claims of other lines notifies those lines once', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'rw-'));
+  const file = path.join(dir, 'reg.json');
+  const base = { version: 1, revision: 0, eventCursor: 0, claims: [
+    mk('a1', { ownerLineId: 'L2', repo: 'https://github.com/o/web' }),
+    mk('a2', { ownerLineId: 'L2', repo: 'https://github.com/o/web', branch: 'b2' }),
+    mk('a3', { ownerLineId: 'L2', repo: 'https://github.com/o/web', status: 'superseded' }),
+    mk('a4', { ownerLineId: 'L2', repo: 'https://github.com/o/api' }),
+    mk('a5', { ownerLineId: 'L1', repo: 'https://github.com/o/web' })],
+    requests: [], archive: [], events: [], outbox: [], tombstones: [], idempotency: [] };
+  await fs.writeFile(file, JSON.stringify(base));
+  const store = createStore(file);
+  let n = 0;
+  let notified = 0;
+  const routes = createRegistryRoutes({ store, lineExists: id => LINES.has(id), now: () => 1000, newId: () => `id-${++n}`,
+    onOutbox: () => { notified++; },
+    resolveRepo: (lineId, value) => ({ ok: true, repoName: value, repo: `https://github.com/o/${value}` }) });
+  const r = await call(routes, 'POST', '/api/registry/lines/L1/claims', newClaim({ repo: 'web', branch: 'feat/x', title: 'New' }));
+  assert.equal(r.code, 201);
+  assert.equal(r.body.claim.repo, 'https://github.com/o/web');
+  assert.deepEqual(r.body.overlaps.map(o => o.claimId), ['a1', 'a2']);
+  const { outbox } = await store.readSnapshot();
+  assert.equal(outbox.length, 1);
+  assert.deepEqual({ ...outbox[0] }, { noticeId: 'id-1:overlap:L2', type: 'claim.overlap', recipientLineId: 'L2', claimId: 'id-1',
+    ownerLineId: 'L1', repo: 'https://github.com/o/web', branch: 'feat/x', title: 'New', yourClaimIds: ['a1', 'a2'], createdAt: 1000, deliveredAt: null });
+  assert.equal(notified, 1);
+  const quiet = await call(routes, 'POST', '/api/registry/lines/L1/claims', newClaim({ repo: 'docs' }));
+  assert.deepEqual(quiet.body.overlaps, []);
+  assert.equal((await store.readSnapshot()).outbox.length, 1);
+});

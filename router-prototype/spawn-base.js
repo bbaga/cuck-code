@@ -55,8 +55,8 @@ function resolveSpawnBase(base, { workers, repoName, run }) {
   if (target.role !== "implementor") {
     throw new BaseError(400, `base worker '${base}' is not an implementor`);
   }
-  if ((target.repo || "primary") !== repoName) {
-    throw new BaseError(400, `base worker '${base}' belongs to repo '${target.repo || "primary"}', not '${repoName}'`);
+  if (target.repo !== repoName) {
+    throw new BaseError(400, `base worker '${base}' belongs to repo '${target.repo || "unknown"}', not '${repoName}'`);
   }
   if (target.status === "running") {
     throw new BaseError(409, `base worker '${base}' is running - wait for it to finish or stop it first`);

@@ -209,8 +209,8 @@
     function buildPublish() {
       const f = pubBox; const out = msg();
       const repoNames = st.repos.map((r) => r.name);
-      const repoSel = select(f, "Repo", repoNames.map((n) => [n, n]).concat([["", "(other — type below)"]]), repoNames[0] || "");
-      const repoTxt = field(f, "Repo (free text)");
+      // A claim covers one of this line's registered repos; the router stores its remote identity.
+      const repoSel = select(f, "Repo", repoNames.length ? repoNames.map((n) => [n, n]) : [["", "(no repos registered)"]], repoNames[0] || "");
       const i = { title: field(f, "Title"), summary: field(f, "Summary"), tags: field(f, "Tags (comma list)"),
         branch: field(f, "Branch"), commit: field(f, "Commit (40 hex)"), contract: field(f, "Contract"),
         status: select(f, "Status", OWNER_STATUSES.map((s) => [s, s]), "active") };
@@ -218,7 +218,7 @@
       f.addEventListener("submit", async (e) => {
         if (e.preventDefault) e.preventDefault();
         const v = Object.fromEntries(Object.entries(i).map(([k, n]) => [k, n.value]));
-        v.repo = trim(repoTxt.value) || repoSel.value;
+        v.repo = repoSel.value;
         const bad = validateClaim(v);
         if (bad) { out.textContent = bad; return; }
         if ((await api("POST", base + "/claims", createClaimBody(v, claimKey.get(v)), out)).ok) { claimKey.clear(); for (const n of Object.values(i)) if (n !== i.status) n.value = ""; load(); }

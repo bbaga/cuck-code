@@ -100,11 +100,16 @@ function previewForLine(line) {
   const pass = [...line.workers.values()].find(w => w.kind === "integration" && w.role === "validator" && w.status === "completed" && w.verdict === "pass");
   const base = { eligible: false, availability: "unavailable", stale: false, sourceRevision: null, projectDirectory: null, expectedUrl: null, prerequisites: [], limitations: [] };
   if (!pass) return { ...base, reason: "No completed integration result has a PASS verdict." };
-  const source = pass.validatedCommit || pass.sourceRevision || pass.integrationCommit;
+  // An integration records one worktree per repository. A preview needs exactly one.
+  const manifest = pass.integration && Array.isArray(pass.integration.repos) ? pass.integration.repos : null;
+  if (manifest && manifest.length !== 1) return { ...base, eligible: true, reason: "The integration spans several repositories. A preview supports one repository only." };
+  const single = manifest ? manifest[0] : null;
+  const source = single ? single.validatedCommit : pass.validatedCommit || pass.sourceRevision || pass.integrationCommit;
   if (!source || !/^[a-f0-9]{40}$/i.test(source)) return { ...base, eligible: true, stale: true, reason: "The validated commit was not recorded; source is unavailable or unverified." };
-  const workdir = path.resolve(pass.worktreePath || "");
+  const workdir = path.resolve((single ? single.worktreePath : pass.worktreePath) || "");
   if (!fs.existsSync(workdir) || git(workdir, ["cat-file", "-e", `${source}^{commit}`]) === null) return { ...base, eligible: true, stale: true, reason: "The recorded validated source is unavailable." };
-  const repos = [line.repoUrl, pass.repoUrl].filter(Boolean);
+  const lineUrls = line.repos instanceof Map ? [...line.repos.values()].map(r => r && r.url).filter(Boolean) : [];
+  const repos = single ? [single.url].filter(Boolean) : [...lineUrls, pass.repoUrl].filter(Boolean);
   const configuredUrl = repos.length === 1 ? repos[0] : null;
   const result = instructionFor(workdir, source, configuredUrl);
   result.steps = result.steps.map(step => ({ ...step, description: safeText(step.description, 500), expected: safeText(step.expected, 500), command: step.command === null ? null : safeText(step.command, 500) }));

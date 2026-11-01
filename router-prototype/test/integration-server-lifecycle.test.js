@@ -41,10 +41,10 @@ test('integration brief requires headless browsers for testing and evidence', ()
 test('integration brief requires explicit merge and commit ancestry checks', () => {
   assert.match(brief, /one explicit Git merge command/);
   assert.match(brief, /Do not use a shell loop/);
-  assert.match(brief, /git merge <branch> --no-edit/);
+  assert.match(brief, /git -C <repository directory> merge --no-edit <commit>/);
   assert.match(brief, /Check the exit status of each command/);
   assert.match(brief, /Report the exact command, exit status, and stderr/);
-  assert.match(brief, /git merge-base --is-ancestor <expected-commit> HEAD/);
+  assert.match(brief, /git -C <repository directory> merge-base --is-ancestor <commit> HEAD/);
   assert.match(brief, /Do not infer\s+success from silent output/);
 });
 
@@ -56,22 +56,25 @@ test('integration brief requires isolated port, readiness, registration, and cle
   assert.match(brief, /kill "\$SERVER_PID" \|\| true/);
 });
 
-test('integrationValidatorBrief renders lifecycle steps for sample inputs', () => {
-  const text = integrationValidatorBrief(
-    { id: 'line-42', name: 'Demo' },
-    [{ branch: 'feat/a', repo: 'primary' }],
-    'Merge it',
-    'worker-1',
-    [{ name: 'primary', path: '/w' }, { name: 'api', url: 'git@x:api.git' }]
-  ).replace(/\s+/g, ' ');
+test('integrationValidatorBrief renders the recorded commits per repository', () => {
+  const manifest = [
+    { name: 'web', url: 'https://github.com/o/web.git', worktreePath: '/wt/int/web', baseBranch: 'main', baseSha: 'a'.repeat(40),
+      branches: [{ name: 'impl-a', branch: 'feat/a', sha: 'b'.repeat(40) }, { name: 'impl-b', branch: 'feat/b', sha: 'c'.repeat(40) }] },
+    { name: 'api', url: null, worktreePath: '/wt/int/api', baseBranch: 'master', baseSha: 'd'.repeat(40),
+      branches: [{ name: 'impl-c', branch: 'feat/c', sha: 'e'.repeat(40) }] },
+  ];
+  const text = integrationValidatorBrief({ id: 'line-42', name: 'Demo' }, manifest, 'Merge it', 'worker-1', 'integration/x-1')
+    .replace(/\s+/g, ' ');
   assert.match(text, /INTEGRATION VALIDATOR \(id worker-1\) for factory line 'Demo'/);
-  assert.match(text, /- feat\/a \(repo 'primary'\)/);
-  assert.match(text, /remote git@x:api\.git/);
+  assert.match(text, /Repository 'web' \(remote https:\/\/github\.com\/o\/web\.git\) Directory: \/wt\/int\/web/);
+  assert.match(text, /Repository 'api' \(no remote\) Directory: \/wt\/int\/api/);
+  assert.match(text, new RegExp(`Integration branch integration/x-1, created from main at ${'a'.repeat(40)}`));
+  assert.match(text, new RegExp(`- ${'b'.repeat(40)} \\(branch feat/a, implementor 'impl-a'\\) - ${'c'.repeat(40)} \\(branch feat/b`));
+  assert.match(text, new RegExp(`- ${'e'.repeat(40)} \\(branch feat/c, implementor 'impl-c'\\)`));
+  assert.match(text, /Do not merge other commits/);
   assert.match(text, /worker worker-1\./);
   assert.match(text, /lines\/line-42\/inventory/);
   assert.doesNotMatch(text, /\$LINE_ID/);
-  assert.match(text, /expected commit SHAs come from the planner instructions/);
-  assert.match(text, /3\. For every other repo/);
-  const single = integrationValidatorBrief({ name: 'D' }, [], '', 'w', [{ name: 'primary', path: '/w' }]);
-  assert.match(single, /3\. No additional repositories/);
+  assert.doesNotMatch(text, /primary/);
+  assert.doesNotMatch(text, /git clone/);
 });
