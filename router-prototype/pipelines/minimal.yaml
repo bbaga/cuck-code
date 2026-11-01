@@ -1,0 +1,17 @@
+name: minimal
+description: One planner, one implementor, one validator and an integration validator.
+start: planner
+
+nodes:
+  planner:     { type: planner }
+  impl:        { type: implementor }
+  val:         { type: validator, checks: [impl] }
+  integration: { type: integration-validator }
+
+edges:
+  - planner -> impl: start, feedback, accept
+  - impl -> planner: report
+  - planner -> val: start
+  - val -> planner: report
+  - planner -> integration: start
+  - integration -> planner: report
