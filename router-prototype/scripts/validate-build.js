@@ -26,6 +26,7 @@ const PRODUCTION_SCRIPTS = [
   "line-graph.js",
   "prompt-builder.js",
   "report-interaction.js",
+  "plugin-catalog.js",
   "handoff.js",
   "jsonl.js",
   "repo-source.js",

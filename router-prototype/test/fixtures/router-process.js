@@ -30,12 +30,14 @@ async function freePort() {
 async function startRouter(root, extraEnv = {}, { docker = NOOP_DOCKER } = {}) {
   const port = await freePort();
   const bin = dockerBin(docker);
+  // Tests never read the host's plugin folder: CUCK_HOME is a fresh empty folder unless a test sets it.
+  const cuckHome = extraEnv.CUCK_HOME ? null : fs.mkdtempSync(path.join(os.tmpdir(), "router-test-cuck-"));
   const child = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, ...extraEnv, PORT: String(port), LINES_DIR: root,
+    env: { ...process.env, ...(cuckHome ? { CUCK_HOME: cuckHome } : {}), ...extraEnv, PORT: String(port), LINES_DIR: root,
       PATH: `${bin}:${extraEnv.PATH || process.env.PATH}` },
     stdio: "ignore",
   });
-  const router = { child, bin, base: `http://127.0.0.1:${port}` };
+  const router = { child, bin, cuckHome, base: `http://127.0.0.1:${port}` };
   for (let i = 0; i < 200; i++) {
     try {
       const res = await fetch(router.base + "/api/lines", { signal: AbortSignal.timeout(1000) });
@@ -49,7 +51,7 @@ async function startRouter(root, extraEnv = {}, { docker = NOOP_DOCKER } = {}) {
 }
 
 // SIGTERM, then SIGKILL after the grace period. Resolves after the exit.
-async function stopRouter({ child, bin }, graceMs = 3000) {
+async function stopRouter({ child, bin, cuckHome }, graceMs = 3000) {
   if (child.exitCode === null && child.signalCode === null) {
     const exited = new Promise((resolve) => child.once("exit", resolve));
     child.kill("SIGTERM");
@@ -58,6 +60,7 @@ async function stopRouter({ child, bin }, graceMs = 3000) {
     clearTimeout(timer);
   }
   fs.rmSync(bin, { recursive: true, force: true });
+  if (cuckHome) fs.rmSync(cuckHome, { recursive: true, force: true });
 }
 
 module.exports = { startRouter, stopRouter, wait };
