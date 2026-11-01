@@ -37,7 +37,7 @@ function withFixture(run) {
 
 test("accepts valid production scripts, inline scripts, and local assets", () => {
   withFixture((root) => {
-    assert.equal(validateBuild(root).length, 22);
+    assert.equal(validateBuild(root).length, 25);
   });
 });
 
