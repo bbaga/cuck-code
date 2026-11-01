@@ -24,7 +24,7 @@ const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
 const { loadBuiltinPipeline, migrateLine, nodeSettingsFromPipeline, pipelineFromNodeSettings,
   nodeSettingsFields, builtinPipelineNames,
   implementorNodeFor, validatorNodeFor, integrationNodeFor } = require("./line-graph");
-const { checkCall } = require("./call-fields");
+const { checkCall, checkLineValues, requiredFields } = require("./call-fields");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
 const { StderrCapture, describeFailure } = require("./run-failure");
 const { messageText, InvocationCapture, appendTranscript, hasCriteria,
@@ -2918,6 +2918,22 @@ const routeRequest = (req, res) => {
           code: "NO_EDGE", allowed });
       }
       const checked = checkCall(graph, name, targetId, body);
+      const lineProblems = checkLineValues({
+        instance: (id) => {
+          const w = line.workers.get(id);
+          return w ? { node: w.node, repo: w.repo, status: w.status === "running" || w.child ? "running" : w.status } : undefined;
+        },
+        hasRepo: (repoName) => !!resolveRepo(line, repoName),
+        commitExists: (repoName, sha) => {
+          const repo = resolveRepo(line, repoName);
+          if (!repo) return false;
+          return spawnSync("git", ["-C", repo.path, "cat-file", "-e", `${sha}^{commit}`]).status === 0;
+        },
+      }, requiredFields(graph, name, targetId), body);
+      for (const p of lineProblems) {
+        if (!checked.invalid.some((i) => i.field === p.field)) checked.invalid.push(p);
+      }
+      if (lineProblems.length) checked.ok = false;
       if (!checked.ok) {
         return json(res, 400, { error: `${name} of node '${targetId}' is incomplete: fill every listed field`,
           code: "INTERACTION_FIELDS", interaction: name, to: targetId,

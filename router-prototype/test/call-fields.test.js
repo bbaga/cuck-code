@@ -2,7 +2,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { requiredFields, checkCall } = require("../call-fields");
+const { requiredFields, checkCall, checkLineValues } = require("../call-fields");
 
 const task = { description: "The task.", type: "text" };
 const criteria = { description: "Criteria.", type: "text" };
@@ -141,4 +141,58 @@ test("a declared field that the body does not use is still required (accept need
   assert.equal(bad.ok, false);
   assert.deepEqual(bad.missing.map((m) => m.field), ["reason"]);
   assert.equal(checkCall(r, "accept", "A", { instance: "i1", reason: "reviewed" }).ok, true);
+});
+
+// checkLineValues: line state through accessors.
+const SHA = "a".repeat(40);
+function lineState(extra = {}) {
+  return {
+    instance: (id) => ({
+      done: { node: "A", status: "completed", repo: "api" },
+      busy: { node: "A", status: "running", repo: "api" },
+      other: { node: "planner", status: "completed", repo: "api" },
+    })[id],
+    hasRepo: (name) => name === "api",
+    commitExists: (repo, sha) => repo === "api" && sha === SHA,
+    ...extra,
+  };
+}
+const need = (field, decl) => ({ [field]: { decl: { description: "d", ...decl }, requiredBy: "t" } });
+
+test("checkLineValues: instance must exist, not run, and belong to the node", () => {
+  const req = need("source", { type: "instance", node: "A" });
+  assert.deepEqual(checkLineValues(lineState(), req, { source: "done" }), []);
+  assert.match(checkLineValues(lineState(), req, { source: "ghost" })[0].reason, /no such instance/);
+  assert.match(checkLineValues(lineState(), req, { source: "busy" })[0].reason, /running/);
+  const wrong = checkLineValues(lineState(), req, { source: "other" });
+  assert.equal(wrong[0].field, "source");
+  assert.match(wrong[0].reason, /belongs to node 'planner'/);
+  const many = need("source", { type: "instance", node: ["A", "planner"] });
+  assert.deepEqual(checkLineValues(lineState(), many, { source: "other" }), []);
+  const any = need("instance", { type: "instance" });
+  assert.deepEqual(checkLineValues(lineState(), any, { instance: "other" }), []);
+});
+
+test("checkLineValues: repo must be registered", () => {
+  const req = need("repo", { type: "repo" });
+  assert.deepEqual(checkLineValues(lineState(), req, { repo: "api" }), []);
+  assert.match(checkLineValues(lineState(), req, { repo: "web" })[0].reason, /not a registered repo/);
+});
+
+test("checkLineValues: commit is 40 lowercase hex and exists in the repo of the call", () => {
+  const req = { ...need("repo", { type: "repo" }), ...need("rev", { type: "commit" }) };
+  assert.deepEqual(checkLineValues(lineState(), req, { repo: "api", rev: SHA }), []);
+  assert.match(checkLineValues(lineState(), req, { repo: "api", rev: "abc" })[0].reason, /40 lowercase hex/);
+  assert.match(checkLineValues(lineState(), req, { repo: "api", rev: SHA.toUpperCase() })[0].reason, /40 lowercase hex/);
+  assert.match(checkLineValues(lineState(), req, { repo: "api", rev: "b".repeat(40) })[0].reason, /not found in repo 'api'/);
+  // the repo of the call can come from a named instance
+  const viaInstance = { ...need("source", { type: "instance" }), ...need("rev", { type: "commit" }) };
+  assert.deepEqual(checkLineValues(lineState(), viaInstance, { source: "done", rev: SHA }), []);
+  assert.match(checkLineValues(lineState(), need("rev", { type: "commit" }), { rev: SHA })[0].reason, /repo of the call is unknown/);
+});
+
+test("checkLineValues: blank, optional and other fields are left alone", () => {
+  const req = { ...need("repo", { type: "repo", optional: true }), ...need("task", { type: "text" }) };
+  assert.deepEqual(checkLineValues(lineState(), req, { task: "x" }), []);
+  assert.deepEqual(checkLineValues(lineState(), req, { repo: "", task: "x" }), []);
 });

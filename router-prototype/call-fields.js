@@ -123,4 +123,49 @@ function checkCall(resolved, interactionName, toNodeId, body) {
   };
 }
 
-module.exports = { requiredFields, checkCall };
+// Checks the values of type instance, repo and commit against the line.
+// `line` gives the line state through three accessors, so the check stays pure:
+//   instance(id) -> { node, status, repo } or undefined (status "running" blocks)
+//   hasRepo(name) -> boolean
+//   commitExists(repoName, sha) -> boolean
+// Returns a list of { field, reason }. Blank and non-string values are left
+// to checkValues.
+function checkLineValues(line, required, body) {
+  const problems = [];
+  const src = body !== null && typeof body === "object" ? body : {};
+  const given = (field) => typeof src[field] === "string" && src[field].trim() !== "";
+  const add = (field, reason) => problems.push({ field, reason });
+  // The repo of a call: its 'repo' value, else the repo of a named instance.
+  const callRepo = () => {
+    if (given("repo")) return src.repo;
+    for (const [field, { decl }] of Object.entries(required || {})) {
+      if (decl.type !== "instance" || !given(field)) continue;
+      const inst = line.instance(src[field]);
+      if (inst && inst.repo) return inst.repo;
+    }
+    return null;
+  };
+  for (const [field, { decl }] of Object.entries(required || {})) {
+    if (!given(field)) continue;
+    const value = src[field];
+    if (decl.type === "instance") {
+      const inst = line.instance(value);
+      if (!inst) { add(field, "no such instance on this line"); continue; }
+      if (inst.status === "running") { add(field, "the instance is running: wait until its run ends"); continue; }
+      if (decl.node !== undefined) {
+        const nodes = Array.isArray(decl.node) ? decl.node : [decl.node];
+        if (!nodes.includes(inst.node)) add(field, `the instance belongs to node '${inst.node}': expected ${nodes.join(" or ")}`);
+      }
+    } else if (decl.type === "repo") {
+      if (!line.hasRepo(value)) add(field, "not a registered repo of this line");
+    } else if (decl.type === "commit") {
+      if (!/^[0-9a-f]{40}$/.test(value)) { add(field, "must be 40 lowercase hex characters"); continue; }
+      const repo = callRepo();
+      if (!repo) add(field, "the repo of the call is unknown: cannot look the commit up");
+      else if (!line.commitExists(repo, value)) add(field, `commit not found in repo '${repo}'`);
+    }
+  }
+  return problems;
+}
+
+module.exports = { requiredFields, checkCall, checkLineValues };

@@ -29,7 +29,8 @@ function seedLine(linesDir, id, planApproved) {
   fs.mkdirSync(lineDir);
   const clone = path.join(lineDir, "repos", "api");
   execFileSync("git", ["clone", "-q", src, clone]);
-  const worker = (wid, name, node) => ({ id: wid, name, node, role: "implementor", status: "completed",
+  const worker = (wid, name, node) => ({ id: wid, name, node,
+    persona: node === "frontend-impl" ? "frontend" : "backend", role: "implementor", status: "completed",
     repo: "api", branch: `b/${name}`, runGeneration: 1, lastCompletedInvocationId: `inv-${wid}`,
     lastRunText: `report of ${name}`,
     worktreePath: path.join(linesDir, "worktrees", id, "api", name) });
@@ -165,4 +166,43 @@ test("a good start of a validator with criteria and source is 201", async () => 
   const w = list.body.workers.find((x) => x.id === out.body.instance.validatorId);
   assert.equal(w.node, "backend-val");
   assert.equal(w.validates, "i1");
+});
+
+// C3: values are checked against the line.
+test("C3: a running instance cannot be the source of a validator", async () => {
+  const started = await post(ok, "start", { to: "backend-impl", task: "long", repo: "api", name: "busy" });
+  assert.equal(started.status, 201, JSON.stringify(started.body));
+  const out = await post(ok, "start", { to: "backend-val", criteria: "1. x", source: started.body.instance.workerId });
+  assert.equal(out.status, 400);
+  assert.equal(out.body.code, "INTERACTION_FIELDS");
+  assert.equal(out.body.invalid.length, 1);
+  assert.equal(out.body.invalid[0].field, "source");
+  assert.match(out.body.invalid[0].reason, /running/);
+});
+
+test("C3: the source must belong to the node the validator checks", async () => {
+  const out = await post(ok, "start", { to: "backend-val", criteria: "1. x", source: "f1" });
+  assert.equal(out.status, 400);
+  assert.match(out.body.invalid[0].reason, /belongs to node 'frontend-impl': expected backend-impl/);
+  const unknown = await post(ok, "start", { to: "backend-val", criteria: "1. x", source: "ghost" });
+  assert.equal(unknown.status, 400);
+  assert.match(unknown.body.invalid[0].reason, /no such instance/);
+});
+
+test("C3: the repo must be registered on the line", async () => {
+  const out = await post(ok, "start", { to: "backend-impl", task: "t", repo: "unregistered" });
+  assert.equal(out.status, 400);
+  assert.deepEqual(out.body.invalid, [{ field: "repo", reason: "not a registered repo of this line" }]);
+});
+
+test("C3: a commit field is checked against the repo of the call", async () => {
+  const { checkLineValues } = require("../call-fields");
+  const sha = git(src, "rev-parse", "HEAD");
+  const required = { repo: { decl: { description: "r", type: "repo" }, requiredBy: "t" },
+    rev: { decl: { description: "c", type: "commit" }, requiredBy: "t" } };
+  const { spawnSync } = require("node:child_process");
+  const line = { instance: () => undefined, hasRepo: (n) => n === "api",
+    commitExists: (repo, c) => spawnSync("git", ["-C", src, "cat-file", "-e", `${c}^{commit}`]).status === 0 };
+  assert.deepEqual(checkLineValues(line, required, { repo: "api", rev: sha }), []);
+  assert.equal(checkLineValues(line, required, { repo: "api", rev: "c".repeat(40) }).length, 1);
 });
