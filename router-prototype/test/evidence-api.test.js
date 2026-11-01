@@ -5,8 +5,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
 const { makeMediaFixtures } = require("./media-fixtures");
+const { startRouter, stopRouter } = require("./fixtures/router-process");
 
 
 async function request(base, pathname, options) {
@@ -45,39 +45,22 @@ function writeLine(root, attemptId = "attempt-2", evidenceAttemptId = attemptId)
   return { lineDir, worktree };
 }
 
-async function start(root) {
-  const port = 7950 + Math.floor(Math.random() * 100);
-  const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(port), LINES_DIR: root }, stdio: "ignore",
-  });
-  const base = `http://localhost:${port}`;
-  for (let i = 0; i < 100; i++) {
-    try { if ((await fetch(base + "/api/harnesses")).ok) return { child, base }; } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  child.kill("SIGTERM");
-  throw new Error("server did not start");
-}
-
-let root, server, base, worktree;
+let root, router, base, worktree;
 test.before(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "evidence-api-"));
   ({ worktree } = writeLine(root));
-  ({ child: server, base } = await start(root));
+  router = await startRouter(root);
+  base = router.base;
 });
 
 // Wait for the router to exit: until then it can still write registry temp
 // files into root, and rmSync fails with ENOTEMPTY.
 test.after(async () => {
-  if (server && server.exitCode === null && server.signalCode === null) {
-    const exited = new Promise((resolve) => server.once("exit", resolve));
-    server.kill("SIGTERM");
-    await exited;
-  }
+  if (router) await stopRouter(router);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("serves current evidence and separate historical evidence", async () => {
+test("serves current evidence and separate historical evidence", { timeout: 30_000 }, async () => {
   const { response, body } = await request(base, "/api/lines/line-1/evidence");
   assert.equal(response.status, 200);
   assert.deepEqual(body.items.map((item) => item.id), ["current"]);
@@ -87,7 +70,7 @@ test("serves current evidence and separate historical evidence", async () => {
   assert.match(body.history[0].steps[0].screenshot, /\/old\/steps\/0\/screenshot$/);
 });
 
-test("delivers screenshots, JPEG types, video ranges, and route errors", async () => {
+test("delivers screenshots, JPEG types, video ranges, and route errors", { timeout: 30_000 }, async () => {
   const screenshot = await request(base, "/api/lines/line-1/evidence/current/steps/0/screenshot");
   assert.equal(screenshot.response.status, 200);
   assert.equal(screenshot.response.headers.get("content-type"), "image/png");
@@ -104,7 +87,7 @@ test("delivers screenshots, JPEG types, video ranges, and route errors", async (
   assert.equal((await request(base, "/api/lines/line-1/evidence/current/steps/0/screenshot")).response.status, 200);
 });
 
-test("registers and serves legacy evidence without steps", async () => {
+test("registers and serves legacy evidence without steps", { timeout: 30_000 }, async () => {
   const result = await request(base, "/api/protocol/workers/worker-1/evidence", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ useCase: "Legacy demo", file: "demo.webm" }),
@@ -121,7 +104,7 @@ test("registers and serves legacy evidence without steps", async () => {
   assert.ok(video.body.length > 1024);
 });
 
-test("rejects invalid evidence without a partial record write", async () => {
+test("rejects invalid evidence without a partial record write", { timeout: 30_000 }, async () => {
   const before = JSON.parse(fs.readFileSync(path.join(root, "line-1", "line.json"), "utf8"));
   const result = await request(base, "/api/protocol/workers/worker-1/evidence", {
     method: "POST", headers: { "content-type": "application/json" },
@@ -145,7 +128,7 @@ async function listing() {
   return (await request(base, "/api/lines/line-1/evidence")).body;
 }
 
-test("reports addedBy for validator and integration validator", async () => {
+test("reports addedBy for validator and integration validator", { timeout: 30_000 }, async () => {
   const validatorId = await register("worker-2", "By validator");
   const integrationId = await register("worker-3", "By integration");
   const { items } = await listing();
@@ -156,9 +139,8 @@ test("reports addedBy for validator and integration validator", async () => {
   assert.equal(typeof items[0].at, "number");
 });
 
-test("sorts items and history newest first by numeric at", async () => {
-  server.kill("SIGTERM");
-  await new Promise((resolve) => server.once("exit", resolve));
+test("sorts items and history newest first by numeric at", { timeout: 30_000 }, async () => {
+  await stopRouter(router);
   const file = path.join(root, "line-1", "line.json");
   const data = JSON.parse(fs.readFileSync(file, "utf8"));
   const video = data.evidence[0].path;
@@ -172,18 +154,17 @@ test("sorts items and history newest first by numeric at", async () => {
     record("h2", 3000, "attempt-1"), record("h3", 10000000000001, "attempt-1"),
     record("h1", 999999999998, "attempt-1")];
   fs.writeFileSync(file, JSON.stringify(data));
-  const restarted = await start(root);
-  server = restarted.child; base = restarted.base;
+  router = await startRouter(root);
+  base = router.base;
   const { items, history } = await listing();
   assert.deepEqual(items.map((i) => i.id), ["c2", "c3", "c1"]);
   assert.deepEqual(history.map((i) => i.id), ["h3", "h1", "h2"]);
   for (const entry of [...items, ...history]) assert.equal(typeof entry.at, "number");
 });
 
-test("keeps addedBy after removal; old records fall back to workers or null", async () => {
+test("keeps addedBy after removal; old records fall back to workers or null", { timeout: 30_000 }, async () => {
   const id = await register("worker-2", "Before removal");
-  server.kill("SIGTERM");
-  await new Promise((resolve) => server.once("exit", resolve));
+  await stopRouter(router);
   const file = path.join(root, "line-1", "line.json");
   const data = JSON.parse(fs.readFileSync(file, "utf8"));
   data.workers = data.workers.filter((w) => w.id !== "worker-2");
@@ -196,8 +177,8 @@ test("keeps addedBy after removal; old records fall back to workers or null", as
     { id: "old-none", useCase: "Old none", name: "demo.webm", path: data.evidence[0].path,
       at: 12, attemptId: "attempt-2" });
   fs.writeFileSync(file, JSON.stringify(data));
-  const restarted = await start(root);
-  server = restarted.child; base = restarted.base;
+  router = await startRouter(root);
+  base = router.base;
   const { items } = await listing();
   const by = (key) => items.find((i) => i.id === key).addedBy;
   assert.deepEqual(by(id), { id: "worker-2", name: "validator-a", role: "validator" });
@@ -206,12 +187,11 @@ test("keeps addedBy after removal; old records fall back to workers or null", as
   assert.deepEqual(by("old-none"), { id: null, name: null, role: null });
 });
 
-test("keeps current items empty after a later attempt and reloads history", async () => {
-  server.kill("SIGTERM");
-  await new Promise((resolve) => server.once("exit", resolve));
+test("keeps current items empty after a later attempt and reloads history", { timeout: 30_000 }, async () => {
+  await stopRouter(router);
   writeLine(root, "attempt-3", "attempt-2");
-  const restarted = await start(root);
-  server = restarted.child; base = restarted.base;
+  router = await startRouter(root);
+  base = router.base;
   const { body } = await request(base, "/api/lines/line-1/evidence");
   assert.deepEqual(body.items, []);
   assert.equal(body.history.at(-1).id, "old");

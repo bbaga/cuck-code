@@ -10,9 +10,9 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { startRouter, stopRouter } = require("./fixtures/router-process");
 
-let server = null;
+let router = null;
 let baseUrl = null;
 let tmpDir = null;
 let piLog = null;
@@ -68,17 +68,6 @@ async function getJson(pathname) {
   return { status: res.status, body };
 }
 
-async function waitUntilListening(url, tries = 100) {
-  for (let i = 0; i < tries; i++) {
-    try {
-      const res = await fetch(url + "/api/harnesses");
-      if (res.ok) return;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error("server did not start");
-}
-
 before(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "harness-api-test-"));
   const binDir = path.join(tmpDir, "bin");
@@ -86,26 +75,16 @@ before(async () => {
   piLog = writeFakeClis(binDir).piLogPath;
   failFlag = path.join(tmpDir, "pi-auth-fails");
   listFailFlag = path.join(tmpDir, "pi-list-fails");
-  const port = 7900 + Math.floor(Math.random() * 100);
-  baseUrl = `http://localhost:${port}`;
-  server = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: {
-      ...process.env,
-      PORT: String(port),
-      LINES_DIR: path.join(tmpDir, "lines"),
-      PATH: `${binDir}:${process.env.PATH}`,
-    },
-    stdio: "ignore",
-  });
-  await waitUntilListening(baseUrl);
+  router = await startRouter(path.join(tmpDir, "lines"), { PATH: `${binDir}:${process.env.PATH}` });
+  baseUrl = router.base;
 });
 
-after(() => {
-  if (server) server.kill("SIGTERM");
+after(async () => {
+  if (router) await stopRouter(router);
   if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-test("base endpoint: pi carries authModes, vibe carries models", async () => {
+test("base endpoint: pi carries authModes, vibe carries models", { timeout: 30_000 }, async () => {
   const { status, body } = await getJson("/api/harnesses");
   assert.strictEqual(status, 200);
   const pi = body.harnesses.find((h) => h.id === "pi");
@@ -123,7 +102,7 @@ test("base endpoint: pi carries authModes, vibe carries models", async () => {
   assert.ok(vibe.models.every((m) => m.value && m.label));
 });
 
-test("base probe never runs a provider-free pi auth check", () => {
+test("base probe never runs a provider-free pi auth check", { timeout: 30_000 }, () => {
   const calls = piCalls();
   for (const args of calls) {
     const isAuthCheck = args[0] === "auth" && args[1] === "check";
@@ -134,7 +113,7 @@ test("base probe never runs a provider-free pi auth check", () => {
   assert.ok(calls.some((args) => args[0] === "--list-models"));
 });
 
-test("pi detail returns the fixed contract for a known provider", async () => {
+test("pi detail returns the fixed contract for a known provider", { timeout: 30_000 }, async () => {
   const { status, body } = await getJson("/api/harnesses/pi?provider=anthropic");
   assert.strictEqual(status, 200);
   assert.deepStrictEqual(body, {
@@ -147,14 +126,14 @@ test("pi detail returns the fixed contract for a known provider", async () => {
   assert.ok(!JSON.stringify(body).includes("sk-secret"));
 });
 
-test("pi detail runs the auth check with an argument array", () => {
+test("pi detail runs the auth check with an argument array", { timeout: 30_000 }, () => {
   const calls = piCalls().filter((args) => args[0] === "auth");
   assert.ok(calls.length >= 1);
   assert.deepStrictEqual(calls[calls.length - 1],
     ["auth", "check", "--provider", "anthropic", "--json"]);
 });
 
-test("pi detail isolates providers: no cross-provider results", async () => {
+test("pi detail isolates providers: no cross-provider results", { timeout: 30_000 }, async () => {
   const a = await getJson("/api/harnesses/pi?provider=anthropic");
   const b = await getJson("/api/harnesses/pi?provider=openai");
   assert.strictEqual(a.body.authMode, "anthropic");
@@ -164,7 +143,7 @@ test("pi detail isolates providers: no cross-provider results", async () => {
   assert.notDeepStrictEqual(a.body.models, b.body.models);
 });
 
-test("pi detail reports missing auth when the check fails", async () => {
+test("pi detail reports missing auth when the check fails", { timeout: 30_000 }, async () => {
   fs.writeFileSync(failFlag, "");
   try {
     const { status, body } = await getJson("/api/harnesses/pi?provider=openai");
@@ -175,20 +154,20 @@ test("pi detail reports missing auth when the check fails", async () => {
   }
 });
 
-test("pi detail rejects a missing provider with 400", async () => {
+test("pi detail rejects a missing provider with 400", { timeout: 30_000 }, async () => {
   const { status, body } = await getJson("/api/harnesses/pi");
   assert.strictEqual(status, 400);
   assert.match(body.error, /provider query parameter is required/);
 });
 
-test("pi detail rejects an unknown provider with 400", async () => {
+test("pi detail rejects an unknown provider with 400", { timeout: 30_000 }, async () => {
   const { status, body } = await getJson("/api/harnesses/pi?provider=gemini");
   assert.strictEqual(status, 400);
   assert.match(body.error, /unknown provider 'gemini'/);
   assert.match(body.error, /anthropic, openai/);
 });
 
-test("base probe keeps the 30-second cache", async () => {
+test("base probe keeps the 30-second cache", { timeout: 30_000 }, async () => {
   const before = piCalls().filter((args) => args[0] === "--list-models").length;
   await getJson("/api/harnesses");
   await getJson("/api/harnesses");
@@ -199,7 +178,7 @@ test("base probe keeps the 30-second cache", async () => {
   assert.strictEqual(afterRefresh, before + 1, "?refresh=1 must re-probe");
 });
 
-test("a failed catalog command yields no providers over HTTP", async () => {
+test("a failed catalog command yields no providers over HTTP", { timeout: 30_000 }, async () => {
   fs.writeFileSync(listFailFlag, "");
   try {
     const { status, body } = await getJson("/api/harnesses?refresh=1");
