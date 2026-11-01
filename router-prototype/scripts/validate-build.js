@@ -20,6 +20,7 @@ const PRODUCTION_SCRIPTS = [
   "node-types.js",
   "interactions.js",
   "pipelines.js",
+  "pipeline-rules.js",
   "handoff.js",
   "jsonl.js",
   "repo-source.js",

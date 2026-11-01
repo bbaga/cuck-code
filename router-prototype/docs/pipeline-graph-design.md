@@ -57,6 +57,7 @@ edges:
 
 The syntax of an edge is `<from> -> <to>: <interaction>[, <interaction>...]`.
 Either side can be a list, `[a, b]`, and the edge then applies to every pair.
+An edge that starts with `[` must be quoted, because YAML would read it as a list.
 The names after the colon are interaction names, and nothing more: the
 meaning of each name is in its interaction file.
 
@@ -341,9 +342,9 @@ nodes:
   integration:   { type: integration-validator }
 edges:
   - planner -> [backend-impl, frontend-impl]: start, feedback, accept
-  - [backend-impl, frontend-impl] -> planner: report
+  - "[backend-impl, frontend-impl] -> planner: report"
   - planner -> [backend-val, frontend-val]: start
-  - [backend-val, frontend-val] -> planner: report
+  - "[backend-val, frontend-val] -> planner: report"
   - planner -> integration: start
   - integration -> planner: report
 ```
