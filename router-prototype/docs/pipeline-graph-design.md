@@ -1,6 +1,6 @@
 # Pipeline graphs, node types and interactions (design proposal)
 
-Status: proposal, not implemented.
+Status: Implemented except the web UI (tasks D4 to D6).
 
 ## Goal
 
