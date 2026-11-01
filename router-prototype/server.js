@@ -1906,13 +1906,18 @@ const requestHandler = (req, res) => {
       if (line.deleted) return json(res, 404, { error: "no such line" });
       // Lines restored from before session config tracking: the current
       // session belongs to the harness configured until now.
+      const previous = { pipeline: line.pipeline, sessionCfg: line.sessionCfg };
       if (line.sessionId && !line.sessionCfg) {
         const before = resolvePipeline(line).planner;
         line.sessionCfg = { harness: before.harness, model: before.model, effort: before.effort,
           timeLimit: before.timeLimit };
       }
       line.pipeline = pipeline;
-      saveLine(line);
+      if (!saveLine(line)) {
+        line.pipeline = previous.pipeline;
+        line.sessionCfg = previous.sessionCfg;
+        return json(res, 500, { error: "could not save the pipeline" });
+      }
       const resolved = resolvePipeline(line);
       slog("info", "line.pipeline.update", { lineId: line.id, pipeline });
       broadcast(line, "pipeline", { pipeline: resolved, overrides: line.pipeline || null });
@@ -1976,7 +1981,11 @@ const requestHandler = (req, res) => {
         queue: [], activePlannerRequest: null, activePlannerRun: null, runId: null,
         stopPlannerRun, clients: new Set(), transcript: [] };
       lines.set(id, line);
-      saveLine(line);
+      if (!saveLine(line)) {
+        lines.delete(id);
+        try { fs.rmSync(workdir, { recursive: true, force: true }); } catch {}
+        return json(res, 500, { error: "could not save the new line" });
+      }
       dashboardLive.publish("line_created", id, lineSummary(line));
       dashboardLive.publish("state", id, dashboardStateForLine(line));
       slog("info", "line.created", { lineId: id, name, repoUrl });
@@ -2057,7 +2066,10 @@ const requestHandler = (req, res) => {
     const line = lines.get(parts[2]);
     if (!line) return json(res, 404, { error: "no such line" });
     line.planApproved = true;
-    saveLine(line);
+    if (!saveLine(line)) {
+      line.planApproved = false;
+      return json(res, 500, { error: "could not save the plan approval" });
+    }
     enqueue(line, "PLAN APPROVED by the user. Spawn your implementor workers now per the plan and the protocol. After spawning, end your turn and wait for worker reports.");
     slog("info", "line.approved", { lineId: line.id });
     return json(res, 202, { approved: true });
@@ -2139,7 +2151,10 @@ const requestHandler = (req, res) => {
       line.inventory.set(id, { id, kind: "process", name: body.name.trim(),
         by: typeof body.worker === "string" ? body.worker : "planner",
         ref: body.pid, keep: false, status: "running", startedAt: Date.now() });
-      saveLine(line);
+      if (!saveLine(line)) {
+        line.inventory.delete(id);
+        return json(res, 500, { error: "could not save the inventory item" });
+      }
       slog("info", "inventory.registered", { lineId: line.id, itemId: id,
         kind: "process", pid: body.pid, name: body.name.trim() });
       json(res, 201, { itemId: id });
@@ -2316,7 +2331,12 @@ const requestHandler = (req, res) => {
         baseCommit, changeset: null, base, baseResolved,
         child: null, transcript: [] };
       line.workers.set(id, worker);
-      saveLine(line);
+      if (!saveLine(line)) {
+        line.workers.delete(id);
+        spawnSync("git", ["-C", repo.path, "worktree", "remove", "--force", worktreePath]);
+        spawnSync("git", ["-C", repo.path, "branch", "-D", branch]);
+        return json(res, 500, { error: "could not save the new worker" });
+      }
       slog("info", "worker.spawned", { lineId: line.id, workerId: id,
         name: body.name, persona, branch, repo: repo.name, repoUrl: repo.url || undefined });
       spawnWorker(line, worker, worker.prompt);
@@ -2502,7 +2522,12 @@ const requestHandler = (req, res) => {
         sessionId: null, worktreePath, branch, status: "running", stopRequested: false,
         runGeneration: 1, child: null, transcript: [] };
       line.workers.set(id, worker);
-      saveLine(line);
+      if (!saveLine(line)) {
+        line.workers.delete(id);
+        spawnSync("git", ["-C", line.workdir, "worktree", "remove", "--force", worktreePath]);
+        spawnSync("git", ["-C", line.workdir, "branch", "-D", branch]);
+        return json(res, 500, { error: "could not save the integration validator" });
+      }
       slog("info", "integration.spawned", { lineId: line.id, validatorId: id,
         branches: branchEntries.map((e) => `${e.repo}:${e.branch}`) });
       broadcast(line, "worker_spawned", { worker: { id, name, branch, status: worker.status,
