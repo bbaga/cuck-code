@@ -57,7 +57,7 @@ const { createDashboardLive } = require("./dashboard-live");
 const { readClaudeConfig } = require("./claude-config");
 const { sessionContextTokens } = require("./context-probe");
 const { migratePresets } = require("./preset-migration");
-const { nameError, textError, validateText, graphPreview, buildListing, resolveSafe, readManagedText,
+const { nameError, textError, validateText, graphPreview, buildListing, readCatalogItem, resolveSafe, readManagedText,
   renameInText, applyNodeSettingsToText, writeManagedPipeline, deleteManagedPipeline, MAX_BODY_BYTES } = require("./pipelines-api");
 const { isSignalablePid } = require("./process-ref");
 const { newContextStats, restoreContextStats, recordTurn, resetForFreshSession,
@@ -1024,6 +1024,13 @@ function pipelinesApi(req, res, parts) {
       const v = pipelineValidation(text);
       json(res, 200, { errors: v.errors, graph: graphPreview(v.resolved) });
     });
+  }
+  if (parts.length === 4 && (parts[2] === "node-types" || parts[2] === "interactions")) {
+    if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });
+    let itemName;
+    try { itemName = decodeURIComponent(parts[3]); } catch { itemName = null; }
+    const item = readCatalogItem({ catalog: CATALOG, kind: parts[2], name: itemName, readFile: defaultReadFile });
+    return item ? json(res, 200, item) : json(res, 404, { error: "not found" });
   }
   let name;
   try { name = decodeURIComponent(parts[2]); } catch { name = null; }
@@ -3378,6 +3385,16 @@ const routeRequest = (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/pipelines") {
+    try {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(fs.readFileSync(path.join(__dirname, "web", "pipelines.html")));
+    } catch {
+      return json(res, 404, { error: "not found" });
+    }
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/favicon.svg") {
     try {
       res.writeHead(200, { "Content-Type": "image/svg+xml" });
@@ -3390,7 +3407,7 @@ const routeRequest = (req, res) => {
 
   if (req.method === "GET" && (url.pathname === "/pipeline-ui.js" || url.pathname === "/registry-ui.js"
     || url.pathname === "/markdown-renderer.js" || url.pathname === "/registry-ui-extra.js"
-    || url.pathname === "/worker-scope.js" || url.pathname === "/registry-line.js")) {
+    || url.pathname === "/pipelines-page.js" || url.pathname === "/worker-scope.js" || url.pathname === "/registry-line.js")) {
     try {
       res.writeHead(200, { "Content-Type": "application/javascript" });
       res.end(fs.readFileSync(path.join(__dirname, "web", url.pathname.slice(1))));

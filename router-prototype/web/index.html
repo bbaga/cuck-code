@@ -307,6 +307,7 @@
   <h1><img src="/favicon.svg" alt="">cuck-code</h1>
   <button id="create">+ Create new line</button>
   <button id="registryBtn" aria-pressed="false">Registry</button>
+  <button id="pipelinesBtn" type="button">Pipelines</button>
   <div id="linelist"></div>
 </aside>
 <main id="lines">
@@ -1536,6 +1537,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const registryBtn = document.getElementById("registryBtn");
   const regView = registryUI.mount(document, registryEl, { fetch: (u) => fetch(u), window, EventSource: window.EventSource });
   registryBtn.addEventListener("click", () => registryToggle.toggle());
+  document.getElementById("pipelinesBtn").addEventListener("click", () => { window.location.href = "/pipelines"; });
 
   function selectLine(id) {
     registryToggle.hide();

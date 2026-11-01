@@ -75,6 +75,9 @@ test("graphPreview, listing, rename and the managed writer", () => {
   assert.ok(g.nodes.find((n) => n.id === "backend-impl" && n.phase === "implementor"));
   assert.deepEqual(g.edges.find((e) => e.from === "integration"), { from: "integration", to: "planner", interactions: ["report"] });
   assert.equal(api.graphPreview(null), null);
+  assert.deepEqual(g.kinds.start, { effect: "create", trigger: "request" });
+  assert.equal(g.kinds.report.trigger, "complete");
+  assert.ok(g.edges.every((e) => e.interactions.every((n) => g.kinds[n])));
 
   const list = api.buildListing(cat, (n) => resolvePipelineDefinition(n, cat));
   const def = list.pipelines.find((p) => p.name === "default");
@@ -361,5 +364,26 @@ test("router: duplicate nodeSettings errors write nothing", async () => {
     assert.equal((await dup({ planner: { effort: "extreme" } })).status, 400);
     assert.equal((await call("GET", "/api/pipelines/bad-one")).status, 404);
     assert.equal((await dup({}, "same-as-default")).status, 201);
+  });
+});
+
+test("router: GET node type and interaction text", async () => {
+  await withRouter(async ({ call }) => {
+    const nt = await call("GET", "/api/pipelines/node-types/planner");
+    assert.equal(nt.status, 200);
+    assert.deepEqual(Object.keys(nt.body).sort(), ["layer", "name", "text"]);
+    assert.equal(nt.body.name, "planner");
+    assert.equal(nt.body.layer, "built-in");
+    assert.equal(nt.body.text, fs.readFileSync(path.join(ROOT, "node-types", "planner", "NODE.md"), "utf8"));
+    const it = await call("GET", "/api/pipelines/interactions/report");
+    assert.equal(it.status, 200);
+    assert.equal(it.body.text, fs.readFileSync(path.join(ROOT, "interactions", "report", "INTERACTION.md"), "utf8"));
+    for (const bad of ["/api/pipelines/node-types/nope", "/api/pipelines/node-types/..%2F..%2Fserver.js",
+      "/api/pipelines/interactions/%E0%A4%A", "/api/pipelines/interactions/A", "/api/pipelines/node-types/"]) {
+      assert.equal((await call("GET", bad)).status, 404, bad);
+    }
+    assert.equal((await call("POST", "/api/pipelines/node-types/planner", {})).status, 405);
+    // a pipeline can still be called node-types
+    assert.equal((await call("GET", "/api/pipelines/node-types")).status, 404);
   });
 });

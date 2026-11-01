@@ -87,12 +87,37 @@ function validateText({ text, expectName, catalog, managedDir, builtInNames = []
 }
 
 // The preview graph: { nodes: [{ id, type, phase }], edges: [{ from, to, interactions }] }.
+// `kinds` maps each used interaction name to { effect, trigger } (what graphView
+// puts on every edge), so a client can lay the graph out like the line graph.
 function graphPreview(resolved) {
   if (!resolved) return null;
+  const kinds = {};
+  for (const e of resolved.edges) {
+    for (const name of e.interactions) {
+      const it = resolved.interactions && resolved.interactions[name];
+      kinds[name] = { effect: it ? it.effect || null : null, trigger: it ? it.trigger || null : null };
+    }
+  }
   return {
+    start: resolved.start,
+    kinds,
     nodes: Object.entries(resolved.nodes).map(([id, n]) => ({ id, type: n.type, phase: phaseOfType(resolved, n.type) })),
     edges: resolved.edges.map((e) => ({ from: e.from, to: e.to, interactions: [...e.interactions] })),
   };
+}
+
+// The file text of a node type or interaction of the catalog: { name, layer, text },
+// or null for an unknown or malformed name. `kind` is "node-types" or "interactions".
+// Only catalog folders are read; the name is checked first.
+function readCatalogItem({ catalog, kind, name, readFile }) {
+  if (nameError(name)) return null;
+  const spec = kind === "node-types" ? { map: catalog.types, file: "NODE.md" } : { map: catalog.interactions, file: "INTERACTION.md" };
+  if (!has(spec.map, name)) return null;
+  const entry = spec.map[name];
+  try {
+    const text = typeof entry.text === "string" ? entry.text : readFile(path.join(entry.folder, spec.file));
+    return { name, layer: entry.layer, text };
+  } catch { return null; }
 }
 
 // resolve(name) throws like resolvePipelineDefinition. Returns { resolved, errors }.
@@ -177,5 +202,5 @@ function deleteManagedPipeline({ fs, managedDir, name }) {
 }
 
 module.exports = { NAME_RE, MAX_TEXT_BYTES, MAX_BODY_BYTES, nameError, textError, validateText, graphPreview,
-  buildListing, resolveSafe, readManagedText, renameInText, setNodeSettingsInDoc, applyNodeSettingsToText, writeManagedPipeline, deleteManagedPipeline,
+  buildListing, readCatalogItem, resolveSafe, readManagedText, renameInText, setNodeSettingsInDoc, applyNodeSettingsToText, writeManagedPipeline, deleteManagedPipeline,
   managedFile };

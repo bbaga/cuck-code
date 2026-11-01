@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipelines - cuck-code router</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+  :root { color-scheme: dark; --bg: #111418; --panel: #151a21; --deep: #0d1014; --line: #262b33; --line2: #333c48;
+    --text: #d8dee6; --muted: #8fa3bd; --dim: #6c7a8c; --accent: #2d6cdf; --bad: #ff8095; --warn: #ffd166; --ok: #7fd18b; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  a { color: #8ab4ff; }
+  :focus-visible { outline: 3px solid var(--warn); outline-offset: 2px; }
+  header.top { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  header.top h1 { font-size: 1rem; margin: 0; display: flex; align-items: center; gap: 8px; }
+  header.top img { width: 20px; height: 20px; }
+  .layout { display: grid; grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); gap: 0; min-height: calc(100vh - 50px); }
+  #listCol { border-right: 1px solid var(--line); padding: 12px; min-width: 0; }
+  #detailCol { padding: 12px 16px; min-width: 0; }
+  button { padding: 6px 12px; background: var(--accent); color: #fff; border: 0; border-radius: 4px; cursor: pointer; font-size: .85rem; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.secondary { background: #262b33; }
+  button.danger { background: #b3354a; }
+  h2 { font-size: .8rem; margin: 14px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  #detail h2 { font-size: 1.05rem; margin: 0; color: var(--text); text-transform: none; letter-spacing: 0; }
+  h3 { font-size: .85rem; margin: 16px 0 6px; }
+  ul.items { list-style: none; margin: 0; padding: 0; }
+  ul.items li.none { color: var(--dim); font-size: .8rem; padding: 4px 8px; }
+  button.item { width: 100%; display: flex; align-items: center; gap: 8px; text-align: left; background: transparent; color: var(--text);
+    padding: 6px 8px; border: 1px solid transparent; border-radius: 4px; }
+  button.item:hover { background: #182335; }
+  button.item.on { background: #182335; border-color: var(--accent); }
+  .iname { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .warn { color: var(--warn); }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .layer { font-size: .68rem; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--line2); color: var(--muted); white-space: nowrap; }
+  .layer.managed { color: var(--ok); border-color: #2f5a39; }
+  .layer.user { color: #c9a4ff; border-color: #4e3a6e; }
+  .catprob { margin-top: 14px; font-size: .75rem; color: var(--warn); overflow-wrap: anywhere; }
+  .catprob p { margin: 4px 0; }
+  .dhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .problems { border: 1px solid #6e5a1f; background: #2a2412; border-radius: 6px; padding: 8px 12px; margin: 8px 0; font-size: .8rem; overflow-wrap: anywhere; }
+  .problems p { margin: 4px 0 0; }
+  .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+  #delHost { display: inline-flex; align-items: center; gap: 8px; }
+  .why { font-size: .78rem; color: var(--muted); }
+  .status { min-height: 1.2em; font-size: .8rem; color: var(--ok); margin: 0 0 6px; }
+  .status.bad { color: var(--bad); }
+  .nameForm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: .85rem; }
+  .nameForm input { padding: 6px; background: var(--deep); color: inherit; border: 1px solid #2c333d; border-radius: 4px; min-width: 0; flex: 1 1 160px; }
+  .nameForm .err { flex-basis: 100%; margin: 0; color: var(--bad); font-size: .78rem; }
+  .editor, .source { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; line-height: 1.45;
+    background: var(--deep); color: var(--text); border: 1px solid var(--line2); border-radius: 6px; padding: 10px; margin: 0; }
+  .editor { resize: vertical; white-space: pre; overflow: auto; min-height: 260px; }
+  .source { white-space: pre; overflow: auto; max-height: 60vh; }
+  ul.errors { margin: 8px 0 0; padding: 0 0 0 18px; color: var(--bad); font-size: .8rem; overflow-wrap: anywhere; }
+  ul.errors:empty { display: none; }
+  .hint { color: var(--dim); font-size: .85rem; }
+  .graphBox { max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--deep); padding: 4px; }
+  .pipeGraph { display: block; font-family: system-ui, sans-serif; }
+  .pipeGraph .pgNode rect { fill: var(--panel); stroke: var(--line2); stroke-width: 1.5; }
+  .pipeGraph .pgNode.start rect { stroke: var(--accent); }
+  .pipeGraph .pgNodeId { fill: var(--text); font-size: 13px; font-weight: 600; }
+  .pipeGraph .pgNodeType { fill: var(--muted); font-size: 11px; }
+  .pipeGraph .pgEdge { fill: none; stroke: var(--muted); stroke-width: 1.4; }
+  .pipeGraph .pgEdge.dashed { stroke-dasharray: 6 4; stroke: var(--dim); }
+  .pipeGraph .pgArrowHead { fill: var(--muted); }
+  .pipeGraph .pgEdgeLabel { fill: var(--text); font-size: 11px; paint-order: stroke; stroke: var(--deep); stroke-width: 4px; stroke-linejoin: round; }
+  .edgesText { font-size: .72rem; color: var(--muted); }
+  .edgesText ul { margin: 6px 0 0; padding-left: 18px; }
+  @media (max-width: 800px) {
+    .layout { grid-template-columns: minmax(0, 1fr); }
+    #listCol { border-right: 0; border-bottom: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1><img src="/favicon.svg" alt="">cuck-code</h1>
+  <a href="/" id="backLink">Back to the dashboard</a>
+</header>
+<div class="layout">
+  <nav id="listCol" aria-label="Pipelines, node types and interactions">
+    <button type="button" id="newBtn">New pipeline</button>
+    <div id="newHost"></div>
+    <div id="listHost"></div>
+  </nav>
+  <main id="detailCol">
+    <p id="status" class="status" role="status"></p>
+    <div id="detail"></div>
+  </main>
+</div>
+<script src="/pipeline-ui.js"></script>
+<script src="/pipelines-page.js"></script>
+</body>
+</html>
