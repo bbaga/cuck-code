@@ -253,8 +253,8 @@ test("router: user-layer pipeline cannot be changed (403) but can be duplicated"
 
 test("router: path traversal in names never writes outside plugins/pipelines", async () => {
   await withRouter(async ({ call, lines }) => {
-    // The router creates its own registry file shortly after it starts: it is not a write by these calls.
-    const listing = () => fs.readdirSync(lines).filter((n) => n !== "work-coordination.json").sort();
+    // The router creates its own registry file (and its temporary files) shortly after it starts: they are not writes by these calls.
+    const listing = () => fs.readdirSync(lines).filter((n) => !n.startsWith("work-coordination.json")).sort();
     const before = listing();
     const names = ["..", "%2E%2E", "..%2Fevil", "%2E%2E%2F%2E%2E%2Fevil", "a%2Fb", "a%5Cb", "%2Fetc%2Fpasswd", "A", "a.b",
       "x".repeat(61), "-a", "a%00b"];
