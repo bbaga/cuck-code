@@ -96,7 +96,7 @@ test("the report template uses router variables only and renders the old sentenc
   assert.doesNotThrow(() => placeholders(report.body));
 
   const base = { from: { node: "backend-impl", name: "api", id: "w1", harness: "vibe", session: "s1",
-    branch: "feat/x", type: {} }, report: "All done.", source: { name: "api", id: "w1" } };
+    branch: "feat/x", type: {} }, report: "All done.", source: { name: "api", id: "w1", harness: "vibe", session: "s1" } };
   const as = (kind, outcome, extra = {}) => render(report.body, {
     ...base, from: { ...base.from, type: { [kind]: true }, ...(extra.from || {}) },
     outcome: { [outcome]: true }, source: base.source,
@@ -107,7 +107,7 @@ test("the report template uses router variables only and renders the old sentenc
     "REPORT BODY (complete):\nAll done.\n\nNow give the acceptance criteria for the validation of this work.\n" +
     "Start a validator with the criteria. If the work needs no validation, accept it.");
   const val = as("validator", "pass");
-  assert.match(val, /^VALIDATION REPORT - validator 'api' checked the work of implementor 'api' \(workerId w1, branch feat\/x\)\./);
+  assert.match(val, /^VALIDATION REPORT - validator 'api' checked the work of implementor 'api' \(workerId w1, vibe session s1, branch feat\/x\)\./);
   assert.match(val, /\n\nFINAL VERDICT: PASS\.\n\nDecide: accept the work, send follow-up instructions to the original implementor \(POST \/api\/protocol\/workers\/w1\/continue with \{"prompt": \.\.\.\}\)/);
   assert.match(as("validator", "reject"), /FINAL VERDICT: FAIL\./);
   assert.match(as("validator", "missing"), /DIAGNOSTIC: no explicit final VERDICT/);

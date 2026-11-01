@@ -7,6 +7,9 @@ const { isSkipValidation } = require("./handoff");
 
 const NOTICE_ID_RE = /^[A-Za-z0-9:_.-]{1,128}$/;
 const MAX_KNOWN_NOTICES = 500;
+// A request that carries this flow was made by a report interaction (task C6).
+// A request without it, or with a criteria source, keeps the old criteria flow.
+const FLOW_INTERACTIONS = "interactions";
 
 function validNoticeId(id) {
   return typeof id === "string" && NOTICE_ID_RE.test(id);
@@ -19,7 +22,7 @@ function sourceIdentity({ workerId, invocationId, runId, report }) {
   return Object.freeze({ workerId, invocationId, runId, report });
 }
 
-function plannerRequest(text, source = null, noticeId = null, userText = null, recorded = false, id = null) {
+function plannerRequest(text, source = null, noticeId = null, userText = null, recorded = false, id = null, flow = null) {
   const identity = source ? sourceIdentity(source) : null;
   const request = { id: typeof id === "string" && id ? id : crypto.randomUUID(), text, source: identity };
   if (typeof userText === "string") {
@@ -28,12 +31,18 @@ function plannerRequest(text, source = null, noticeId = null, userText = null, r
   }
   if (validNoticeId(noticeId)) request.noticeId = noticeId;
   if (recorded === true) request.recorded = true;
+  if (flow === FLOW_INTERACTIONS) request.flow = flow;
   return Object.freeze(request);
 }
 
 function recordedPlannerRequest(request) {
   return plannerRequest(request.text, request.source, request.noticeId,
-    request.fromUser ? request.userText : null, true, request.id);
+    request.fromUser ? request.userText : null, true, request.id, request.flow);
+}
+
+// A report request of the interactions flow: it carries no criteria source.
+function interactionReportRequest(text) {
+  return plannerRequest(text, null, null, null, false, null, FLOW_INTERACTIONS);
 }
 
 function implementorReportRequest(text, worker, invocation, report) {
@@ -49,7 +58,7 @@ function restorePlannerRequest(value) {
   if (!value || typeof value.text !== "string") return null;
   const userText = value.fromUser && typeof value.userText === "string" ? value.userText : null;
   return plannerRequest(value.text, value.source || null, value.noticeId, userText,
-    value.recorded === true, value.id);
+    value.recorded === true, value.id, value.flow);
 }
 
 function completePlannerCriteria(request, criteria, {
@@ -100,6 +109,7 @@ function serializePlannerRequest(request) {
     out.userText = request.userText;
   }
   if (request.recorded === true) out.recorded = true;
+  if (request.flow === FLOW_INTERACTIONS) out.flow = request.flow;
   return out;
 }
 
@@ -218,6 +228,8 @@ module.exports = {
   sourceIdentity,
   plannerRequest,
   implementorReportRequest,
+  interactionReportRequest,
+  FLOW_INTERACTIONS,
   restorePlannerRequest,
   recordedPlannerRequest,
   completePlannerCriteria,

@@ -25,6 +25,7 @@ const { loadBuiltinPipeline, migrateLine, nodeSettingsFromPipeline, pipelineFrom
   nodeSettingsFields, builtinPipelineNames,
   implementorNodeFor, validatorNodeFor, integrationNodeFor } = require("./line-graph");
 const { checkCall, checkLineValues, requiredFields } = require("./call-fields");
+const { renderReports, kindOfNode } = require("./report-interaction");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
 const { StderrCapture, describeFailure } = require("./run-failure");
 const { messageText, InvocationCapture, appendTranscript, hasCriteria,
@@ -38,7 +39,7 @@ const { CHANGESET_LIMIT, collectChangeset, changesetWakeMessage,
   changesetFields } = require("./changeset");
 const { BaseError, resolveSpawnBase, baseFields, baseNote } = require("./spawn-base");
 const { recordRequestEntry, userEntry, isPromptEcho } = require("./transcript-echo");
-const { recordedPlannerRequest, sourceIdentity, plannerRequest, implementorReportRequest, restorePlannerRequest,
+const { recordedPlannerRequest, sourceIdentity, plannerRequest, implementorReportRequest, interactionReportRequest, restorePlannerRequest,
   completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests, serializePlannerRequest, restoreKnownNoticeIds,
   queuedUserPromptProjection, writeFileDurable, enqueuePlannerRequest, submitPrompt,
@@ -1573,7 +1574,7 @@ function pump(line) {
           },
         });
         slog("info", "planner.criteria.completed", { lineId: line.id, decision: decision.decision });
-      } else if (request.text.startsWith("IMPLEMENTOR REPORT")) {
+      } else if (request.flow !== "interactions" && request.text.startsWith("IMPLEMENTOR REPORT")) {
         slog("error", "planner.criteria-source-missing", { lineId: line.id });
         enqueue(line, "VALIDATION NOT STARTED - the implementor report request has no trusted source metadata. No current worker report was substituted. Request fresh criteria from the current implementor report.");
       }
@@ -1823,7 +1824,36 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
   // The failure detail for the planner wake prompts; empty when the run
   // left none (completed or stopped runs).
   const failureNote = worker.lastError ? `\n\nFAILURE DETAIL:\n${worker.lastError}` : "";
-  if (worker.role === "validator" && worker.kind === "integration") {
+  if (line.graph && kindOfNode(line.graph, worker.node)) {
+    // Reports as interactions: every complete-triggered interaction on an
+    // edge that leaves the node delivers its rendered text (task C6).
+    let overLimit = false;
+    if (worker.status === "completed" && worker.role !== "validator") {
+      // An oversized or uncountable implementor result never reaches the
+      // planner as a report: it gets a CHANGESET LIMIT EXCEEDED wake instead.
+      const cs = collectChangeset(worker.worktreePath, worker.baseCommit);
+      worker.changeset = cs;
+      saveLine(line);
+      if (worker.role === "implementor" && !cs.ok) {
+        overLimit = true;
+        slog("warn", "changeset.exceeded", { lineId: line.id, workerId: worker.id,
+          reason: cs.reason, total: cs.total, limit: cs.limit });
+        enqueue(line, changesetWakeMessage(cs, worker));
+      }
+    }
+    if (!overLimit) {
+      const reports = renderReports({ graph: line.graph, worker, report, timedOut,
+        source: worker.validates ? line.workers.get(worker.validates) || null : null });
+      for (const item of reports) {
+        if (item.target === "starter") {
+          enqueueRequest(line, interactionReportRequest(item.text));
+        } else {
+          slog("warn", "report.target-unsupported", { lineId: line.id, workerId: worker.id,
+            interaction: item.name, target: item.target });
+        }
+      }
+    }
+  } else if (worker.role === "validator" && worker.kind === "integration") {
     if (worker.status === "completed") {
       enqueue(line, buildIntegrationNotification(worker, report));
     } else if (timedOut) {

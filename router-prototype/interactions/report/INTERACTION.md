@@ -11,7 +11,7 @@ REPORT BODY (complete):
 {{report}}
 
 Now give the acceptance criteria for the validation of this work.
-Start a validator with the criteria. If the work needs no validation, accept it.{{/outcome.done}}{{#outcome.pass}}{{#from.type.validator}}VALIDATION REPORT - validator '{{from.name}}' checked the work of implementor '{{source.name}}' (workerId {{source.id}}, branch {{from.branch}}).
+Start a validator with the criteria. If the work needs no validation, accept it.{{/outcome.done}}{{#outcome.pass}}{{#from.type.validator}}VALIDATION REPORT - validator '{{from.name}}' checked the work of implementor '{{source.name}}' (workerId {{source.id}}, {{source.harness}} session {{source.session}}, branch {{from.branch}}).
 
 REPORT BODY (complete):
 {{report}}
@@ -25,7 +25,7 @@ REPORT BODY (complete):
 
 FINAL VERDICT: PASS.
 
-Decide: report completion to the user, or route fixes to the ORIGINAL implementors (continue endpoint) and start a new integration validator after they pass again.{{/from.type.integration}}{{/outcome.pass}}{{#outcome.reject}}{{#from.type.validator}}VALIDATION REPORT - validator '{{from.name}}' checked the work of implementor '{{source.name}}' (workerId {{source.id}}, branch {{from.branch}}).
+Decide: report completion to the user, or route fixes to the ORIGINAL implementors (continue endpoint) and start a new integration validator after they pass again.{{/from.type.integration}}{{/outcome.pass}}{{#outcome.reject}}{{#from.type.validator}}VALIDATION REPORT - validator '{{from.name}}' checked the work of implementor '{{source.name}}' (workerId {{source.id}}, {{source.harness}} session {{source.session}}, branch {{from.branch}}).
 
 REPORT BODY (complete):
 {{report}}
@@ -39,7 +39,7 @@ REPORT BODY (complete):
 
 FINAL VERDICT: FAIL.
 
-Decide: report completion to the user, or route fixes to the ORIGINAL implementors (continue endpoint) and start a new integration validator after they pass again.{{/from.type.integration}}{{/outcome.reject}}{{#outcome.missing}}{{#from.type.validator}}VALIDATION REPORT - validator '{{from.name}}' checked the work of implementor '{{source.name}}' (workerId {{source.id}}, branch {{from.branch}}).
+Decide: report completion to the user, or route fixes to the ORIGINAL implementors (continue endpoint) and start a new integration validator after they pass again.{{/from.type.integration}}{{/outcome.reject}}{{#outcome.missing}}{{#from.type.validator}}VALIDATION REPORT - validator '{{from.name}}' checked the work of implementor '{{source.name}}' (workerId {{source.id}}, {{source.harness}} session {{source.session}}, branch {{from.branch}}).
 
 REPORT BODY (complete):
 {{report}}
