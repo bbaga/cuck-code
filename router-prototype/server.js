@@ -294,8 +294,19 @@ ${implId ? `- The implementor's app port: read ui.port at the repo root, or call
 const { wrapPlannerTurn } = require("./planner-turn");
 
 const lines = new Map();
+const { buildPrompt, workerRouterValues, validatorRouterValues, integrationRouterValues,
+  plannerRouterValues } = require("./prompt-builder");
 const pipelinePresets = createPresetStore(path.join(LINES_DIR, "pipeline-presets.json"),
   { writeFile: writeFileDurable });
+
+// The planner prompt. A line with a graph builds it from the template of the
+// start node (task B4); a line without one uses plannerBrief.
+function plannerPromptFor(line, task) {
+  if (!line.graph) return plannerBrief(line.name, line.id, task, PORT);
+  return buildPrompt(line.graph, line.graph.start,
+    plannerRouterValues({ line, nodeId: line.graph.start, port: PORT, workerCap: WORKER_CAP }),
+    { task });
+}
 
 function plannerBrief(name, lineId, userPrompt, port, trackerTicket) {
   return `PLANNER-ONLY RULES
@@ -1313,9 +1324,16 @@ function pump(line) {
   // The first run after a compaction starts a fresh session: it needs the
   // planner brief (router API, rules) again, plus the handoff summary.
   const reseed = !line.sessionId && !!line.handoff;
-  const turnText = reseed
-    ? plannerBrief(line.name, line.id, `${handoffBlock(line.handoff)}\n\n${text}`, PORT)
-    : text;
+  let turnText = text;
+  if (reseed) {
+    const reseedTask = `${handoffBlock(line.handoff)}\n\n${text}`;
+    try {
+      turnText = plannerPromptFor(line, reseedTask);
+    } catch (e) {
+      slog("error", "planner.prompt.failed", { lineId: line.id, error: e.message });
+      turnText = plannerBrief(line.name, line.id, reseedTask, PORT);
+    }
+  }
   const prompt = wrapPlannerTurn(turnText, { lineId: line.id, approved: line.planApproved,
     workdir: line.workdir });
   line.lastRun = text;
@@ -1783,14 +1801,31 @@ function spawnValidator(line, source, criteria, report) {
   const repo = resolveRepo(line, implWorker.repo);
   const repoName = repo ? repo.name : implWorker.repo || null;
   const repoUrl = repo ? repo.url : null;
+  let prompt;
+  try {
+    if (line.graph) {
+      const callerValues = { criteria };
+      if (implWorker.trackerTicket) callerValues.trackerTicket = implWorker.trackerTicket;
+      prompt = buildPrompt(line.graph, valNode, validatorRouterValues({ line, nodeId: valNode,
+        workerId: id, workerName: name, implementor: implWorker, report, repoName, repoUrl,
+        port: PORT }), callerValues);
+    } else {
+      prompt = validatorBrief(implWorker.name, report, criteria,
+        implWorker.persona || "backend", id, implWorker.id, line.id, repoName, repoUrl,
+        implWorker.trackerTicket);
+    }
+  } catch (e) {
+    slog("error", "validator.prompt.failed", { lineId: line.id, implementorId: implWorker.id,
+      error: e.message });
+    enqueue(line, `VALIDATION NOT STARTED - the prompt of the validator of implementor '${implWorker.name}' could not be built: ${e.message}. No validator was started.`);
+    return;
+  }
   const worker = { id, lineId: line.id, name,
     node: valNode,
     role: "validator", validates: implWorker.id, persona: implWorker.persona || "backend",
     validationSource: source, validationCriteria: criteria,
     kind: "standard", repo: repoName,
-    prompt: validatorBrief(implWorker.name, report, criteria,
-      implWorker.persona || "backend", id, implWorker.id, line.id, repoName, repoUrl,
-      implWorker.trackerTicket),
+    prompt,
     sessionId: null, worktreePath: implWorker.worktreePath, branch: implWorker.branch,
     status: "running", stopRequested: false, runGeneration: 1, child: null, transcript: [] };
   line.workers.set(id, worker);
@@ -2132,9 +2167,13 @@ const routeRequest = (req, res) => {
       let kind = "plain";
       const wasStarted = line.started;
       if (!line.started) {
+        try {
+          text = plannerPromptFor(line, body.text);
+        } catch (e) {
+          return json(res, 500, { error: `could not build the planner prompt: ${e.message}` });
+        }
         line.started = true;
         kind = "initial";
-        text = plannerBrief(line.name, line.id, body.text, PORT);
       } else if (!line.planApproved) {
         try {
           fs.accessSync(path.join(line.workdir, "plan.md"));
@@ -2425,14 +2464,31 @@ const routeRequest = (req, res) => {
         return json(res, 500, { error: "worktree HEAD does not match the resolved base", expected: baseResolved.sha, actual: baseCommit });
       }
       const base = baseResolved ? body.base : null;
+      let workerPrompt;
+      try {
+        if (line.graph) {
+          const callerValues = { task: body.prompt };
+          if (body.trackerTicket) callerValues.trackerTicket = body.trackerTicket;
+          workerPrompt = buildPrompt(line.graph, implNode, workerRouterValues({ line, nodeId: implNode,
+            workerId: id, workerName: body.name, repo, baseCommit,
+            baseNote: baseNote(base, baseResolved), port: PORT, changesetLimit: CHANGESET_LIMIT }),
+          callerValues);
+        } else {
+          workerPrompt = workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo,
+            baseCommit, baseNote(base, baseResolved), body.trackerTicket);
+        }
+      } catch (e) {
+        spawnSync("git", ["-C", repo.path, "worktree", "remove", "--force", worktreePath]);
+        spawnSync("git", ["-C", repo.path, "branch", "-D", branch]);
+        return json(res, 500, { error: `could not build the worker prompt: ${e.message}` });
+      }
       const worker = { id, lineId: line.id, name: body.name, node: implNode,
         role: "implementor", validates: null, persona, kind: "standard", repo: repo.name,
         trackerTicket: body.trackerTicket || null,
         runGeneration: 1,
         harness: body.harness || null, model: body.model || null,
         effort: body.effort || null,
-        prompt: workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo, baseCommit,
-          baseNote(base, baseResolved), body.trackerTicket),
+        prompt: workerPrompt,
         sessionId: null, context: newContextStats(), handoff: null,
         worktreePath, branch, status: "running", stopRequested: false,
         baseCommit, changeset: null, base, baseResolved,
@@ -2649,10 +2705,22 @@ const routeRequest = (req, res) => {
         return json(res, 500, { error: prepared.error, stderr: prepared.stderr });
       }
       const manifest = prepared.repos;
+      let integrationPrompt;
+      try {
+        integrationPrompt = line.graph
+          ? buildPrompt(line.graph, integrationNode, integrationRouterValues({ line,
+            nodeId: integrationNode, workerId: id, workerName: name, manifest, branch, port: PORT }),
+          { instructions: body.prompt })
+          : integrationValidatorBrief(line, manifest, body.prompt, id, branch);
+      } catch (e) {
+        prepared.rollback();
+        try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
+        return json(res, 500, { error: `could not build the integration prompt: ${e.message}` });
+      }
       const worker = { id, lineId: line.id, name, kind: "integration", node: integrationNode,
         role: "validator", validates: null, persona: "backend", repo: null,
         integration: { startedAt: new Date().toISOString(), repos: manifest },
-        prompt: integrationValidatorBrief(line, manifest, body.prompt, id, branch),
+        prompt: integrationPrompt,
         sessionId: null, worktreePath: root, branch, status: "running", stopRequested: false,
         runGeneration: 1, child: null, transcript: [] };
       line.workers.set(id, worker);
