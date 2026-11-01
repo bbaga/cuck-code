@@ -7,28 +7,8 @@ const http = require("node:http");
 const http2 = require("node:http2");
 const os = require("node:os");
 const path = require("node:path");
-const { spawn, execFileSync } = require("node:child_process");
-
-function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
-
-async function start(root, extraEnv = {}) {
-  // Ask the OS for an unused port rather than occasionally connecting to an
-  // unrelated server when concurrent test files collide in a small range.
-  const probe = http.createServer();
-  await new Promise(resolve => probe.listen(0, "127.0.0.1", resolve));
-  const port = probe.address().port;
-  await new Promise(resolve => probe.close(resolve));
-  const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(port), LINES_DIR: root, ...extraEnv }, stdio: "ignore",
-  });
-  const base = `http://localhost:${port}`;
-  for (let i = 0; i < 100; i++) {
-    try { if ((await fetch(base + "/api/lines")).ok) return { child, base }; } catch {}
-    await wait(25);
-  }
-  child.kill("SIGTERM");
-  throw new Error("server did not start");
-}
+const { execFileSync } = require("node:child_process");
+const { startRouter, stopRouter, wait } = require("./fixtures/router-process");
 
 function openStream(base) {
   return new Promise((resolve, reject) => {
@@ -38,9 +18,15 @@ function openStream(base) {
   });
 }
 
-test("restart recovers stale running lines and persists idle state", async (t) => {
+test("restart recovers stale running lines and persists idle state", { timeout: 30_000 }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-stale-running-"));
-  const { child, base } = await start(root);
+  const routers = [];
+  t.after(async () => {
+    for (const router of routers.reverse()) await stopRouter(router);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const first = await startRouter(root); routers.push(first);
+  const { child, base } = first;
   const created = await fetch(base + "/api/lines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "stale" }) });
   const stale = await created.json();
   const staleDir = path.join(root, stale.id);
@@ -52,8 +38,7 @@ test("restart recovers stale running lines and persists idle state", async (t) =
     const timer = setTimeout(() => reject(new Error("server did not terminate cleanly")), 3000);
     child.once("exit", () => { clearTimeout(timer); resolve(); });
   });
-  const restarted = await start(root);
-  t.after(() => { restarted.child.kill("SIGTERM"); fs.rmSync(root, { recursive: true, force: true }); });
+  const restarted = await startRouter(root); routers.push(restarted);
   let lines;
   for (let i = 0; i < 100; i++) {
     lines = (await (await fetch(restarted.base + "/api/lines")).json()).lines;
@@ -63,19 +48,19 @@ test("restart recovers stale running lines and persists idle state", async (t) =
   assert.equal(lines.find((line) => line.id === stale.id).status, "idle");
   assert.equal(JSON.parse(fs.readFileSync(path.join(staleDir, "line.json"))).status, "idle");
   restarted.child.kill("SIGKILL");
-  await wait(100);
-  const second = await start(root);
-  t.after(() => { second.child.kill("SIGKILL"); fs.rmSync(root, { recursive: true, force: true }); });
+  await new Promise((resolve) => restarted.child.once("exit", resolve));
+  const second = await startRouter(root); routers.push(second);
   const secondLines = (await (await fetch(second.base + "/api/lines")).json()).lines;
   assert.equal(secondLines.find((line) => line.id === stale.id).status, "idle");
 });
 
-test("completed planner wait for approval publishes and persists attention", async (t) => {
+test("completed planner wait for approval publishes and persists attention", { timeout: 30_000 }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-attention-"));
   const bin = path.join(root, "bin"); fs.mkdirSync(bin, { recursive: true });
   const fake = path.join(bin, "vibe"); fs.writeFileSync(fake, "#!/bin/sh\nexit 0\n"); fs.chmodSync(fake, 0o755);
-  const { child, base } = await start(root, { PATH: `${bin}:${process.env.PATH}` });
-  t.after(() => { child.kill("SIGTERM"); fs.rmSync(root, { recursive: true, force: true }); });
+  const router = await startRouter(root, { PATH: `${bin}:${process.env.PATH}` });
+  t.after(async () => { await stopRouter(router); fs.rmSync(root, { recursive: true, force: true }); });
+  const { base } = router;
   const created = await fetch(base + "/api/lines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "needs approval" }) });
   const line = await created.json();
   const result = await fetch(`${base}/api/lines/${line.id}/prompts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "create the plan" }) });
@@ -90,9 +75,8 @@ test("completed planner wait for approval publishes and persists attention", asy
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, line.id, "line.json"))).status, "attention");
 });
 
-test("restart bootstraps every persisted pipeline graph and durable marker state", async (t) => {
+test("restart bootstraps every persisted pipeline graph and durable marker state", { timeout: 30_000 }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-graph-restart-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const statuses = ["standby", "running", "attention", "failed", "idle"];
   for (const [index, status] of statuses.entries()) {
     const id = `pipeline-${index}`;
@@ -123,8 +107,9 @@ test("restart bootstraps every persisted pipeline graph and durable marker state
   // One unreadable record must not prevent the other graphs from loading.
   fs.mkdirSync(path.join(root, "broken"));
   fs.writeFileSync(path.join(root, "broken", "line.json"), "{");
-  const { child, base } = await start(root);
-  t.after(() => child.kill("SIGTERM"));
+  const router = await startRouter(root);
+  const { base } = router;
+  t.after(async () => { await stopRouter(router); fs.rmSync(root, { recursive: true, force: true }); });
   const { request, response } = await openStream(base);
   t.after(() => request.destroy());
   let body = "";
@@ -248,15 +233,12 @@ test("restart bootstraps every persisted pipeline graph and durable marker state
   } finally { await page.close(); }
 });
 
-test("shared dashboard stream bootstraps and publishes line lifecycle events", async (t) => {
+test("shared dashboard stream bootstraps and publishes line lifecycle events", { timeout: 30_000 }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-events-api-"));
-  const { child, base } = await start(root);
+  const router = await startRouter(root);
+  const { base } = router;
   t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) {
-      const exited = new Promise(resolve => child.once("exit", resolve));
-      child.kill("SIGTERM");
-      await exited;
-    }
+    await stopRouter(router);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -290,7 +272,7 @@ test("shared dashboard stream bootstraps and publishes line lifecycle events", a
   assert.ok(state);
 });
 
-test("prompt API and dashboard SSE preserve identical queued user IDs and positions", async (t) => {
+test("prompt API and dashboard SSE preserve identical queued user IDs and positions", { timeout: 30_000 }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-prompt-api-"));
   const bin = path.join(root, "bin");
   const lineDir = path.join(root, "seeded");
@@ -306,8 +288,13 @@ test("prompt API and dashboard SSE preserve identical queued user IDs and positi
     activePlannerRequest: { id: "internal-a", text: "internal notice", source: null },
     workers: [], repos: [], inventory: [], evidence: [], pendingValidations: [],
   }));
-  const { child, base } = await start(root, { PATH: `${bin}:${process.env.PATH}` });
-  t.after(() => { child.kill("SIGTERM"); fs.rmSync(root, { recursive: true, force: true }); });
+  const routers = [];
+  t.after(async () => {
+    for (const router of routers.reverse()) await stopRouter(router);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const first = await startRouter(root, { PATH: `${bin}:${process.env.PATH}` }); routers.push(first);
+  const { base } = first;
 
   const initialStream = await openStream(base);
   let initial = "";
@@ -367,7 +354,7 @@ test("prompt API and dashboard SSE preserve identical queued user IDs and positi
   stream.request.destroy();
 });
 
-test("DELETE queued prompt uses HTTP, authoritative SSE, persistence, conflicts, and failed-save rollback", async (t) => {
+test("DELETE queued prompt uses HTTP, authoritative SSE, persistence, conflicts, and failed-save rollback", { timeout: 30_000 }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-cancel-api-"));
   const bin = path.join(root, "bin");
   const lineDir = path.join(root, "seeded");
@@ -388,8 +375,13 @@ test("DELETE queued prompt uses HTTP, authoritative SSE, persistence, conflicts,
     activePlannerRequest: { id: "active-internal", text: "active notice", source: null },
     workers: [], repos: [], inventory: [], evidence: [], pendingValidations: [],
   }));
-  const { child, base } = await start(root, { PATH: `${bin}:${process.env.PATH}` });
-  t.after(() => { child.kill("SIGTERM"); fs.rmSync(root, { recursive: true, force: true }); });
+  const routers = [];
+  t.after(async () => {
+    for (const router of routers.reverse()) await stopRouter(router);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const initialRouter = await startRouter(root, { PATH: `${bin}:${process.env.PATH}` }); routers.push(initialRouter);
+  const { child, base } = initialRouter;
 
   const stream = await openStream(base);
   t.after(() => stream.request.destroy());
@@ -463,8 +455,7 @@ test("DELETE queued prompt uses HTTP, authoritative SSE, persistence, conflicts,
   // Reload proves the successful mutation is durable and the deleted ID cannot be pumped.
   child.kill("SIGTERM");
   await new Promise((resolve) => child.once("exit", resolve));
-  const restarted = await start(root, { PATH: `${bin}:${process.env.PATH}` });
-  t.after(() => restarted.child.kill("SIGTERM"));
+  const restarted = await startRouter(root, { PATH: `${bin}:${process.env.PATH}` }); routers.push(restarted);
   const restoredStream = await openStream(restarted.base);
   t.after(() => restoredStream.request.destroy());
   let restoredRaw = "";
@@ -484,7 +475,7 @@ test("DELETE queued prompt uses HTTP, authoritative SSE, persistence, conflicts,
   ]);
 });
 
-test("Node serves the dashboard stream over direct HTTP/2 when TLS is configured", async (t) => {
+test("Node serves the dashboard stream over direct HTTP/2 when TLS is configured", { timeout: 30_000 }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-events-h2-"));
   const key = path.join(root, "key.pem");
   const cert = path.join(root, "cert.pem");
@@ -497,8 +488,8 @@ test("Node serves the dashboard stream over direct HTTP/2 when TLS is configured
     return;
   }
   const httpsPort = 8600 + Math.floor(Math.random() * 400);
-  const { child } = await start(root, { HTTPS_PORT: String(httpsPort), TLS_KEY: key, TLS_CERT: cert });
-  t.after(() => { child.kill("SIGTERM"); fs.rmSync(root, { recursive: true, force: true }); });
+  const router = await startRouter(root, { HTTPS_PORT: String(httpsPort), TLS_KEY: key, TLS_CERT: cert });
+  t.after(async () => { await stopRouter(router); fs.rmSync(root, { recursive: true, force: true }); });
 
   const client = http2.connect(`https://localhost:${httpsPort}`, { rejectUnauthorized: false });
   t.after(() => client.close());

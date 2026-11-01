@@ -28,6 +28,6 @@ jobs:
           sudo apt-get install -y ffmpeg
           ffmpeg -version
       - name: Run unit tests
-        run: node --test router-prototype/test/*.test.js
+        run: node --test --test-timeout=60000 router-prototype/test/*.test.js
       - name: Validate JavaScript and local web assets
         run: node router-prototype/scripts/validate-build.js

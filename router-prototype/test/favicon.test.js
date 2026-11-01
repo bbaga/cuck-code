@@ -10,9 +10,9 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { startRouter, stopRouter } = require("./fixtures/router-process");
 
-let server = null;
+let router = null;
 let baseUrl = null;
 let tmpDir = null;
 
@@ -37,42 +37,21 @@ exit 1
   fs.writeFileSync(path.join(binDir, "vibe"), vibe, { mode: 0o755 });
 }
 
-async function waitUntilListening(url, tries = 100) {
-  for (let i = 0; i < tries; i++) {
-    try {
-      const res = await fetch(url + "/api/harnesses");
-      if (res.ok) return;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error("server did not start");
-}
-
 before(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "favicon-test-"));
   const binDir = path.join(tmpDir, "bin");
   fs.mkdirSync(binDir);
   writeFakeClis(binDir);
-  const port = 8100 + Math.floor(Math.random() * 100);
-  baseUrl = `http://localhost:${port}`;
-  server = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: {
-      ...process.env,
-      PORT: String(port),
-      LINES_DIR: path.join(tmpDir, "lines"),
-      PATH: `${binDir}:${process.env.PATH}`,
-    },
-    stdio: "ignore",
-  });
-  await waitUntilListening(baseUrl);
+  router = await startRouter(path.join(tmpDir, "lines"), { PATH: `${binDir}:${process.env.PATH}` });
+  baseUrl = router.base;
 });
 
-after(() => {
-  if (server) server.kill("SIGTERM");
+after(async () => {
+  if (router) await stopRouter(router);
   if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-test("GET /favicon.svg serves the svg with the right content type", async () => {
+test("GET /favicon.svg serves the svg with the right content type", { timeout: 30_000 }, async () => {
   const res = await fetch(baseUrl + "/favicon.svg");
   assert.strictEqual(res.status, 200);
   assert.strictEqual(res.headers.get("content-type"), "image/svg+xml");
@@ -81,14 +60,14 @@ test("GET /favicon.svg serves the svg with the right content type", async () => 
   assert.ok(body.includes("viewBox"), "svg must have a viewBox");
 });
 
-test("GET / includes the favicon link", async () => {
+test("GET / includes the favicon link", { timeout: 30_000 }, async () => {
   const res = await fetch(baseUrl + "/");
   assert.strictEqual(res.status, 200);
   const html = await res.text();
   assert.match(html, /<link rel="icon" type="image\/svg\+xml" href="\/favicon\.svg">/);
 });
 
-test("GET / shows the logo img before the text in the sidebar h1", async () => {
+test("GET / shows the logo img before the text in the sidebar h1", { timeout: 30_000 }, async () => {
   const res = await fetch(baseUrl + "/");
   assert.strictEqual(res.status, 200);
   const html = await res.text();
