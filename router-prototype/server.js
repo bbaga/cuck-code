@@ -24,6 +24,7 @@ const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
 const { loadBuiltinPipeline, migrateLine, nodeSettingsFromPipeline, pipelineFromNodeSettings,
   nodeSettingsFields, builtinPipelineNames,
   implementorNodeFor, validatorNodeFor, integrationNodeFor } = require("./line-graph");
+const { checkCall } = require("./call-fields");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
 const { StderrCapture, describeFailure } = require("./run-failure");
 const { messageText, InvocationCapture, appendTranscript, hasCriteria,
@@ -2860,6 +2861,104 @@ const routeRequest = (req, res) => {
     if (!worker) return json(res, 404, { error: "no such worker" });
     releaseUiSlot(worker.id);
     return json(res, 202, { released: true });
+  }
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "lines"
+    && parts[4] === "interactions" && parts.length === 6) {
+    const line = lines.get(parts[3]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    const graph = line.graph;
+    const name = parts[5];
+    if (!graph || !Object.prototype.hasOwnProperty.call(graph.interactions, name)) {
+      return json(res, 404, { error: `no such interaction: '${name}'` });
+    }
+    const interaction = graph.interactions[name];
+    if (interaction.trigger === "complete") {
+      return json(res, 405, { error: "the router performs this interaction" });
+    }
+    readBody(req, res, (err, rawBody) => {
+      if (err || rawBody === null || typeof rawBody !== "object" || Array.isArray(rawBody)) {
+        return json(res, 400, { error: "expected a JSON object {to?, ...fields}" });
+      }
+      if (line.deleted || lines.get(line.id) !== line) return json(res, 404, { error: "no such line" });
+      const { to, ...body } = rawBody;
+      const caller = graph.start;
+      const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+      let targetId;
+      if (interaction.target === "chosen") {
+        if (typeof body.instance !== "string" || body.instance.trim() === "") {
+          return json(res, 400, { error: `${name} is incomplete: fill every listed field`,
+            code: "INTERACTION_FIELDS", interaction: name, to: null,
+            missing: [{ field: "instance", description: "The instance that receives the message.", requiredBy: "target: chosen" }],
+            invalid: [], unexpected: Object.keys(body).filter((k) => k !== "instance"),
+            expected: { instance: "instance, required" } });
+        }
+        const target = line.workers.get(body.instance);
+        if (!target) return json(res, 404, { error: `no such instance: '${body.instance}'` });
+        if (typeof target.node !== "string" || !has(graph.nodes, target.node)) {
+          return json(res, 404, { error: `the instance '${body.instance}' belongs to no node of the pipeline` });
+        }
+        targetId = target.node;
+      } else {
+        if (typeof to !== "string" || !has(graph.nodes, to)) {
+          return json(res, 404, { error: `no such node: ${JSON.stringify(to === undefined ? null : to)}` });
+        }
+        targetId = to;
+      }
+      const edges = (graph.edges || []).filter((e) => e.from === caller);
+      if (!edges.some((e) => e.to === targetId && (e.interactions || []).includes(name))) {
+        const allowed = [];
+        for (const e of edges) {
+          for (const i of e.interactions || []) {
+            const def = graph.interactions[i];
+            if (def && def.trigger === "request") allowed.push({ interaction: i, to: e.to });
+          }
+        }
+        return json(res, 403, { error: `the node '${caller}' may not use '${name}' on node '${targetId}'`,
+          code: "NO_EDGE", allowed });
+      }
+      const checked = checkCall(graph, name, targetId, body);
+      if (!checked.ok) {
+        return json(res, 400, { error: `${name} of node '${targetId}' is incomplete: fill every listed field`,
+          code: "INTERACTION_FIELDS", interaction: name, to: targetId,
+          missing: checked.missing, invalid: checked.invalid, unexpected: checked.unexpected,
+          expected: checked.expected });
+      }
+      if ((interaction.effect === "create" || interaction.effect === "deliver") && !line.planApproved) {
+        return json(res, 409, { error: "plan not approved" });
+      }
+      if (interaction.effect !== "create") {
+        return json(res, 501, { error: "not implemented", code: "NOT_IMPLEMENTED" });
+      }
+      const node = graph.nodes[targetId];
+      const type = graph.types[node.type];
+      let out;
+      if (type.workspace === "own-worktree") {
+        let wname = body.name;
+        if (!wname) {
+          let n = 1;
+          while ([...line.workers.values()].some((w) => w.name === `${targetId}-${n}`)) n++;
+          wname = `${targetId}-${n}`;
+        }
+        out = createOwnWorktree(line, targetId, { name: wname, prompt: body.task,
+          persona: node.type.startsWith("frontend") ? "frontend" : "backend",
+          repo: body.repo, base: body.base, trackerTicket: body.trackerTicket });
+      } else if (type.workspace === "source") {
+        const impl = line.workers.get(body.source);
+        if (!impl) return json(res, 404, { error: `no such instance: '${body.source}'` });
+        const source = sourceIdentity({ workerId: impl.id, invocationId: impl.lastCompletedInvocationId,
+          runId: impl.runGeneration, report: impl.lastRunText });
+        out = createSourceChecker(line, targetId, impl, { source, criteria: body.criteria,
+          report: reportForValidation(null, impl.lastRunText) });
+      } else if (type.workspace === "integration") {
+        out = createIntegration(line, targetId, { instructions: body.instructions });
+      } else {
+        return json(res, 400, { error: `the node '${targetId}' cannot be started: workspace '${type.workspace}'` });
+      }
+      if (!out.ok) return sendFailure(res, out);
+      json(res, 201, { instance: out.response });
+    });
+    return;
   }
 
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "lines"
