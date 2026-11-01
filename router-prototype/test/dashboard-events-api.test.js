@@ -509,3 +509,33 @@ test("Node serves the dashboard stream over direct HTTP/2 when TLS is configured
   assert.match(body, /"type":"snapshot_begin"/);
   assert.match(body, /"type":"snapshot_end"/);
 });
+
+test("integration request for a line deleted during body upload makes no worktree", { timeout: 30_000 }, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-integration-delete-"));
+  const routers = [];
+  t.after(async () => {
+    for (const router of routers.reverse()) await stopRouter(router);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const id = "line-int";
+  const workdir = path.join(root, id);
+  fs.mkdirSync(workdir);
+  execFileSync("git", ["-C", workdir, "init", "-q"]);
+  execFileSync("git", ["-C", workdir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
+  fs.writeFileSync(path.join(workdir, "line.json"), JSON.stringify({
+    id, name: "integration", started: true, planApproved: true, status: "idle",
+    workers: [{ id: "impl-1", name: "impl", role: "implementor", branch: "feature/x", status: "stopped" }],
+    repos: [], inventory: [], evidence: [], pendingValidations: [],
+  }));
+  const router = await startRouter(root); routers.push(router);
+  const payload = Buffer.from(JSON.stringify({ prompt: "integrate" }));
+  const req = http.request(`${router.base}/api/protocol/lines/${id}/integration`, { method: "POST",
+    headers: { "Content-Type": "application/json", "Content-Length": String(payload.length) } });
+  const response = new Promise((resolve) => req.on("response", (res) => { res.resume(); resolve(res.statusCode); }));
+  req.write(payload.subarray(0, 5));
+  await wait(100);
+  assert.equal((await fetch(`${router.base}/api/lines/${id}`, { method: "DELETE" })).status, 202);
+  req.end(payload.subarray(5));
+  assert.equal(await response, 404);
+  assert.equal(fs.existsSync(path.join(root, "worktrees", id)), false);
+});

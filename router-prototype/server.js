@@ -2248,6 +2248,7 @@ const requestHandler = (req, res) => {
         return json(res, 400, { error: `harness must be one of: ${HARNESS_IDS.join(", ")}` });
       }
       if (body.harness && !await gateHarnesses([body.harness], res)) return;
+      if (line.deleted || lines.get(line.id) !== line) return json(res, 404, { error: "no such line" });
       const spawnBodyError = validateWorkerSpawnBody(body);
       if (spawnBodyError) return json(res, 400, { error: spawnBodyError });
       const persona = body.persona === undefined || body.persona === null
@@ -2470,6 +2471,12 @@ const requestHandler = (req, res) => {
     readBody(req, (err, body) => {
       if (err || !body || typeof body.prompt !== "string" || !body.prompt.trim()) {
         return json(res, 400, { error: "expected {prompt}" });
+      }
+      // The body arrives later than the first examination. Examine again
+      // here: this callback is synchronous until line.workers.set.
+      if (line.deleted || lines.get(line.id) !== line) return json(res, 404, { error: "no such line" });
+      if (runningCount(line) >= WORKER_CAP) {
+        return json(res, 409, { error: `cap reached: ${WORKER_CAP} workers/validators are running concurrently - wait for completions first` });
       }
       const branchEntries = [...line.workers.values()]
         .filter((w) => w.role === "implementor" && w.kind !== "integration")
