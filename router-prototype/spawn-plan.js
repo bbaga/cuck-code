@@ -5,7 +5,7 @@
 // tests exercise them without starting the server or a CLI process.
 
 const { createHarness } = require("./harness");
-const { resolvePipeline, defaultModelFor, EFFORT_LEVELS } = require("./pipeline-config");
+const { resolvePipeline, resolveNodeSettings, defaultModelFor, EFFORT_LEVELS } = require("./pipeline-config");
 
 // Which pipeline phase a worker run belongs to.
 function phaseForWorker(role, kind) {
@@ -13,6 +13,20 @@ function phaseForWorker(role, kind) {
     return kind === "integration" ? "integration" : "validator";
   }
   return "implementor";
+}
+
+// Run settings of the planner: the start node of the line graph. A line
+// without a graph uses the old per-phase view.
+function plannerSettings(line) {
+  if (line.graph && line.graph.start) return resolveNodeSettings(line, line.graph.start);
+  return resolvePipeline(line).planner;
+}
+
+// Run settings of a worker: its node. A worker without a node yet uses the
+// old per-phase view.
+function workerSettings(line, worker) {
+  if (worker.node && line.graph) return resolveNodeSettings(line, worker.node);
+  return resolvePipeline(line)[phaseForWorker(worker.role, worker.kind)];
 }
 
 // Per-worker overrides win over the phase config when set. A worker that
@@ -104,6 +118,8 @@ function lineSummary(line) {
 
 module.exports = {
   phaseForWorker,
+  plannerSettings,
+  workerSettings,
   resolveWorkerOverrides,
   planPlannerRun,
   planWorkerRun,

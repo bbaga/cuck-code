@@ -113,27 +113,92 @@ function defaultModelFor(harness, phase) {
 // the env/default harness: a line that switches the phase to another
 // harness without naming a model gets that harness's default instead of a
 // model id meant for a different CLI.
+function mergePhase(phase, e, cfg, withContext) {
+  const prefix = PHASE_ENV_PREFIX[phase];
+  const envTimeLimit = phase === "planner"
+    ? Number(e.PLANNER_TIME_LIMIT || 1800)
+    : Number(e.WORKER_TIME_LIMIT || 3600);
+  const baseHarness = e[`${prefix}_HARNESS`] || DEFAULTS.harness;
+  const harness = cfg.harness || baseHarness;
+  const baseModel = harness === baseHarness ? e[`${prefix}_MODEL`] : null;
+  const result = {
+    harness,
+    model: cfg.model || baseModel || defaultModelFor(harness, phase),
+    effort: cfg.effort || e[`${prefix}_EFFORT`] || DEFAULTS.effort,
+    timeLimit: cfg.timeLimit || envTimeLimit,
+  };
+  if (withContext) result.maxContext = cfg.maxContext || parseAutoThreshold(e.COMPACT_AUTO_TOKENS);
+  return result;
+}
+
+// line-graph loads the pipeline resolver, which needs this module: load it late.
+function phaseOfType(graph, typeName) {
+  return require("./line-graph").phaseOfType(graph, typeName);
+}
+
+function graphType(graph, nodeId) {
+  const node = graph && graph.nodes && Object.prototype.hasOwnProperty.call(graph.nodes, nodeId)
+    ? graph.nodes[nodeId] : null;
+  return node ? node : null;
+}
+
+// Does the node type keep its session across runs (session: resume)?
+function nodeResumes(graph, nodeId) {
+  const node = graphType(graph, nodeId);
+  const type = node && graph.types && graph.types[node.type];
+  return !!type && type.session === "resume";
+}
+
+// Check settings for one node of a resolved graph: maxContext is allowed only
+// on a node whose type has session: resume. Returns an error string or null.
+function validateNodeSettingsForNode(graph, nodeId, settings) {
+  if (!graphType(graph, nodeId)) return `no such node '${nodeId}'`;
+  return validateNodeSettings(`nodeSettings.${nodeId}`, settings || {}, {
+    strict: true,
+    maxContext: nodeResumes(graph, nodeId),
+  });
+}
+
+// Run settings of one node, most specific wins: code defaults for the phase
+// of the node type, env vars of that phase, the pipeline file node settings,
+// the legacy line.pipeline[phase] override, then line.nodeSettings[nodeId].
+// The env model applies only to the env harness (see resolvePipeline).
+// maxContext is set only for a node type with session: resume.
+function resolveNodeSettings(line, nodeId, env) {
+  const e = env || process.env;
+  const graph = line && line.graph;
+  const node = graphType(graph, nodeId);
+  if (!node) throw new Error(`no such node '${nodeId}'`);
+  const phase = phaseOfType(graph, node.type);
+  if (!phase) throw new Error(`node '${nodeId}' has a type without a phase`);
+  const legacy = line.pipeline && line.pipeline[phase] ? line.pipeline[phase] : {};
+  const own = line.nodeSettings && line.nodeSettings[nodeId] ? line.nodeSettings[nodeId] : {};
+  const merged = { ...(node.settings || {}), ...legacy, ...own };
+  const resumes = nodeResumes(graph, nodeId);
+  const result = mergePhase(phase, e, merged, resumes);
+  if (!resumes) delete result.maxContext;
+  return result;
+}
+
+// The old per-phase view. With a graph, each phase uses the first node of
+// that phase in graph order; without one (or without such a node) the old
+// line.pipeline overrides apply as before.
 function resolvePipeline(line, env) {
   const e = env || process.env;
   const pipeline = line && line.pipeline ? line.pipeline : {};
+  const graph = line && line.graph;
   const result = {};
   for (const phase of PHASES) {
-    const prefix = PHASE_ENV_PREFIX[phase];
-    const phaseCfg = pipeline[phase] || {};
-    const envTimeLimit = phase === "planner"
-      ? Number(e.PLANNER_TIME_LIMIT || 1800)
-      : Number(e.WORKER_TIME_LIMIT || 3600);
-    const baseHarness = e[`${prefix}_HARNESS`] || DEFAULTS.harness;
-    const harness = phaseCfg.harness || baseHarness;
-    const baseModel = harness === baseHarness ? e[`${prefix}_MODEL`] : null;
-    result[phase] = {
-      harness,
-      model: phaseCfg.model || baseModel || defaultModelFor(harness, phase),
-      effort: phaseCfg.effort || e[`${prefix}_EFFORT`] || DEFAULTS.effort,
-      timeLimit: phaseCfg.timeLimit || envTimeLimit,
-    };
-    if (CONTEXT_PHASES.includes(phase)) {
-      result[phase].maxContext = phaseCfg.maxContext || parseAutoThreshold(e.COMPACT_AUTO_TOKENS);
+    const nodeId = graph && graph.nodes
+      ? Object.keys(graph.nodes).find((id) => phaseOfType(graph, graph.nodes[id].type) === phase)
+      : null;
+    if (nodeId && (!CONTEXT_PHASES.includes(phase) || nodeResumes(graph, nodeId))) {
+      result[phase] = resolveNodeSettings(line, nodeId, e);
+      if (CONTEXT_PHASES.includes(phase) && result[phase].maxContext === undefined) {
+        result[phase].maxContext = parseAutoThreshold(e.COMPACT_AUTO_TOKENS);
+      }
+    } else {
+      result[phase] = mergePhase(phase, e, pipeline[phase] || {}, CONTEXT_PHASES.includes(phase));
     }
   }
   return result;
@@ -457,6 +522,8 @@ module.exports = {
   validateNodeSettings,
   defaultModelFor,
   resolvePipeline,
+  resolveNodeSettings,
+  validateNodeSettingsForNode,
   HARNESS_PROBES,
   probeHarnesses,
   probeResultFor,

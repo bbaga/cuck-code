@@ -602,3 +602,70 @@ test("piProviderDetail never leaks credentials or raw output", async () => {
   assert.ok(!serialized.includes("sk-secret"));
   assert.ok(!serialized.includes("hunter2"));
 });
+
+// ---- resolveNodeSettings ----
+
+const { loadBuiltinPipeline } = require("../line-graph");
+const { resolveNodeSettings, validateNodeSettingsForNode } = require("../pipeline-config");
+
+function lineWithGraph(extra) {
+  const graph = loadBuiltinPipeline("default", fs, path.join(__dirname, ".."));
+  return { graph: JSON.parse(JSON.stringify(graph)), ...extra };
+}
+
+test("resolveNodeSettings uses the env defaults of the phase of the node type", () => {
+  const env = { IMPLEMENTOR_MODEL: "impl-m", VALIDATOR_EFFORT: "high", INTEGRATION_HARNESS: "codex",
+    PLANNER_TIME_LIMIT: "99", WORKER_TIME_LIMIT: "77", COMPACT_AUTO_TOKENS: "50000" };
+  const line = lineWithGraph();
+  assert.strictEqual(resolveNodeSettings(line, "backend-impl", env).model, "impl-m");
+  assert.strictEqual(resolveNodeSettings(line, "frontend-impl", env).model, "impl-m");
+  assert.strictEqual(resolveNodeSettings(line, "backend-val", env).effort, "high");
+  assert.strictEqual(resolveNodeSettings(line, "backend-val", env).model, "glm-5-3");
+  const integ = resolveNodeSettings(line, "integration", env);
+  assert.strictEqual(integ.harness, "codex");
+  assert.strictEqual(integ.model, null);
+  assert.strictEqual(integ.timeLimit, 77);
+  const planner = resolveNodeSettings(line, "planner", env);
+  assert.strictEqual(planner.timeLimit, 99);
+  assert.strictEqual(planner.maxContext, 50000);
+  assert.strictEqual(resolveNodeSettings(line, "backend-impl", env).maxContext, 50000);
+});
+
+test("resolveNodeSettings: file settings, then node settings win; env model needs the env harness", () => {
+  const env = { IMPLEMENTOR_MODEL: "impl-m" };
+  const line = lineWithGraph({ nodeSettings: { "frontend-impl": { effort: "low", harness: "pi" } } });
+  line.graph.nodes["backend-impl"].settings = { effort: "high", model: "file-m" };
+  line.graph.nodes["frontend-impl"].settings = { effort: "high", model: "file-m" };
+  const be = resolveNodeSettings(line, "backend-impl", env);
+  assert.strictEqual(be.effort, "high");
+  assert.strictEqual(be.model, "file-m");
+  const fe = resolveNodeSettings(line, "frontend-impl", env);
+  assert.strictEqual(fe.effort, "low");
+  assert.strictEqual(fe.harness, "pi");
+  assert.strictEqual(fe.model, "file-m");
+  line.nodeSettings["frontend-impl"].model = "node-m";
+  assert.strictEqual(resolveNodeSettings(line, "frontend-impl", env).model, "node-m");
+  delete line.graph.nodes["backend-impl"].settings.model;
+  assert.strictEqual(resolveNodeSettings(line, "backend-impl", env).model, "impl-m");
+  const switched = lineWithGraph({ nodeSettings: { "backend-impl": { harness: "pi" } } });
+  assert.strictEqual(resolveNodeSettings(switched, "backend-impl", env).model, null);
+  assert.throws(() => resolveNodeSettings(line, "nope", env), /no such node/);
+});
+
+test("maxContext is allowed only on a node with a resumed session", () => {
+  const line = lineWithGraph();
+  assert.strictEqual(validateNodeSettingsForNode(line.graph, "backend-impl", { maxContext: 5000 }), null);
+  assert.strictEqual(validateNodeSettingsForNode(line.graph, "planner", { maxContext: 5000 }), null);
+  assert.match(validateNodeSettingsForNode(line.graph, "backend-val", { maxContext: 5000 }),
+    /maxContext is not supported/);
+  assert.match(validateNodeSettingsForNode(line.graph, "integration", { maxContext: 5000 }),
+    /maxContext is not supported/);
+  line.nodeSettings = { "backend-val": { maxContext: 5000 } };
+  assert.strictEqual("maxContext" in resolveNodeSettings(line, "backend-val", {}), false);
+});
+
+test("resolvePipeline keeps the old per-phase view on a line with a graph", () => {
+  const line = lineWithGraph({ pipeline: { validator: { effort: "high" }, planner: { maxContext: 7000 } } });
+  const plain = { pipeline: line.pipeline };
+  assert.deepStrictEqual(resolvePipeline(line, {}), resolvePipeline(plain, {}));
+});

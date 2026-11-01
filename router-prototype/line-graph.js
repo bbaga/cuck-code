@@ -44,17 +44,23 @@ function nodeForWorker(resolved, w) {
   return pick("implementor", frontend ? "frontend-impl" : "backend-impl");
 }
 
+// Copy the old per-phase overrides to every node whose type maps to the phase.
+function nodeSettingsFromPipeline(graph, pipeline) {
+  const out = {};
+  const old = pipeline && typeof pipeline === "object" ? pipeline : {};
+  for (const [phase, settings] of Object.entries(old)) {
+    if (!settings || typeof settings !== "object") continue;
+    for (const [id, node] of Object.entries(graph.nodes)) {
+      if (phaseOfType(graph, node.type) === phase) out[id] = { ...settings };
+    }
+  }
+  return out;
+}
+
 function migrateLine(meta, resolvedDefault) {
   if (meta && meta.graph) return meta;
   const graph = JSON.parse(JSON.stringify(resolvedDefault));
-  const nodeSettings = {};
-  const pipeline = meta && meta.pipeline && typeof meta.pipeline === "object" ? meta.pipeline : {};
-  for (const [phase, settings] of Object.entries(pipeline)) {
-    if (!settings || typeof settings !== "object") continue;
-    for (const [id, node] of Object.entries(graph.nodes)) {
-      if (phaseOfType(graph, node.type) === phase) nodeSettings[id] = { ...settings };
-    }
-  }
+  const nodeSettings = nodeSettingsFromPipeline(graph, meta && meta.pipeline);
   const workers = (meta.workers || []).map((w) => {
     const out = { ...w, node: nodeForWorker(graph, w) };
     if (w.role !== "validator" && w.validationSkipped) {
@@ -88,4 +94,4 @@ function loadBuiltinPipeline(name, fs, root) {
   return resolvePipelineDefinition(name, { readFile, types, interactions, pipelines });
 }
 
-module.exports = { PHASE_TYPES, phaseOfType, migrateLine, loadBuiltinPipeline };
+module.exports = { PHASE_TYPES, phaseOfType, migrateLine, nodeSettingsFromPipeline, loadBuiltinPipeline };

@@ -18,8 +18,9 @@ const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
   resolvePipeline, probeResultFor, piProviderDetail,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
+  plannerSettings, workerSettings,
   validateWorkerSpawnBody, implementorBranchName, lineSummary } = require("./spawn-plan");
-const { loadBuiltinPipeline, migrateLine } = require("./line-graph");
+const { loadBuiltinPipeline, migrateLine, nodeSettingsFromPipeline } = require("./line-graph");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
 const { StderrCapture, describeFailure } = require("./run-failure");
 const { messageText, InvocationCapture, appendTranscript, hasCriteria,
@@ -874,8 +875,7 @@ function sseSend(res, event, data) {
 // implementors. Validators start fresh on every run.
 // The compaction threshold for a planner (line) or implementor session.
 function maxContextFor(line, owner) {
-  const pipeline = resolvePipeline(line);
-  return (owner === line ? pipeline.planner : pipeline.implementor).maxContext;
+  return (owner === line ? plannerSettings(line) : workerSettings(line, owner)).maxContext;
 }
 
 function compactionFields(owner, line = owner) {
@@ -950,7 +950,7 @@ function compactPlanner(line, reason, sessionCfg = null) {
   if (line.deleted || line.compacting || line.status === "running" || !line.sessionId) return false;
   line.compacting = true;
   if (!line.context) line.context = newContextStats();
-  const current = resolvePipeline(line).planner;
+  const current = plannerSettings(line);
   const cfg = sessionCfg ? { ...current, ...sessionCfg } : current;
   const plan = planPlannerRun(cfg, { prompt: compactionPrompt("planner"), workdir: line.workdir,
     sessionId: line.sessionId, autoApprove: AUTO_APPROVE });
@@ -1002,7 +1002,7 @@ function compactWorker(line, worker, reason, then = () => {}) {
   worker.stopRequested = false;
   if (!worker.context) worker.context = newContextStats();
   const phase = phaseForWorker(worker.role, worker.kind);
-  const cfg = resolvePipeline(line)[phase];
+  const cfg = workerSettings(line, worker);
   const effective = resolveWorkerOverrides(cfg, worker, phase);
   const plan = planWorkerRun({ ...cfg, ...effective }, { phase,
     prompt: compactionPrompt("implementor"), workdir: worker.worktreePath,
@@ -1294,7 +1294,7 @@ function pump(line) {
   // edit switched the planner harness, compact on the old harness first;
   // the next run then starts a fresh session on the new one.
   if (line.sessionId && line.sessionCfg
-    && line.sessionCfg.harness !== resolvePipeline(line).planner.harness
+    && line.sessionCfg.harness !== plannerSettings(line).harness
     && compactPlanner(line, "harness-switch", line.sessionCfg)) return;
   // A large session is compacted before the next request; compactPlanner
   // calls pump again when it is done.
@@ -1323,7 +1323,7 @@ function pump(line) {
   slog("info", "planner.run.start", { lineId: line.id, resume: !!line.sessionId, reseed,
     chars: text.length, prompt: preview(text, 400) });
 
-  const cfg = resolvePipeline(line).planner;
+  const cfg = plannerSettings(line);
   line.plannerHarness = cfg.harness;
   line.sessionCfg = { harness: cfg.harness, model: cfg.model, effort: cfg.effort,
     timeLimit: cfg.timeLimit };
@@ -1577,7 +1577,7 @@ function spawnWorker(line, worker, prompt, resume) {
   worker.activeInvocationId = invocationId;
   saveLine(line);
   const phase = phaseForWorker(worker.role, worker.kind);
-  const cfg = resolvePipeline(line)[phase];
+  const cfg = workerSettings(line, worker);
   const effective = resolveWorkerOverrides(cfg, worker, phase);
   worker.lastError = null;
   worker.harness = effective.harness;
@@ -1995,15 +1995,19 @@ const routeRequest = (req, res) => {
       if (line.deleted) return json(res, 404, { error: "no such line" });
       // Lines restored from before session config tracking: the current
       // session belongs to the harness configured until now.
-      const previous = { pipeline: line.pipeline, sessionCfg: line.sessionCfg };
+      const previous = { pipeline: line.pipeline, sessionCfg: line.sessionCfg,
+        nodeSettings: line.nodeSettings };
       if (line.sessionId && !line.sessionCfg) {
-        const before = resolvePipeline(line).planner;
+        const before = plannerSettings(line);
         line.sessionCfg = { harness: before.harness, model: before.model, effort: before.effort,
           timeLimit: before.timeLimit };
       }
       line.pipeline = pipeline;
+      // Keep the node settings in step with the phase settings (B6 replaces this).
+      if (line.graph) line.nodeSettings = nodeSettingsFromPipeline(line.graph, pipeline);
       if (!saveLine(line)) {
         line.pipeline = previous.pipeline;
+        line.nodeSettings = previous.nodeSettings;
         line.sessionCfg = previous.sessionCfg;
         return json(res, 500, { error: "could not save the pipeline" });
       }
@@ -2903,7 +2907,7 @@ When done, reply with a report: what you changed, files changed, how you verifie
     if (!line) return json(res, 404, { error: "no such line" });
     const worker = parts.length === 6 ? line.workers.get(parts[4]) : null;
     if (parts.length === 6 && !worker) return json(res, 404, { error: "no such worker" });
-    const cfg = resolvePipeline(line)[worker ? phaseForWorker(worker.role, worker.kind) : "planner"];
+    const cfg = worker ? workerSettings(line, worker) : plannerSettings(line);
     const target = worker || line;
     const harness = worker ? worker.harness || cfg.harness
       : line.sessionCfg?.harness || line.plannerHarness || cfg.harness;
