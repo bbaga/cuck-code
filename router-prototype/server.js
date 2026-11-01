@@ -56,7 +56,7 @@ const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require(
 const { createDashboardLive } = require("./dashboard-live");
 const { readClaudeConfig } = require("./claude-config");
 const { sessionContextTokens } = require("./context-probe");
-const { createPresetStore } = require("./pipeline-presets");
+const { migratePresets } = require("./preset-migration");
 const { isSignalablePid } = require("./process-ref");
 const { newContextStats, restoreContextStats, recordTurn, resetForFreshSession,
   contextView, shouldAutoCompact, parseAutoThreshold, compactionPrompt, acceptSummary,
@@ -308,8 +308,6 @@ const { wrapPlannerTurn } = require("./planner-turn");
 const lines = new Map();
 const { buildPrompt, buildPromptParts, workerRouterValues, validatorRouterValues, integrationRouterValues,
   plannerRouterValues } = require("./prompt-builder");
-const pipelinePresets = createPresetStore(path.join(LINES_DIR, "pipeline-presets.json"),
-  { writeFile: writeFileDurable });
 
 // The planner prompt. A line with a graph builds it from the template of the
 // start node (task B4). A line without a graph is an error.
@@ -943,6 +941,11 @@ function rebuildCatalog() {
   CATALOG_GRAPHS.clear();
   return CATALOG;
 }
+// Old presets become managed pipelines before the first catalog build.
+migratePresets({ presetsFile: path.join(LINES_DIR, "pipeline-presets.json"), managedDir: MANAGED_PLUGINS_DIR,
+  defaultPipelineText: fs.readFileSync(path.join(__dirname, "pipelines", "default.yaml"), "utf8"),
+  defaultGraph: DEFAULT_PIPELINE, fs, reservedNames: builtinPipelineNames(fs, __dirname),
+  log: (message) => slog("info", "preset.migrate", { message }) });
 rebuildCatalog();
 for (const p of CATALOG.problems) slog("warn", "catalog.problem", { layer: p.layer, path: p.path, errors: p.errors });
 
@@ -2233,28 +2236,7 @@ const routeRequest = (req, res) => {
   }
 
   if (parts[0] === "api" && parts[1] === "pipeline-presets") {
-    if (req.method === "GET" && parts.length === 2) {
-      return json(res, 200, { presets: pipelinePresets.list() });
-    }
-    let name;
-    try { name = parts.length === 3 ? decodeURIComponent(parts[2]) : null; } catch { name = null; }
-    if (name === null) return json(res, 404, { error: "not found" });
-    if (req.method === "DELETE") {
-      if (!pipelinePresets.remove(name)) return json(res, 404, { error: "no such preset" });
-      slog("info", "preset.delete", { name });
-      return json(res, 200, { deleted: true });
-    }
-    if (req.method === "PUT") {
-      readBody(req, res, (err, body) => {
-        if (err || !body) return json(res, 400, { error: "invalid JSON" });
-        const out = pipelinePresets.put(name, body.pipeline);
-        if (out.error) return json(res, 400, { error: out.error });
-        slog("info", "preset.save", { name: out.preset.name, created: out.created });
-        json(res, out.created ? 201 : 200, { preset: out.preset });
-      });
-      return;
-    }
-    return json(res, 405, { error: "method not allowed" });
+    return json(res, 410, { error: "pipeline presets are replaced by pipelines", use: "/api/pipelines" });
   }
 
   if (req.method === "PUT" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "pipeline"
