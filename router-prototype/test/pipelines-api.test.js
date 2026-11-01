@@ -253,7 +253,9 @@ test("router: user-layer pipeline cannot be changed (403) but can be duplicated"
 
 test("router: path traversal in names never writes outside plugins/pipelines", async () => {
   await withRouter(async ({ call, lines }) => {
-    const before = fs.readdirSync(lines).sort();
+    // The router creates its own registry file shortly after it starts: it is not a write by these calls.
+    const listing = () => fs.readdirSync(lines).filter((n) => n !== "work-coordination.json").sort();
+    const before = listing();
     const names = ["..", "%2E%2E", "..%2Fevil", "%2E%2E%2F%2E%2E%2Fevil", "a%2Fb", "a%5Cb", "%2Fetc%2Fpasswd", "A", "a.b",
       "x".repeat(61), "-a", "a%00b"];
     for (const n of names) {
@@ -268,7 +270,7 @@ test("router: path traversal in names never writes outside plugins/pipelines", a
       assert.equal((await call("POST", "/api/pipelines/default/duplicate", { newName: bad })).status, 400, bad);
     }
     assert.equal((await call("PUT", "/api/pipelines/evil", { text: mine("../evil") })).status, 400);
-    assert.deepEqual(fs.readdirSync(lines).sort(), before);
+    assert.deepEqual(listing(), before);
     assert.equal(fs.existsSync(path.join(path.dirname(lines), "evil.yaml")), false);
     assert.equal(fs.existsSync(path.join(lines, "plugins")), false);
     assert.equal(fs.existsSync(path.join(lines, "evil.yaml")), false);
