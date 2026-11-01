@@ -3,7 +3,7 @@
 const ROUTER_VARIABLES = [
   "line.*", "node.*", "instance.*", "from.*",
   "repo.url", "repo.name", "router.url", "router.workerCap",
-  "source.name", "source.report", "source.id", "report", "outcome",
+  "source.name", "source.report", "source.id", "report", "outcome", "outcome.*",
   "integration.*",
 ];
 

@@ -1,0 +1,19 @@
+name: default
+description: The planner, backend and frontend implementors and validators, and an integration validator.
+start: planner
+
+nodes:
+  planner:       { type: planner }
+  backend-impl:  { type: backend-implementor }
+  frontend-impl: { type: frontend-implementor }
+  backend-val:   { type: backend-validator, checks: [backend-impl] }
+  frontend-val:  { type: frontend-validator, checks: [frontend-impl] }
+  integration:   { type: integration-validator }
+
+edges:
+  - planner -> [backend-impl, frontend-impl]: start, feedback, accept
+  - "[backend-impl, frontend-impl] -> planner: report"
+  - planner -> [backend-val, frontend-val]: start
+  - "[backend-val, frontend-val] -> planner: report"
+  - planner -> integration: start
+  - integration -> planner: report
