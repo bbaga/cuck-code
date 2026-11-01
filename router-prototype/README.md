@@ -638,8 +638,10 @@ event-specific fields; prompt/report text is previewed with a length cap.
 ## Remote pipeline (lines with a repository)
 
 Create a line with a repo URL to work on a real project:
-`POST /api/lines {"name": "...", "repoUrl": "<any git URL>"}` clones the
-repository into the line workdir. The pipeline then extends past validation:
+`POST /api/lines {"name": "...", "repoUrl": "<git URL>"}` clones the
+repository into the line workdir. The router accepts `https://`, `ssh://`,
+and `user@host:path` URLs. Set `ROUTER_ALLOW_LOCAL_REPOS=1` to also accept
+local paths and `file://` URLs. The pipeline then extends past validation:
 
 - Implementors commit in their worktree branch and push it to the remote
   (`git push -u origin HEAD`), reporting the branch name.

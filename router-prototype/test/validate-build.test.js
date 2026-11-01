@@ -10,7 +10,7 @@ const { validateBuild } = require("../scripts/validate-build");
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cuck-build-check-"));
   for (const file of [
-    "server.js", "process-ref.js", "http-guard.js", "harness.js", "pipeline-config.js", "planner-turn.js", "spawn-plan.js",
+    "server.js", "process-ref.js", "http-guard.js", "repo-source.js", "harness.js", "pipeline-config.js", "planner-turn.js", "spawn-plan.js",
     "handoff.js", "jsonl.js", "validation-queue.js", "planner-request.js", "transcript-history.js",
     "web/pipeline-ui.js", "web/worker-scope.js", "web/markdown-renderer.js", "web/registry-ui.js", "web/registry-ui-extra.js", "web/registry-line.js", "web/index.html",
   ]) {
@@ -37,7 +37,7 @@ function withFixture(run) {
 
 test("accepts valid production scripts, inline scripts, and local assets", () => {
   withFixture((root) => {
-    assert.equal(validateBuild(root).length, 20);
+    assert.equal(validateBuild(root).length, 21);
   });
 });
 
