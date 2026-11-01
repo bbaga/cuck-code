@@ -57,6 +57,27 @@ function nodeSettingsFromPipeline(graph, pipeline) {
   return out;
 }
 
+// The node an implementor of this persona runs on: backend-impl or
+// frontend-impl, if the graph has that node with an implementor type.
+function implementorNodeFor(graph, persona) {
+  const id = persona === "frontend" ? "frontend-impl" : "backend-impl";
+  const node = graph && graph.nodes && has(graph.nodes, id) ? graph.nodes[id] : null;
+  return node && phaseOfType(graph, node.type) === "implementor" ? id : null;
+}
+
+// The validator node that checks the given implementor node.
+function validatorNodeFor(graph, implementorNode) {
+  const nodes = (graph && graph.nodes) || {};
+  return Object.keys(nodes).find((id) => phaseOfType(graph, nodes[id].type) === "validator"
+    && Array.isArray(nodes[id].checks) && nodes[id].checks.includes(implementorNode)) || null;
+}
+
+// The node whose type has the integration phase (root type integration-validator).
+function integrationNodeFor(graph) {
+  const nodes = (graph && graph.nodes) || {};
+  return Object.keys(nodes).find((id) => phaseOfType(graph, nodes[id].type) === "integration") || null;
+}
+
 function migrateLine(meta, resolvedDefault) {
   if (meta && meta.graph) return meta;
   const graph = JSON.parse(JSON.stringify(resolvedDefault));
@@ -94,4 +115,5 @@ function loadBuiltinPipeline(name, fs, root) {
   return resolvePipelineDefinition(name, { readFile, types, interactions, pipelines });
 }
 
-module.exports = { PHASE_TYPES, phaseOfType, migrateLine, nodeSettingsFromPipeline, loadBuiltinPipeline };
+module.exports = { PHASE_TYPES, phaseOfType, migrateLine, nodeSettingsFromPipeline,
+  implementorNodeFor, validatorNodeFor, integrationNodeFor, loadBuiltinPipeline };

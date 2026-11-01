@@ -129,3 +129,11 @@ test("a claim stores the remote identity of a registered repo", async () => {
   assert.equal(unknown.status, 400);
   assert.equal(unknown.body.code, "UNKNOWN_REPO");
 });
+
+test("a seeded implementor gets its node after the load and the API shows it", async () => {
+  const list = await call(base, "GET", `/api/protocol/lines/${approvedId}/workers`);
+  assert.equal(list.status, 200);
+  assert.equal(list.body.workers.find((w) => w.id === "i1").node, "backend-impl");
+  const legacy = await call(base, "GET", "/api/protocol/lines/legacy-line/workers");
+  assert.equal(legacy.body.workers.find((w) => w.id === "w1").node, "backend-impl");
+});

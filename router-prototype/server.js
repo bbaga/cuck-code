@@ -20,7 +20,8 @@ const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   plannerSettings, workerSettings,
   validateWorkerSpawnBody, implementorBranchName, lineSummary } = require("./spawn-plan");
-const { loadBuiltinPipeline, migrateLine, nodeSettingsFromPipeline } = require("./line-graph");
+const { loadBuiltinPipeline, migrateLine, nodeSettingsFromPipeline,
+  implementorNodeFor, validatorNodeFor, integrationNodeFor } = require("./line-graph");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
 const { StderrCapture, describeFailure } = require("./run-failure");
 const { messageText, InvocationCapture, appendTranscript, hasCriteria,
@@ -1055,6 +1056,7 @@ function dashboardStateForLine(line) {
     ...compactionFields(line),
     workers: [...line.workers.values()].map((w) => ({
       id: w.id, name: w.name, ...completionFields(w), branch: w.branch, role: w.role,
+      node: w.node || null,
       validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
       ...changesetFields(w), lastError: w.lastError || null,
       attention: w.attention === true, needsAttention: w.needsAttention === true,
@@ -1770,11 +1772,19 @@ function spawnValidator(line, source, criteria, report) {
   while ([...line.workers.values()].some((w) => w.name === name)) {
     name = `validator-${implWorker.name}-${n++}`;
   }
+  const valNode = validatorNodeFor(line.graph, implWorker.node);
+  if (!valNode) {
+    slog("warn", "validator.not-spawned", { lineId: line.id, implementorId: implWorker.id,
+      reason: "no-validator-node", node: implWorker.node || null });
+    enqueue(line, `VALIDATION NOT STARTED - pipeline has no node for the validator of implementor '${implWorker.name}'. No validator was started.`);
+    return;
+  }
   const id = crypto.randomUUID();
   const repo = resolveRepo(line, implWorker.repo);
   const repoName = repo ? repo.name : implWorker.repo || null;
   const repoUrl = repo ? repo.url : null;
   const worker = { id, lineId: line.id, name,
+    node: valNode,
     role: "validator", validates: implWorker.id, persona: implWorker.persona || "backend",
     validationSource: source, validationCriteria: criteria,
     kind: "standard", repo: repoName,
@@ -2340,7 +2350,7 @@ const routeRequest = (req, res) => {
     if (req.method === "GET") {
       return json(res, 200, { workers: [...line.workers.values()].map((w) => ({
         id: w.id, name: w.name, ...completionFields(w), sessionId: w.sessionId, branch: w.branch,
-        role: w.role, validates: w.validates, persona: w.persona || "backend",
+        role: w.role, node: w.node || null, validates: w.validates, persona: w.persona || "backend",
         kind: w.kind || "standard", humanIntervention: w.humanIntervention === true,
         ...changesetFields(w), ...baseFields(w),
         lastError: w.lastError || null,
@@ -2365,6 +2375,8 @@ const routeRequest = (req, res) => {
       if (!PERSONAS.includes(persona)) {
         return json(res, 400, { error: `persona must be one of: ${PERSONAS.join(", ")}` });
       }
+      const implNode = implementorNodeFor(line.graph, persona);
+      if (!implNode) return json(res, 500, { error: `pipeline has no node for ${persona} implementor` });
       if (typeof body.repo !== "string" || !body.repo) {
         const names = [...(line.repos || new Map()).keys()];
         return json(res, 400, { error: `repo is required: name one of the registered repos (${names.length ? names.join(", ") : "none - register one with POST /api/protocol/lines/" + line.id + "/repos"})` });
@@ -2413,7 +2425,7 @@ const routeRequest = (req, res) => {
         return json(res, 500, { error: "worktree HEAD does not match the resolved base", expected: baseResolved.sha, actual: baseCommit });
       }
       const base = baseResolved ? body.base : null;
-      const worker = { id, lineId: line.id, name: body.name,
+      const worker = { id, lineId: line.id, name: body.name, node: implNode,
         role: "implementor", validates: null, persona, kind: "standard", repo: repo.name,
         trackerTicket: body.trackerTicket || null,
         runGeneration: 1,
@@ -2601,6 +2613,8 @@ const routeRequest = (req, res) => {
       // The body arrives later than the first examination. Examine again
       // here: this callback is synchronous until line.workers.set.
       if (line.deleted || lines.get(line.id) !== line) return json(res, 404, { error: "no such line" });
+      const integrationNode = integrationNodeFor(line.graph);
+      if (!integrationNode) return json(res, 500, { error: "pipeline has no node for integration validator" });
       if (runningCount(line) >= WORKER_CAP) {
         return json(res, 409, { error: `cap reached: ${WORKER_CAP} workers/validators are running concurrently - wait for completions first` });
       }
@@ -2635,7 +2649,7 @@ const routeRequest = (req, res) => {
         return json(res, 500, { error: prepared.error, stderr: prepared.stderr });
       }
       const manifest = prepared.repos;
-      const worker = { id, lineId: line.id, name, kind: "integration",
+      const worker = { id, lineId: line.id, name, kind: "integration", node: integrationNode,
         role: "validator", validates: null, persona: "backend", repo: null,
         integration: { startedAt: new Date().toISOString(), repos: manifest },
         prompt: integrationValidatorBrief(line, manifest, body.prompt, id, branch),
