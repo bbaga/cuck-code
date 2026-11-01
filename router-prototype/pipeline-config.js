@@ -171,7 +171,9 @@ function resolveNodeSettings(line, nodeId, env) {
   if (!node) throw new Error(`no such node '${nodeId}'`);
   const phase = phaseOfType(graph, node.type);
   if (!phase) throw new Error(`node '${nodeId}' has a type without a phase`);
-  const legacy = line.pipeline && line.pipeline[phase] ? line.pipeline[phase] : {};
+  // line.nodeSettings is the stored truth. The phase overrides apply only to a
+  // line that has no node settings (line.pipeline is then the only record).
+  const legacy = !line.nodeSettings && line.pipeline && line.pipeline[phase] ? line.pipeline[phase] : {};
   const own = line.nodeSettings && line.nodeSettings[nodeId] ? line.nodeSettings[nodeId] : {};
   const merged = { ...(node.settings || {}), ...legacy, ...own };
   const resumes = nodeResumes(graph, nodeId);

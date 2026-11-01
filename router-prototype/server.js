@@ -14,14 +14,15 @@ process.env.GCM_INTERACTIVE = "Never";
 let spawnProcess = spawn;
 let lifecycleTestHooks = null;
 let timerApi = { setTimeout, clearTimeout };
-const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
+const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig, validateNodeSettingsForNode,
   resolvePipeline, probeResultFor, piProviderDetail,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   plannerSettings, workerSettings,
   validateWorkerSpawnBody, implementorBranchName, lineSummary,
   systemPromptOptions, briefForHarness, usesSystemChannel } = require("./spawn-plan");
-const { loadBuiltinPipeline, migrateLine, nodeSettingsFromPipeline,
+const { loadBuiltinPipeline, migrateLine, nodeSettingsFromPipeline, pipelineFromNodeSettings,
+  nodeSettingsFields, builtinPipelineNames,
   implementorNodeFor, validatorNodeFor, integrationNodeFor } = require("./line-graph");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
 const { StderrCapture, describeFailure } = require("./run-failure");
@@ -1085,6 +1086,7 @@ function dashboardStateForLine(line) {
     error: line.error === true, lastError: line.lastError || null,
     sessionId: line.sessionId, started: line.started,
     pipeline: resolvePipeline(line), pipelineOverrides: line.pipeline || null,
+    ...nodeSettingsFields(line),
     transcript: line.transcript.slice(-50),
     queuedUserPrompts: queuedUserPromptProjection(line.queue),
     activePlannerRunId: line.runId || null,
@@ -1129,6 +1131,45 @@ function transitionPlannerStatus(line, status, detail = null, { broadcastState =
 
 // The built-in default pipeline, resolved one time at boot. Built-in files only.
 const DEFAULT_PIPELINE = loadBuiltinPipeline("default", fs, __dirname);
+
+// Settings from a request body, in either shape, for a graph. Returns
+// { error } or { nodeSettings, pipeline, harnesses }. nodeSettings is the stored
+// truth; pipeline is the legacy per-phase mirror (as given for the old shape,
+// derived from the first node of each phase for the new one).
+function settingsFromBody(graph, body) {
+  const hasNodes = body.nodeSettings !== undefined && body.nodeSettings !== null;
+  const hasPhases = body.pipeline !== undefined && body.pipeline !== null;
+  if (hasNodes && hasPhases) return { error: "send either nodeSettings or pipeline, not both" };
+  if (hasNodes) {
+    const raw = body.nodeSettings;
+    if (typeof raw !== "object" || Array.isArray(raw)) return { error: "nodeSettings must be an object" };
+    const nodeSettings = {};
+    for (const [id, settings] of Object.entries(raw)) {
+      if (!graph || !Object.prototype.hasOwnProperty.call(graph.nodes, id)) {
+        return { error: `nodeSettings: no such node '${id}'` };
+      }
+      if (settings === null || typeof settings !== "object" || Array.isArray(settings)) {
+        return { error: `nodeSettings.${id} must be an object` };
+      }
+      const message = validateNodeSettingsForNode(graph, id, settings);
+      if (message) return { error: message };
+      nodeSettings[id] = { ...settings };
+    }
+    return { nodeSettings, pipeline: pipelineFromNodeSettings(graph, nodeSettings),
+      harnesses: Object.values(nodeSettings).map((s) => s.harness).filter(Boolean) };
+  }
+  const message = validatePipelineConfig(body.pipeline);
+  if (message) return { error: message };
+  const pipeline = body.pipeline && Object.keys(body.pipeline).length ? body.pipeline : null;
+  return { pipeline, nodeSettings: graph ? nodeSettingsFromPipeline(graph, pipeline) : {},
+    harnesses: PHASES.map((p) => pipeline && pipeline[p] && pipeline[p].harness).filter(Boolean) };
+}
+
+const BUILTIN_PIPELINES = new Map();
+function builtinPipeline(name) {
+  if (!BUILTIN_PIPELINES.has(name)) BUILTIN_PIPELINES.set(name, loadBuiltinPipeline(name, fs, __dirname));
+  return BUILTIN_PIPELINES.get(name);
+}
 
 function saveLine(line) {
   if (lifecycleTestHooks && lifecycleTestHooks.save) lifecycleTestHooks.save(line);
@@ -2082,11 +2123,10 @@ const routeRequest = (req, res) => {
     if (!line) return json(res, 404, { error: "no such line" });
     readBody(req, res, async (err, body) => {
       if (err || !body) return json(res, 400, { error: "invalid JSON" });
-      const pipeline = body.pipeline && Object.keys(body.pipeline).length ? body.pipeline : null;
-      const pipelineError = validatePipelineConfig(pipeline);
-      if (pipelineError) return json(res, 400, { error: pipelineError });
-      const wanted = new Set(PHASES.map((p) => pipeline && pipeline[p] && pipeline[p].harness).filter(Boolean));
-      if (!await gateHarnesses([...wanted], res)) return;
+      const parsed = settingsFromBody(line.graph, body);
+      if (parsed.error) return json(res, 400, { error: parsed.error });
+      const { pipeline, nodeSettings } = parsed;
+      if (!await gateHarnesses([...new Set(parsed.harnesses)], res)) return;
       if (line.deleted) return json(res, 404, { error: "no such line" });
       // Lines restored from before session config tracking: the current
       // session belongs to the harness configured until now.
@@ -2097,9 +2137,8 @@ const routeRequest = (req, res) => {
         line.sessionCfg = { harness: before.harness, model: before.model, effort: before.effort,
           timeLimit: before.timeLimit };
       }
+      line.nodeSettings = nodeSettings;
       line.pipeline = pipeline;
-      // Keep the node settings in step with the phase settings (B6 replaces this).
-      if (line.graph) line.nodeSettings = nodeSettingsFromPipeline(line.graph, pipeline);
       if (!saveLine(line)) {
         line.pipeline = previous.pipeline;
         line.nodeSettings = previous.nodeSettings;
@@ -2108,14 +2147,16 @@ const routeRequest = (req, res) => {
       }
       const resolved = resolvePipeline(line);
       slog("info", "line.pipeline.update", { lineId: line.id, pipeline });
-      broadcast(line, "pipeline", { pipeline: resolved, overrides: line.pipeline || null });
+      broadcast(line, "pipeline", { pipeline: resolved, overrides: line.pipeline || null,
+        ...nodeSettingsFields(line) });
       broadcastContext(line, "planner", line);
       for (const w of line.workers.values()) {
         if (w.role === "implementor") broadcastContext(line, w.id, w);
       }
       // A harness switch is handled before the next planner run.
       pump(line);
-      json(res, 200, { pipeline: resolved, overrides: line.pipeline || null });
+      json(res, 200, { pipeline: resolved, overrides: line.pipeline || null,
+        ...nodeSettingsFields(line) });
     });
     return;
   }
@@ -2124,17 +2165,17 @@ const routeRequest = (req, res) => {
     readBody(req, res, async (err, body) => {
       body = body || {};
       if (err) return json(res, 400, { error: "invalid JSON" });
-      const pipelineError = validatePipelineConfig(body.pipeline);
-      if (pipelineError) return json(res, 400, { error: pipelineError });
-      const wantedHarnesses = new Set();
-      if (body.pipeline) {
-        for (const phase of PHASES) {
-          if (body.pipeline[phase] && body.pipeline[phase].harness) {
-            wantedHarnesses.add(body.pipeline[phase].harness);
-          }
-        }
+      const pipelineName = body.pipelineName === undefined ? "default" : body.pipelineName;
+      const known = builtinPipelineNames(fs, __dirname);
+      if (typeof pipelineName !== "string" || !known.includes(pipelineName)) {
+        return json(res, 400, { error: `unknown pipeline '${pipelineName}' (known: ${known.join(", ")})` });
       }
-      if (!await gateHarnesses([...wantedHarnesses], res)) return;
+      let graph;
+      try { graph = builtinPipeline(pipelineName); }
+      catch (e) { return json(res, 500, { error: `could not load pipeline '${pipelineName}': ${e.message}` }); }
+      const parsed = settingsFromBody(graph, body);
+      if (parsed.error) return json(res, 400, { error: parsed.error });
+      if (!await gateHarnesses([...new Set(parsed.harnesses)], res)) return;
       const name = typeof body.name === "string" && body.name.trim()
         ? body.name.trim()
         : `Draft line ${[...lines.values()].filter((l) => /^Draft line/.test(l.name)).length + 1}`;
@@ -2171,8 +2212,8 @@ const routeRequest = (req, res) => {
         workdir, status: "standby",
         started: false, planApproved: false, workers: new Map(),
         repos: draft.repos,
-        pipeline: body.pipeline || null,
-        graph: JSON.parse(JSON.stringify(DEFAULT_PIPELINE)), nodeSettings: {},
+        pipeline: parsed.pipeline,
+        graph: JSON.parse(JSON.stringify(graph)), nodeSettings: parsed.nodeSettings,
         inventory: new Map(),
         queue: [], activePlannerRequest: null, activePlannerRun: null, runId: null,
         stopPlannerRun, clients: new Set(), transcript: [] };

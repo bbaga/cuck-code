@@ -57,6 +57,45 @@ function nodeSettingsFromPipeline(graph, pipeline) {
   return out;
 }
 
+// The old per-phase mirror of node settings: for each phase, the settings of
+// the first node of that phase (in graph order) that has any. Null if none.
+function pipelineFromNodeSettings(graph, nodeSettings) {
+  const out = {};
+  for (const [id, node] of Object.entries(graph.nodes)) {
+    const phase = phaseOfType(graph, node.type);
+    if (phase && !has(out, phase) && has(nodeSettings, id)) out[phase] = { ...nodeSettings[id] };
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+// The graph as the API shows it: name, start, nodes with type and phase, edges.
+function graphView(graph) {
+  if (!graph) return null;
+  const nodes = {};
+  for (const [id, node] of Object.entries(graph.nodes || {})) {
+    nodes[id] = { type: node.type, phase: phaseOfType(graph, node.type) };
+  }
+  return { name: graph.name, start: graph.start, nodes,
+    edges: JSON.parse(JSON.stringify(graph.edges || [])) };
+}
+
+// The node fields of an API response: graph, stored node settings and the
+// effective settings per node.
+function nodeSettingsFields(line, env) {
+  const { resolveNodeSettings } = require("./pipeline-config");
+  if (!line.graph) return {};
+  const effective = {};
+  for (const id of Object.keys(line.graph.nodes)) effective[id] = resolveNodeSettings(line, id, env);
+  return { graph: graphView(line.graph), nodeSettings: line.nodeSettings || {},
+    effectiveNodeSettings: effective };
+}
+
+// Names of the built-in pipeline files.
+function builtinPipelineNames(fs, root) {
+  return fs.readdirSync(path.join(root, "pipelines"), { withFileTypes: true })
+    .map((e) => /^(.+)\.yaml$/.exec(e.name)).filter(Boolean).map((m) => m[1]).sort();
+}
+
 // The node an implementor of this persona runs on: backend-impl or
 // frontend-impl, if the graph has that node with an implementor type.
 function implementorNodeFor(graph, persona) {
@@ -116,4 +155,5 @@ function loadBuiltinPipeline(name, fs, root) {
 }
 
 module.exports = { PHASE_TYPES, phaseOfType, migrateLine, nodeSettingsFromPipeline,
+  pipelineFromNodeSettings, graphView, nodeSettingsFields, builtinPipelineNames,
   implementorNodeFor, validatorNodeFor, integrationNodeFor, loadBuiltinPipeline };

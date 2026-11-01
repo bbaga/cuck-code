@@ -6,6 +6,7 @@
 
 const { createHarness, trustedSystemChannel, writeSystemPromptFile } = require("./harness");
 const { resolvePipeline, resolveNodeSettings, defaultModelFor, EFFORT_LEVELS } = require("./pipeline-config");
+const { nodeSettingsFields } = require("./line-graph");
 
 // Which pipeline phase a worker run belongs to.
 function phaseForWorker(role, kind) {
@@ -154,6 +155,7 @@ function lineSummary(line) {
     // The line's own settings, without defaults: what the pipeline editor
     // shows and saves.
     pipelineOverrides: line.pipeline || null,
+    ...nodeSettingsFields(line),
   };
 }
 
