@@ -839,7 +839,11 @@ The planner talks to its pipeline through interactions. The old routes
   `to`. The `start` interaction answers 201 `{instance: {...}}`; `feedback`
   answers 202 `{queued, compacting}`. 404 for an unknown line, interaction,
   node or instance; 403 `NO_EDGE` when the pipeline has no edge from the
-  planner to that node for that interaction; 409 before plan approval.
+  planner to that node for that interaction; 409 before plan approval, at the
+  worker cap, and (for a validator) with `code: "CHANGESET_LIMIT"` when the
+  router measures the change set of the implementor again right before the
+  start and the work cannot enter validation (over the limit, binary, dirty or
+  untracked work). The planner then sends `feedback` to the implementor.
 - `GET /api/protocol/lines/:id/interactions` — what the planner may do, with
   the field list of every call.
 - A call with missing, invalid or unexpected fields answers 400:
@@ -999,9 +1003,10 @@ loop). Only the integration validator runs integration tests locally.
 The cap of 8 counts concurrently RUNNING implementors and validators
 together — never finished, stopped, or failed workers, which stay in
 the line's history (implementors are only removed explicitly). The
-planner-driven spawns (workers, integration validator) get a 409 at the cap
-and the planner brief tells the planner to wait for completions and retry.
-The router no longer keeps a queue of deferred validations. Run generations
+planner-driven starts (implementors, validators and the integration
+validator) get a 409 at the cap (`code: "WORKER_CAP"` on a validator start), and
+the planner prompt tells the planner to wait for completions and retry. The
+router keeps no queue of deferred validations. Run generations
 persist in `line.json`; a continuation advances the generation of its
 implementor.
 

@@ -24,6 +24,8 @@ const ok = "ia-ok";
 const pending = "ia-pending";
 const fbLine = "ia-feedback";
 const accLine = "ia-accept";
+const csLine = "ia-changeset";
+const capLine = "ia-cap";
 const post = (line, name, body) => call(base, "POST", `/api/protocol/lines/${line}/interactions/${name}`, body);
 
 function seedLine(linesDir, id, planApproved, extra = {}) {
@@ -31,15 +33,24 @@ function seedLine(linesDir, id, planApproved, extra = {}) {
   fs.mkdirSync(lineDir);
   const clone = path.join(lineDir, "repos", "api");
   execFileSync("git", ["clone", "-q", src, clone]);
+  // The router measures the change set of an implementor before it starts a validator, so the
+  // seeded implementors need a real git worktree and a base commit.
+  const base = git(src, "rev-parse", "HEAD");
   const worker = (wid, name, node) => ({ id: wid, name, node,
     persona: node === "frontend-impl" ? "frontend" : "backend", role: "implementor", status: "completed",
     repo: "api", branch: `b/${name}`, runGeneration: 1, lastCompletedInvocationId: `inv-${wid}`,
-    lastRunText: `report of ${name}`,
+    lastRunText: `report of ${name}`, baseCommit: base,
     worktreePath: path.join(linesDir, "worktrees", id, "api", name), ...(extra[wid] || {}) });
+  const workers = [worker("i1", "impl", "backend-impl"), worker("f1", "front", "frontend-impl")];
+  for (const w of workers) {
+    if (w.worktreePath.startsWith(path.join(linesDir, "worktrees"))) {
+      fs.mkdirSync(path.dirname(w.worktreePath), { recursive: true });
+      git(clone, "worktree", "add", "-q", "--detach", w.worktreePath);
+    }
+  }
   fs.writeFileSync(path.join(lineDir, "line.json"), JSON.stringify({
     id, name: id, layout: 2, started: true, planApproved,
-    repos: [{ name: "api", url: src, path: clone }],
-    workers: [worker("i1", "impl", "backend-impl"), worker("f1", "front", "frontend-impl")] }));
+    repos: [{ name: "api", url: src, path: clone }], workers }));
 }
 
 test.before(async () => {
@@ -54,6 +65,10 @@ test.before(async () => {
   git(src, "commit", "-qm", "init");
   seedLine(linesDir, ok, true);
   seedLine(linesDir, pending, false);
+  seedLine(linesDir, csLine, true);
+  // Untracked work in the worktree cannot enter validation.
+  fs.writeFileSync(path.join(linesDir, "worktrees", csLine, "api", "impl", "untracked.txt"), "work in progress\n");
+  seedLine(linesDir, capLine, true);
   git(src, "branch", "b/impl");
   git(src, "branch", "b/front");
   // Lines with idle instances that have a session (the fake agent logs its arguments).
@@ -279,4 +294,29 @@ test("C3: a commit field is checked against the repo of the call", async () => {
     commitExists: (repo, c) => spawnSync("git", ["-C", src, "cat-file", "-e", `${c}^{commit}`]).status === 0 };
   assert.deepEqual(checkLineValues(line, required, { repo: "api", rev: sha }), []);
   assert.equal(checkLineValues(line, required, { repo: "api", rev: "c".repeat(40) }).length, 1);
+});
+
+// The router checks two things right before it starts a validator: the change set of the implementor
+// and the worker cap. A validator never waits in a queue: the planner gets 409 and calls start again.
+test("a validator is refused when the change set of its implementor cannot enter validation", async () => {
+  const out = await post(csLine, "start", { to: "backend-val", criteria: "1. It works.", source: "i1" });
+  assert.equal(out.status, 409, JSON.stringify(out.body));
+  assert.equal(out.body.code, "CHANGESET_LIMIT");
+  assert.match(out.body.error, /cannot enter validation/);
+  assert.match(out.body.error, /feedback/);
+  const list = await call(base, "GET", `/api/protocol/lines/${csLine}/workers`);
+  assert.equal(list.body.workers.filter((w) => w.role === "validator").length, 0, "no validator was created");
+});
+
+test("a validator is refused at the worker cap and no validator is created", async () => {
+  for (let i = 1; i <= 8; i++) {
+    const r = await post(capLine, "start", { to: "backend-impl", task: `task ${i}`, repo: "api", name: `busy-${i}` });
+    assert.equal(r.status, 201, `${i}: ${JSON.stringify(r.body)}`);
+  }
+  const out = await post(capLine, "start", { to: "backend-val", criteria: "1. It works.", source: "i1" });
+  assert.equal(out.status, 409, JSON.stringify(out.body));
+  assert.equal(out.body.code, "WORKER_CAP");
+  assert.match(out.body.error, /cap reached: 8/);
+  const list = await call(base, "GET", `/api/protocol/lines/${capLine}/workers`);
+  assert.equal(list.body.workers.filter((w) => w.role === "validator").length, 0);
 });

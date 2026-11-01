@@ -1651,6 +1651,26 @@ function createSourceChecker(line, nodeId, sourceInstance, fields) {
   const fail = (status, error, extra) => ({ ok: false, status, error, ...extra });
   const implWorker = sourceInstance;
   const { source, criteria, report } = fields;
+  // The cap counts running workers and validators together. A validator never waits in a queue:
+  // the planner gets 409 and calls start again when a slot frees.
+  if (runningCount(line) >= WORKER_CAP) {
+    return fail(409, `cap reached: ${WORKER_CAP} workers/validators are running concurrently - wait for completions first`, { code: "WORKER_CAP" });
+  }
+  // Stale-state defense: measure the change set again immediately before the validator is created.
+  // The work can have changed since the run ended, and work over the limit must not enter validation.
+  if (implWorker.role === "implementor") {
+    const cs = collectChangeset(implWorker.worktreePath, implWorker.baseCommit);
+    implWorker.changeset = cs;
+    if (!cs.ok) {
+      saveLine(line);
+      slog("warn", "changeset.exceeded-at-validation", { lineId: line.id,
+        workerId: implWorker.id, reason: cs.reason, total: cs.total, limit: cs.limit });
+      return fail(409, `the change set of implementor '${implWorker.name}' (${implWorker.id}) cannot enter validation `
+        + `(reason: ${cs.reason}; additions ${cs.additions}, deletions ${cs.deletions}, total ${cs.total}, limit ${cs.limit}`
+        + `${cs.error ? `; error: ${cs.error}` : ""}). Send feedback to the implementor to bring the change set within the limit.`,
+        { code: "CHANGESET_LIMIT", reason: cs.reason, total: cs.total, limit: cs.limit });
+    }
+  }
   let name = `validator-${implWorker.name}`;
   let n = 2;
   while ([...line.workers.values()].some((w) => w.name === name)) {
