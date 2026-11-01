@@ -21,6 +21,8 @@ const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   plannerSettings, workerSettings,
   validateWorkerSpawnBody, implementorBranchName, lineSummary,
   systemPromptOptions, briefForHarness, usesSystemChannel } = require("./spawn-plan");
+const { buildCatalog, defaultReadDir, defaultReadFile } = require("./plugin-catalog");
+const { resolvePipelineDefinition, PipelineError } = require("./resolve-pipeline");
 const { loadBuiltinPipeline, migrateLine, nodeSettingsFromPipeline, pipelineFromNodeSettings,
   nodeSettingsFields, builtinPipelineNames,
   implementorNodeFor, validatorNodeFor, integrationNodeFor } = require("./line-graph");
@@ -929,6 +931,21 @@ function transitionPlannerStatus(line, status, detail = null, { broadcastState =
 // The built-in default pipeline, resolved one time at boot. Built-in files only.
 const DEFAULT_PIPELINE = loadBuiltinPipeline("default", fs, __dirname);
 
+// The plugin catalog: managed, user and built-in layers. rebuildCatalog() runs at
+// boot and after each write to the managed layer; it also clears the graph cache.
+const MANAGED_PLUGINS_DIR = path.join(LINES_DIR, "plugins");
+const USER_PLUGINS_DIR = process.env.CUCK_HOME || path.join(os.homedir(), ".cuck");
+let CATALOG = null;
+const CATALOG_GRAPHS = new Map();
+function rebuildCatalog() {
+  CATALOG = buildCatalog({ managedDir: MANAGED_PLUGINS_DIR, userDir: USER_PLUGINS_DIR,
+    builtInDir: __dirname, readDir: defaultReadDir, readFile: defaultReadFile });
+  CATALOG_GRAPHS.clear();
+  return CATALOG;
+}
+rebuildCatalog();
+for (const p of CATALOG.problems) slog("warn", "catalog.problem", { layer: p.layer, path: p.path, errors: p.errors });
+
 // Settings from a request body, in either shape, for a graph. Returns
 // { error } or { nodeSettings, pipeline, harnesses }. nodeSettings is the stored
 // truth; pipeline is the legacy per-phase mirror (as given for the old shape,
@@ -962,10 +979,10 @@ function settingsFromBody(graph, body) {
     harnesses: PHASES.map((p) => pipeline && pipeline[p] && pipeline[p].harness).filter(Boolean) };
 }
 
-const BUILTIN_PIPELINES = new Map();
-function builtinPipeline(name) {
-  if (!BUILTIN_PIPELINES.has(name)) BUILTIN_PIPELINES.set(name, loadBuiltinPipeline(name, fs, __dirname));
-  return BUILTIN_PIPELINES.get(name);
+// The resolved graph of a catalog pipeline (cached per name). Throws PipelineError.
+function catalogPipeline(name) {
+  if (!CATALOG_GRAPHS.has(name)) CATALOG_GRAPHS.set(name, resolvePipelineDefinition(name, CATALOG));
+  return CATALOG_GRAPHS.get(name);
 }
 
 function saveLine(line) {
@@ -2289,13 +2306,16 @@ const routeRequest = (req, res) => {
       body = body || {};
       if (err) return json(res, 400, { error: "invalid JSON" });
       const pipelineName = body.pipelineName === undefined ? "default" : body.pipelineName;
-      const known = builtinPipelineNames(fs, __dirname);
+      const known = Object.keys(CATALOG.pipelines).sort();
       if (typeof pipelineName !== "string" || !known.includes(pipelineName)) {
         return json(res, 400, { error: `unknown pipeline '${pipelineName}' (known: ${known.join(", ")})` });
       }
       let graph;
-      try { graph = builtinPipeline(pipelineName); }
-      catch (e) { return json(res, 500, { error: `could not load pipeline '${pipelineName}': ${e.message}` }); }
+      try { graph = catalogPipeline(pipelineName); }
+      catch (e) {
+        if (e instanceof PipelineError) return json(res, 400, { error: e.message, rules: e.errors });
+        return json(res, 500, { error: `could not load pipeline '${pipelineName}': ${e.message}` });
+      }
       const parsed = settingsFromBody(graph, body);
       if (parsed.error) return json(res, 400, { error: parsed.error });
       if (!await gateHarnesses([...new Set(parsed.harnesses)], res)) return;
