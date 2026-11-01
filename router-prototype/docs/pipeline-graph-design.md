@@ -1,6 +1,6 @@
 # Pipeline graphs, node types and interactions (design proposal)
 
-Status: Implemented except the web UI (tasks D4 to D6).
+Status: Implemented. The cleanup of the old code (task D9) comes in a later release.
 
 ## Goal
 

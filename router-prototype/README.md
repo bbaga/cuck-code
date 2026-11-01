@@ -146,12 +146,12 @@ message it delivers. The built-in files live in `router-prototype/pipelines/`,
 `node-types/` and `interactions/`. The design is in
 `docs/pipeline-graph-design.md`.
 
-**Status.** The router, the files, the plugin layers, the strict calls and the
-pipelines HTTP API are built. The web UI is not: the create-panel pipeline
-picker, the Pipeline tab with the graph view and the `/pipelines` page (tasks D4
-to D6) do not exist yet. The web UI still shows the four per-phase rows, and it
-sends the old per-phase `pipeline` shape (the router still accepts it).
-Pipelines are managed today through the HTTP API below or by files on disk.
+**Status.** The router, the files, the plugin layers, the strict calls, the
+pipelines HTTP API and the web UI are built. In the web UI, the create panel has
+a pipeline picker and one settings row per node, the Pipeline tab of a line
+shows the graph and the settings of each node, and the `/pipelines` page lists,
+edits and checks pipelines. The old per-phase `pipeline` request shape and the
+old routes still work for one release (see "Pipeline settings").
 
 ### Concepts
 
@@ -639,8 +639,8 @@ These routes read and write pipeline files. Only the managed layer
 (`<LINES_DIR>/plugins/pipelines/<name>.yaml`) can be changed. Built-in and user
 pipelines are read-only: duplicate one to edit it. A pipeline name follows the
 rules above. A running line keeps its own resolved copy, so changing or
-deleting a file never changes a running line. The web UI for these routes (the
-`/pipelines` page) is not built yet (task D6).
+deleting a file never changes a running line. The web UI for these routes is
+the `/pipelines` page (a "Pipelines" button in the sidebar of the dashboard).
 
 | Route | Answer |
 |---|---|
@@ -688,8 +688,8 @@ applies to every node of its phase.
   the first node of each phase.
 - Presets (named settings in `pipeline-presets.json`) no longer exist; they
   became pipeline files (see "Presets are now pipelines").
-- The web UI still shows the per-phase rows and the Pipeline tab of the old
-  design. It does not show nodes or the graph yet (see the Status note above).
+- The web UI sends `pipelineName` and `nodeSettings` (create panel and Pipeline
+  tab). Only scripts and older clients use the per-phase `pipeline` shape.
 
 ## Context compaction
 
