@@ -15,7 +15,11 @@ node server.js
 Then open http://localhost:7788. The dashboard uses one tagged SSE stream at
 `GET /api/events` per browser tab; the legacy per-line stream endpoint remains
 available for compatibility. Configuration via env: `PORT` (default 7788),
-`LINES_DIR` (default `./lines`), `IMPLEMENTOR_MODEL` (default `glm-5-3-flash`,
+`ROUTER_HOST` (the address the router listens on; default `127.0.0.1`; any
+other value lets other computers send commands to the router, which has no
+authentication), `ROUTER_ALLOWED_HOSTS` (comma-separated extra host names
+accepted in the `Host` header; default empty; use only together with
+`ROUTER_HOST`), `LINES_DIR` (default `./lines`), `IMPLEMENTOR_MODEL` (default `glm-5-3-flash`,
 the fast model) and `VALIDATOR_MODEL` (default `glm-5-3`, the full-effort
 model). Git commands run non-interactively (`GIT_TERMINAL_PROMPT=0` and
 `GCM_INTERACTIVE=Never`, inherited by workers). Configure repository credentials

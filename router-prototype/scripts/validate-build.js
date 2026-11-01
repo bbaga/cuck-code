@@ -7,6 +7,7 @@ const vm = require("node:vm");
 const ROOT = path.resolve(__dirname, "..");
 const PRODUCTION_SCRIPTS = [
   "server.js",
+  "http-guard.js",
   "harness.js",
   "pipeline-config.js",
   "planner-turn.js",
