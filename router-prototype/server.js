@@ -19,6 +19,7 @@ const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   validateWorkerSpawnBody, implementorBranchName, lineSummary } = require("./spawn-plan");
+const { loadBuiltinPipeline, migrateLine } = require("./line-graph");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
 const { StderrCapture, describeFailure } = require("./run-failure");
 const { messageText, InvocationCapture, appendTranscript, hasCriteria,
@@ -1088,6 +1089,9 @@ function transitionPlannerStatus(line, status, detail = null, { broadcastState =
   }
 }
 
+// The built-in default pipeline, resolved one time at boot. Built-in files only.
+const DEFAULT_PIPELINE = loadBuiltinPipeline("default", fs, __dirname);
+
 function saveLine(line) {
   if (lifecycleTestHooks && lifecycleTestHooks.save) lifecycleTestHooks.save(line);
   if (line.deleted) return false;
@@ -1098,6 +1102,8 @@ function saveLine(line) {
         sessionCfg: line.sessionCfg || null,
         layout: 2,
         pipeline: line.pipeline || null,
+        graph: line.graph || null,
+        nodeSettings: line.nodeSettings || {},
         pendingValidations: serializePendingValidations(line.pendingValidations),
         plannerQueue: serializePlannerRequests(line.queue),
         knownNoticeIds: restoreKnownNoticeIds(line.knownNoticeIds),
@@ -1131,6 +1137,7 @@ function saveLine(line) {
           role: w.role, validates: w.validates, persona: w.persona || "backend",
           repo: w.repo || null, worktreePath: w.worktreePath,
           validationSkipped: w.validationSkipped || null,
+          node: w.node || null, acceptedRuns: w.acceptedRuns || [],
           integration: w.integration || null,
           ...changesetFields(w), ...baseFields(w),
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
@@ -2066,6 +2073,7 @@ const routeRequest = (req, res) => {
         started: false, planApproved: false, workers: new Map(),
         repos: draft.repos,
         pipeline: body.pipeline || null,
+        graph: JSON.parse(JSON.stringify(DEFAULT_PIPELINE)), nodeSettings: {},
         inventory: new Map(),
         queue: [], activePlannerRequest: null, activePlannerRun: null, runId: null,
         stopPlannerRun, clients: new Set(), transcript: [] };
@@ -3037,7 +3045,7 @@ function loadLines() {
       continue;
     }
     try {
-      const meta = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+      const meta = migrateLine(JSON.parse(fs.readFileSync(metadataPath, "utf8")), DEFAULT_PIPELINE);
       // Lines saved with an implicit "primary" repo adopt their workdir clone in place.
       const migration = adoptLegacyWorkdir(meta, path.join(LINES_DIR, entry.name));
       if (migration.adopted) {
@@ -3058,6 +3066,7 @@ function loadLines() {
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           repo: workerRepo(w),
           validationSkipped: w.validationSkipped || null,
+          node: w.node || null, acceptedRuns: Array.isArray(w.acceptedRuns) ? w.acceptedRuns : [],
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
           lastError: w.lastError || null,
           sessionId: w.sessionId,
@@ -3077,7 +3086,7 @@ function loadLines() {
         const impl = workers.get(w.validates);
         if (!impl && w.kind !== "integration") continue;
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
-          role: "validator", validates: w.validates, prompt: w.kind === "integration" && typeof w.prompt === "string" ? w.prompt : null, kind: w.kind || "standard", verdict: w.verdict || null,
+          role: "validator", node: w.node || null, validates: w.validates, prompt: w.kind === "integration" && typeof w.prompt === "string" ? w.prompt : null, kind: w.kind || "standard", verdict: w.verdict || null,
           validationSource: w.validationSource || null, validationCriteria: w.validationCriteria || null,
           validatedCommit: w.validatedCommit || null,
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
@@ -3112,6 +3121,7 @@ function loadLines() {
         handoff: typeof meta.handoff === "string" ? meta.handoff : null,
         sessionCfg: meta.sessionCfg && typeof meta.sessionCfg.harness === "string" ? meta.sessionCfg : null,
         pipeline: meta.pipeline || null,
+        graph: meta.graph, nodeSettings: meta.nodeSettings || {},
         repos: new Map(migration.repos.map((r) => [r.name, r])),
         workdir: path.join(LINES_DIR, entry.name),
         status: ["standby", "idle", "running", "attention", "failed"].includes(meta.status)
