@@ -51,6 +51,7 @@ const { newContextStats, restoreContextStats, recordTurn, resetForFreshSession,
   handoffBlock, workerReseedPrompt } = require("./compaction");
 
 const { allowedHosts, guardRequest } = require("./http-guard");
+const { withJsonBody } = require("./http-body");
 // Loopback by default. A remote bind is an explicit opt-in: the router has
 // no authentication.
 const ROUTER_HOST = process.env.ROUTER_HOST || "127.0.0.1";
@@ -1104,12 +1105,18 @@ function saveLine(line) {
   }
 }
 
-function readBody(req, cb) {
-  let data = "";
-  req.on("data", (c) => { data += c; if (data.length > 1e6) req.destroy(); });
-  req.on("end", () => {
-    try { cb(null, JSON.parse(data || "{}")); } catch { cb(new Error("invalid JSON")); }
-  });
+// Body errors get their own status. The handler runs one time. A handler
+// error gets one 500 response and does not stop the router.
+function readBody(req, res, handler) {
+  withJsonBody(req, res, handler, { respond: json, onError: handlerFailed });
+}
+
+function handlerFailed(req, res, err) {
+  slog("error", "http.handler_failed", { method: req.method, path: req.url,
+    error: String((err && err.stack) || err) });
+  if (res.writableEnded) return;
+  if (res.headersSent) { res.destroy(); return; }
+  json(res, 500, { error: "internal error" });
 }
 
 // Run a probe command with a timeout. Resolves { code, stdout }, or null
@@ -1831,7 +1838,7 @@ registryStore.load().then(() => {
   }
 });
 
-const requestHandler = (req, res) => {
+const routeRequest = (req, res) => {
   const url = new URL(req.url, "http://localhost");
   const parts = url.pathname.split("/").filter(Boolean);
   const t0 = Date.now();
@@ -1880,7 +1887,7 @@ const requestHandler = (req, res) => {
       return json(res, 200, { deleted: true });
     }
     if (req.method === "PUT") {
-      readBody(req, (err, body) => {
+      readBody(req, res, (err, body) => {
         if (err || !body) return json(res, 400, { error: "invalid JSON" });
         const out = pipelinePresets.put(name, body.pipeline);
         if (out.error) return json(res, 400, { error: out.error });
@@ -1896,7 +1903,7 @@ const requestHandler = (req, res) => {
     && parts.length === 4) {
     const line = lines.get(parts[2]);
     if (!line) return json(res, 404, { error: "no such line" });
-    readBody(req, async (err, body) => {
+    readBody(req, res, async (err, body) => {
       if (err || !body) return json(res, 400, { error: "invalid JSON" });
       const pipeline = body.pipeline && Object.keys(body.pipeline).length ? body.pipeline : null;
       const pipelineError = validatePipelineConfig(pipeline);
@@ -1933,7 +1940,7 @@ const requestHandler = (req, res) => {
   }
 
   if (req.method === "POST" && url.pathname === "/api/lines") {
-    readBody(req, async (err, body) => {
+    readBody(req, res, async (err, body) => {
       body = body || {};
       if (err) return json(res, 400, { error: "invalid JSON" });
       const pipelineError = validatePipelineConfig(body.pipeline);
@@ -2013,7 +2020,7 @@ const requestHandler = (req, res) => {
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "prompts") {
     const line = lines.get(parts[2]);
     if (!line) return json(res, 404, { error: "no such line" });
-    readBody(req, (err, body) => {
+    readBody(req, res, (err, body) => {
       if (err || !body || typeof body.text !== "string" || !body.text.trim()) {
         return json(res, 400, { error: "expected {text}" });
       }
@@ -2136,7 +2143,7 @@ const requestHandler = (req, res) => {
     && parts[4] === "inventory") {
     const line = lines.get(parts[3]);
     if (!line) return json(res, 404, { error: "no such line" });
-    readBody(req, (err, body) => {
+    readBody(req, res, (err, body) => {
       if (err || !body || body.kind !== "process" || !Number.isInteger(body.pid)
         || typeof body.name !== "string" || !body.name.trim()) {
         return json(res, 400, { error: "expected {kind: 'process', pid, name}" });
@@ -2189,7 +2196,7 @@ const requestHandler = (req, res) => {
     const item = line.inventory.get(parts[4]);
     if (!item) return json(res, 404, { error: "no such item" });
     if (parts[5] === "keep") {
-      return readBody(req, (err, body) => {
+      return readBody(req, res, (err, body) => {
         if (err || !body) return json(res, 400, { error: "expected {keep}" });
         item.keep = !!body.keep;
         saveLine(line);
@@ -2211,7 +2218,7 @@ const requestHandler = (req, res) => {
       return json(res, 200, { repos: repoList(line).map((r) => ({
         name: r.name, url: r.url, path: r.path })) });
     }
-    readBody(req, (err, body) => {
+    readBody(req, res, (err, body) => {
       if (err || !body || typeof body.name !== "string" || !body.name.trim()
         || typeof body.url !== "string" || !body.url.trim()) {
         return json(res, 400, { error: "expected {name, url}" });
@@ -2253,7 +2260,7 @@ const requestHandler = (req, res) => {
       })) });
     }
     if (!line.planApproved) return json(res, 409, { error: "plan not approved" });
-    readBody(req, async (err, body) => {
+    readBody(req, res, async (err, body) => {
       if (err || !body || typeof body.name !== "string" || !body.name
         || typeof body.prompt !== "string") {
         return json(res, 400, { error: "expected {name, prompt}" });
@@ -2488,7 +2495,7 @@ const requestHandler = (req, res) => {
     if (runningCount(line) >= WORKER_CAP) {
       return json(res, 409, { error: `cap reached: ${WORKER_CAP} workers/validators are running concurrently - wait for completions first` });
     }
-    readBody(req, (err, body) => {
+    readBody(req, res, (err, body) => {
       if (err || !body || typeof body.prompt !== "string" || !body.prompt.trim()) {
         return json(res, 400, { error: "expected {prompt}" });
       }
@@ -2549,7 +2556,7 @@ const requestHandler = (req, res) => {
       if (w) { line = l; worker = w; break; }
     }
     if (!worker) return json(res, 404, { error: "no such worker" });
-    readBody(req, (err, body) => {
+    readBody(req, res, (err, body) => {
       if (err || !body || typeof body.useCase !== "string" || !body.useCase.trim()
         || typeof body.file !== "string" || !body.file.trim()) {
         return json(res, 400, { error: "expected {useCase, file}" });
@@ -2660,7 +2667,7 @@ const requestHandler = (req, res) => {
 
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "interrupt"
     && parts.length === 4) {
-    readBody(req, (err, body) => {
+    readBody(req, res, (err, body) => {
       const keys = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body) : [];
       if (err || keys.length !== 1 || keys[0] !== "runId" || typeof body.runId !== "string" || !body.runId.trim()) {
         return json(res, 400, { error: "expected {runId} with a non-empty string runId" });
@@ -2738,7 +2745,7 @@ const requestHandler = (req, res) => {
     }
     if (worker.compacting) return json(res, 409, { error: "worker is compacting its context" });
     if (!worker.sessionId && !worker.handoff) return json(res, 409, { error: "worker has no session yet" });
-    readBody(req, (err, body) => {
+    readBody(req, res, (err, body) => {
       if (err || !body || typeof body.prompt !== "string" || !body.prompt.trim()) {
         return json(res, 400, { error: "expected {prompt}" });
       }
@@ -2877,6 +2884,17 @@ When done, reply with a report: what you changed, files changed, how you verifie
   if (registryRoutes.handle(req, res, url, parts, json)) return;
 
   json(res, 404, { error: "not found" });
+};
+
+// One error boundary for all routes. A route bug answers 500 and the
+// router continues to supervise the other pipelines.
+const requestHandler = (req, res) => {
+  try {
+    const out = routeRequest(req, res);
+    if (out && typeof out.then === "function") out.catch((err) => handlerFailed(req, res, err));
+  } catch (err) {
+    handlerFailed(req, res, err);
+  }
 };
 
 const server = http.createServer(requestHandler);
@@ -3034,6 +3052,10 @@ function loadLines() {
 }
 
 if (require.main === module) {
+  // A promise rejection that no route catches must not stop the supervisor.
+  process.on("unhandledRejection", (err) => {
+    slog("error", "process.unhandled_rejection", { error: String((err && err.stack) || err) });
+  });
 loadLines();
 // Boot sweep: remove ONLY containers of lines that this store deleted
 // (tombstones in LINES_DIR/.deleted). A line that is absent, corrupt, or

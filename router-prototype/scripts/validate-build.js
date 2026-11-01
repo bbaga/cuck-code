@@ -9,6 +9,7 @@ const PRODUCTION_SCRIPTS = [
   "server.js",
   "process-ref.js",
   "http-guard.js",
+  "http-body.js",
   "harness.js",
   "pipeline-config.js",
   "planner-turn.js",

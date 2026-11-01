@@ -587,3 +587,24 @@ test("restart keeps the integration validator brief", { timeout: 30_000 }, async
   assert.equal(saved.workers.find((w) => w.id === "int-1").prompt, "INTEGRATION BRIEF");
   assert.equal(saved.workers.find((w) => w.id === "std-1").prompt, null);
 });
+
+test("a route handler bug answers 500 and the router keeps serving", { timeout: 30_000 }, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-handler-bug-"));
+  const routers = [];
+  t.after(async () => {
+    for (const router of routers.reverse()) await stopRouter(router);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const router = await startRouter(root); routers.push(router);
+  const { child, base } = router;
+  // Replace the lines directory with a file so the async create handler throws at mkdirSync.
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.writeFileSync(root, "not a directory");
+  const failed = await fetch(base + "/api/lines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "boom" }) });
+  assert.equal(failed.status, 500);
+  assert.deepEqual(await failed.json(), { error: "internal error" });
+  assert.equal(child.exitCode, null, "router process must stay alive");
+  assert.equal((await fetch(base + "/api/lines")).status, 200);
+  const wrongType = await fetch(base + "/api/lines", { method: "POST", headers: { "Content-Type": "text/plain" }, body: "{}" });
+  assert.equal(wrongType.status, 415);
+});
