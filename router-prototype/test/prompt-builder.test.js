@@ -25,7 +25,6 @@ const WORKER_CAP = 8;
 const CHANGESET_LIMIT = 500;
 const validationCriteriaBlock = (criteria) => `The planner gave these acceptance criteria:\n${criteria}`;
 const oldCode = [
-  cut("function plannerBrief(", "\n}\n") + "\n}\n",
   cut("function frontendToolsBlock(", "\nconst { wrapPlannerTurn"),
   cut("const IMPL_PERSONA", "\nconst VAL_PERSONA"),
   cut("const VAL_PERSONA", "\nfunction containersBlock"),
@@ -38,17 +37,30 @@ const oldCode = [
   cut("function integrationValidatorBrief(", "\nfunction sanitizeName"),
 ].join("\n");
 const old = new Function("PORT", "WORKER_CAP", "CHANGESET_LIMIT", "validationCriteriaBlock",
-  `${oldCode}\nreturn { plannerBrief, workerBrief, validatorBrief, integrationValidatorBrief };`)(
+  `${oldCode}\nreturn { workerBrief, validatorBrief, integrationValidatorBrief };`)(
   PORT, WORKER_CAP, CHANGESET_LIMIT, validationCriteriaBlock);
 
 const graph = loadBuiltinPipeline("default", fs, root);
 const line = { id: "line-9", name: "Line One" };
 
-test("planner prompt equals plannerBrief", () => {
-  const rv = plannerRouterValues({ line, nodeId: graph.start, port: PORT, workerCap: WORKER_CAP });
+// The planner prompt is generated (task C8); test/builtin-prompts-planner.test.js checks its text.
+test("planner prompt holds the task, the router values and the generated calls", () => {
+  const rv = plannerRouterValues({ line, nodeId: graph.start, port: PORT, workerCap: WORKER_CAP, graph });
   const task = "Build the thing.\nSecond line.";
-  assert.equal(buildPrompt(graph, graph.start, rv, { task }), old.plannerBrief(line.name, line.id, task, PORT));
+  const text = buildPrompt(graph, graph.start, rv, { task });
+  assert.ok(text.includes(`You are the PLANNER of factory line 'Line One' (id line-9).\n${task}`));
+  assert.ok(text.includes(`http://localhost:${PORT}/api/protocol/lines/line-9/interactions/start`));
+  assert.ok(text.includes(`A maximum of ${WORKER_CAP} workers`));
+  assert.ok(!text.includes("{{"));
 });
+
+test("a worker prompt has no generated protocol text", () => {
+  assert.equal(rvProtocol("backend-impl"), "");
+  assert.equal(rvProtocol("integration"), "");
+});
+function rvProtocol(nodeId) {
+  return require("../prompt-builder").protocolSection(graph, nodeId, "http://localhost:7788", "line-9");
+}
 
 for (const persona of ["backend", "frontend"]) {
   const repos = [

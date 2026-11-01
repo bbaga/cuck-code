@@ -168,12 +168,11 @@ function checkLineValues(line, required, body) {
   return problems;
 }
 
-// What the start node may do: { caller, interactions: [{ name, description, effect, target,
+// What a coordinator (default: the start node) may do: { caller, interactions: [{ name, description, effect, target,
 // to: [{ node, fields: { field: { description, expected } } }] }] }. Only request-triggered
 // interactions with an edge from the start node count. The order follows the edges.
 // `fields` comes from requiredFields, the function the router enforces.
-function introspect(resolved) {
-  const caller = resolved.start;
+function introspect(resolved, caller = resolved.start) {
   const byName = new Map();
   for (const edge of resolved.edges || []) {
     if (edge.from !== caller) continue;

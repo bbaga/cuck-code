@@ -4,23 +4,20 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { loadBuiltinPipeline } = require('../line-graph');
+const { buildPrompt, plannerRouterValues } = require('../prompt-builder');
 
-// server.js starts a server when required, so build the function from its source.
-const source = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
-const start = source.indexOf('function plannerBrief(');
-assert.ok(start >= 0, 'start marker "function plannerBrief(" not found in server.js');
-const end = source.indexOf('\n}\n', start);
-assert.ok(end > start, 'end marker "\\n}\\n" not found after plannerBrief');
-const plannerBrief = new Function('WORKER_CAP', `${source.slice(start, end + 3)}\nreturn plannerBrief;`)(8);
-
-const brief = plannerBrief('N', 'L-1', 'PROMPT', 7788);
+const graph = loadBuiltinPipeline('default', fs, path.join(__dirname, '..'));
+const line = { id: 'L-1', name: 'N' };
+const brief = buildPrompt(graph, graph.start,
+  plannerRouterValues({ line, nodeId: graph.start, port: 7788, workerCap: 8, graph }), { task: 'PROMPT' });
 const BEGIN = '## Work registry\n';
 const FINISH = '## Container and process hygiene';
 
 test('registry block sits between the factory protocol and the hygiene section', () => {
   const a = brief.indexOf(BEGIN);
   const b = brief.indexOf(FINISH);
-  assert.ok(a > brief.indexOf('## Factory protocol'), 'registry marker missing or misplaced');
+  assert.ok(a > brief.indexOf('## Calls'), 'registry marker missing or misplaced');
   assert.ok(b > a, 'hygiene marker must follow the registry block');
 });
 
@@ -32,7 +29,9 @@ test('registry block names the real port, line id and endpoints', () => {
     'http://localhost:7788/api/registry/lines/L-1/requests',
     'http://localhost:7788/api/registry/lines/L-1/claims',
     'http://localhost:7788/api/registry/events?after=',
-    'untrusted', 'never approves a plan', 'Supersede', 'stale claim'
+    'untrusted', 'never approves a plan', 'Supersede', 'stale claim',
+    'REGISTRY OVERLAP NOTICE tells you that another line claimed work on a repo where you hold a claim.',
+    'If the work overlaps yours, send a request to its line.'
   ]) assert.ok(block.includes(text), `missing: ${text}`);
 });
 

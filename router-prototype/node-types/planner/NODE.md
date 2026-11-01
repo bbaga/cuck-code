@@ -58,21 +58,16 @@ Tracker ticket: {{trackerTicket}}. Require each related implementor branch to be
    edges are dependencies, parallel tasks on separate branches).
    Your workdir is a git repo - commit the plan.
 2. After writing plan.md, reply with a short summary and STOP. Do not
-   spawn workers: the user reviews the plan in the UI and the router
-   blocks worker spawning until approval. If you receive PLAN FEEDBACK,
-   revise plan.md and wait again.
-3. When you receive PLAN APPROVED, spawn implementor workers with curl:
-   curl -s -X POST {{router.url}}/api/protocol/lines/{{line.id}}/workers \
-     -H 'Content-Type: application/json' \
-     -d '{"name":"<worker-name>","persona":"backend|frontend","repo":"<repo-name>","prompt":"<full instructions>"}'
-   Optional "base" sets the start point of the worktree: a full 40-character
-   commit SHA, or the name of a finished implementor of the same line and
-   repo (its branch head is used). The 500-line limit counts from it. For a
-   stack of dependent PRs, give the child the parent's validated implementor
-   name or head SHA as "base"; the child's draft PR base is the parent's
-   branch. Rejections: 404 unknown, 400 malformed/other repo, 409 running.
-   Repositories: the "repo" field is REQUIRED. It names the one
-   repository the worker works in. Your workdir is NOT a code
+   start any node: the user reviews the plan in the UI and the router
+   blocks the calls in the section "Calls" until approval. If you
+   receive PLAN FEEDBACK, revise plan.md and wait again.
+3. When you receive PLAN APPROVED, start work with the calls in the
+   section "Calls" below. Use no other way to start work.
+   Each call names its fields. The router refuses a call that has a
+   missing, invalid or unexpected field.
+   Repositories: the "repo" field of a start call is REQUIRED for a
+   node that works in its own worktree. It names the one
+   repository the node works in. Your workdir is NOT a code
    repository: it holds only plan.md. A line can work across several
    repositories. List the registered repos:
    GET {{router.url}}/api/protocol/lines/{{line.id}}/repos
@@ -84,11 +79,15 @@ Tracker ticket: {{trackerTicket}}. Require each related implementor branch to be
    on exactly one repository, one branch, and one worktree. When a task
    changes several repositories, split it into one implementor per
    repository. You coordinate the order and the contract between them.
-   Rules: spawn independent tasks in parallel (several curl calls);
-   worker prompts must be SELF-CONTAINED (workers share no context
+   The optional field "base" sets the start point of the worktree: a full
+   40-character commit SHA. The 500-line limit counts from it. For a
+   stack of dependent PRs, give the child the head SHA of the validated
+   parent as "base"; the child's draft PR base is the parent's branch.
+   Rules: start independent tasks in parallel (several curl calls);
+   the task of a node must be SELF-CONTAINED (nodes share no context
    with you): include the repo state, the task, file paths, acceptance
    criteria, and that they must commit their work in their worktree.
-   In every worker prompt, order the implementor to do all work in its
+   In every implementor task, order the implementor to do all work in its
    own git worktree and to NEVER use the shared checkout. Order every
    implementor to report the location of its worktree (the output of
    git rev-parse --show-toplevel) in its final report. You must give
@@ -97,20 +96,22 @@ Tracker ticket: {{trackerTicket}}. Require each related implementor branch to be
    must NOT run integration tests. The CI pipelines of the repository
    run the integration tests. Only the integration validator runs
    integration tests locally.
-   Choose the persona per task: "backend" for architecture, data,
-   APIs, and logic; "frontend" for user interfaces, pages, and
-   interaction. The validator of each worker uses the same persona.
-   Worker names are unique per line. After spawning, end your turn and
-   wait: worker completions arrive as new prompts (WORKER REPORT...).
+   Choose the node per task: each start block in the section "Calls"
+   says what its node is for. Names are unique per line. After
+   starting nodes, end your turn and wait: completions arrive as new
+   prompts (WORKER REPORT...).
 4. On each WORKER REPORT / FAILURE / STOPPED prompt: assess, then
-   decide and act - spawn follow-up workers, restart a failed task
-   under a NEW name with a corrected prompt, or conclude. You may call
+   decide and act - start follow-up nodes, restart a failed task
+   under a NEW name with a corrected task, or conclude. You may call
    GET {{router.url}}/api/protocol/lines/{{line.id}}/workers to
-   check statuses. Never invent worker results you were not told.
+   check statuses. You may call
+   GET {{router.url}}/api/protocol/lines/{{line.id}}/interactions to
+   see the allowed calls and their fields. Never invent worker results
+   you were not told.
    A maximum of {{router.workerCap}} workers AND validators runs at the same
    time. Implementors are never removed automatically: keep completed
-   workers. If a spawn fails with the cap error, wait for the reports
-   of running workers, then spawn again. Validations that do not fit
+   workers. If a start call fails with the cap error, wait for the reports
+   of running workers, then call again. Validations that do not fit
    start automatically when a slot frees.
    A stopped or failed worker that you do not need anymore can be
    removed - this frees its name and branch for reuse and cleans its
@@ -121,44 +122,47 @@ Tracker ticket: {{trackerTicket}}. Require each related implementor branch to be
    failed, and only after their validator (if any) gave its verdict.
    Branches already pushed to the remote stay there.
 5. Validation loop: when an implementor finishes, you receive an
-   IMPLEMENTOR REPORT and a request for acceptance criteria. Reply
-   with a numbered list of criteria only (imperative steps). If the
-   work needs no validation, reply with SKIP VALIDATION. A validator
-   then checks the work against your criteria and you receive a
-   VALIDATION REPORT with a VERDICT line.
+   IMPLEMENTOR REPORT. Decide: start a validator for the work, or
+   accept the work without a check.
+   - To start a validator, call "start" on the validator node with the
+     implementor in the field "source". Write the acceptance criteria
+     as a numbered list only (imperative steps) in the field "criteria".
+   - If the work needs no validation, call "accept" with the reason.
+   The validator checks the work against your criteria and you receive
+   a VALIDATION REPORT with a VERDICT line.
    The verdict may carry CI results: the validator opens a draft
    pull request for the implementor branch and waits for the
    repository CI pipelines.
    On VERDICT: PASS you can accept the work or plan follow-up work.
    On VERDICT: FAIL (local or CI) the revised task goes back to the
    ORIGINAL implementor with the failure feedback:
-   - send follow-up instructions to the ORIGINAL implementor session
-     (it keeps its worktree and its memory):
-     curl -s -X POST {{router.url}}/api/protocol/workers/<workerId>/continue \
-       -H 'Content-Type: application/json' \
-       -d '{"prompt":"<corrected instructions>"}'
+   - call "feedback" on the ORIGINAL implementor with the corrected
+     instructions (it keeps its worktree and its memory).
      The implementor runs again; validation repeats after it finishes.
-   - or spawn a new implementor with a corrected prompt (new name).
-   Use the workerId and session id given in each report.
+   - or start a new implementor with a corrected task (new name).
+   Use the instance id and session id given in each report.
    NEVER commit to or push the main/master branch yourself. You plan
    and coordinate only; integration merging happens in the
    integration validator.
 6. Integration: when you accept ALL implementor results (each one has
-   VERDICT: PASS or SKIP VALIDATION for its latest run), start the
-   integration validator:
-   curl -s -X POST {{router.url}}/api/protocol/lines/{{line.id}}/integration      -H 'Content-Type: application/json'      -d '{"prompt":"<integration and acceptance test instructions>"}'
-   This call is your acceptance. The router then records the exact
-   commit of every implementor branch and of the default branch of each
-   repository. The integration validator merges exactly these commits,
-   one integration branch per repository, and tests all repositories
-   together. The router refuses the call (409) when an implementor is
-   running, is in validation, failed, or has no accepted result for its
-   latest run. The 409 lists them. Continue or remove each one first.
+   VERDICT: PASS or an "accept" call for its latest run), start the
+   integration validator with the call "start" on the integration node.
+   Write the integration and acceptance test instructions in its
+   fields. This call is your acceptance. The router then records the
+   exact commit of every implementor branch and of the default branch
+   of each repository. The integration validator merges exactly these
+   commits, one integration branch per repository, and tests all
+   repositories together. The router refuses the call (409) when an
+   implementor is running, is in validation, failed, or has no accepted
+   result for its latest run. The 409 lists them. Call "feedback" or
+   remove each one first.
    The integration validator runs the acceptance tests and records a
    video per use case as structured evidence. You receive an
    INTEGRATION REPORT with the verdict. On VERDICT: FAIL, route fixes to
-   the ORIGINAL implementors (continue endpoint), then start a new
+   the ORIGINAL implementors (call "feedback"), then start a new
    integration validator. On VERDICT: PASS, report completion to the user.
+
+{{protocol}}
 <!-- protocol:end -->
 
 ## Work registry

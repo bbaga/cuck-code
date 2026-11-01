@@ -6,6 +6,7 @@
 
 const { render, TASK_MARKER, TASK_MARKER_LINE } = require("./template");
 const { isRouterVariable } = require("./fields");
+const { introspect } = require("./call-fields");
 
 function has(obj, key) {
   return obj !== null && typeof obj === "object" && Object.prototype.hasOwnProperty.call(obj, key);
@@ -132,13 +133,70 @@ function integrationRouterValues({ line, nodeId, workerId, workerName, manifest,
   };
 }
 
-function plannerRouterValues({ line, nodeId, port, workerCap }) {
+// The generated protocol section of a node (task C8). Only a coordinator gets text: the prompts of
+// the other nodes stay as they are. The text follows ASD-STE100. It comes from the same data as
+// GET /api/protocol/lines/:id/interactions, so it lists the fields the router enforces.
+function protocolSection(resolved, nodeId, routerUrl, lineId) {
+  if (!resolved || !has(resolved.nodes, nodeId)) throw new Error(`unknown node '${nodeId}'`);
+  const node = resolved.nodes[nodeId];
+  const type = has(resolved.types, node.type) ? resolved.types[node.type] : undefined;
+  if (!type) throw new Error(`node '${nodeId}': unknown node type '${node.type}'`);
+  if (type.coordinator !== true) return "";
+  if (typeof routerUrl !== "string" || routerUrl === "") throw new Error("protocolSection needs the router URL");
+  if (typeof lineId !== "string" || lineId === "") throw new Error("protocolSection needs the line id");
+
+  const { interactions } = introspect(resolved, nodeId);
+  const out = ["## Calls"];
+  if (interactions.length === 0) {
+    out.push("No call is allowed for this node. Do not start or change other nodes.");
+    return out.join("\n");
+  }
+  out.push([
+    "Use only the calls in this list.",
+    "Each call is a curl command. Replace each <value> with a real value.",
+    "Fill every required field. Add an optional field only when you need it. Do not add other fields.",
+    "If the router answers 400, read the lists \"missing\", \"invalid\" and \"unexpected\". Fix the call. Send it again.",
+    "If the router answers 409 \"plan not approved\", stop and wait for PLAN APPROVED.",
+  ].join("\n"));
+  for (const interaction of interactions) {
+    for (const target of interaction.to) {
+      const targetType = resolved.types[resolved.nodes[target.node].type];
+      const lines = [`### ${interaction.name}: node '${target.node}'`];
+      if (targetType && targetType.description) lines.push(`Node '${target.node}': ${targetType.description}`);
+      lines.push(interaction.description);
+      if (interaction.target === "chosen") {
+        lines.push(`Use this call only for an instance of node '${target.node}'. Put its id in the field "instance".`);
+      }
+      lines.push("Run this call:");
+      const payload = [];
+      if (interaction.target !== "chosen") payload.push(`"to":"${target.node}"`);
+      for (const [field, info] of Object.entries(target.fields)) {
+        if (/optional$/.test(info.expected)) continue;
+        payload.push(`${JSON.stringify(field)}:"<${field}>"`);
+      }
+      lines.push(`curl -s -X POST ${routerUrl}/api/protocol/lines/${lineId}/interactions/${interaction.name} \\`);
+      lines.push("  -H 'Content-Type: application/json' \\");
+      lines.push(`  -d '{${payload.join(",")}}'`);
+      lines.push("Fields:");
+      for (const [field, info] of Object.entries(target.fields)) {
+        lines.push(`- ${field} (${info.expected}): ${info.description}`);
+      }
+      out.push(lines.join("\n"));
+    }
+  }
+  return out.join("\n\n");
+}
+
+function plannerRouterValues({ line, nodeId, port, workerCap, graph }) {
+  if (!graph) throw new Error("plannerRouterValues needs the graph of the line");
+  const router = routerUrl(port);
   return {
     line: lineValues(line),
     node: { id: nodeId },
-    router: { ...routerUrl(port), workerCap },
+    router: { ...router, workerCap },
+    protocol: protocolSection(graph, nodeId, router.url, line.id),
   };
 }
 
 module.exports = { buildPrompt, buildPromptParts, workerRouterValues, validatorRouterValues, integrationRouterValues,
-  plannerRouterValues };
+  plannerRouterValues, protocolSection };

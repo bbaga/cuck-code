@@ -92,7 +92,7 @@ test("the built-in types carry the marker at the documented split points", () =>
   const i = buildPromptParts(graph, "integration", integrationRouterValues({ line, nodeId: "integration",
     workerId: "g-1", workerName: "int", manifest, branch: "integration/x", port: 7788 }), { instructions: "Go." });
   assert.ok(i.task.startsWith("Instructions from the planner:\nGo."));
-  const prv = plannerRouterValues({ line, nodeId: graph.start, port: 7788, workerCap: 8 });
+  const prv = plannerRouterValues({ line, nodeId: graph.start, port: 7788, workerCap: 8, graph });
   const p = buildPromptParts(graph, graph.start, prv, { task: "Build X." });
   assert.ok(p.task.startsWith("Build X."));
   assert.ok(p.role.startsWith("PLANNER-ONLY RULES") && p.role.endsWith("(id line-9)."));
