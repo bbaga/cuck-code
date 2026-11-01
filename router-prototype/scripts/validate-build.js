@@ -24,6 +24,7 @@ const PRODUCTION_SCRIPTS = [
   "call-fields.js",
   "resolve-pipeline.js",
   "line-graph.js",
+  "prompt-builder.js",
   "handoff.js",
   "jsonl.js",
   "repo-source.js",
