@@ -45,6 +45,7 @@ const { createDashboardLive } = require("./dashboard-live");
 const { readClaudeConfig } = require("./claude-config");
 const { sessionContextTokens } = require("./context-probe");
 const { createPresetStore } = require("./pipeline-presets");
+const { isSignalablePid } = require("./process-ref");
 const { newContextStats, restoreContextStats, recordTurn, resetForFreshSession,
   contextView, shouldAutoCompact, parseAutoThreshold, compactionPrompt, acceptSummary,
   handoffBlock, workerReseedPrompt } = require("./compaction");
@@ -182,6 +183,7 @@ function reconcileInventory(line, cb) {
     }
     for (const item of line.inventory.values()) {
       if (item.kind === "process" && item.status === "running") {
+        if (!isSignalablePid(item.ref)) { item.status = "stopped"; continue; }
         try { process.kill(item.ref, 0); } catch { item.status = "stopped"; }
       }
     }
@@ -195,8 +197,10 @@ function killItem(item) {
     ref: item.ref, by: item.by, keep: item.keep });
   if (item.kind === "container") {
     dockerRun(["rm", "-fv", item.ref]);
-  } else {
+  } else if (isSignalablePid(item.ref)) {
     try { process.kill(item.ref, "SIGTERM"); } catch {}
+  } else {
+    slog("error", "inventory.kill_refused", { kind: item.kind, name: item.name, ref: item.ref });
   }
   item.status = "stopped";
   item.keep = false;
@@ -224,7 +228,7 @@ function cleanupStage(line, by) {
   });
   for (const item of line.inventory.values()) {
     if (item.kind === "process" && item.by === by && item.status === "running" && !item.keep) {
-      try { process.kill(item.ref, "SIGTERM"); } catch {}
+      if (isSignalablePid(item.ref)) { try { process.kill(item.ref, "SIGTERM"); } catch {} }
       item.status = "stopped";
     }
   }
@@ -2074,7 +2078,7 @@ const requestHandler = (req, res) => {
     for (const item of line.inventory.values()) {
       if (item.keep) continue;
       if (item.kind === "process" && item.status === "running") {
-        try { process.kill(item.ref, "SIGTERM"); } catch {}
+        if (isSignalablePid(item.ref)) { try { process.kill(item.ref, "SIGTERM"); } catch {} }
         item.status = "stopped";
       }
     }
@@ -2101,6 +2105,9 @@ const requestHandler = (req, res) => {
       if (err || !body || body.kind !== "process" || !Number.isInteger(body.pid)
         || typeof body.name !== "string" || !body.name.trim()) {
         return json(res, 400, { error: "expected {kind: 'process', pid, name}" });
+      }
+      if (!isSignalablePid(body.pid)) {
+        return json(res, 400, { error: "pid must be one positive process ID that is not the router" });
       }
       try { process.kill(body.pid, 0); } catch {
         return json(res, 400, { error: "no such process" });
