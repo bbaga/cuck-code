@@ -1741,6 +1741,8 @@ const { createStore: createRegistryStore } = require("./work-registry");
 const { createDelivery: createRegistryDelivery } = require("./registry-delivery");
 const { createRefresh: createRegistryRefresh, matchRepo: matchRegistryRepo, ghCheckPullRequest } = require("./registry-refresh");
 const { createStalenessSweep } = require("./registry-staleness");
+const { cloneSourceError } = require("./repo-source");
+const ALLOW_LOCAL_REPOS = process.env.ROUTER_ALLOW_LOCAL_REPOS === "1";
 const REGISTRY_FILE = path.join(LINES_DIR, "work-coordination.json");
 const registryLive = require("./registry-live").createRegistryLive({ log: (event, data) => slog("warn", event, data) });
 const registryStore = createRegistryStore(REGISTRY_FILE, { onCommit: (state) => registryLive.notify(state) });
@@ -1931,7 +1933,9 @@ const requestHandler = (req, res) => {
       const id = crypto.randomUUID();
       const workdir = path.join(LINES_DIR, id);
       if (repoUrl) {
-        const clone = spawnSync("git", ["clone", repoUrl, workdir], { encoding: "utf8" });
+        const sourceError = cloneSourceError(repoUrl, { allowLocal: ALLOW_LOCAL_REPOS });
+        if (sourceError) return json(res, 400, { error: sourceError });
+        const clone = spawnSync("git", ["clone", "--", repoUrl, workdir], { encoding: "utf8" });
         if (clone.error) return json(res, 500, { error: `git is not available: ${clone.error.message}` });
         if (clone.status !== 0) return json(res, 500, { error: "git clone failed", stderr: clone.stderr });
       } else {
@@ -2181,7 +2185,9 @@ const requestHandler = (req, res) => {
         return json(res, 409, { error: `repo '${sName}' is already registered` });
       }
       const dest = path.join(LINES_DIR, line.id, "repos", sName);
-      const clone = spawnSync("git", ["clone", body.url.trim(), dest], { encoding: "utf8" });
+      const sourceError = cloneSourceError(body.url.trim(), { allowLocal: ALLOW_LOCAL_REPOS });
+      if (sourceError) return json(res, 400, { error: sourceError });
+      const clone = spawnSync("git", ["clone", "--", body.url.trim(), dest], { encoding: "utf8" });
       if (clone.error) return json(res, 500, { error: `git is not available: ${clone.error.message}` });
       if (clone.status !== 0) return json(res, 500, { error: "git clone failed", stderr: clone.stderr });
       line.repos.set(sName, { name: sName, url: body.url.trim(), path: dest });

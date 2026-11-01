@@ -13,6 +13,7 @@ const PRODUCTION_SCRIPTS = [
   "spawn-plan.js",
   "handoff.js",
   "jsonl.js",
+  "repo-source.js",
   "validation-queue.js",
   "planner-request.js",
   "transcript-history.js",
