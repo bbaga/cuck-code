@@ -143,11 +143,13 @@ function releaseUiSlot(workerId) {
 function dockerRun(args, cb) {
   let child;
   try { child = spawn("docker", args, { stdio: ["ignore", "pipe", "ignore"] }); }
-  catch { return cb(null); }
+  catch { return cb && cb(null); }
   let out = "";
+  let settled = false;
+  const done = (value) => { if (settled) return; settled = true; if (cb) cb(value); };
   child.stdout.on("data", (c) => { out += c; });
-  child.on("error", () => cb && cb(null));
-  child.on("close", () => cb && cb(out.trim()));
+  child.on("error", () => done(null));
+  child.on("close", (code) => done(code === 0 ? out.trim() : null));
 }
 
 function removeContainers(filter, cb) {
@@ -1753,6 +1755,10 @@ const { createStalenessSweep } = require("./registry-staleness");
 const { cloneSourceError } = require("./repo-source");
 const ALLOW_LOCAL_REPOS = process.env.ROUTER_ALLOW_LOCAL_REPOS === "1";
 const REGISTRY_FILE = path.join(LINES_DIR, "work-coordination.json");
+// A deleted line leaves a tombstone. The boot sweep removes containers only
+// for tombstoned lines: an absent line is not proof of deletion, because
+// other routers and damaged line.json files share the same Docker host.
+const TOMBSTONE_DIR = path.join(LINES_DIR, ".deleted");
 const registryLive = require("./registry-live").createRegistryLive({ log: (event, data) => slog("warn", event, data) });
 const registryStore = createRegistryStore(REGISTRY_FILE, { onCommit: (state) => registryLive.notify(state) });
 let registryUnavailable = null;
@@ -2077,6 +2083,12 @@ const requestHandler = (req, res) => {
       if (uiSlots.held.has(w.id) || uiSlots.waiters.some((x) => x.workerId === w.id)) {
         releaseUiSlot(w.id);
       }
+    }
+    try {
+      fs.mkdirSync(TOMBSTONE_DIR, { recursive: true });
+      fs.writeFileSync(path.join(TOMBSTONE_DIR, line.id), new Date().toISOString());
+    } catch (err) {
+      slog("error", "line.tombstone.failed", { lineId: line.id, error: String(err && err.message) });
     }
     const keptRefs = new Set([...line.inventory.values()]
       .filter((i) => i.keep && i.kind === "container").map((i) => i.ref));
@@ -2867,9 +2879,12 @@ process.on("SIGTERM", shutdown);
 function loadLines() {
   fs.mkdirSync(LINES_DIR, { recursive: true });
   for (const entry of fs.readdirSync(LINES_DIR, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
+    if (!entry.isDirectory() || entry.name.startsWith(".") || entry.name === "worktrees") continue;
     const metadataPath = path.join(LINES_DIR, entry.name, "line.json");
-    if (!fs.existsSync(metadataPath)) continue;
+    if (!fs.existsSync(metadataPath)) {
+      slog("error", "boot.line-quarantined", { directory: entry.name, reason: "line.json is missing" });
+      continue;
+    }
     try {
       const meta = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
       const workers = new Map();
@@ -2981,31 +2996,33 @@ function loadLines() {
       if (line.queue.length) pump(line);
     } catch (error) {
       slog("error", "boot.line-load-failed", { directory: entry.name, error: String(error.message || error) });
+      console.error(`line ${entry.name} did not load and is quarantined: its containers are kept`);
     }
   }
 }
 
 if (require.main === module) {
 loadLines();
-// Boot sweep: remove ONLY orphans - containers labeled for lines that no
-// longer exist (deleted while the router was down). Containers of
-// restored lines are the factory's live inventory: they stay alive across
-// restarts, and the user keeps the explicit kill control. Never blanket-
-// purge by label=cuck.line: that kills every line's containers.
+// Boot sweep: remove ONLY containers of lines that this store deleted
+// (tombstones in LINES_DIR/.deleted). A line that is absent, corrupt, or
+// owned by another router is never proof of deletion.
 (function bootCleanup() {
-  dockerRun(["ps", "-aq", "--filter", "label=cuck.line",
-    "--format", "{{.ID}}\t{{.Label \"cuck.line\"}}"], (out) => {
-    if (out == null) return;
-    const orphans = [];
-    for (const row of out.split("\n").filter(Boolean)) {
-      const [cid, cline] = row.split("\t");
-      if (!lines.has(cline)) orphans.push(cid);
-    }
-    if (!orphans.length) return;
-    slog("info", "docker.boot-reap", { count: orphans.length,
-      containers: orphans.map((c) => c.slice(0, 12)) });
-    dockerRun(["rm", "-fv", ...orphans]);
-  });
+  let deleted = [];
+  try { deleted = fs.readdirSync(TOMBSTONE_DIR); } catch {}
+  for (const lineId of deleted) {
+    dockerRun(["ps", "-aq", "--filter", `label=cuck.line=${lineId}`], (out) => {
+      if (out == null) return;
+      const containers = out.split(/\s+/).filter(Boolean);
+      // Forget the tombstone only after Docker shows no container for it.
+      if (!containers.length) {
+        try { fs.rmSync(path.join(TOMBSTONE_DIR, lineId), { force: true }); } catch {}
+        return;
+      }
+      slog("info", "docker.boot-reap", { lineId, count: containers.length,
+        containers: containers.map((c) => c.slice(0, 12)) });
+      dockerRun(["rm", "-fv", ...containers]);
+    });
+  }
 })();
 slog("info", "server.boot", { lines: lines.size,
   workers: [...lines.values()].reduce((n, l) => n + l.workers.size, 0),
