@@ -1082,7 +1082,7 @@ function saveLine(line) {
           id: w.id, name: w.name, sessionId: w.sessionId, branch: w.branch,
           context: w.context || null, handoff: w.handoff || null,
           // The brief is kept so a compacted session can be reseeded with it.
-          prompt: w.role === "implementor" ? w.prompt || null : null,
+          prompt: w.role === "implementor" || w.kind === "integration" ? w.prompt || null : null,
           ...completionFields(w), lastRunText: w.lastRunText || null,
           runGeneration: w.runGeneration || 0,
           activeInvocationId: w.activeInvocationId || null,
@@ -2876,7 +2876,7 @@ function loadLines() {
       for (const w of meta.workers || []) {
         if (w.role === "validator") continue;
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
-          role: w.role === "validator" && w.kind === "integration" ? "validator" : "implementor",
+          role: "implementor",
           validates: null, prompt: typeof w.prompt === "string" ? w.prompt : null,
           kind: w.kind || "standard", verdict: w.verdict || null,
           context: restoreContextStats(w.context),
@@ -2902,7 +2902,7 @@ function loadLines() {
         const impl = workers.get(w.validates);
         if (!impl && w.kind !== "integration") continue;
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
-          role: "validator", validates: w.validates, prompt: null, kind: w.kind || "standard", verdict: w.verdict || null,
+          role: "validator", validates: w.validates, prompt: w.kind === "integration" && typeof w.prompt === "string" ? w.prompt : null, kind: w.kind || "standard", verdict: w.verdict || null,
           validationSource: w.validationSource || null, validationCriteria: w.validationCriteria || null,
           validatedCommit: w.validatedCommit || null,
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
