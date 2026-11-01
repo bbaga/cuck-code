@@ -52,7 +52,7 @@ test('registration example has the exact versioned showcase shape', () => {
 
 test('instructions use the worker evidence endpoint and preserve ordered steps', () => {
   assert.match(serverSource, /POST http:\/\/localhost:\$\{PORT\}\/api\/protocol\/workers\/\$\{workerId\}\/evidence/);
-  assert.match(serverSource, /Use paths relative to your worktree/);
+  assert.match(serverSource, /Use paths relative to your workdir/);
   assert.match(serverSource, /screenshots in demonstration\s+order/);
   assert.match(serverSource, /accepted A|362eff17942182a62baf05ef12423afa2dbf6613/);
   assert.match(serverSource, /POST.*evidenceId.*attemptId|evidenceId.*attemptId/);

@@ -6,11 +6,12 @@ const { eventsAfter } = require('./work-merge');
 const { randomUUID } = require('node:crypto');
 const { ID_PATTERN } = require('./work-registry');
 const { createWriteRoutes } = require('./registry-write');
+const { repoIdentity } = require('./line-repos');
 
 const PAGE_SIZE_MAX = 100;
 const PAGE_SIZE_DEFAULT = 20;
 const Q_MAX = 200;
-const CLAIM_TEXT = ['title', 'summary', 'tags', 'repo', 'branch', 'contract'];
+const CLAIM_TEXT = ['title', 'summary', 'tags', 'repo', 'repoName', 'branch', 'contract'];
 const ARCHIVE_TEXT = ['title', 'summary', 'tags', 'repo'];
 const REQUEST_TEXT = ['subject', 'text'];
 
@@ -55,8 +56,8 @@ function statusFilter(url) {
   return new Set(list);
 }
 
-function createRegistryRoutes({ store, lineExists = () => false, lineName = () => null, unavailable = null, now = Date.now, newId = randomUUID, onOutbox, refresh = null, staleness = null, live = null }) {
-  const writer = createWriteRoutes({ store, lineExists, now, newId, onOutbox });
+function createRegistryRoutes({ store, lineExists = () => false, lineName = () => null, unavailable = null, now = Date.now, newId = randomUUID, onOutbox, refresh = null, staleness = null, live = null, resolveRepo = null }) {
+  const writer = createWriteRoutes({ store, lineExists, now, newId, onOutbox, resolveRepo });
   const down = () => (typeof unavailable === 'function' ? unavailable() : unavailable);
   const withOwner = item => {
     const name = lineName(item.ownerLineId);
@@ -76,9 +77,10 @@ function createRegistryRoutes({ store, lineExists = () => false, lineName = () =
     const statuses = useStatus ? statusFilter(url) : null;
     const lineId = url.searchParams.get('lineId');
     const repo = url.searchParams.get('repo');
+    const repoId = repo ? repoIdentity(repo) : null;
     const q = query(url);
     const all = source.filter(c => (!statuses || statuses.has(c.status))
-      && (!lineId || c.ownerLineId === lineId) && (!repo || c.repo === repo) && matches(c, q, fields)).map(withOwner);
+      && (!lineId || c.ownerLineId === lineId) && (!repo || c.repo === repo || (repoId !== null && c.repo === repoId)) && matches(c, q, fields)).map(withOwner);
     return listResponse(snapshot, all, paged);
   }
 

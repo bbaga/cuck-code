@@ -209,20 +209,26 @@ On approval the planner spawns workers by calling the router's protocol API
   selects the worker's brief (priorities and verification approach), and the
   validator spawned after the implementor inherits the same persona with the
   matching validation focus (frontend validators run headless UI tests with
-  the playwright tools). The optional `repo` field selects which of the
-  line's repositories the worker works in (default `primary`). 409 before
+  the playwright tools). The required `repo` field names the one registered
+  repository the worker works in (400 without it - there is no default). 409 before
   plan approval, on a duplicate worker name, or with 8 workers/validators
   already RUNNING concurrently - the cap counts running implementors and
   validators together, never finished ones (large pipelines with many
   completed workers are fine); 404 for an
   unregistered repo name. Each worker runs in its own
-  git worktree of its repo on branch `<lineIdPrefix>/<name>`, with no shared
+  git worktree of its repo (`lines/worktrees/<lineId>/<repo>/<name>`) on
+  branch `<lineIdPrefix>/<name>`, with no shared
   context with the planner: worker prompts must be self-contained.
 - `GET /api/protocol/lines/:id/repos` / `POST /api/protocol/lines/:id/repos
-  {name, url}` — the line's repository registry. A line works across several
-  repositories: the line workdir is the implicit `primary` repo, and the
-  planner registers additional repos (the router clones them under
-  `lines/<lineId>/repos/<name>`). Remotes are resolved at spawn time
+  {name?, url}` — the line's repository registry. A line works across several
+  repositories, and none of them is special: the line workdir holds only the
+  planner state (`line.json`, `plan.md`) and is never a code repository.
+  Every repository is registered by name (default: derived from the URL) and
+  cloned under `lines/<lineId>/repos/<name>`. Each implementor and validator
+  works on exactly one repository, one branch, and one worktree; the planner
+  coordinates work that spans repositories. Lines saved before this rule
+  adopt their workdir clone in place as a named repository (named after its
+  remote, or `workdir`) the first time they load. Remotes are resolved at spawn time
   (`git remote get-url origin`), so an origin the planner added later is
   still detected.
 - `GET /api/protocol/lines/:id/workers` — worker statuses, including role
@@ -552,12 +558,13 @@ The registry lets lines see each other's work. It avoids duplicate work between 
   - `age`: the owner did not confirm the claim for 14 days.
   A stale claim accepts only renew or supersede. Another patch gives 409 `STALE_CLAIM`.
 - **Retire and tombstones.** A claim stale for more than 30 days is retired. The router removes it and keeps a tombstone for 30 days. A merged claim is archived and never retired.
-- **Merge verification.** The router checks a claim against the default branch of the registered repository. The commit must be an ancestor of the default branch. For squash and rebase, `gh` must show a merged pull request with the same head commit. The router sets `merged` only after a check passes. Otherwise the claim stays and shows `unverified` with the reason.
+- **Repository identity.** A claim covers one repository. The owner sets `repo` to the name (or URL) of one of its registered repos; the router stores the normalized remote URL as `repo` (for example `https://github.com/o/r`) and the owner's name as `repoName`. Every line can match the same repository this way. An unknown repo gives 400 `UNKNOWN_REPO`. Work across several repositories needs one claim per repository.
+- **Merge verification.** The router checks a claim against the default branch of the owner's matching registered repository. The commit must be an ancestor of the default branch. For squash and rebase, `gh` must show a merged pull request with the same head commit. The router sets `merged` only after a check passes. Otherwise the claim stays and shows `unverified` with the reason.
 - **Merge sweep.** The router checks merges every 10 minutes. It sweeps only `active` and `available` claims. It rechecks a claim after 30 minutes. It checks 20 claims at most in one sweep. `POST /claims/:id/refresh` always checks that claim. `POST /refresh` runs the merge sweep, which skips claims checked less than 30 minutes ago.
 - **Stale sweep.** The router rechecks the branch of a claim every 6 hours. One sweep covers 50 claims and 20 branch checks at most.
 - **Archive.** A merged claim moves to the archive with its merge evidence.
 - **Requests.** One line asks another line for something. States: `open`, `accepted`, `declined`, `fulfilled`. Allowed changes: `open` to `accepted` or `declined`; `accepted` to `fulfilled`. Only the target line responds (403 `NOT_TARGET`). Only the two lines read the request (403 otherwise). `fulfilled` needs a reference: `{claimId}` or `{branch, commit}`. A request with a deleted line is marked `orphaned` and does not change (409 `ORPHANED`). A new request needs an `idempotencyKey`. A repeat with the same key returns the first request.
-- **Notices and outbox.** Each request change and each merge writes a notice to the outbox. The router delivers it to the planner of the recipient line. The first line holds an untrusted label, for example `WORK REQUEST NOTICE <id> (UNTRUSTED CONTENT FROM ANOTHER LINE): ...` or `REGISTRY MERGE NOTICE <id> (UNTRUSTED CONTENT FROM ANOTHER LINE): ...`. A notice never approves a plan or starts work. The router delivers each notice once, and the planner queue ignores a repeat. A failed delivery stays in the outbox and the router tries again. A notice for a deleted line is dropped.
+- **Notices and outbox.** Each request change and each merge writes a notice to the outbox. The router delivers it to the planner of the recipient line. The first line holds an untrusted label, for example `WORK REQUEST NOTICE <id> (UNTRUSTED CONTENT FROM ANOTHER LINE): ...` or `REGISTRY MERGE NOTICE <id> (UNTRUSTED CONTENT FROM ANOTHER LINE): ...`. A new claim on a repository where another line holds a current claim sends that line one `REGISTRY OVERLAP NOTICE` (owner line, repo, branch, claim id and title, and the recipient's claims on that repo). The 201 response of the new claim lists the same claims in `overlaps` (at most 10). A notice never approves a plan or starts work. The router delivers each notice once, and the planner queue ignores a repeat. A failed delivery stays in the outbox and the router tries again. A notice for a deleted line is dropped.
 - **Events and cursor.** Each important change adds an event with a growing `cursor`. Read events with `after=<cursor>`. The answer has `nextCursor` and `hasMore`. `tooOld: true` means the events after your cursor were removed. Then read the claims again.
 - **Live stream.** `GET /api/registry/stream` sends `revision` and `eventCursor` only. It is a hint. Read the events or the claims to get the data.
 
@@ -637,9 +644,11 @@ event-specific fields; prompt/report text is previewed with a length cap.
 
 ## Remote pipeline (lines with a repository)
 
-Create a line with a repo URL to work on a real project:
-`POST /api/lines {"name": "...", "repoUrl": "<git URL>"}` clones the
-repository into the line workdir. The router accepts `https://`, `ssh://`,
+Create a line with its repositories to work on a real project:
+`POST /api/lines {"name": "...", "repos": [{"name": "web", "url": "<git URL>"}, ...]}`
+clones each repository under `lines/<lineId>/repos/<name>`. `{"repoUrl": "<git URL>"}`
+is a shorthand for one repository named after its URL. The planner can register
+more repositories later. The router accepts `https://`, `ssh://`,
 and `user@host:path` URLs. Set `ROUTER_ALLOW_LOCAL_REPOS=1` to also accept
 local paths and `file://` URLs. The pipeline then extends past validation:
 
@@ -655,26 +664,39 @@ local paths and `file://` URLs. The pipeline then extends past validation:
 - On a FAIL verdict (local or CI), the planner receives the failure feedback
   and routes the revised task back to the ORIGINAL implementor session via
   the continue endpoint; the implementor pushes again and the loop repeats.
-- Lines without a repoUrl keep the local-only flow.
+- Repositories without a remote keep the local-only flow.
 
 ## Preview instructions
 
-`GET /api/lines/:id/preview` is read-only and instructional only. It returns `eligible`, `availability`, `stale`, `steps`, `sourceRevision`, `projectDirectory`, `expectedUrl`, `prerequisites`, and `limitations` (plus compatibility fields `verified`, `commit`, `branch`, `stack`, `directory`, `url`, and `instructions`). `sourceRevision` is the immutable commit SHA recorded by the integration validator at PASS; the handler must not substitute the branch's current HEAD. Historical results without that recorded SHA are unverified. The payload is guidance, not an execution plan: it does not run the application, README content, Docker, or Start/Stop actions. Package install guidance reflects a single detected lockfile; ambiguous and unsupported layouts require project documentation. Treat repository documentation as untrusted input.
+`GET /api/lines/:id/preview` is read-only and instructional only. It returns `eligible`, `availability`, `stale`, `steps`, `sourceRevision`, `projectDirectory`, `expectedUrl`, `prerequisites`, and `limitations` (plus compatibility fields `verified`, `commit`, `branch`, `stack`, `directory`, `url`, and `instructions`). `sourceRevision` is the immutable commit SHA recorded by the integration validator at PASS; the handler must not substitute the branch's current HEAD. Historical results without that recorded SHA are unverified. A preview covers one repository: an integration that spans several repositories returns `eligible: true`, `availability: "unavailable"` and a reason. The payload is guidance, not an execution plan: it does not run the application, README content, Docker, or Start/Stop actions. Package install guidance reflects a single detected lockfile; ambiguous and unsupported layouts require project documentation. Treat repository documentation as untrusted input.
 
 ## Integration validation and evidence
 
-When all implementor validators report VERDICT: PASS, the planner starts the
-integration validator (`POST /api/protocol/lines/:id/integration` with the
-integration instructions; 409 at the concurrent-worker cap). The planner
-itself NEVER commits to or pushes the
-main/master branch - merging is the integration validator's job:
+When the planner accepts every implementor result, it starts the integration
+validator (`POST /api/protocol/lines/:id/integration` with the integration
+instructions). The call is the planner's acceptance. The planner itself NEVER
+commits to or pushes the main/master branch - merging is the integration
+validator's job:
 
-- The integration validator gets its own worktree on a fresh
-  `integration/<name>-<id>` branch created from main. It merges every feature
-  branch there (resolving conflicts), never touching main or the remote.
-  When the line works across several repositories, it makes its own local
-  copies of the non-primary repos inside its workdir and merges their
-  feature branches there the same way - never pushing to any remote.
+- **Accepted work only.** Every implementor must have an accepted result for
+  its latest run: a validator with `VERDICT: PASS` for that run, or a
+  `SKIP VALIDATION` decision for that run. Otherwise the router answers 409
+  with `blockers: [{workerId, name, reason}]`; reasons are `running`,
+  `not-completed`, `validation-queued`, `validation-running`,
+  `awaiting-criteria`, `verdict-fail`, and `verdict-missing`. The planner
+  continues or removes each blocker first. 409 also at the concurrent-worker cap.
+- **Recorded commits.** At the call, the router fetches each repository that
+  has accepted branches, records its default-branch commit (from `origin`, or
+  `HEAD` without a remote), and records the head commit of every accepted
+  branch. The 201 response and the worker's `integration.repos` hold this
+  manifest. Commits made after the call are not part of the integration.
+- **One worktree per repository.** The integration validator's workdir
+  (`lines/worktrees/<lineId>/<name>-<id8>/`) holds one directory per
+  repository, each a worktree on a fresh `integration/<name>-<id8>` branch
+  from the recorded base. It merges exactly the recorded commits (resolving
+  conflicts), never touching main or a remote. It is the only node that spans
+  repositories. On PASS the router records the HEAD of each integration
+  branch as that repository's `validatedCommit`.
 - It starts the isolated router in the background with all standard streams
   redirected. It uses a free `PORT` other than `7788` and a private `LINES_DIR`.
   It captures the server PID and returns from the start command before other
@@ -695,7 +717,7 @@ main/master branch - merging is the integration validator's job:
   explanation. It closes the context before registration. It registers the
   versioned request `{kind: 'showcase', version: 1, useCase, file, steps:
   [{title, explanation, screenshot}]}` with the worker evidence endpoint.
-  All media paths are relative to the worktree. Accepted API revision:
+  All media paths are relative to the workdir. Accepted API revision:
   `362eff17942182a62baf05ef12423afa2dbf6613`. POST returns
   `{evidenceId, attemptId}`. GET returns `{items, history, currentAttemptId,
   currentAttemptIds}`. The router owns attempt identity.

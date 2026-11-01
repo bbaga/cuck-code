@@ -7,7 +7,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { previewForLine, safeText } = require("../preview-instructions");
 
-function line(worker, repoUrl) { return { ...(repoUrl === undefined ? {} : { repoUrl }), workers: new Map([[worker.id, worker]]) }; }
+function line(worker, repoUrl) { return { repos: new Map(repoUrl === undefined ? [] : [["app", { name: "app", url: repoUrl, path: "/unused" }]]), workers: new Map([[worker.id, worker]]) }; }
 function repository(t, files = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "preview-test-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -102,4 +102,15 @@ test("absent, conflicting, credential-bearing, and unsafe URLs return manual-onl
 });
 test("sanitizer removes control characters and bounds content", () => {
   assert.equal(safeText("a\0b", 2), "ab");
+});
+test("an integration manifest with one repo previews that repo; several repos are not previewed", t => {
+  const { root, commit } = repository(t, { "package.json": JSON.stringify({ scripts: { start: "vite" }, dependencies: { vite: "1" } }), "package-lock.json": "{}" });
+  const manifestRepo = { name: "web", url: "https://example.com/team/web.git", worktreePath: root, validatedCommit: commit };
+  const one = previewForLine(line(validator("/missing", null, { integration: { repos: [manifestRepo] } })));
+  assert.equal(one.availability, "available");
+  assert.equal(one.sourceRevision, commit);
+  const many = previewForLine(line(validator(root, commit, { integration: { repos: [manifestRepo, { ...manifestRepo, name: "api" }] } })));
+  assert.equal(many.availability, "unavailable");
+  assert.equal(many.eligible, true);
+  assert.match(many.reason, /several repositories/);
 });

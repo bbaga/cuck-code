@@ -5,6 +5,7 @@
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { cleanRepoUrl, reconcile, recordCheck, captureClaim, purgeExpired } = require('./work-merge');
+const { repoIdentity } = require('./line-repos');
 const execFileAsync = promisify(execFile);
 
 const BODY_MAX = 64 * 1024;
@@ -19,11 +20,15 @@ function safeClean(url) {
   try { return cleanRepoUrl(url); } catch { return null; }
 }
 
-// repos: [{ name, path, url }] (include 'primary'). Returns { repoPath, repositoryUrl } or null.
+// repos: the owner line's registered repos [{ name, path, url }]. claimRepo is the
+// stored repository identity (or a repo name on older claims).
+// Returns { repoPath, repositoryUrl } or null.
 function matchRepo(repos, claimRepo) {
   const wanted = safeClean(claimRepo);
-  const hit = (repos || []).find(r => r && (r.name === claimRepo || (wanted && safeClean(r.url) === wanted)));
-  const repositoryUrl = hit && safeClean(hit.url);
+  const identity = repoIdentity(claimRepo);
+  const hit = (repos || []).find(r => r && (r.name === claimRepo
+    || (wanted && safeClean(r.url) === wanted) || (identity && repoIdentity(r.url) === identity)));
+  const repositoryUrl = hit && (safeClean(hit.url) || safeClean(repoIdentity(hit.url)));
   return hit && hit.path && repositoryUrl ? { repoPath: hit.path, repositoryUrl } : null;
 }
 

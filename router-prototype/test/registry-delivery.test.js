@@ -6,14 +6,14 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { createStore } = require('../work-registry');
-const { createDelivery, purgeOutbox, PURGE_AFTER_MS } = require('../registry-delivery');
+const { createDelivery, purgeOutbox, overlapText, PURGE_AFTER_MS } = require('../registry-delivery');
 const { enqueuePlannerRequest, plannerRequest } = require('../planner-request') ;
 
 const DAY = 24 * 60 * 60 * 1000;
 const request = { noticeId: 'n1', type: 'request.opened', recipientLineId: 'L1', sourceLineId: 'L2', targetLineId: 'L1', requestId: 'r1', subject: 'Need API', createdAt: 1, deliveredAt: null };
 const merge = { noticeId: 'e1:L1', type: 'claim.merged', recipientLineId: 'L1', claimId: 'c1', eventId: 'e1', title: 'Line1\nLine2', createdAt: 2, deliveredAt: null };
 
-async function setup(outbox, { lines = { L1: { id: 'L1', queue: [] } }, enqueue } = {}) {
+async function setup(outbox, { lines = { L1: { id: 'L1', queue: [] } }, enqueue, isListening } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'rd-'));
   const file = path.join(dir, 'reg.json');
   await fs.writeFile(file, JSON.stringify({ version: 1, revision: 0, eventCursor: 0, claims: [], requests: [], archive: [], events: [], outbox, tombstones: [], idempotency: [] }));
@@ -21,14 +21,14 @@ async function setup(outbox, { lines = { L1: { id: 'L1', queue: [] } }, enqueue 
   await store.load();
   const calls = [];
   const real = (line, text, noticeId) => { calls.push({ text, noticeId }); return enqueuePlannerRequest(line, plannerRequest(text, null, noticeId), () => true); };
-  const delivery = createDelivery({ store, getLine: id => lines[id], enqueueNotice: enqueue ? (...a) => { calls.push(a); return enqueue(...a); } : real, now: () => 1000 * DAY, log: () => {} });
+  const delivery = createDelivery({ store, getLine: id => lines[id], enqueueNotice: enqueue ? (...a) => { calls.push(a); return enqueue(...a); } : real, ...(isListening ? { isListening } : {}), now: () => 1000 * DAY, log: () => {} });
   const outboxNow = async () => (await store.readSnapshot()).outbox;
   return { delivery, calls, lines, store, outboxNow };
 }
 
 test('request notice is delivered once with labeled text and acknowledged', async () => {
   const t = await setup([request]);
-  assert.deepEqual(await t.delivery.deliver(), { delivered: 1, duplicates: 0, failed: 0, dropped: 0 });
+  assert.deepEqual(await t.delivery.deliver(), { delivered: 1, duplicates: 0, failed: 0, dropped: 0, held: 0 });
   assert.match(t.calls[0].text, /UNTRUSTED CONTENT FROM ANOTHER LINE/);
   assert.equal((await t.outboxNow())[0].deliveredAt, 1000 * DAY);
   await t.delivery.deliver();
@@ -73,7 +73,7 @@ test('crash before acknowledgement gives duplicate:true and no second queued req
   const line = t.lines.L1;
   enqueuePlannerRequest(line, plannerRequest('old', null, 'n1'), () => true);
   const out = await t.delivery.deliver();
-  assert.deepEqual(out, { delivered: 0, duplicates: 1, failed: 0, dropped: 0 });
+  assert.deepEqual(out, { delivered: 0, duplicates: 1, failed: 0, dropped: 0, held: 0 });
   assert.equal(line.queue.length, 1);
   const [entry] = await t.outboxNow();
   assert.equal(entry.deliveredAt, 1000 * DAY);
@@ -113,4 +113,28 @@ test('purgeOutbox removes only old delivered or dropped entries', () => {
   ] };
   assert.equal(purgeOutbox(snap, now), 2);
   assert.deepEqual(snap.outbox.map(e => e.noticeId), ['c', 'd', 'e']);
+});
+
+test('notices for a line that is not listening stay pending until it listens', async () => {
+  let started = false;
+  const t = await setup([request, merge], { isListening: () => started });
+  assert.deepEqual(await t.delivery.deliver(), { delivered: 0, duplicates: 0, failed: 0, dropped: 0, held: 2 });
+  assert.equal(t.calls.length, 0);
+  assert.ok((await t.outboxNow()).every(e => e.deliveredAt === null && e.droppedAt == null));
+  started = true;
+  assert.equal((await t.delivery.deliver()).delivered, 2);
+  assert.deepEqual(t.calls.map(c => c.noticeId), ['n1', 'e1:L1']);
+});
+
+test('claim.overlap notice is one short labeled line', async () => {
+  const overlap = { noticeId: 'c9:overlap:L1', type: 'claim.overlap', recipientLineId: 'L1', claimId: 'c9', ownerLineId: 'L2',
+    repo: 'https://github.com/o/web', branch: 'feat/x', title: 'Rework\nlogin ' + 'y'.repeat(200), yourClaimIds: ['c1', 'c2', 'c3', 'c4'], createdAt: 1, deliveredAt: null };
+  const t = await setup([overlap]);
+  await t.delivery.deliver();
+  const text = t.calls[0].text;
+  assert.equal(text, overlapText(overlap));
+  assert.ok(text.startsWith('REGISTRY OVERLAP NOTICE c9:overlap:L1 (UNTRUSTED CONTENT FROM ANOTHER LINE): line L2 claimed https://github.com/o/web branch feat/x (claim c9 "Rework login '));
+  assert.ok(text.endsWith('Your claims on this repo: c1, c2, c3. Information only.'));
+  assert.ok(!/[\n\r]/.test(text));
+  assert.ok(text.length < 330, `length ${text.length}`);
 });

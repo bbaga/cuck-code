@@ -4,7 +4,7 @@ const { resolveSpawnBase, BaseError, baseFields, baseNote } = require("../spawn-
 
 const SHA = "a".repeat(40);
 const OTHER = "b".repeat(40);
-const parent = { name: "parent", role: "implementor", repo: "primary", branch: "9b508685/parent", status: "done" };
+const parent = { name: "parent", role: "implementor", repo: "web", branch: "9b508685/parent", status: "done" };
 
 // Fake git: `ok` maps a joined arg string to stdout; others fail.
 function runner(ok) {
@@ -16,7 +16,7 @@ function runner(ok) {
   };
   return { run, calls };
 }
-const ctx = (run, workers = [parent]) => ({ workers, repoName: "primary", run });
+const ctx = (run, workers = [parent]) => ({ workers, repoName: "web", run });
 const rejects = (fn, status) => assert.throws(fn, (e) => e instanceof BaseError && e.status === status);
 
 test("absent, null and empty base resolve to null without git calls", () => {
@@ -97,6 +97,11 @@ test("a validator gives 400", () => {
 
 test("a worker of another repository gives 400", () => {
   const w = { ...parent, repo: "other" };
+  rejects(() => resolveSpawnBase("parent", ctx(runner({}).run, [w])), 400);
+});
+
+test("a worker without a repository is never treated as part of a named repo", () => {
+  const w = { ...parent, repo: undefined };
   rejects(() => resolveSpawnBase("parent", ctx(runner({}).run, [w])), 400);
 });
 
