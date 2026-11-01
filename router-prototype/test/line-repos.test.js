@@ -101,6 +101,26 @@ test("integrationSelection uses the latest validator for the run", () => {
   assert.deepEqual(out.included.map((w) => w.id), ["a"]);
 });
 
+test("C5: integrationSelection accepts a run with an acceptedRuns entry, not an older one", () => {
+  const rec = (runId, invocationId) => ({ runId, invocationId, by: "planner", reason: "r", at: "t" });
+  const a = impl("a", { acceptedRuns: [rec(2, "inv-a")] });
+  const old = impl("old", { acceptedRuns: [rec(1, "inv-old")] });
+  const out = integrationSelection([a, old]);
+  assert.deepEqual(out.included.map((w) => w.id), ["a"]);
+  assert.deepEqual(out.blockers.map((b) => [b.workerId, b.reason]), [["old", "awaiting-criteria"]]);
+});
+
+test("C5: the workspace kind of the node decides which instances need acceptance", () => {
+  const graph = { nodes: { w: { type: "t-own" }, c: { type: "t-co" }, s: { type: "t-src" } },
+    types: { "t-own": { workspace: "own-worktree" }, "t-co": { workspace: "coordinator" }, "t-src": { workspace: "source" } } };
+  const own = impl("own", { node: "w" });
+  const coordinator = impl("co", { node: "c" });
+  const checker = { id: "chk", role: "validator", node: "s", status: "completed", verdict: "pass" };
+  const noNode = impl("nonode");
+  const out = integrationSelection([own, coordinator, checker, noNode], [], graph);
+  assert.deepEqual(out.blockers.map((b) => b.workerId), ["own", "nonode"]);
+});
+
 test("defaultBranchFrom parses ls-remote --symref output", () => {
   assert.equal(defaultBranchFrom("ref: refs/heads/trunk\tHEAD\nabc\tHEAD\n"), "trunk");
   assert.equal(defaultBranchFrom(""), null);

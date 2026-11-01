@@ -3000,6 +3000,19 @@ const routeRequest = (req, res) => {
         if (!sent.ok) return json(res, sent.status, { error: sent.error });
         return json(res, 202, { queued: true, compacting: sent.compacting });
       }
+      if (interaction.effect === "accept") {
+        const target = line.workers.get(body.instance);
+        if (!target) return json(res, 404, { error: `no such instance: '${body.instance}'` });
+        if (target.status === "running" || target.child) {
+          return json(res, 409, { error: "the instance is running - accept its run when it is idle" });
+        }
+        const runId = target.runGeneration || 0;
+        if (!Array.isArray(target.acceptedRuns)) target.acceptedRuns = [];
+        target.acceptedRuns.push({ runId, invocationId: target.lastCompletedInvocationId || null,
+          by: "planner", reason: body.reason, at: new Date().toISOString() });
+        saveLine(line);
+        return json(res, 200, { accepted: true, instance: target.id, runId });
+      }
       if (interaction.effect !== "create") {
         return json(res, 501, { error: "not implemented", code: "NOT_IMPLEMENTED" });
       }

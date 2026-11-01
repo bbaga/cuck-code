@@ -78,9 +78,21 @@ const BLOCKER_TEXT = {
 // validator with VERDICT: PASS for that run, or a SKIP VALIDATION decision
 // for that run. Anything else blocks the integration.
 // Returns { included: [worker], blockers: [{ workerId, name, reason, text }] }.
-function integrationSelection(workers, pendingValidations = []) {
+// An instance needs acceptance when its node has workspace "own-worktree"
+// (graph = line.graph). A worker without a node falls back to the role test.
+// A run is accepted by: an acceptedRuns entry, a PASS from a checker, or the
+// old validationSkipped record (kept until task D9).
+function integrationSelection(workers, pendingValidations = [], graph = null) {
   const all = [...workers];
-  const implementors = all.filter((w) => w.role === "implementor" && w.kind !== "integration");
+  const needsAcceptance = (w) => {
+    if (w.kind === "integration") return false;
+    const node = graph && graph.nodes && typeof w.node === "string"
+      && Object.prototype.hasOwnProperty.call(graph.nodes, w.node) ? graph.nodes[w.node] : null;
+    const type = node && graph.types ? graph.types[node.type] : null;
+    if (type && type.workspace) return type.workspace === "own-worktree";
+    return w.role === "implementor";
+  };
+  const implementors = all.filter(needsAcceptance);
   const included = [];
   const blockers = [];
   const block = (w, reason) => blockers.push({ workerId: w.id, name: w.name, reason,
@@ -94,6 +106,7 @@ function integrationSelection(workers, pendingValidations = []) {
     const current = (src) => src && src.runId === impl.runGeneration
       && src.invocationId === impl.lastCompletedInvocationId;
     if (current(impl.validationSkipped)) { included.push(impl); continue; }
+    if ((impl.acceptedRuns || []).some(current)) { included.push(impl); continue; }
     const latest = validators.filter((v) => current(v.validationSource)).pop();
     if (!latest) { block(impl, "awaiting-criteria"); continue; }
     if (latest.status === "completed" && latest.verdict === "pass") { included.push(impl); continue; }

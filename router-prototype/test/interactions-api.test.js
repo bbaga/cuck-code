@@ -184,6 +184,32 @@ test("C4: feedback to an instance without a session is 409", async () => {
   assert.match(out.body.error, /no session/);
 });
 
+test("C5: accept records the run and the integration no longer waits for criteria", async () => {
+  const before = await call(base, "POST", `/api/protocol/lines/${accLine}/integration`, { prompt: "test all" });
+  assert.equal(before.status, 409, JSON.stringify(before.body));
+  const reasons = (b) => b.body.blockers.map((x) => [x.workerId, x.reason]);
+  assert.deepEqual(reasons(before).filter(([id]) => id === "i1"), [["i1", "awaiting-criteria"]]);
+  const out = await post(accLine, "accept", { instance: "i1", reason: "No check needed." });
+  assert.equal(out.status, 200, JSON.stringify(out.body));
+  assert.deepEqual(out.body, { accepted: true, instance: "i1", runId: 1 });
+  const w = await stateOf(accLine, "i1");
+  assert.equal(w.acceptedRuns.length, 1);
+  assert.deepEqual({ ...w.acceptedRuns[0], at: typeof w.acceptedRuns[0].at },
+    { runId: 1, invocationId: "inv-i1", by: "planner", reason: "No check needed.", at: "string" });
+  const after = await call(base, "POST", `/api/protocol/lines/${accLine}/integration`, { prompt: "test all" });
+  if (after.status === 409 && after.body.blockers) {
+    assert.ok(!reasons(after).some(([id]) => id === "i1"), JSON.stringify(after.body));
+  }
+});
+
+test("C5: accept of a running instance is refused", async () => {
+  const started = await post(ok, "start", { to: "backend-impl", task: "long", repo: "api", name: "busy-acc" });
+  const id = started.body.instance.workerId;
+  const out = await post(ok, "accept", { instance: id, reason: "x" });
+  assert.equal(out.status, 400);
+  assert.match(out.body.invalid[0].reason, /running/);
+});
+
 test("a good start of an implementor is 201 with the instance", async () => {
   const out = await post(ok, "start", { to: "backend-impl", task: "build it", repo: "api", name: "fresh" });
   assert.equal(out.status, 201, JSON.stringify(out.body));
