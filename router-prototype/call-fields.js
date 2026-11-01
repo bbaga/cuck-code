@@ -54,6 +54,12 @@ function requiredFields(resolved, interactionName, toNodeId) {
     if (!has(interaction.fields, v)) throw undeclared(v, `interaction '${interactionName}'`);
     add(v, interaction.fields[v], `interaction ${interactionName}`);
   }
+  // Declared fields that the body does not use (for example the reason of 'accept') are still part
+  // of the call. The 'instance' field of a 'chosen' target comes from the effect step below.
+  for (const [name, decl] of Object.entries(interaction.fields || {})) {
+    if (name === "instance" && interaction.target === "chosen") continue;
+    add(name, decl, `interaction ${interactionName}`);
+  }
 
   if (interaction.effect === "create") {
     // 2. Everything the new instance's prompt is built from.

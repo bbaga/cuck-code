@@ -128,3 +128,17 @@ test("unknown interaction or node throws", () => {
   assert.throws(() => requiredFields(resolved(), "nope", "A"), /unknown interaction/);
   assert.throws(() => requiredFields(resolved(), "start", "Z"), /unknown node/);
 });
+
+test("a declared field that the body does not use is still required (accept needs a reason)", () => {
+  const r = resolved({ interactions: { accept: {
+    name: "accept", effect: "accept", trigger: "request", target: "chosen", body: "",
+    fields: { instance: { description: "The instance.", type: "instance" }, reason: { description: "Why.", type: "string" } },
+  } } });
+  const need = requiredFields(r, "accept", "A");
+  assert.deepEqual(Object.keys(need).sort(), ["instance", "reason"]);
+  assert.equal(need.instance.decl.node, "A", "the effect declaration of 'instance' wins");
+  const bad = checkCall(r, "accept", "A", { instance: "i1" });
+  assert.equal(bad.ok, false);
+  assert.deepEqual(bad.missing.map((m) => m.field), ["reason"]);
+  assert.equal(checkCall(r, "accept", "A", { instance: "i1", reason: "reviewed" }).ok, true);
+});
