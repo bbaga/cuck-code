@@ -58,7 +58,7 @@ const { readClaudeConfig } = require("./claude-config");
 const { sessionContextTokens } = require("./context-probe");
 const { migratePresets } = require("./preset-migration");
 const { nameError, textError, validateText, graphPreview, buildListing, resolveSafe, readManagedText,
-  renameInText, writeManagedPipeline, deleteManagedPipeline, MAX_BODY_BYTES } = require("./pipelines-api");
+  renameInText, applyNodeSettingsToText, writeManagedPipeline, deleteManagedPipeline, MAX_BODY_BYTES } = require("./pipelines-api");
 const { isSignalablePid } = require("./process-ref");
 const { newContextStats, restoreContextStats, recordTurn, resetForFreshSession,
   contextView, shouldAutoCompact, parseAutoThreshold, compactionPrompt, acceptSummary,
@@ -1084,8 +1084,27 @@ function pipelinesApi(req, res, parts) {
       }
       let text;
       try { text = renameInText(sourceText, newName); } catch (e) { return json(res, 400, { error: e.message }); }
-      const v = pipelineValidation(text, newName);
+      let v = pipelineValidation(text, newName);
       if (v.errors.length) return sendErrors(400, v.errors);
+      if (body.nodeSettings !== undefined && body.nodeSettings !== null) {
+        const raw = body.nodeSettings;
+        if (typeof raw !== "object" || Array.isArray(raw)) return json(res, 400, { error: "nodeSettings must be an object" });
+        const clean = {};
+        for (const [id, settings] of Object.entries(raw)) {
+          if (!Object.prototype.hasOwnProperty.call(v.resolved.nodes, id)) {
+            return json(res, 400, { error: `nodeSettings: no such node '${id}'` });
+          }
+          if (settings === null || typeof settings !== "object" || Array.isArray(settings)) {
+            return json(res, 400, { error: `nodeSettings.${id} must be an object` });
+          }
+          const message = validateNodeSettingsForNode(v.resolved, id, settings);
+          if (message) return json(res, 400, { error: message });
+          clean[id] = settings;
+        }
+        try { text = applyNodeSettingsToText(text, clean); } catch (e) { return json(res, 400, { error: e.message }); }
+        v = pipelineValidation(text, newName);
+        if (v.errors.length) return sendErrors(400, v.errors);
+      }
       writeManagedPipeline({ fs, managedDir: MANAGED_PLUGINS_DIR, name: newName, text, write: writeFileDurable });
       rebuildCatalog();
       slog("info", "pipeline.duplicate", { from: name, name: newName });

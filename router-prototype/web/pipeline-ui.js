@@ -312,6 +312,76 @@
     return any ? pipeline : null;
   }
 
+  // ---- Create panel: pipeline picker and per-node settings ----
+
+  // Picker label: "name - description (layer)".
+  function pipelineOptionLabel(p) {
+    const desc = p && p.description ? " - " + p.description : "";
+    return (p && p.name) + desc + (p && p.layer ? " (" + p.layer + ")" : "");
+  }
+
+  // Pipelines for the picker: `default` first, then the others in listing order.
+  // Pipelines that do not resolve stay in the list (the panel shows their errors).
+  function pickerPipelines(list) {
+    const items = Array.isArray(list) ? list.filter((p) => p && typeof p.name === "string") : [];
+    return [...items.filter((p) => p.name === "default"), ...items.filter((p) => p.name !== "default")];
+  }
+
+  // True when the node type keeps a fresh session per run (no max context).
+  function isFreshSessionNode(resolved, nodeId) {
+    const node = resolved && resolved.nodes && resolved.nodes[nodeId];
+    const type = node && resolved.types && resolved.types[node.type];
+    return !!type && type.session === "fresh";
+  }
+
+  // One form row per node of a resolved pipeline (GET /api/pipelines/:name `resolved`),
+  // in file order: { id, type, title, maxContext }. Empty for a pipeline that did not resolve.
+  function nodeRowsFromResolved(resolved) {
+    if (!resolved || typeof resolved.nodes !== "object" || resolved.nodes === null) return [];
+    return Object.entries(resolved.nodes).map(([id, node]) => ({
+      id,
+      type: node.type,
+      title: id + " (" + node.type + ")",
+      maxContext: !isFreshSessionNode(resolved, id),
+    }));
+  }
+
+  // The `nodeSettings` request body from form values { <nodeId>: {harness, model,
+  // effort, timeLimit, maxContext} }. Empty values are left out; a fresh-session
+  // node never sends maxContext. Returns null when no node has a setting.
+  function buildNodeSettingsPayload(values, resolved) {
+    const out = {};
+    for (const [id, row] of Object.entries(values || {})) {
+      if (!row || typeof row !== "object") continue;
+      const entry = {};
+      for (const field of ["harness", "model", "effort", "timeLimit", "maxContext"]) {
+        if (field === "maxContext" && resolved && isFreshSessionNode(resolved, id)) continue;
+        const v = row[field];
+        if (v !== undefined && v !== null && String(v).trim() !== "") {
+          entry[field] = typeof v === "number" ? v : String(v).trim();
+        }
+      }
+      if (Object.keys(entry).length) out[id] = entry;
+    }
+    return Object.keys(out).length ? out : null;
+  }
+
+  // The `POST /api/lines` body of the create panel. Empty name/repo are omitted.
+  function buildCreateBody({ name, repoUrl, pipelineName, nodeSettings }) {
+    const body = {};
+    if (name && String(name).trim()) body.name = String(name).trim();
+    if (repoUrl && String(repoUrl).trim()) body.repoUrl = String(repoUrl).trim();
+    if (pipelineName) body.pipelineName = pipelineName;
+    if (nodeSettings && Object.keys(nodeSettings).length) body.nodeSettings = nodeSettings;
+    return body;
+  }
+
+  // Error lines of a pipeline answer (`errors: [{rule, message}]`) as one text, or "".
+  function pipelineErrorsText(errors) {
+    if (!Array.isArray(errors) || !errors.length) return "";
+    return errors.map((e) => (e && e.rule ? e.rule + ": " : "") + (e && e.message || String(e))).join("; ");
+  }
+
   // A validator counts as failed when its status is "failed" or its
   // verdict is "fail". Non-objects are never failed.
   function isFailedValidator(w) {
@@ -779,6 +849,13 @@
     clearHarnessState,
     clearProviderState,
     buildPipelinePayload,
+    pipelineOptionLabel,
+    pickerPipelines,
+    isFreshSessionNode,
+    nodeRowsFromResolved,
+    buildNodeSettingsPayload,
+    buildCreateBody,
+    pipelineErrorsText,
     formatScopePanelData,
     authBadge,
     previewForIntegration,

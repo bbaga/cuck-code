@@ -135,7 +135,12 @@ async function openPage(url, options = {}) {
     }
     const setViewport = (width, height) => send('Emulation.setDeviceMetricsOverride',
       { width, height, deviceScaleFactor: 1, mobile: false });
-    return { evaluate, waitFor, press, setViewport, requests: () => [...seen],
+    const screenshot = async (file) => {
+      const r = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+      fs.writeFileSync(file, Buffer.from(r.data, 'base64'));
+      return file;
+    };
+    return { evaluate, waitFor, press, setViewport, screenshot, requests: () => [...seen],
       blocked: () => [...blockedIds].map((id) => urlById.get(id)), close, browser: exe, pid: proc.pid };
   } catch (err) {
     await close();

@@ -8,10 +8,10 @@
 const path = require("node:path");
 const YAML = require("yaml");
 const { phaseOfType } = require("./line-graph");
+const { setNodeSettingsInDoc } = require("./pipelines-api");
 const { restorePresets } = require("./pipeline-presets");
 
 const MAX_FILE_NAME = 60;
-const SETTING_KEYS = ["harness", "model", "effort", "timeLimit", "maxContext"];
 
 // A safe file name: lowercase [a-z0-9-], at most 60 characters, never empty.
 function safeFileName(name) {
@@ -39,16 +39,7 @@ function presetPipelineText(defaultPipelineText, defaultGraph, fileName, oldName
     const phase = phaseOfType(defaultGraph, node.type);
     const settings = phase && settingsByPhase[phase];
     if (!settings || typeof settings !== "object") continue;
-    let touched = false;
-    for (const key of SETTING_KEYS) {
-      if (settings[key] === undefined) continue;
-      doc.setIn(["nodes", id, key], settings[key]);
-      touched = true;
-    }
-    if (touched) {
-      const map = doc.getIn(["nodes", id], true);
-      if (map && typeof map === "object") map.flow = false;
-    }
+    setNodeSettingsInDoc(doc, id, settings);
   }
   return doc.toString();
 }

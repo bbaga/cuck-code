@@ -327,3 +327,39 @@ test("router: duplicate a built-in, edit it with PUT, create a line from it", as
     assert.equal(saved.graph.nodes.planner.settings.model, "sonnet-edit");
   });
 });
+
+test("applyNodeSettingsToText writes settings into node entries", () => {
+  const YAML = require("yaml");
+  const out = api.applyNodeSettingsToText(defaultText, { planner: { harness: "claude", maxContext: 100000 }, validator: { effort: "high" } });
+  const doc = YAML.parse(out);
+  assert.equal(doc.nodes.planner.harness, "claude");
+  assert.equal(doc.nodes.planner.maxContext, 100000);
+  assert.equal(doc.nodes.validator.effort, "high");
+});
+
+test("router: duplicate with nodeSettings writes them into the copy", async () => {
+  await withRouter(async ({ call }) => {
+    const dup = await call("POST", "/api/pipelines/default/duplicate",
+      { newName: "tuned", nodeSettings: { planner: { harness: "claude", effort: "high", maxContext: 50000 } } });
+    assert.equal(dup.status, 201, JSON.stringify(dup.body));
+    const got = await call("GET", "/api/pipelines/tuned");
+    assert.deepEqual(got.body.errors, []);
+    const planner = require("yaml").parse(got.body.text).nodes.planner;
+    assert.equal(planner.harness, "claude");
+    assert.equal(planner.effort, "high");
+    assert.equal(planner.maxContext, 50000);
+  });
+});
+
+test("router: duplicate nodeSettings errors write nothing", async () => {
+  await withRouter(async ({ call }) => {
+    const dup = (nodeSettings, newName = "bad-one") => call("POST", "/api/pipelines/default/duplicate", { newName, nodeSettings });
+    assert.equal((await dup({ nope: { harness: "claude" } })).status, 400);
+    assert.equal((await dup({ planner: { bogus: 1 } })).status, 400);
+    assert.equal((await dup({ planner: "x" })).status, 400);
+    assert.equal((await dup([])).status, 400);
+    assert.equal((await dup({ planner: { effort: "extreme" } })).status, 400);
+    assert.equal((await call("GET", "/api/pipelines/bad-one")).status, 404);
+    assert.equal((await dup({}, "same-as-default")).status, 201);
+  });
+});

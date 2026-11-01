@@ -249,6 +249,11 @@
   .pipePane h3 { font-size: .85rem; margin: 14px 0 6px; color: #d8dee6; }
   .pipePane .pipeCfg { padding: 0; border: 0; min-width: max-content; }
   .pipeNote { font-size: .72rem; color: #6c7a8c; margin: 0 0 8px; }
+  .nodeRow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 88px 72px; }
+  .nodeRow .phaseName { grid-column: 1 / -1; color: #8fa3bd; overflow-wrap: anywhere; }
+  .nodeRow .authHint { grid-column: 1 / -1; }
+  .saveRow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; margin-top: 10px; }
+  #createPanel button:disabled { opacity: .5; cursor: not-allowed; }
   .presetBar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
     gap: 6px; align-items: center; margin: 4px 0 8px; }
   .presetBar button, .pipeBtns button { white-space: nowrap; }
@@ -276,7 +281,7 @@
     body { flex-direction: column; }
     #sidebar { width: auto; box-sizing: border-box; border-right: 0; border-bottom: 1px solid #262b33; }
     #registry { padding: 12px; }
-    .phaseRow { grid-template-columns: 1fr 1fr; }
+    .phaseRow, .nodeRow { grid-template-columns: 1fr 1fr; }
     .phaseRow .phaseName { grid-column: 1 / -1; }
     .authHint { grid-column: 1 / -1; }
   }
@@ -301,7 +306,8 @@
 <script src="registry-line.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
-  const { PHASE_ROWS, EFFORT_LEVELS, CONTEXT_PHASES, parseContextSize, formatTokens, filterInstalled, buildPipelinePayload, authBadge, previewForIntegration,
+  const { PHASE_ROWS, nodeRowsFromResolved, buildNodeSettingsPayload, buildCreateBody, pickerPipelines,
+    pipelineOptionLabel, pipelineErrorsText, EFFORT_LEVELS, CONTEXT_PHASES, parseContextSize, formatTokens, filterInstalled, buildPipelinePayload, authBadge, previewForIntegration,
     previewSelectionKey, previewSelectionExists, isPassingIntegration, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
     PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
@@ -1705,67 +1711,84 @@ window.addEventListener("DOMContentLoaded", () => {
   // model, effort, and (for resumed phases) max context. Used by the create
   // panel and by each line's Pipeline page. read() returns { pipeline } or
   // { error }; set() fills the form from a pipeline override object.
-  function createPipelineForm(idPrefix) {
+  // With `rowSpecs` (from nodeRowsFromResolved) the form has one row per graph
+  // node and read() returns { nodeSettings }; setRows() swaps the rows later.
+  function createPipelineForm(idPrefix, rowSpecs) {
     const el = document.createElement("div");
     el.className = "pipeForm";
+    const nodeMode = Array.isArray(rowSpecs);
     const harnessSelects = {}, authModeSelects = {}, modelSelects = {},
       effortSelects = {}, authHints = {}, maxContextInputs = {};
     const phaseState = {};
+    let rows = [];
     // Fields the form has no control for (timeLimit) survive a set/read.
     let extraFields = {};
-    for (const { key } of PHASE_ROWS) {
-      const row = document.createElement("div");
-      row.className = "phaseRow";
-      const phaseName = document.createElement("span");
-      phaseName.className = "phaseName";
-      phaseName.textContent = key;
-      const mkSelect = (kind, label) => {
-        const sel = document.createElement("select");
-        sel.id = idPrefix + "-" + kind + "-" + key;
-        sel.setAttribute("aria-label", key + " " + label);
-        const def = document.createElement("option");
-        def.value = "";
-        def.textContent = "default";
-        sel.appendChild(def);
-        return sel;
-      };
-      const hSel = mkSelect("harness", "harness");
-      const amSel = mkSelect("authmode", "authentication mode");
-      amSel.hidden = true;
-      amSel.disabled = true;
-      const mSel = mkSelect("model", "model");
-      const eSel = mkSelect("effort", "effort");
-      for (const level of EFFORT_LEVELS) {
-        const o = document.createElement("option");
-        o.value = level;
-        o.textContent = level;
-        eSel.appendChild(o);
-      }
-      const hint = document.createElement("div");
-      hint.className = "authHint";
-      row.append(phaseName, hSel, amSel, mSel, eSel);
-      if (CONTEXT_PHASES.includes(key)) {
-        const ctxIn = document.createElement("input");
-        ctxIn.id = idPrefix + "-maxctx-" + key;
-        ctxIn.placeholder = "max ctx";
-        ctxIn.title = "Max context window, e.g. 200K or 50K. The session is compacted when it reaches this size. Empty uses the router default.";
-        ctxIn.setAttribute("aria-label", key + " max context window");
-        row.appendChild(ctxIn);
-        maxContextInputs[key] = ctxIn;
-      }
-      row.appendChild(hint);
-      el.appendChild(row);
-      harnessSelects[key] = hSel;
-      authModeSelects[key] = amSel;
-      modelSelects[key] = mSel;
-      effortSelects[key] = eSel;
-      authHints[key] = hint;
-      phaseState[key] = clearHarnessState(null);
-    }
     const authSummary = document.createElement("div");
     authSummary.className = "authSummary";
     el.appendChild(authSummary);
 
+    function buildRows(specs) {
+      for (const old of [...el.querySelectorAll(".phaseRow")]) old.remove();
+      for (const m of [harnessSelects, authModeSelects, modelSelects, effortSelects, authHints,
+        maxContextInputs, phaseState]) {
+        for (const k of Object.keys(m)) delete m[k];
+      }
+      rows = specs;
+      for (const { key, title, maxContext } of specs) {
+        const row = document.createElement("div");
+        row.className = "phaseRow" + (nodeMode ? " nodeRow" : "");
+        const phaseName = document.createElement("span");
+        phaseName.className = "phaseName";
+        phaseName.textContent = title || key;
+        const mkSelect = (kind, label) => {
+          const sel = document.createElement("select");
+          sel.id = idPrefix + "-" + kind + "-" + key;
+          sel.setAttribute("aria-label", key + " " + label);
+          const def = document.createElement("option");
+          def.value = "";
+          def.textContent = "default";
+          sel.appendChild(def);
+          return sel;
+        };
+        const hSel = mkSelect("harness", "harness");
+        const amSel = mkSelect("authmode", "authentication mode");
+        amSel.hidden = true;
+        amSel.disabled = true;
+        const mSel = mkSelect("model", "model");
+        const eSel = mkSelect("effort", "effort");
+        for (const level of EFFORT_LEVELS) {
+          const o = document.createElement("option");
+          o.value = level;
+          o.textContent = level;
+          eSel.appendChild(o);
+        }
+        const hint = document.createElement("div");
+        hint.className = "authHint";
+        row.append(phaseName, hSel, amSel, mSel, eSel);
+        if (maxContext) {
+          const ctxIn = document.createElement("input");
+          ctxIn.id = idPrefix + "-maxctx-" + key;
+          ctxIn.placeholder = "max ctx";
+          ctxIn.title = "Max context window, e.g. 200K or 50K. The session is compacted when it reaches this size. Empty uses the router default.";
+          ctxIn.setAttribute("aria-label", key + " max context window");
+          row.appendChild(ctxIn);
+          maxContextInputs[key] = ctxIn;
+        }
+        row.appendChild(hint);
+        el.insertBefore(row, authSummary);
+        harnessSelects[key] = hSel;
+        authModeSelects[key] = amSel;
+        modelSelects[key] = mSel;
+        effortSelects[key] = eSel;
+        authHints[key] = hint;
+        phaseState[key] = clearHarnessState(null);
+        hSel.addEventListener("change", () => onHarnessChange(key));
+        amSel.addEventListener("change", () => onAuthModeChange(key));
+      }
+    }
+    buildRows(nodeMode
+      ? rowSpecs.map((r) => ({ key: r.id, title: r.title, maxContext: r.maxContext }))
+      : PHASE_ROWS.map(({ key }) => ({ key, maxContext: CONTEXT_PHASES.includes(key) })));
     function syncPhaseRow(key) {
       const state = phaseState[key];
       const harness = harnessSelects[key].value;
@@ -1804,11 +1827,6 @@ window.addEventListener("DOMContentLoaded", () => {
       authHints[key].textContent = phaseState[key].statusText || baseAuthHintText(key);
     }
 
-    for (const { key } of PHASE_ROWS) {
-      harnessSelects[key].addEventListener("change", () => onHarnessChange(key));
-      authModeSelects[key].addEventListener("change", () => onAuthModeChange(key));
-    }
-
     function onHarnessChange(key) {
       // New harness: drop the auth mode, model, models, status, and hints, and
       // invalidate any in-flight Pi detail fetch for this row.
@@ -1838,11 +1856,11 @@ window.addEventListener("DOMContentLoaded", () => {
       const result = await fetchPiDetail({
         url: piDetailUrl(provider),
         fetchImpl: fetch,
-        isCurrent: (t) => phaseState[key].tracker.isCurrent(t),
+        isCurrent: (t) => !!phaseState[key] && phaseState[key].tracker.isCurrent(t),
         token,
       });
       if (result.stage === "fetch-error") {
-        if (result.current) {
+        if (result.current && phaseState[key]) {
           phaseState[key].statusText = result.error;
           updateAuthHint(key);
         }
@@ -1858,7 +1876,7 @@ window.addEventListener("DOMContentLoaded", () => {
         status: result.status,
         data: result.data,
       });
-      if (!outcome.apply) return;
+      if (!outcome.apply || !phaseState[key]) return;
       phaseState[key].piDetail = outcome.piDetail;
       phaseState[key].models = outcome.models;
       phaseState[key].statusText = outcome.statusText;
@@ -1869,7 +1887,7 @@ window.addEventListener("DOMContentLoaded", () => {
     // model choices (Vibe and Claude rows pick up their models here; Pi rows
     // wait for a mode).
     function applyHarnesses() {
-      for (const { key } of PHASE_ROWS) {
+      for (const { key } of rows) {
         const sel = harnessSelects[key];
         const current = sel.value;
         const model = modelSelects[key].value;
@@ -1898,7 +1916,7 @@ window.addEventListener("DOMContentLoaded", () => {
     function set(pipeline) {
       const p = pipeline && typeof pipeline === "object" ? pipeline : {};
       extraFields = {};
-      for (const { key } of PHASE_ROWS) {
+      for (const { key } of rows) {
         const cfg = p[key] && typeof p[key] === "object" ? p[key] : {};
         selectValue(harnessSelects[key], cfg.harness, "not installed");
         onHarnessChange(key);
@@ -1911,10 +1929,43 @@ window.addEventListener("DOMContentLoaded", () => {
       }
     }
 
+    // The typed values per row key, as read() would send them (no validation).
+    function snapshot() {
+      const out = {};
+      for (const { key } of rows) {
+        out[key] = { harness: harnessSelects[key].value, model: modelSelects[key].value,
+          effort: effortSelects[key].value,
+          maxContext: maxContextInputs[key] ? maxContextInputs[key].value : "",
+          authMode: authModeSelects[key].value, timeLimit: (extraFields[key] || {}).timeLimit };
+      }
+      return out;
+    }
+
+    // Replace the rows (node mode). Values typed for a node id that is still
+    // present are kept. A Pi row keeps only harness, effort and max context: its
+    // model list depends on the auth mode, which is fetched again.
+    function setRows(specs) {
+      const old = snapshot();
+      const oldExtra = extraFields;
+      buildRows(specs.map((r) => ({ key: r.id, title: r.title, maxContext: r.maxContext })));
+      extraFields = {};
+      applyHarnesses();
+      for (const { key } of rows) {
+        const prev = old[key];
+        if (!prev) continue;
+        selectValue(harnessSelects[key], prev.harness, "not installed");
+        onHarnessChange(key);
+        if (prev.harness !== PI_HARNESS_ID) selectValue(modelSelects[key], prev.model);
+        effortSelects[key].value = prev.effort;
+        if (maxContextInputs[key]) maxContextInputs[key].value = prev.maxContext;
+        if (oldExtra[key]) extraFields[key] = oldExtra[key];
+      }
+    }
+
     function read() {
-      const rows = {};
-      for (const { key } of PHASE_ROWS) {
-        rows[key] = {
+      const values = {};
+      for (const { key } of rows) {
+        values[key] = {
           ...(extraFields[key] || {}),
           harness: harnessSelects[key].value,
           model: modelSelects[key].value,
@@ -1925,13 +1976,14 @@ window.addEventListener("DOMContentLoaded", () => {
           if (Number.isNaN(maxContext)) {
             return { error: key + " max context must look like 200K, 50K or 1M" };
           }
-          rows[key].maxContext = maxContext;
+          values[key].maxContext = maxContext;
         }
       }
-      return { pipeline: buildPipelinePayload(rows) };
+      if (nodeMode) return { nodeSettings: buildNodeSettingsPayload(values) };
+      return { pipeline: buildPipelinePayload(values) };
     }
 
-    return { el, set, read, reset: () => set(null),
+    return { el, set, read, setRows, reset: () => set(null),
       open: () => { applyHarnesses(); reloadHarnesses(); },
       dispose: () => harnessListeners.delete(applyHarnesses) };
   }
@@ -2033,11 +2085,34 @@ window.addEventListener("DOMContentLoaded", () => {
     createErr.textContent = message || "";
     createErr.hidden = !message;
   };
-  const createForm = createPipelineForm("cp");
-  const createPresets = createPresetBar(createForm, showCreateError);
+  const createForm = createPipelineForm("cp", []);
   const pipeLabel = document.createElement("label");
   pipeLabel.textContent = "Pipeline";
-  createPanel.append(pipeLabel, createPresets.el, createForm.el);
+  pipeLabel.setAttribute("for", "cp-pipeline");
+  const pipelinePicker = document.createElement("select");
+  pipelinePicker.id = "cp-pipeline";
+  pipelinePicker.setAttribute("aria-label", "pipeline");
+  const pipeNote = document.createElement("div");
+  pipeNote.className = "pipeNote";
+  pipeNote.id = "cp-pipeline-note";
+  createPanel.append(pipeLabel, pipelinePicker, pipeNote, createForm.el);
+
+  const saveRow = document.createElement("div");
+  saveRow.className = "saveRow";
+  saveRow.hidden = true;
+  const saveName = document.createElement("input");
+  saveName.id = "cp-save-name";
+  saveName.placeholder = "new pipeline name";
+  saveName.setAttribute("aria-label", "new pipeline name");
+  const saveOk = document.createElement("button");
+  saveOk.type = "button";
+  saveOk.id = "cp-save-ok";
+  saveOk.textContent = "Save";
+  const saveCancel = document.createElement("button");
+  saveCancel.type = "button";
+  saveCancel.className = "secondary";
+  saveCancel.textContent = "Cancel";
+  saveRow.append(saveName, saveOk, saveCancel);
 
   const cpBtns = document.createElement("div");
   cpBtns.className = "row";
@@ -2045,26 +2120,98 @@ window.addEventListener("DOMContentLoaded", () => {
   cpBtns.style.padding = "10px 0 0";
   const cpCreate = document.createElement("button");
   cpCreate.textContent = "Create line";
+  const cpSaveAs = document.createElement("button");
+  cpSaveAs.type = "button";
+  cpSaveAs.id = "cp-save-as";
+  cpSaveAs.className = "secondary";
+  cpSaveAs.textContent = "Save as pipeline";
   const cpCancel = document.createElement("button");
   cpCancel.textContent = "Cancel";
   cpCancel.style.background = "#262b33";
-  cpBtns.append(cpCreate, cpCancel);
-  createPanel.append(createErr, cpBtns);
+  cpBtns.append(cpCreate, cpSaveAs, cpCancel);
+  createPanel.append(saveRow, createErr, cpBtns);
   linesMain.insertBefore(createPanel, linesMain.firstChild);
+
+  // The pipeline picked in the create panel: its resolved definition, or the
+  // errors that stop it from being used. Create and Save are off until loaded.
+  let pickedResolved = null;
+  let pickedLoaded = false;
+  let pickSeq = 0;
+  function syncCreateButtons() {
+    cpCreate.disabled = !pickedLoaded;
+    cpSaveAs.disabled = !pickedLoaded;
+  }
+  syncCreateButtons();
+
+  async function loadPickedPipeline() {
+    const name = pipelinePicker.value;
+    const seq = ++pickSeq;
+    pickedLoaded = false;
+    pickedResolved = null;
+    syncCreateButtons();
+    if (!name) return;
+    let data = null;
+    try {
+      const res = await fetch("/api/pipelines/" + encodeURIComponent(name));
+      data = await res.json().catch(() => null);
+      if (!res.ok) data = { errors: [{ message: (data && data.error) || "HTTP " + res.status }] };
+    } catch (err) {
+      data = { errors: [{ message: String(err) }] };
+    }
+    if (seq !== pickSeq) return;
+    const errors = (data && data.errors) || [];
+    pickedResolved = errors.length ? null : data.resolved;
+    createForm.setRows(nodeRowsFromResolved(pickedResolved));
+    pipeNote.textContent = pickedResolved ? Object.keys(pickedResolved.nodes).length + " nodes" : "";
+    if (errors.length) showCreateError("Pipeline '" + name + "' cannot be used: " + pipelineErrorsText(errors));
+    else showCreateError(null);
+    pickedLoaded = !errors.length && !!pickedResolved;
+    syncCreateButtons();
+  }
+
+  // Fill the picker from GET /api/pipelines; keep `select` (or the current choice), else default.
+  async function loadPipelineList(select) {
+    let list = [];
+    try {
+      const res = await fetch("/api/pipelines");
+      if (res.ok) list = pickerPipelines((await res.json()).pipelines);
+    } catch {}
+    const want = select || pipelinePicker.value || "default";
+    pipelinePicker.innerHTML = "";
+    for (const p of list) {
+      const o = document.createElement("option");
+      o.value = p.name;
+      o.textContent = pipelineOptionLabel(p);
+      pipelinePicker.appendChild(o);
+    }
+    if (!list.length) {
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = "No pipelines available";
+      pipelinePicker.appendChild(o);
+    }
+    const before = pipelinePicker.value;
+    pipelinePicker.value = list.some((p) => p.name === want) ? want : (list[0] ? list[0].name : "");
+    if (!pickedLoaded || pipelinePicker.value !== before || select) await loadPickedPipeline();
+  }
+  pipelinePicker.addEventListener("change", loadPickedPipeline);
 
   function resetCreatePanel() {
     nameInput.value = "";
     repoInput.value = "";
     createForm.reset();
-    createPresets.reset();
+    saveRow.hidden = true;
+    saveName.value = "";
+    pipelinePicker.value = "default";
     showCreateError(null);
+    loadPickedPipeline();
   }
 
   createBtn.addEventListener("click", () => {
     createPanel.hidden = !createPanel.hidden;
     if (!createPanel.hidden) {
       createForm.open();
-      reloadPresets();
+      loadPipelineList();
       nameInput.focus();
     }
   });
@@ -2074,15 +2221,45 @@ window.addEventListener("DOMContentLoaded", () => {
     resetCreatePanel();
   });
 
-  cpCreate.addEventListener("click", async () => {
-    const body = {};
-    const name = nameInput.value.trim();
-    const repoUrl = repoInput.value.trim();
-    if (name) body.name = name;
-    if (repoUrl) body.repoUrl = repoUrl;
+  cpSaveAs.addEventListener("click", () => {
+    saveRow.hidden = false;
+    saveName.focus();
+  });
+  saveCancel.addEventListener("click", () => {
+    saveRow.hidden = true;
+    saveName.value = "";
+    showCreateError(null);
+  });
+  saveOk.addEventListener("click", async () => {
+    const newName = saveName.value.trim();
+    if (!newName) return showCreateError("Type a name for the new pipeline first.");
     const out = createForm.read();
     if (out.error) return showCreateError(out.error);
-    if (out.pipeline) body.pipeline = out.pipeline;
+    const body = { newName };
+    if (out.nodeSettings) body.nodeSettings = out.nodeSettings;
+    showCreateError(null);
+    let res;
+    try {
+      res = await fetch("/api/pipelines/" + encodeURIComponent(pipelinePicker.value) + "/duplicate", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+    } catch (err) {
+      return showCreateError(String(err));
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return showCreateError(data.error || "Saving the pipeline failed (HTTP " + res.status + ")");
+    }
+    saveRow.hidden = true;
+    saveName.value = "";
+    await loadPipelineList(newName);
+  });
+
+  cpCreate.addEventListener("click", async () => {
+    const out = createForm.read();
+    if (out.error) return showCreateError(out.error);
+    const body = buildCreateBody({ name: nameInput.value, repoUrl: repoInput.value,
+      pipelineName: pipelinePicker.value, nodeSettings: out.nodeSettings });
     showCreateError(null);
     let res;
     try {

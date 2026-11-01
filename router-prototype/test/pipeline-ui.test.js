@@ -824,3 +824,74 @@ test("buildGraphLanes keeps unvalidated and integration workers separate and fil
   assert.deepEqual(shown.lanes[0].validators.map(v=>v.id), ["bad"]);
   assert.equal(shown.lanes[0].rowCount, 1);
 });
+
+// ---- D4: create panel helpers ----
+
+const D4_ROOT = path.join(__dirname, "..");
+function resolvedBuiltIn(name) {
+  const { resolvePipelineDefinition } = require("../resolve-pipeline");
+  const { buildCatalog } = require("../plugin-catalog");
+  const cat = buildCatalog({ managedDir: "/nonexistent-d4-managed", builtInDir: D4_ROOT, userDir: "/nonexistent-d4-user" });
+  return JSON.parse(JSON.stringify(resolvePipelineDefinition(name, cat)));
+}
+// A review-gate shaped pipeline: one extra fresh-session reviewer between implementor and validator.
+const REVIEW_GATE = {
+  nodes: {
+    planner: { type: "planner" }, impl: { type: "implementor" }, reviewer: { type: "validator" },
+    val: { type: "validator" }, integration: { type: "integration-validator" },
+  },
+  types: {
+    planner: { session: "resume" }, implementor: { session: "resume" }, validator: { session: "fresh" },
+    "integration-validator": { session: "fresh" },
+  },
+};
+
+test("D4 rows: default has six node rows, minimal four, title is id and type", () => {
+  const def = pipelineUiModule.nodeRowsFromResolved(resolvedBuiltIn("default"));
+  assert.deepEqual(def.map((r) => r.id),
+    ["planner", "backend-impl", "frontend-impl", "backend-val", "frontend-val", "integration"]);
+  assert.equal(def[1].title, "backend-impl (backend-implementor)");
+  const min = pipelineUiModule.nodeRowsFromResolved(resolvedBuiltIn("minimal"));
+  assert.deepEqual(min.map((r) => r.id), ["planner", "impl", "val", "integration"]);
+  assert.deepEqual(pipelineUiModule.nodeRowsFromResolved(null), []);
+});
+
+test("D4 rows: review-gate rows and the fresh-session rule for max context", () => {
+  const rows = pipelineUiModule.nodeRowsFromResolved(REVIEW_GATE);
+  assert.deepEqual(rows.map((r) => [r.id, r.maxContext]),
+    [["planner", true], ["impl", true], ["reviewer", false], ["val", false], ["integration", false]]);
+  const def = pipelineUiModule.nodeRowsFromResolved(resolvedBuiltIn("default"));
+  assert.deepEqual(def.map((r) => r.maxContext), [true, true, true, false, false, false]);
+  assert.equal(pipelineUiModule.isFreshSessionNode(REVIEW_GATE, "reviewer"), true);
+  assert.equal(pipelineUiModule.isFreshSessionNode(REVIEW_GATE, "impl"), false);
+  assert.equal(pipelineUiModule.isFreshSessionNode(REVIEW_GATE, "nope"), false);
+});
+
+test("D4 nodeSettings body: empty values omitted, fresh nodes never send maxContext", () => {
+  const b = pipelineUiModule.buildNodeSettingsPayload;
+  assert.equal(b({}, REVIEW_GATE), null);
+  assert.equal(b({ planner: { harness: "", model: " ", effort: "" } }, REVIEW_GATE), null);
+  assert.deepEqual(b({
+    planner: { harness: " claude ", effort: "high", maxContext: 200000 },
+    impl: { harness: "", model: "m" },
+    reviewer: { maxContext: 5000, timeLimit: "10m" },
+    val: { maxContext: 5000 },
+  }, REVIEW_GATE), {
+    planner: { harness: "claude", effort: "high", maxContext: 200000 },
+    impl: { model: "m" },
+    reviewer: { timeLimit: "10m" },
+  });
+});
+
+test("D4 create body and picker helpers", () => {
+  const c = pipelineUiModule.buildCreateBody;
+  assert.deepEqual(c({ name: " ", repoUrl: "", pipelineName: "default", nodeSettings: null }), { pipelineName: "default" });
+  assert.deepEqual(c({ name: "n", repoUrl: "u", pipelineName: "minimal", nodeSettings: { planner: { model: "m" } } }),
+    { name: "n", repoUrl: "u", pipelineName: "minimal", nodeSettings: { planner: { model: "m" } } });
+  const list = [{ name: "minimal", description: "d", layer: "built-in" }, { name: "default", description: "x", layer: "built-in" }];
+  assert.deepEqual(pipelineUiModule.pickerPipelines(list).map((p) => p.name), ["default", "minimal"]);
+  assert.equal(pipelineUiModule.pipelineOptionLabel(list[1]), "default - x (built-in)");
+  assert.equal(pipelineUiModule.pipelineOptionLabel({ name: "a", layer: "managed" }), "a (managed)");
+  assert.equal(pipelineUiModule.pipelineErrorsText([{ rule: "R", message: "m" }, { message: "n" }]), "R: m; n");
+  assert.equal(pipelineUiModule.pipelineErrorsText([]), "");
+});

@@ -132,6 +132,33 @@ function renameInText(text, newName) {
   return text.slice(0, node.range[0]) + YAML.stringify(newName).trim() + text.slice(node.range[1]);
 }
 
+const SETTING_KEYS = ["harness", "model", "effort", "timeLimit", "maxContext"];
+
+// Put run settings into the node entry `id` of a parsed YAML Document. Keys that
+// are undefined are skipped. A node written in flow style is turned to block style.
+function setNodeSettingsInDoc(doc, id, settings) {
+  if (!settings || typeof settings !== "object") return false;
+  let touched = false;
+  for (const key of SETTING_KEYS) {
+    if (settings[key] === undefined) continue;
+    doc.setIn(["nodes", id, key], settings[key]);
+    touched = true;
+  }
+  if (touched) {
+    const map = doc.getIn(["nodes", id], true);
+    if (map && typeof map === "object") map.flow = false;
+  }
+  return touched;
+}
+
+// The text with run settings written into its node entries. `nodeSettings` maps a node id to settings.
+function applyNodeSettingsToText(text, nodeSettings) {
+  const doc = YAML.parseDocument(text);
+  if (doc.errors.length) throw new Error(doc.errors[0].message);
+  for (const [id, settings] of Object.entries(nodeSettings)) setNodeSettingsInDoc(doc, id, settings);
+  return doc.toString();
+}
+
 // Atomic write into <managedDir>/pipelines/<name>.yaml. `write(file, text)` writes through a temp file and rename.
 function writeManagedPipeline({ fs, managedDir, name, text, write }) {
   const file = managedFile(managedDir, name);
@@ -150,5 +177,5 @@ function deleteManagedPipeline({ fs, managedDir, name }) {
 }
 
 module.exports = { NAME_RE, MAX_TEXT_BYTES, MAX_BODY_BYTES, nameError, textError, validateText, graphPreview,
-  buildListing, resolveSafe, readManagedText, renameInText, writeManagedPipeline, deleteManagedPipeline,
+  buildListing, resolveSafe, readManagedText, renameInText, setNodeSettingsInDoc, applyNodeSettingsToText, writeManagedPipeline, deleteManagedPipeline,
   managedFile };
