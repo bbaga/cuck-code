@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { PHASE_TYPES, phaseOfType, migrateLine, loadBuiltinPipeline } = require("../line-graph");
+const { PHASE_TYPES, phaseOfType, migrateLine, loadBuiltinPipeline, graphView } = require("../line-graph");
 const { startRouter, stopRouter } = require("./fixtures/router-process");
 
 const ROOT = path.join(__dirname, "..");
@@ -105,4 +105,22 @@ test("a new line stores the graph, and an old line.json gains it on the next sav
     await stopRouter(router);
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("graphView edges carry kinds taken from the resolved interactions", () => {
+  const view = graphView(resolved);
+  assert.equal(view.start, "planner");
+  assert.deepEqual(view.nodes.planner, { type: "planner", phase: "planner" });
+  for (const edge of view.edges) {
+    assert.deepEqual(Object.keys(edge.kinds), edge.interactions);
+  }
+  const start = view.edges.find((e) => e.from === "planner" && e.to === "backend-val");
+  assert.deepEqual(start.kinds, { start: { effect: "create", trigger: "request" } });
+  const rep = view.edges.find((e) => e.from === "integration" && e.to === "planner");
+  assert.deepEqual(rep.kinds, { report: { effect: "deliver", trigger: "complete" } });
+  assert.deepEqual(view.freshNodes, ["backend-val", "frontend-val", "integration"]);
+  assert.equal(graphView(null), null);
+  // the view is a copy
+  view.edges[0].interactions.push("x");
+  assert.ok(!resolved.edges[0].interactions.includes("x"));
 });

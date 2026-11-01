@@ -895,3 +895,93 @@ test("D4 create body and picker helpers", () => {
   assert.equal(pipelineUiModule.pipelineErrorsText([{ rule: "R", message: "m" }, { message: "n" }]), "R: m; n");
   assert.equal(pipelineUiModule.pipelineErrorsText([]), "");
 });
+
+// D5: graph layout.
+const { graphView: viewOf } = require("../line-graph");
+const layoutOf = (name) => pipelineUiModule.layoutGraph(viewOf(resolvedBuiltIn(name)));
+const REVIEW_VIEW = (() => {
+  const create = { start: { effect: "create", trigger: "request" } };
+  const rep = { report: { effect: "deliver", trigger: "complete" } };
+  const edge = (from, to, interactions, kinds) => ({ from, to, interactions, kinds });
+  return {
+    name: "review-gate", start: "planner",
+    nodes: { planner: { type: "planner" }, A: { type: "implementor" }, B: { type: "validator" } },
+    edges: [edge("planner", "A", ["start"], create), edge("A", "B", ["start"], create),
+      edge("planner", "B", ["start"], create), edge("B", "planner", ["report"], rep),
+      edge("A", "planner", ["report"], rep)],
+  };
+})();
+
+test("D5 layout: default has two columns, one row per node in file order, one edge each", () => {
+  const view = viewOf(resolvedBuiltIn("default"));
+  const g = pipelineUiModule.layoutGraph(view);
+  const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
+  assert.deepEqual(g.nodes.map((n) => n.id), Object.keys(view.nodes));
+  assert.equal(by.planner.column, 0);
+  assert.equal(by.planner.row, 0);
+  assert.deepEqual(["backend-impl", "frontend-impl", "backend-val", "frontend-val", "integration"]
+    .map((id) => [by[id].column, by[id].row]), [[1, 0], [1, 1], [1, 2], [1, 3], [1, 4]]);
+  assert.equal(by["backend-impl"].type, "backend-implementor");
+  assert.equal(by["backend-impl"].phase, "implementor");
+  assert.equal(g.edges.length, view.edges.length);
+  for (const n of g.nodes) assert.ok(n.x >= 0 && n.y >= 0 && n.x + n.width <= g.width && n.y + n.height <= g.height, n.id);
+  const dashed = g.edges.filter((e) => e.dashed);
+  assert.equal(dashed.length, 5);
+  assert.ok(dashed.every((e) => e.to === "planner" && e.label === "report"));
+  const first = g.edges.find((e) => e.from === "planner" && e.to === "backend-impl");
+  assert.equal(first.label, "start, feedback, accept");
+  assert.equal(first.dashed, false);
+  for (const e of g.edges) assert.ok(typeof e.path === "string" && e.path.startsWith("M") && Array.isArray(e.points), e.label);
+});
+
+test("D5 layout: minimal", () => {
+  const g = layoutOf("minimal");
+  assert.deepEqual(g.nodes.map((n) => [n.id, n.column, n.row]),
+    [["planner", 0, 0], ["impl", 1, 0], ["val", 1, 1], ["integration", 1, 2]]);
+  assert.equal(g.edges.length, 6);
+  assert.deepEqual(g.edges.filter((e) => e.dashed).map((e) => e.from), ["impl", "val", "integration"]);
+});
+
+test("D5 layout: review-gate chain puts B in the third column (longest create path)", () => {
+  const g = pipelineUiModule.layoutGraph(REVIEW_VIEW);
+  assert.deepEqual(g.nodes.map((n) => [n.id, n.column, n.row]), [["planner", 0, 0], ["A", 1, 0], ["B", 2, 0]]);
+  const skip = g.edges.find((e) => e.from === "planner" && e.to === "B");
+  assert.equal(skip.label, "start");
+  assert.equal(skip.dashed, false);
+  const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
+  // the edge that skips a column does not run through the box of A
+  for (const [x, y] of skip.points) {
+    const inside = x > by.A.x && x < by.A.x + by.A.width && y > by.A.y && y < by.A.y + by.A.height;
+    assert.ok(!inside, "point " + x + "," + y);
+  }
+  assert.equal(g.edges.filter((e) => e.dashed).length, 2);
+});
+
+test("D5 helpers: rows from the graph view, node summary text, edge text", () => {
+  const view = viewOf(resolvedBuiltIn("default"));
+  const rows = pipelineUiModule.nodeRowsFromGraphView(view);
+  assert.deepEqual(rows, pipelineUiModule.nodeRowsFromResolved(resolvedBuiltIn("default")));
+  assert.deepEqual(pipelineUiModule.nodeRowsFromGraphView(null), []);
+  assert.equal(pipelineUiModule.nodeSummaryText({ harness: "claude", model: "opus" }), "claude / opus");
+  assert.equal(pipelineUiModule.nodeSummaryText({ harness: "vibe" }), "vibe / default model");
+  assert.equal(pipelineUiModule.nodeSummaryText({ harness: "vibe", model: "x".repeat(60) }, 12).length, 12);
+  assert.equal(pipelineUiModule.nodeSummaryText(null), "default model");
+  assert.equal(pipelineUiModule.edgeTextLines(view)[0], "planner -> backend-impl: start, feedback, accept");
+  assert.equal(pipelineUiModule.edgeTextLines(view).length, view.edges.length);
+});
+
+test("D5 layout: pure, tolerant of missing data and create cycles", () => {
+  const before = JSON.stringify(REVIEW_VIEW);
+  pipelineUiModule.layoutGraph(REVIEW_VIEW);
+  assert.equal(JSON.stringify(REVIEW_VIEW), before);
+  assert.deepEqual(pipelineUiModule.layoutGraph(null), { nodes: [], edges: [], width: 0, height: 0 });
+  const cyc = { start: "a", nodes: { a: { type: "t" }, b: { type: "t" } }, edges: [
+    { from: "a", to: "b", interactions: ["start"], kinds: { start: { effect: "create", trigger: "request" } } },
+    { from: "b", to: "a", interactions: ["start"], kinds: { start: { effect: "create", trigger: "request" } } }] };
+  const g = pipelineUiModule.layoutGraph(cyc);
+  assert.deepEqual(g.nodes.map((n) => n.column), [0, 1]);
+  // no kinds: a view from an older server still lays out, with "start" taken as create
+  const old = { start: "a", nodes: { a: { type: "t" }, b: { type: "t" } }, edges: [
+    { from: "a", to: "b", interactions: ["start"] }] };
+  assert.deepEqual(pipelineUiModule.layoutGraph(old).nodes.map((n) => n.column), [0, 1]);
+});

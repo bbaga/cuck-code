@@ -69,14 +69,27 @@ function pipelineFromNodeSettings(graph, nodeSettings) {
 }
 
 // The graph as the API shows it: name, start, nodes with type and phase, edges.
+// Each edge also carries `kinds`: for every interaction name its { effect,
+// trigger } from the resolved interactions, so a client can lay the graph out.
+// `freshNodes` lists the nodes whose type starts a fresh session on every turn.
 function graphView(graph) {
   if (!graph) return null;
   const nodes = {};
+  const freshNodes = [];
   for (const [id, node] of Object.entries(graph.nodes || {})) {
     nodes[id] = { type: node.type, phase: phaseOfType(graph, node.type) };
+    const type = graph.types && graph.types[node.type];
+    if (type && type.session === "fresh") freshNodes.push(id);
   }
-  return { name: graph.name, start: graph.start, nodes,
-    edges: JSON.parse(JSON.stringify(graph.edges || [])) };
+  const edges = (graph.edges || []).map((edge) => {
+    const kinds = {};
+    for (const name of edge.interactions || []) {
+      const it = graph.interactions && graph.interactions[name];
+      kinds[name] = { effect: it ? it.effect || null : null, trigger: it ? it.trigger || null : null };
+    }
+    return { ...JSON.parse(JSON.stringify(edge)), kinds };
+  });
+  return { name: graph.name, start: graph.start, nodes, edges, freshNodes };
 }
 
 // The node fields of an API response: graph, stored node settings and the

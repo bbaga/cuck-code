@@ -334,6 +334,121 @@
     return !!type && type.session === "fresh";
   }
 
+  // Graph layout (pure). `graph` is the API graph view: { start, nodes: {id: {type,
+  // phase}}, edges: [{from, to, interactions, kinds?}] }.
+  // Column = longest path from the start node over create-effect edges (start = 0;
+  // a node no create edge reaches stays in column 0). Row = the node's order in the
+  // graph inside its column. Forward edges run between the boxes, an edge that skips
+  // columns goes over the top, a back edge (to the same or an earlier column) goes
+  // out to the right of its box, under all boxes and up into the bottom of the target.
+  // An edge whose interactions are all complete-triggered is dashed.
+  const GRAPH_GEOMETRY = { nodeWidth: 190, nodeHeight: 68, columnGap: 190, rowGap: 26, margin: 20, lane: 17 };
+
+  function layoutGraph(graph) {
+    const ids = graph && graph.nodes ? Object.keys(graph.nodes) : [];
+    if (!ids.length) return { nodes: [], edges: [], width: 0, height: 0 };
+    const G = GRAPH_GEOMETRY;
+    const edges = Array.isArray(graph.edges) ? graph.edges : [];
+    const kindOf = (edge, name) => {
+      const k = edge.kinds && edge.kinds[name];
+      return k || { effect: name === "start" ? "create" : null, trigger: null };
+    };
+    const isCreate = (edge) => (edge.interactions || []).some((n) => kindOf(edge, n).effect === "create");
+    const isComplete = (edge) => (edge.interactions || []).length > 0
+      && edge.interactions.every((n) => kindOf(edge, n).trigger === "complete");
+
+    // Longest path over create edges, relaxed at most ids.length times so a cycle ends.
+    const col = {};
+    const start = graph.start && graph.nodes[graph.start] ? graph.start : ids[0];
+    col[start] = 0;
+    for (let pass = 0; pass < ids.length; pass++) {
+      let changed = false;
+      for (const edge of edges) {
+        if (!isCreate(edge) || col[edge.from] === undefined || !graph.nodes[edge.to]) continue;
+        const next = col[edge.from] + 1;
+        if (edge.to === start || next > ids.length - 1) continue;
+        if (col[edge.to] === undefined || col[edge.to] < next) { col[edge.to] = next; changed = true; }
+      }
+      if (!changed) break;
+    }
+    const rowsInColumn = {};
+    const nodes = ids.map((id) => {
+      const column = col[id] === undefined ? 0 : col[id];
+      const row = rowsInColumn[column] = (rowsInColumn[column] === undefined ? 0 : rowsInColumn[column] + 1);
+      const info = graph.nodes[id] || {};
+      return { id, type: info.type, phase: info.phase, column, row, width: G.nodeWidth, height: G.nodeHeight };
+    });
+    const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
+
+    const forward = [], back = [];
+    edges.forEach((edge, index) => {
+      const a = byId[edge.from], b = byId[edge.to];
+      if (!a || !b) return;
+      (b.column > a.column ? forward : back).push({ edge, index, a, b });
+    });
+    const skips = forward.filter((e) => e.b.column - e.a.column > 1);
+    const originY = G.margin + (skips.length ? skips.length * G.lane + 8 : 0);
+    const maxRows = Math.max(...nodes.map((n) => n.row)) + 1;
+    for (const n of nodes) {
+      n.x = G.margin + n.column * (G.nodeWidth + G.columnGap);
+      n.y = originY + n.row * (G.nodeHeight + G.rowGap);
+    }
+    const boxesBottom = originY + maxRows * G.nodeHeight + (maxRows - 1) * G.rowGap;
+    const out = new Array(edges.length);
+    let maxX = Math.max(...nodes.map((n) => n.x + n.width));
+    const finish = (item, points, path, labelX, labelY) => {
+      for (const [x] of points) maxX = Math.max(maxX, x);
+      out[item.index] = { from: item.edge.from, to: item.edge.to, label: (item.edge.interactions || []).join(", "),
+        dashed: isComplete(item.edge), path, points, labelX, labelY };
+    };
+    const pathOf = (pts) => "M" + pts.map(([x, y]) => x + " " + y).join(" L");
+
+    // Forward edges between neighbouring columns: a curve from the right side to the left side.
+    for (const item of forward) {
+      const { a, b } = item;
+      if (b.column - a.column > 1) continue;
+      const x1 = a.x + a.width, y1 = a.y + a.height / 2, x2 = b.x, y2 = b.y + b.height / 2;
+      const mx = (x1 + x2) / 2;
+      finish(item, [[x1, y1], [mx, y1], [mx, y2], [x2, y2]],
+        "M" + x1 + " " + y1 + " C" + mx + " " + y1 + " " + mx + " " + y2 + " " + x2 + " " + y2,
+        mx, (y1 + y2) / 2 - (y1 === y2 ? 9 : 0));
+    }
+    // Forward edges that skip columns: over the top, through the gaps between columns.
+    skips.forEach((item, k) => {
+      const { a, b } = item;
+      const laneY = G.margin + k * G.lane;
+      const x1 = a.x + a.width, y1 = a.y + a.height / 2, x2 = b.x, y2 = b.y + b.height / 2;
+      const gx1 = x1 + 14 + k * 6, gx2 = x2 - 14 - k * 6;
+      const pts = [[x1, y1], [gx1, y1], [gx1, laneY], [gx2, laneY], [gx2, y2], [x2, y2]];
+      finish(item, pts, pathOf(pts), (gx1 + gx2) / 2, laneY);
+    });
+    // Back edges: lanes below all boxes. Lower rows get the shallower lanes, and the
+    // deepest lane arrives furthest left on the target, so lanes cross as little as possible.
+    back.sort((p, q) => (q.a.row - p.a.row) || (q.a.column - p.a.column) || (p.index - q.index));
+    back.forEach((item, k) => { item.lane = k; });
+    const exitRank = {};
+    for (const item of back) {
+      exitRank[item.a.column] = exitRank[item.a.column] === undefined ? 0 : exitRank[item.a.column] + 1;
+      item.exitRank = exitRank[item.a.column];
+    }
+    const arrivals = {};
+    for (const item of back) (arrivals[item.b.id] = arrivals[item.b.id] || []).push(item);
+    for (const list of Object.values(arrivals)) {
+      list.sort((p, q) => q.lane - p.lane);
+      list.forEach((item, j) => { item.arriveX = item.b.x + item.b.width * (j + 1) / (list.length + 1); });
+    }
+    for (const item of back) {
+      const { a, b } = item;
+      const x1 = a.x + a.width, y1 = a.y + a.height / 2;
+      const gx = x1 + 14 + item.exitRank * 9;
+      const laneY = boxesBottom + 16 + item.lane * G.lane;
+      const pts = [[x1, y1], [gx, y1], [gx, laneY], [item.arriveX, laneY], [item.arriveX, b.y + b.height]];
+      finish(item, pts, pathOf(pts), (gx + item.arriveX) / 2, laneY);
+    }
+    const lastLane = back.length ? boxesBottom + 16 + (back.length - 1) * G.lane : boxesBottom;
+    return { nodes, edges: out, width: Math.ceil(maxX + G.margin), height: Math.ceil(lastLane + G.margin) };
+  }
+
   // One form row per node of a resolved pipeline (GET /api/pipelines/:name `resolved`),
   // in file order: { id, type, title, maxContext }. Empty for a pipeline that did not resolve.
   function nodeRowsFromResolved(resolved) {
@@ -344,6 +459,28 @@
       title: id + " (" + node.type + ")",
       maxContext: !isFreshSessionNode(resolved, id),
     }));
+  }
+
+  // Form rows for a line, from the graph view the API sends (nodes and freshNodes):
+  // the same shape as nodeRowsFromResolved.
+  function nodeRowsFromGraphView(graph) {
+    if (!graph || typeof graph.nodes !== "object" || graph.nodes === null) return [];
+    const fresh = new Set(Array.isArray(graph.freshNodes) ? graph.freshNodes : []);
+    return Object.entries(graph.nodes).map(([id, node]) => ({
+      id, type: node.type, title: id + " (" + node.type + ")", maxContext: !fresh.has(id),
+    }));
+  }
+
+  // One-line settings summary of a node box: harness and model, from the effective settings.
+  function nodeSummaryText(effective, max = 30) {
+    const cfg = effective && typeof effective === "object" ? effective : {};
+    const text = [cfg.harness, cfg.model || "default model"].filter(Boolean).join(" / ");
+    return text.length > max ? text.slice(0, max - 1) + "…" : text;
+  }
+
+  // The same edges as plain text, one line each: "planner -> backend-impl: start, feedback".
+  function edgeTextLines(graph) {
+    return ((graph && graph.edges) || []).map((e) => e.from + " -> " + e.to + ": " + (e.interactions || []).join(", "));
   }
 
   // The `nodeSettings` request body from form values { <nodeId>: {harness, model,
@@ -853,6 +990,11 @@
     pickerPipelines,
     isFreshSessionNode,
     nodeRowsFromResolved,
+    layoutGraph,
+    GRAPH_GEOMETRY,
+    nodeRowsFromGraphView,
+    nodeSummaryText,
+    edgeTextLines,
     buildNodeSettingsPayload,
     buildCreateBody,
     pipelineErrorsText,

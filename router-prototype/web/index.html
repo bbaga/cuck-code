@@ -248,6 +248,21 @@
   .pipePane { flex: 1 1 auto; width: 100%; min-width: 0; overflow-x: auto; overflow-y: auto; padding: 12px 16px; max-width: 720px; }
   .pipePane h3 { font-size: .85rem; margin: 14px 0 6px; color: #d8dee6; }
   .pipePane .pipeCfg { padding: 0; border: 0; min-width: max-content; }
+  .pipeGraphBox { max-width: 100%; overflow-x: auto; border: 1px solid #262b33; border-radius: 6px;
+    background: #0d1014; padding: 4px; }
+  .pipeGraph { display: block; font-family: system-ui, sans-serif; }
+  .pipeGraph .pgNode rect { fill: #151a21; stroke: #333c48; stroke-width: 1.5; }
+  .pipeGraph .pgNode.start rect { stroke: #2d6cdf; }
+  .pipeGraph .pgNodeId { fill: #d8dee6; font-size: 13px; font-weight: 600; }
+  .pipeGraph .pgNodeType { fill: #8fa3bd; font-size: 11px; }
+  .pipeGraph .pgNodeCfg { fill: #6c7a8c; font-size: 11px; }
+  .pipeGraph .pgEdge { fill: none; stroke: #8fa3bd; stroke-width: 1.4; }
+  .pipeGraph .pgEdge.dashed { stroke-dasharray: 6 4; stroke: #6c7a8c; }
+  .pipeGraph .pgArrowHead { fill: #8fa3bd; }
+  .pipeGraph .pgEdgeLabel { fill: #d8dee6; font-size: 11px; paint-order: stroke; stroke: #0d1014;
+    stroke-width: 4px; stroke-linejoin: round; }
+  .pipeEdgesText { margin: 8px 0 0; font-size: .72rem; color: #8fa3bd; }
+  .pipeEdgesText ul { margin: 6px 0 0; padding-left: 18px; }
   .pipeNote { font-size: .72rem; color: #6c7a8c; margin: 0 0 8px; }
   .nodeRow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 88px 72px; }
   .nodeRow .phaseName { grid-column: 1 / -1; color: #8fa3bd; overflow-wrap: anywhere; }
@@ -306,7 +321,7 @@
 <script src="registry-line.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
-  const { PHASE_ROWS, nodeRowsFromResolved, buildNodeSettingsPayload, buildCreateBody, pickerPipelines,
+  const { PHASE_ROWS, nodeRowsFromResolved, layoutGraph, nodeRowsFromGraphView, nodeSummaryText, edgeTextLines, buildNodeSettingsPayload, buildCreateBody, pickerPipelines,
     pipelineOptionLabel, pipelineErrorsText, EFFORT_LEVELS, CONTEXT_PHASES, parseContextSize, formatTokens, filterInstalled, buildPipelinePayload, authBadge, previewForIntegration,
     previewSelectionKey, previewSelectionExists, isPassingIntegration, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
     PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
@@ -977,8 +992,19 @@ window.addEventListener("DOMContentLoaded", () => {
     const pipePane = document.createElement("div");
     pipePane.className = "pipePane";
     pipePane.hidden = true;
-    const pipeEffective = document.createElement("div");
-    pipeEffective.className = "pipeCfg";
+    const pipeGraphTitle = document.createElement("h3");
+    pipeGraphTitle.textContent = "Pipeline graph";
+    const pipeStructureNote = document.createElement("p");
+    pipeStructureNote.className = "pipeNote";
+    pipeStructureNote.textContent = "The pipeline structure of a line does not change after creation.";
+    const pipeGraphBox = document.createElement("div");
+    pipeGraphBox.className = "pipeGraphBox";
+    const pipeEdgesText = document.createElement("details");
+    pipeEdgesText.className = "pipeEdgesText";
+    const pipeEdgesSummary = document.createElement("summary");
+    pipeEdgesSummary.textContent = "Edges as text";
+    const pipeEdgesList = document.createElement("ul");
+    pipeEdgesText.append(pipeEdgesSummary, pipeEdgesList);
     const pipeEditTitle = document.createElement("h3");
     pipeEditTitle.textContent = "Change settings";
     const pipeNote = document.createElement("p");
@@ -994,8 +1020,7 @@ window.addEventListener("DOMContentLoaded", () => {
       pipeMsg.hidden = !message;
       pipeMsg.classList.toggle("ok", !!ok);
     };
-    const pipeForm = createPipelineForm("lp-" + line.id);
-    const pipePresets = createPresetBar(pipeForm, showPipeMsg);
+    const pipeForm = createPipelineForm("lp-" + line.id, nodeRowsFromGraphView(line.graph));
     const pipeBtns = document.createElement("div");
     pipeBtns.className = "pipeBtns";
     const pipeSave = document.createElement("button");
@@ -1004,7 +1029,8 @@ window.addEventListener("DOMContentLoaded", () => {
     pipeRevert.className = "secondary";
     pipeRevert.textContent = "Revert";
     pipeBtns.append(pipeSave, pipeRevert);
-    pipePane.append(pipeEffective, pipeEditTitle, pipeNote, pipePresets.el, pipeForm.el, pipeMsg, pipeBtns);
+    pipePane.append(pipeGraphTitle, pipeStructureNote, pipeGraphBox, pipeEdgesText,
+      pipeEditTitle, pipeNote, pipeForm.el, pipeMsg, pipeBtns);
     const scopeDetails = document.createElement("details");
     scopeDetails.className = "scopeDetails";
     scopeDetails.hidden = true;
@@ -1099,8 +1125,9 @@ window.addEventListener("DOMContentLoaded", () => {
     const st = { id: line.id, dot, banner, transcript, transcriptWrap, scrollBottomBtn, input, send,
       ctxMeter, compactBtn, plannerCtx: null,
       waiting, planBody, graph, graphDetails, graphHandle, chatHandle, previewPanel, approveBtn, badge, planDetails, planControls: controls,
-      pipePane, tabPipeBtn, pipeForm, pipePresets, pipeEffective,
-      pipeline: line.pipeline || null, pipelineOverrides: line.pipelineOverrides || null,
+      pipePane, tabPipeBtn, pipeForm, pipeGraphBox, pipeEdgesList,
+      pipeGraph: line.graph || null, nodeSettings: line.nodeSettings || null,
+      effectiveNodeSettings: line.effectiveNodeSettings || null,
       tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, tabWorkBtn, workPane, plan, row, procPane, evPane,
       hideFailedValidators: true,
       plannerStatus: line.status, plannerAttention: line.attention === true || line.needsAttention === true,
@@ -1120,24 +1147,22 @@ window.addEventListener("DOMContentLoaded", () => {
     tabProcBtn.addEventListener("click", () => setLineTab(st, "processes"));
     tabEvBtn.addEventListener("click", () => setLineTab(st, "evidence"));
     tabPipeBtn.addEventListener("click", () => setLineTab(st, "pipeline"));
-    renderPipelineSummary(st);
-    pipeForm.set(st.pipelineOverrides);
-    pipeRevert.addEventListener("click", () => { pipeForm.set(st.pipelineOverrides); pipePresets.reset(); showPipeMsg(null); });
+    renderPipelineGraph(st);
+    pipeForm.set(st.nodeSettings);
+    pipeRevert.addEventListener("click", () => { pipeForm.set(st.nodeSettings); showPipeMsg(null); });
     pipeSave.addEventListener("click", async () => {
       const out = pipeForm.read();
       if (out.error) return showPipeMsg(out.error);
       pipeSave.disabled = true;
       const res = await fetch("/api/lines/" + st.id + "/pipeline", {
         method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pipeline: out.pipeline }),
+        body: JSON.stringify({ nodeSettings: out.nodeSettings }),
       }).catch(() => null);
       pipeSave.disabled = false;
       const data = res ? await res.json().catch(() => ({})) : {};
       if (!res || !res.ok) return showPipeMsg(data.error || "Saving the settings failed.");
-      st.pipeline = data.pipeline;
-      st.pipelineOverrides = data.overrides;
-      renderPipelineSummary(st);
-      pipeForm.set(st.pipelineOverrides);
+      applyPipelineState(st, data);
+      pipeForm.set(st.nodeSettings);
       showPipeMsg("Saved. The settings apply from the next run.", true);
     });
     tabWorkBtn.addEventListener("click", () => setLineTab(st, "work"));
@@ -1279,14 +1304,12 @@ window.addEventListener("DOMContentLoaded", () => {
         renderGraph(st); updateListEntry(st);
       },
       line_error({ message }) { if (message) showError(message); },
-      pipeline({ pipeline, overrides }) {
-        const changed = JSON.stringify(overrides || null) !== JSON.stringify(st.pipelineOverrides || null);
-        st.pipeline = pipeline;
-        st.pipelineOverrides = overrides || null;
-        renderPipelineSummary(st);
+      pipeline(data) {
+        const changed = JSON.stringify(data.nodeSettings || null) !== JSON.stringify(st.nodeSettings || null);
+        applyPipelineState(st, data);
         // Another tab or the API changed the settings: show them, unless
         // this page is open with possibly unsaved edits.
-        if (changed && st.tab !== "pipeline") st.pipeForm.set(st.pipelineOverrides);
+        if (changed && st.tab !== "pipeline") st.pipeForm.set(st.nodeSettings);
       },
       context({ target, ...fields }) {
         if (target === "planner") st.plannerCtx = fields;
@@ -1363,7 +1386,6 @@ window.addEventListener("DOMContentLoaded", () => {
       st.historyLoader.clear();
       st.transcriptResizeObserver.disconnect();
       st.pipeForm.dispose();
-      st.pipePresets.dispose();
       st.card.remove();
       st.entry.remove();
       cards.delete(id);
@@ -1394,29 +1416,78 @@ window.addEventListener("DOMContentLoaded", () => {
     st.entryCount.textContent = st.workers.size ? st.workers.size + "w" : "";
   }
 
-  // Effective settings of a line: the line's own settings merged over the
-  // router defaults, one row per phase.
-  function renderPipelineSummary(st) {
-    const box = st.pipeEffective;
-    box.innerHTML = "";
-    const title = document.createElement("h3");
-    title.textContent = "Effective settings";
-    box.appendChild(title);
-    const p = st.pipeline && typeof st.pipeline === "object" ? st.pipeline : {};
-    const own = st.pipelineOverrides || {};
-    for (const { key } of PHASE_ROWS) {
-      const cfg = p[key];
-      if (!cfg || typeof cfg !== "object") continue;
-      const parts = [cfg.harness, cfg.model || "default model", cfg.effort].filter(Boolean);
-      if (cfg.timeLimit) parts.push(cfg.timeLimit + "s");
-      if (cfg.maxContext !== undefined) {
-        parts.push(cfg.maxContext ? "compact at " + formatTokens(cfg.maxContext) : "no auto compaction");
-      }
-      const row = document.createElement("div");
-      row.className = "pipeRow";
-      row.textContent = key + ": " + parts.join(" · ")
-        + (own[key] && Object.keys(own[key]).length ? "" : "  (defaults)");
-      box.appendChild(row);
+  // Take the graph and the settings of a line from an API answer or a "pipeline" event.
+  function applyPipelineState(st, data) {
+    if (data.graph) st.pipeGraph = data.graph;
+    st.nodeSettings = data.nodeSettings || null;
+    st.effectiveNodeSettings = data.effectiveNodeSettings || null;
+    renderPipelineGraph(st);
+  }
+
+  // The graph view of the Pipeline tab: one box per node (id, type, harness / model)
+  // and one arrow per edge, laid out by layoutGraph. The same edges follow as text.
+  function renderPipelineGraph(st) {
+    const box = st.pipeGraphBox;
+    box.textContent = "";
+    st.pipeEdgesList.textContent = "";
+    const graph = st.pipeGraph;
+    const layout = layoutGraph(graph);
+    if (!layout.nodes.length) {
+      const none = document.createElement("p");
+      none.className = "pipeNote";
+      none.textContent = "This line has no pipeline graph.";
+      box.appendChild(none);
+      return;
+    }
+    const rows = nodeRowsFromGraphView(graph);
+    const rowKey = JSON.stringify(rows.map((r) => [r.id, r.maxContext]));
+    if (st.pipeRowKey !== rowKey) {
+      if (st.pipeRowKey !== undefined) st.pipeForm.setRows(rows);
+      st.pipeRowKey = rowKey;
+    }
+    const el = (name, attrs, text) => {
+      const node = document.createElementNS(SVGNS, name);
+      for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+    const svg = el("svg", { class: "pipeGraph", role: "img", width: layout.width, height: layout.height,
+      viewBox: "0 0 " + layout.width + " " + layout.height,
+      "aria-label": "Pipeline graph " + (graph.name || "") + ": " + layout.nodes.length + " nodes, "
+        + layout.edges.length + " edges. The edges follow as a text list." });
+    svg.appendChild(el("title", {}, "Pipeline graph " + (graph.name || "")));
+    const defs = el("defs");
+    const marker = el("marker", { id: "pgArrow-" + st.id, viewBox: "0 0 10 10", refX: 9, refY: 5,
+      markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" });
+    marker.appendChild(el("path", { d: "M0 0 L10 5 L0 10 z", class: "pgArrowHead" }));
+    defs.appendChild(marker);
+    svg.appendChild(defs);
+    const edgeLayer = el("g", { class: "pgEdges" });
+    const labelLayer = el("g", { class: "pgLabels" });
+    for (const edge of layout.edges) {
+      if (!edge) continue;
+      edgeLayer.appendChild(el("path", { d: edge.path, class: "pgEdge" + (edge.dashed ? " dashed" : ""),
+        "marker-end": "url(#pgArrow-" + st.id + ")" }));
+      labelLayer.appendChild(el("text", { x: edge.labelX, y: edge.labelY, class: "pgEdgeLabel",
+        "text-anchor": "middle", "dominant-baseline": "central" }, edge.label));
+    }
+    svg.append(edgeLayer);
+    const eff = st.effectiveNodeSettings || {};
+    for (const n of layout.nodes) {
+      const g = el("g", { class: "pgNode" + (n.id === graph.start ? " start" : ""), "data-node": n.id });
+      g.appendChild(el("rect", { x: n.x, y: n.y, width: n.width, height: n.height, rx: 6 }));
+      g.appendChild(el("text", { x: n.x + 10, y: n.y + 21, class: "pgNodeId" }, n.id));
+      g.appendChild(el("text", { x: n.x + 10, y: n.y + 38, class: "pgNodeType" }, n.type || ""));
+      g.appendChild(el("text", { x: n.x + 10, y: n.y + 55, class: "pgNodeCfg" }, nodeSummaryText(eff[n.id])));
+      svg.appendChild(g);
+    }
+    // Labels last, so no box or arrow hides them.
+    svg.appendChild(labelLayer);
+    box.appendChild(svg);
+    for (const line of edgeTextLines(graph)) {
+      const li = document.createElement("li");
+      li.textContent = line;
+      st.pipeEdgesList.appendChild(li);
     }
   }
 
@@ -1447,7 +1518,6 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     if (tab === "pipeline") {
       st.pipeForm.open();
-      reloadPresets();
     }
     if (tab === "processes") pollInventory();
     if (tab === "evidence") pollEvidence();
@@ -1988,95 +2058,6 @@ window.addEventListener("DOMContentLoaded", () => {
       dispose: () => harnessListeners.delete(applyHarnesses) };
   }
 
-  // Preset bar for a pipeline form: pick a saved preset to fill the form,
-  // save the form as a named preset, or delete the selected preset. Every
-  // bar on the page shares the server-side preset list.
-  const presetBars = new Set();
-  let presetList = [];
-  async function reloadPresets() {
-    try {
-      const res = await fetch("/api/pipeline-presets");
-      if (!res.ok) return;
-      presetList = (await res.json()).presets || [];
-      for (const bar of presetBars) bar.render();
-    } catch {}
-  }
-
-  function createPresetBar(form, showError) {
-    const el = document.createElement("div");
-    el.className = "presetBar";
-    const sel = document.createElement("select");
-    sel.setAttribute("aria-label", "pipeline preset");
-    const nameIn = document.createElement("input");
-    nameIn.placeholder = "preset name";
-    nameIn.setAttribute("aria-label", "preset name");
-    const saveBtn = document.createElement("button");
-    saveBtn.type = "button";
-    saveBtn.textContent = "Save as preset";
-    const delBtn = document.createElement("button");
-    delBtn.type = "button";
-    delBtn.className = "secondary";
-    delBtn.textContent = "Delete preset";
-    el.append(sel, nameIn, saveBtn, delBtn);
-
-    function render() {
-      const current = sel.value;
-      sel.innerHTML = "";
-      const none = document.createElement("option");
-      none.value = "";
-      none.textContent = presetList.length ? "Load a preset…" : "No presets saved";
-      sel.appendChild(none);
-      for (const p of presetList) {
-        const o = document.createElement("option");
-        o.value = p.name;
-        o.textContent = p.name;
-        sel.appendChild(o);
-      }
-      sel.value = presetList.some((p) => p.name === current) ? current : "";
-      delBtn.disabled = !sel.value;
-    }
-
-    sel.addEventListener("change", () => {
-      const preset = presetList.find((p) => p.name === sel.value);
-      delBtn.disabled = !preset;
-      if (!preset) return;
-      form.set(preset.pipeline);
-      nameIn.value = preset.name;
-      showError(null);
-    });
-    saveBtn.addEventListener("click", async () => {
-      const name = nameIn.value.trim();
-      if (!name) return showError("Type a preset name first.");
-      const out = form.read();
-      if (out.error) return showError(out.error);
-      if (!out.pipeline) return showError("Choose at least one setting before saving a preset.");
-      const res = await fetch("/api/pipeline-presets/" + encodeURIComponent(name), {
-        method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pipeline: out.pipeline }),
-      }).catch(() => null);
-      if (!res || !res.ok) {
-        const data = res ? await res.json().catch(() => ({})) : {};
-        return showError(data.error || "Saving the preset failed.");
-      }
-      showError(null);
-      await reloadPresets();
-      sel.value = name;
-      delBtn.disabled = false;
-    });
-    delBtn.addEventListener("click", async () => {
-      if (!sel.value) return;
-      await fetch("/api/pipeline-presets/" + encodeURIComponent(sel.value), { method: "DELETE" })
-        .catch(() => null);
-      nameIn.value = "";
-      await reloadPresets();
-    });
-
-    const bar = { el, render, reset: () => { sel.value = ""; nameIn.value = ""; render(); },
-      dispose: () => presetBars.delete(bar) };
-    presetBars.add(bar);
-    render();
-    return bar;
-  }
 
   const createErr = document.createElement("div");
   createErr.className = "createErr";

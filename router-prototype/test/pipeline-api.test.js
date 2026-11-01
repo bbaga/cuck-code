@@ -64,6 +64,12 @@ test("a line with no settings uses the default pipeline and shows graph, node se
   assert.equal(s.graph.nodes["backend-impl"].phase, "implementor");
   assert.ok(Array.isArray(s.graph.edges) && s.graph.edges.length > 0);
   assert.deepEqual(s.nodeSettings, {});
+  // D5: edges carry the effect and trigger of each interaction; fresh-session nodes are listed.
+  const toBackend = s.graph.edges.find((e) => e.from === "planner" && e.to === "backend-impl");
+  assert.deepEqual(toBackend.kinds.start, { effect: "create", trigger: "request" });
+  const report = s.graph.edges.find((e) => e.from === "backend-impl" && e.to === "planner");
+  assert.deepEqual(report.kinds.report, { effect: "deliver", trigger: "complete" });
+  assert.ok(s.graph.freshNodes.includes("backend-val") && !s.graph.freshNodes.includes("planner"));
   for (const id of Object.keys(s.graph.nodes)) assert.ok(s.effectiveNodeSettings[id].harness, id);
   assert.equal(s.pipelineOverrides, null);
   assert.deepEqual(Object.keys(s.pipeline), ["planner", "implementor", "validator", "integration"]);
