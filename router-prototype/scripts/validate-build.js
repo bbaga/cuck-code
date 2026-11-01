@@ -8,6 +8,7 @@ const ROOT = path.resolve(__dirname, "..");
 const PRODUCTION_SCRIPTS = [
   "server.js",
   "process-ref.js",
+  "http-guard.js",
   "harness.js",
   "pipeline-config.js",
   "planner-turn.js",

@@ -50,6 +50,11 @@ const { newContextStats, restoreContextStats, recordTurn, resetForFreshSession,
   contextView, shouldAutoCompact, parseAutoThreshold, compactionPrompt, acceptSummary,
   handoffBlock, workerReseedPrompt } = require("./compaction");
 
+const { allowedHosts, guardRequest } = require("./http-guard");
+// Loopback by default. A remote bind is an explicit opt-in: the router has
+// no authentication.
+const ROUTER_HOST = process.env.ROUTER_HOST || "127.0.0.1";
+const ALLOWED_HOSTS = allowedHosts(process.env.ROUTER_ALLOWED_HOSTS);
 const PORT = Number(process.env.PORT || 7788);
 const HTTPS_PORT = Number(process.env.HTTPS_PORT || 0);
 const TLS_KEY = process.env.TLS_KEY;
@@ -1826,6 +1831,8 @@ const requestHandler = (req, res) => {
     method: req.method, path: url.pathname, status: res.statusCode,
     ms: Date.now() - t0,
   }));
+  const denied = guardRequest(req, ALLOWED_HOSTS);
+  if (denied) return json(res, denied.status, { error: denied.error });
 
   if (req.method === "GET" && url.pathname === "/api/harnesses") {
     const refresh = url.searchParams.get("refresh") === "1";
@@ -2997,7 +3004,11 @@ loadLines();
 slog("info", "server.boot", { lines: lines.size,
   workers: [...lines.values()].reduce((n, l) => n + l.workers.size, 0),
   port: PORT, httpsPort: HTTPS_PORT || null, logMaxBytes: LOG_MAX_BYTES, logKeep: LOG_KEEP });
-server.listen(PORT, () => slog("info", "server.listen", { port: PORT }));
+if (!["127.0.0.1", "::1", "localhost"].includes(ROUTER_HOST)) {
+  slog("warn", "server.remote_bind", { host: ROUTER_HOST,
+    note: "no authentication: any peer that reaches this address can run agents" });
+}
+server.listen(PORT, ROUTER_HOST, () => slog("info", "server.listen", { port: PORT, host: ROUTER_HOST }));
 
 if (HTTPS_PORT) {
   if (!TLS_KEY || !TLS_CERT) {
@@ -3008,7 +3019,7 @@ if (HTTPS_PORT) {
     cert: fs.readFileSync(path.resolve(TLS_CERT)),
     allowHTTP1: true,
   }, requestHandler);
-  secureServer.listen(HTTPS_PORT, () => {
+  secureServer.listen(HTTPS_PORT, ROUTER_HOST, () => {
     slog("info", "server.https_listen", { port: HTTPS_PORT, protocol: "h2" });
   });
 }
