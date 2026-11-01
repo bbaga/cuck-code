@@ -19,7 +19,8 @@ const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   plannerSettings, workerSettings,
-  validateWorkerSpawnBody, implementorBranchName, lineSummary } = require("./spawn-plan");
+  validateWorkerSpawnBody, implementorBranchName, lineSummary,
+  systemPromptOptions, briefForHarness, usesSystemChannel } = require("./spawn-plan");
 const { loadBuiltinPipeline, migrateLine, nodeSettingsFromPipeline,
   implementorNodeFor, validatorNodeFor, integrationNodeFor } = require("./line-graph");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
@@ -66,6 +67,11 @@ const HTTPS_PORT = Number(process.env.HTTPS_PORT || 0);
 const TLS_KEY = process.env.TLS_KEY;
 const TLS_CERT = process.env.TLS_CERT;
 const LINES_DIR = path.resolve(process.env.LINES_DIR || "./lines");
+// Router-owned directory for the role prompts that go through a harness file
+// channel (claude, pi). writeSystemPromptFile creates it with owner-only
+// permissions (directory 0700, files 0600); file names are content hashes.
+// The dot prefix keeps loadLines from reading it as a line.
+const SYSTEM_PROMPT_DIR = path.join(LINES_DIR, ".system-prompts");
 const AUTO_APPROVE = process.env.LINE_AUTO_APPROVE !== "0";
 const INDEX_HTML = path.join(__dirname, "web", "index.html");
 const WORKER_CAP = 8;
@@ -294,7 +300,7 @@ ${implId ? `- The implementor's app port: read ui.port at the repo root, or call
 const { wrapPlannerTurn } = require("./planner-turn");
 
 const lines = new Map();
-const { buildPrompt, workerRouterValues, validatorRouterValues, integrationRouterValues,
+const { buildPrompt, buildPromptParts, workerRouterValues, validatorRouterValues, integrationRouterValues,
   plannerRouterValues } = require("./prompt-builder");
 const pipelinePresets = createPresetStore(path.join(LINES_DIR, "pipeline-presets.json"),
   { writeFile: writeFileDurable });
@@ -306,6 +312,23 @@ function plannerPromptFor(line, task) {
   return buildPrompt(line.graph, line.graph.start,
     plannerRouterValues({ line, nodeId: line.graph.start, port: PORT, workerCap: WORKER_CAP }),
     { task });
+}
+
+// The planner prompt in parts for a trusted system channel: { full, role, task }.
+// Null for a line without a graph.
+function plannerPartsFor(line, task) {
+  if (!line.graph) return null;
+  const routerValues = plannerRouterValues({ line, nodeId: line.graph.start, port: PORT,
+    workerCap: WORKER_CAP });
+  const { role, task: taskPart } = buildPromptParts(line.graph, line.graph.start, routerValues, { task });
+  return { full: buildPrompt(line.graph, line.graph.start, routerValues, { task }), role, task: taskPart };
+}
+
+// The stored split of a worker brief: the role part for the system channel
+// and the task part for the user turn. Nothing when the type has no task
+// marker (role ""), so such a worker keeps the full brief in the user turn.
+function splitFields(split) {
+  return split && split.role ? { rolePrompt: split.role, taskPrompt: split.task } : {};
 }
 
 function plannerBrief(name, lineId, userPrompt, port, trackerTicket) {
@@ -965,7 +988,8 @@ function compactPlanner(line, reason, sessionCfg = null) {
   const current = plannerSettings(line);
   const cfg = sessionCfg ? { ...current, ...sessionCfg } : current;
   const plan = planPlannerRun(cfg, { prompt: compactionPrompt("planner"), workdir: line.workdir,
-    sessionId: line.sessionId, autoApprove: AUTO_APPROVE });
+    sessionId: line.sessionId, autoApprove: AUTO_APPROVE,
+    ...systemPromptOptions(cfg.harness, line.rolePrompt, SYSTEM_PROMPT_DIR) });
   const before = contextView(line.context, cfg.maxContext);
   slog("info", "planner.compact.start", { lineId: line.id, reason, tokens: before.tokens,
     estimated: before.estimated });
@@ -1018,7 +1042,8 @@ function compactWorker(line, worker, reason, then = () => {}) {
   const effective = resolveWorkerOverrides(cfg, worker, phase);
   const plan = planWorkerRun({ ...cfg, ...effective }, { phase,
     prompt: compactionPrompt("implementor"), workdir: worker.worktreePath,
-    sessionId: worker.sessionId, autoApprove: AUTO_APPROVE });
+    sessionId: worker.sessionId, autoApprove: AUTO_APPROVE,
+    ...systemPromptOptions(effective.harness, worker.rolePrompt, SYSTEM_PROMPT_DIR) });
   const before = contextView(worker.context, cfg.maxContext);
   slog("info", "worker.compact.start", { lineId: line.id, workerId: worker.id, reason,
     tokens: before.tokens, estimated: before.estimated });
@@ -1113,6 +1138,8 @@ function saveLine(line) {
       JSON.stringify({ id: line.id, name: line.name, sessionId: line.sessionId,
         context: line.context || null, handoff: line.handoff || null,
         sessionCfg: line.sessionCfg || null,
+        rolePrompt: line.rolePrompt || null,
+        initialBrief: line.initialBrief || null,
         layout: 2,
         pipeline: line.pipeline || null,
         graph: line.graph || null,
@@ -1141,6 +1168,8 @@ function saveLine(line) {
           context: w.context || null, handoff: w.handoff || null,
           // The brief is kept so a compacted session can be reseeded with it.
           prompt: w.role === "implementor" || w.kind === "integration" ? w.prompt || null : null,
+          rolePrompt: w.role === "implementor" || w.kind === "integration" ? w.rolePrompt || null : null,
+          taskPrompt: w.role === "implementor" || w.kind === "integration" ? w.taskPrompt || null : null,
           ...completionFields(w), lastRunText: w.lastRunText || null,
           runGeneration: w.runGeneration || 0,
           activeInvocationId: w.activeInvocationId || null,
@@ -1324,15 +1353,24 @@ function pump(line) {
   // The first run after a compaction starts a fresh session: it needs the
   // planner brief (router API, rules) again, plus the handoff summary.
   const reseed = !line.sessionId && !!line.handoff;
+  const cfg = plannerSettings(line);
+  // A harness with a trusted system channel gets the role part there on every
+  // run (the CLI keeps no system prompt in a resumed session). A line without
+  // a stored role part (legacy) keeps the full brief in the user turn.
+  const viaChannel = usesSystemChannel(cfg.harness, line.rolePrompt);
   let turnText = text;
   if (reseed) {
     const reseedTask = `${handoffBlock(line.handoff)}\n\n${text}`;
     try {
-      turnText = plannerPromptFor(line, reseedTask);
+      const parts = viaChannel ? plannerPartsFor(line, reseedTask) : null;
+      turnText = parts ? parts.task : plannerPromptFor(line, reseedTask);
     } catch (e) {
       slog("error", "planner.prompt.failed", { lineId: line.id, error: e.message });
       turnText = plannerBrief(line.name, line.id, reseedTask, PORT);
     }
+  } else if (viaChannel && line.initialBrief && text === line.initialBrief.full) {
+    // The first prompt: only its task part goes in the user turn.
+    turnText = line.initialBrief.task;
   }
   const prompt = wrapPlannerTurn(turnText, { lineId: line.id, approved: line.planApproved,
     workdir: line.workdir });
@@ -1343,12 +1381,12 @@ function pump(line) {
   slog("info", "planner.run.start", { lineId: line.id, resume: !!line.sessionId, reseed,
     chars: text.length, prompt: preview(text, 400) });
 
-  const cfg = plannerSettings(line);
   line.plannerHarness = cfg.harness;
   line.sessionCfg = { harness: cfg.harness, model: cfg.model, effort: cfg.effort,
     timeLimit: cfg.timeLimit };
   const plan = planPlannerRun(cfg, { prompt, workdir: line.workdir,
-    sessionId: line.sessionId, autoApprove: AUTO_APPROVE });
+    sessionId: line.sessionId, autoApprove: AUTO_APPROVE,
+    ...systemPromptOptions(cfg.harness, line.rolePrompt, SYSTEM_PROMPT_DIR) });
   const adapter = plan.adapter;
   const child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, ...plan.env },
@@ -1379,6 +1417,7 @@ function pump(line) {
       line.sessionId = entry.sessionId;
       // The fresh session has received the handoff summary.
       line.handoff = null;
+      line.initialBrief = null;
     }
     if (typeof entry.at !== "number") entry.at = Date.now();
     runOutput.add(entry);
@@ -1606,13 +1645,21 @@ function spawnWorker(line, worker, prompt, resume) {
   if (!worker.context) worker.context = newContextStats();
   // A continuation after a compaction starts a fresh session: it gets the
   // original brief and the handoff summary before the new instructions.
+  // A harness with a trusted system channel gets the role part of the brief
+  // there on every run (a resumed CLI session keeps no system prompt), and
+  // only the task part stays in the user turn. A worker without a stored role
+  // part (legacy) or a harness without a channel (vibe) uses the full brief.
+  const brief = briefForHarness(effective.harness, worker);
   if (resume && !worker.sessionId && worker.handoff && worker.prompt) {
-    prompt = workerReseedPrompt(worker.prompt, worker.handoff, prompt);
+    prompt = workerReseedPrompt(brief, worker.handoff, prompt);
+  } else if (!resume && prompt === worker.prompt) {
+    prompt = brief;
   }
   const plan = planWorkerRun({ ...cfg, ...effective }, {
     phase, prompt, workdir: worker.worktreePath,
     sessionId: resume && worker.sessionId ? worker.sessionId : null,
     autoApprove: AUTO_APPROVE,
+    ...systemPromptOptions(effective.harness, worker.rolePrompt, SYSTEM_PROMPT_DIR),
   });
   const adapter = plan.adapter;
   worker.adapter = adapter;
@@ -1802,13 +1849,16 @@ function spawnValidator(line, source, criteria, report) {
   const repoName = repo ? repo.name : implWorker.repo || null;
   const repoUrl = repo ? repo.url : null;
   let prompt;
+  let split = null;
   try {
     if (line.graph) {
       const callerValues = { criteria };
       if (implWorker.trackerTicket) callerValues.trackerTicket = implWorker.trackerTicket;
-      prompt = buildPrompt(line.graph, valNode, validatorRouterValues({ line, nodeId: valNode,
+      const routerValues = validatorRouterValues({ line, nodeId: valNode,
         workerId: id, workerName: name, implementor: implWorker, report, repoName, repoUrl,
-        port: PORT }), callerValues);
+        port: PORT });
+      prompt = buildPrompt(line.graph, valNode, routerValues, callerValues);
+      split = buildPromptParts(line.graph, valNode, routerValues, callerValues);
     } else {
       prompt = validatorBrief(implWorker.name, report, criteria,
         implWorker.persona || "backend", id, implWorker.id, line.id, repoName, repoUrl,
@@ -1825,7 +1875,7 @@ function spawnValidator(line, source, criteria, report) {
     role: "validator", validates: implWorker.id, persona: implWorker.persona || "backend",
     validationSource: source, validationCriteria: criteria,
     kind: "standard", repo: repoName,
-    prompt,
+    prompt, ...splitFields(split),
     sessionId: null, worktreePath: implWorker.worktreePath, branch: implWorker.branch,
     status: "running", stopRequested: false, runGeneration: 1, child: null, transcript: [] };
   line.workers.set(id, worker);
@@ -2168,7 +2218,11 @@ const routeRequest = (req, res) => {
       const wasStarted = line.started;
       if (!line.started) {
         try {
-          text = plannerPromptFor(line, body.text);
+          const parts = plannerPartsFor(line, body.text);
+          text = parts ? parts.full : plannerPromptFor(line, body.text);
+          // Kept so the first run can send the role through a system channel.
+          line.rolePrompt = parts && parts.role ? parts.role : null;
+          line.initialBrief = parts && parts.role ? { full: parts.full, task: parts.task } : null;
         } catch (e) {
           return json(res, 500, { error: `could not build the planner prompt: ${e.message}` });
         }
@@ -2465,14 +2519,16 @@ const routeRequest = (req, res) => {
       }
       const base = baseResolved ? body.base : null;
       let workerPrompt;
+      let split = null;
       try {
         if (line.graph) {
           const callerValues = { task: body.prompt };
           if (body.trackerTicket) callerValues.trackerTicket = body.trackerTicket;
-          workerPrompt = buildPrompt(line.graph, implNode, workerRouterValues({ line, nodeId: implNode,
+          const routerValues = workerRouterValues({ line, nodeId: implNode,
             workerId: id, workerName: body.name, repo, baseCommit,
-            baseNote: baseNote(base, baseResolved), port: PORT, changesetLimit: CHANGESET_LIMIT }),
-          callerValues);
+            baseNote: baseNote(base, baseResolved), port: PORT, changesetLimit: CHANGESET_LIMIT });
+          workerPrompt = buildPrompt(line.graph, implNode, routerValues, callerValues);
+          split = buildPromptParts(line.graph, implNode, routerValues, callerValues);
         } else {
           workerPrompt = workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo,
             baseCommit, baseNote(base, baseResolved), body.trackerTicket);
@@ -2488,7 +2544,7 @@ const routeRequest = (req, res) => {
         runGeneration: 1,
         harness: body.harness || null, model: body.model || null,
         effort: body.effort || null,
-        prompt: workerPrompt,
+        prompt: workerPrompt, ...splitFields(split),
         sessionId: null, context: newContextStats(), handoff: null,
         worktreePath, branch, status: "running", stopRequested: false,
         baseCommit, changeset: null, base, baseResolved,
@@ -2706,12 +2762,17 @@ const routeRequest = (req, res) => {
       }
       const manifest = prepared.repos;
       let integrationPrompt;
+      let split = null;
       try {
-        integrationPrompt = line.graph
-          ? buildPrompt(line.graph, integrationNode, integrationRouterValues({ line,
-            nodeId: integrationNode, workerId: id, workerName: name, manifest, branch, port: PORT }),
-          { instructions: body.prompt })
-          : integrationValidatorBrief(line, manifest, body.prompt, id, branch);
+        if (line.graph) {
+          const routerValues = integrationRouterValues({ line,
+            nodeId: integrationNode, workerId: id, workerName: name, manifest, branch, port: PORT });
+          const callerValues = { instructions: body.prompt };
+          integrationPrompt = buildPrompt(line.graph, integrationNode, routerValues, callerValues);
+          split = buildPromptParts(line.graph, integrationNode, routerValues, callerValues);
+        } else {
+          integrationPrompt = integrationValidatorBrief(line, manifest, body.prompt, id, branch);
+        }
       } catch (e) {
         prepared.rollback();
         try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
@@ -2720,7 +2781,7 @@ const routeRequest = (req, res) => {
       const worker = { id, lineId: line.id, name, kind: "integration", node: integrationNode,
         role: "validator", validates: null, persona: "backend", repo: null,
         integration: { startedAt: new Date().toISOString(), repos: manifest },
-        prompt: integrationPrompt,
+        prompt: integrationPrompt, ...splitFields(split),
         sessionId: null, worktreePath: root, branch, status: "running", stopRequested: false,
         runGeneration: 1, child: null, transcript: [] };
       line.workers.set(id, worker);
@@ -3146,6 +3207,8 @@ function loadLines() {
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
           role: "implementor",
           validates: null, prompt: typeof w.prompt === "string" ? w.prompt : null,
+          rolePrompt: typeof w.rolePrompt === "string" && w.rolePrompt ? w.rolePrompt : null,
+          taskPrompt: typeof w.taskPrompt === "string" && w.taskPrompt ? w.taskPrompt : null,
           kind: w.kind || "standard", verdict: w.verdict || null,
           context: restoreContextStats(w.context),
           handoff: typeof w.handoff === "string" ? w.handoff : null,
@@ -3172,7 +3235,9 @@ function loadLines() {
         const impl = workers.get(w.validates);
         if (!impl && w.kind !== "integration") continue;
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
-          role: "validator", node: w.node || null, validates: w.validates, prompt: w.kind === "integration" && typeof w.prompt === "string" ? w.prompt : null, kind: w.kind || "standard", verdict: w.verdict || null,
+          role: "validator", node: w.node || null, validates: w.validates, prompt: w.kind === "integration" && typeof w.prompt === "string" ? w.prompt : null,
+          rolePrompt: w.kind === "integration" && typeof w.rolePrompt === "string" && w.rolePrompt ? w.rolePrompt : null,
+          taskPrompt: w.kind === "integration" && typeof w.taskPrompt === "string" && w.taskPrompt ? w.taskPrompt : null, kind: w.kind || "standard", verdict: w.verdict || null,
           validationSource: w.validationSource || null, validationCriteria: w.validationCriteria || null,
           validatedCommit: w.validatedCommit || null,
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
@@ -3206,6 +3271,9 @@ function loadLines() {
         context: restoreContextStats(meta.context),
         handoff: typeof meta.handoff === "string" ? meta.handoff : null,
         sessionCfg: meta.sessionCfg && typeof meta.sessionCfg.harness === "string" ? meta.sessionCfg : null,
+        rolePrompt: typeof meta.rolePrompt === "string" && meta.rolePrompt ? meta.rolePrompt : null,
+        initialBrief: meta.initialBrief && typeof meta.initialBrief.full === "string"
+          && typeof meta.initialBrief.task === "string" ? meta.initialBrief : null,
         pipeline: meta.pipeline || null,
         graph: meta.graph, nodeSettings: meta.nodeSettings || {},
         repos: new Map(migration.repos.map((r) => [r.name, r])),

@@ -9,6 +9,7 @@ consistency, error paths, test coverage of the changed logic, and dead
 code.
 
 
+<!-- task -->
 The implementor reported:
 {{source.report}}
 

@@ -4,7 +4,7 @@
 // concrete child process plans. server.js calls these helpers; the unit
 // tests exercise them without starting the server or a CLI process.
 
-const { createHarness } = require("./harness");
+const { createHarness, trustedSystemChannel, writeSystemPromptFile } = require("./harness");
 const { resolvePipeline, resolveNodeSettings, defaultModelFor, EFFORT_LEVELS } = require("./pipeline-config");
 
 // Which pipeline phase a worker run belongs to.
@@ -40,6 +40,47 @@ function resolveWorkerOverrides(cfg, worker, phase) {
     model: worker.model || fallbackModel,
     effort: worker.effort || cfg.effort,
   };
+}
+
+// Trusted system prompt delivery (task B5).
+//
+// A node prompt has a role part (router rules, role text) and a task part.
+// A harness with a trusted system prompt channel (claude, pi, codex) gets the
+// role part through that channel and only the task part as the user turn. A
+// harness without one (vibe) gets the full prompt in the user turn, as before.
+
+// Role texts at least this long go through a file when the harness has a file
+// channel; the body then stays off the command line.
+const SYSTEM_PROMPT_FILE_MIN_CHARS = 1000;
+
+// True when this harness gets the role part through its system channel.
+function usesSystemChannel(harnessId, rolePrompt) {
+  return typeof rolePrompt === "string" && rolePrompt !== "" && trustedSystemChannel(harnessId) !== null;
+}
+
+// The system prompt options of one run: {} (nothing to send), {systemPrompt}
+// (inline text) or {systemPromptFile}. The file lives in dir, a router-owned
+// directory that writeSystemPromptFile creates with owner-only permissions
+// (0700 directory, 0600 files). Codex has no file channel and always gets
+// inline text. Pass dir = null to force inline text.
+function systemPromptOptions(harnessId, rolePrompt, dir) {
+  if (!usesSystemChannel(harnessId, rolePrompt)) return {};
+  const channel = trustedSystemChannel(harnessId);
+  if (channel.file && dir && rolePrompt.length >= SYSTEM_PROMPT_FILE_MIN_CHARS) {
+    return { systemPromptFile: writeSystemPromptFile(rolePrompt, dir) };
+  }
+  return { systemPrompt: rolePrompt };
+}
+
+// The brief text for the user turn of a first or reseeded run. stored holds
+// the full brief (prompt) and the split parts (rolePrompt, taskPrompt). A
+// legacy record without the split, or a harness without a channel, uses the
+// full brief.
+function briefForHarness(harnessId, stored) {
+  if (usesSystemChannel(harnessId, stored.rolePrompt) && typeof stored.taskPrompt === "string") {
+    return stored.taskPrompt;
+  }
+  return stored.prompt;
 }
 
 function planRun(cfg, opts) {
@@ -117,6 +158,10 @@ function lineSummary(line) {
 }
 
 module.exports = {
+  usesSystemChannel,
+  systemPromptOptions,
+  briefForHarness,
+  SYSTEM_PROMPT_FILE_MIN_CHARS,
   phaseForWorker,
   plannerSettings,
   workerSettings,

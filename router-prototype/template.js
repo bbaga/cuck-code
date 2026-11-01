@@ -143,10 +143,17 @@ function renderNodes(nodes, scopes, out) {
   }
 }
 
-function render(text, values = {}) {
+// The task marker splits a node prompt into a role part and a task part
+// (task B5). render drops it with its line break, so the plain text of a body
+// is the same as without the marker. buildPromptParts asks to keep it.
+const TASK_MARKER = "<!-- task -->";
+const TASK_MARKER_LINE = /<!-- task -->\n?/g;
+
+function render(text, values = {}, options = {}) {
   const out = [];
   renderNodes(parseTemplate(text), [values], out);
-  return out.join("");
+  const rendered = out.join("");
+  return options.keepTaskMarker === true ? rendered : rendered.replace(TASK_MARKER_LINE, "");
 }
 
-module.exports = { TemplateError, parseTemplate, placeholders, render };
+module.exports = { TemplateError, parseTemplate, placeholders, render, TASK_MARKER, TASK_MARKER_LINE };

@@ -49,6 +49,7 @@ the changed pages when the work includes a user interface.
   unique ports, isolated containers or headless browsers, no shared
   fixtures.
 
+<!-- task -->
 The implementor reported:
 {{source.report}}
 

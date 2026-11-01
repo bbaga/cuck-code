@@ -4,7 +4,7 @@
 // Pure: no file reads. Router values come from the router, caller values
 // from the request that starts the node.
 
-const { render } = require("./template");
+const { render, TASK_MARKER, TASK_MARKER_LINE } = require("./template");
 const { isRouterVariable } = require("./fields");
 
 function has(obj, key) {
@@ -18,7 +18,12 @@ function isPlainObject(v) {
 // The protocol markers of a type body are for later tasks. They are not part of the text.
 const PROTOCOL_MARKER = /<!-- protocol:(?:start|end) -->\n?/g;
 
-function buildPrompt(resolved, nodeId, routerValues, callerValues) {
+// The task marker (see template.js) splits a type body into the role part
+// (before) and the task part (after). A prompt has at most one marker.
+
+// Render the pieces of the prompt: the parts in order, each rendered and
+// cleaned. The marker stays in the rendered text.
+function renderParts(resolved, nodeId, routerValues, callerValues) {
   if (!resolved || !has(resolved.nodes, nodeId)) throw new Error(`unknown node '${nodeId}'`);
   const node = resolved.nodes[nodeId];
   const type = has(resolved.types, node.type) ? resolved.types[node.type] : undefined;
@@ -36,11 +41,42 @@ function buildPrompt(resolved, nodeId, routerValues, callerValues) {
   }
 
   const values = { ...caller, ...router };
-  const parts = [type.body, resolved.defaults && resolved.defaults.prompt, node.prompt]
-    .filter((p) => typeof p === "string" && p.trim() !== "")
-    .map((p) => render(p, values).replace(PROTOCOL_MARKER, "").replace(/\n+$/, ""))
-    .filter((p) => p !== "");
-  return parts.join("\n\n");
+  const rendered = [type.body, resolved.defaults && resolved.defaults.prompt, node.prompt]
+    .map((p, i) => ({ p, i }))
+    .filter(({ p }) => typeof p === "string" && p.trim() !== "")
+    .map(({ p, i }) => ({ i, text: render(p, values, { keepTaskMarker: true }).replace(PROTOCOL_MARKER, "").replace(/\n+$/, "") }))
+    .filter(({ text }) => text !== "");
+  // The marker may only sit in the type body (parent and child bodies are
+  // already joined). Exactly one marker overall is allowed; zero is allowed.
+  let count = 0;
+  for (const { text } of rendered) count += text.split(TASK_MARKER).length - 1;
+  if (count > 1) throw new Error(`node '${nodeId}': the prompt has ${count} '${TASK_MARKER}' markers: use at most one`);
+  return rendered;
+}
+
+// The full prompt text, with the task marker removed.
+function buildPrompt(resolved, nodeId, routerValues, callerValues) {
+  return renderParts(resolved, nodeId, routerValues, callerValues)
+    .map(({ text }) => text).join("\n\n").replace(TASK_MARKER_LINE, "");
+}
+
+// The prompt in two parts: { role, task }. The role part is the text before
+// the task marker plus the pipeline and node prompt extensions. The task part
+// is the text after the marker. A type without a marker has role "" and the
+// whole prompt as task. role + task is NOT the full prompt (the extensions
+// sit between them); a harness without a trusted system channel must send the
+// full prompt from buildPrompt.
+function buildPromptParts(resolved, nodeId, routerValues, callerValues) {
+  const rendered = renderParts(resolved, nodeId, routerValues, callerValues);
+  const typeText = rendered.length > 0 && rendered[0].i === 0 ? rendered[0].text : "";
+  const at = typeText.indexOf(TASK_MARKER);
+  if (at < 0) {
+    return { role: "", task: rendered.map(({ text }) => text).join("\n\n") };
+  }
+  const before = typeText.slice(0, at).replace(/\n+$/, "");
+  const after = typeText.slice(at + TASK_MARKER.length).replace(/^\n+/, "");
+  const extensions = rendered.filter(({ i }) => i !== 0).map(({ text }) => text.replace(TASK_MARKER_LINE, ""));
+  return { role: [before, ...extensions].filter((t) => t !== "").join("\n\n"), task: after };
 }
 
 // Router value builders. Each takes plain data from the router state.
@@ -104,5 +140,5 @@ function plannerRouterValues({ line, nodeId, port, workerCap }) {
   };
 }
 
-module.exports = { buildPrompt, workerRouterValues, validatorRouterValues, integrationRouterValues,
+module.exports = { buildPrompt, buildPromptParts, workerRouterValues, validatorRouterValues, integrationRouterValues,
   plannerRouterValues };

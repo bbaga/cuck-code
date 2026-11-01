@@ -37,6 +37,7 @@ other tool call. Wait for HTTP readiness with a bounded timeout.
 Register the PID with the router inventory under your integration
 worker ID. Stop the server PID after tests, including after failure.
 
+<!-- task -->
 Instructions from the planner:
 {{instructions}}
 

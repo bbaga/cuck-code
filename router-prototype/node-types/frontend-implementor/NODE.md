@@ -62,6 +62,7 @@ Whenever you perform browser-based UI or UX testing, launch the browser in headl
   unique ports, isolated containers or headless browsers, no shared
   fixtures.
 
+<!-- task -->
 Task from the planner:
 {{task}}
 
