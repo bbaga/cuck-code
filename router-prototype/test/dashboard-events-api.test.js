@@ -561,3 +561,29 @@ test("plan approval fails and is not applied when the line cannot be saved", { t
   const plan = await (await fetch(`${router.base}/api/lines/${line.id}/plan`)).json();
   assert.equal(plan.approved, false);
 });
+
+test("restart keeps the integration validator brief", { timeout: 30_000 }, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-integration-brief-"));
+  const routers = [];
+  t.after(async () => {
+    for (const router of routers.reverse()) await stopRouter(router);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const id = "line-brief";
+  fs.mkdirSync(path.join(root, id));
+  fs.writeFileSync(path.join(root, id, "line.json"), JSON.stringify({
+    id, name: "brief", started: true, planApproved: true, status: "idle",
+    workers: [
+      { id: "int-1", name: "integration-validator", role: "validator", kind: "integration",
+        validates: null, prompt: "INTEGRATION BRIEF", status: "stopped" },
+      { id: "impl-1", name: "implementor", role: "implementor", prompt: "IMPL PROMPT", status: "stopped" },
+      { id: "std-1", name: "standard-validator", role: "validator", kind: "standard",
+        validates: "impl-1", prompt: "STANDARD PROMPT", status: "stopped" },
+    ],
+    repos: [], inventory: [], evidence: [], pendingValidations: [],
+  }));
+  const router = await startRouter(root); routers.push(router);
+  const saved = JSON.parse(fs.readFileSync(path.join(root, id, "line.json"), "utf8"));
+  assert.equal(saved.workers.find((w) => w.id === "int-1").prompt, "INTEGRATION BRIEF");
+  assert.equal(saved.workers.find((w) => w.id === "std-1").prompt, null);
+});
