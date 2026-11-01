@@ -509,3 +509,25 @@ test("Node serves the dashboard stream over direct HTTP/2 when TLS is configured
   assert.match(body, /"type":"snapshot_begin"/);
   assert.match(body, /"type":"snapshot_end"/);
 });
+
+test("plan approval fails and is not applied when the line cannot be saved", { timeout: 30_000 }, async (t) => {
+  if (process.getuid && process.getuid() === 0) return t.skip("root ignores directory permissions");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-save-fail-"));
+  const routers = [];
+  let lineDir = null;
+  t.after(async () => {
+    if (lineDir) fs.chmodSync(lineDir, 0o755);
+    for (const router of routers.reverse()) await stopRouter(router);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const router = await startRouter(root); routers.push(router);
+  const created = await fetch(router.base + "/api/lines", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "readonly" }) });
+  const line = await created.json();
+  lineDir = path.join(root, line.id);
+  fs.chmodSync(lineDir, 0o555);
+  const approve = await fetch(`${router.base}/api/lines/${line.id}/approve`, { method: "POST" });
+  assert.equal(approve.status, 500);
+  const plan = await (await fetch(`${router.base}/api/lines/${line.id}/plan`)).json();
+  assert.equal(plan.approved, false);
+});
