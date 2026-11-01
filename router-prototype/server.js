@@ -23,7 +23,7 @@ const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   systemPromptOptions, briefForHarness, usesSystemChannel } = require("./spawn-plan");
 const { buildCatalog, defaultReadDir, defaultReadFile } = require("./plugin-catalog");
 const { resolvePipelineDefinition, PipelineError } = require("./resolve-pipeline");
-const { loadBuiltinPipeline, migrateLine, nodeSettingsFromPipeline, pipelineFromNodeSettings,
+const { loadBuiltinPipeline, migrateLine, normalizeLine, nodeSettingsFromPipeline, pipelineFromNodeSettings,
   nodeSettingsFields, builtinPipelineNames,
   implementorNodeFor, validatorNodeFor, integrationNodeFor } = require("./line-graph");
 const { checkCall, checkLineValues, requiredFields, introspect } = require("./call-fields");
@@ -3472,7 +3472,16 @@ function loadLines() {
       continue;
     }
     try {
-      const meta = migrateLine(JSON.parse(fs.readFileSync(metadataPath, "utf8")), DEFAULT_PIPELINE);
+      const meta = normalizeLine(JSON.parse(fs.readFileSync(metadataPath, "utf8")), DEFAULT_PIPELINE, {
+        log: slog,
+        // The report of a completed worker, rendered as workerClosed renders it.
+        renderReport: (worker, m) => {
+          if (!kindOfNode(m.graph, worker.node)) return null;
+          const source = worker.validates ? (m.workers || []).find((x) => x.id === worker.validates) || null : null;
+          const item = renderReports({ graph: m.graph, worker, report: worker.lastRunText || "", timedOut: false,
+            source }).find((r) => r.target === "starter");
+          return item ? item.text : null;
+        } });
       // Lines saved with an implicit "primary" repo adopt their workdir clone in place.
       const migration = adoptLegacyWorkdir(meta, path.join(LINES_DIR, entry.name));
       if (migration.adopted) {
