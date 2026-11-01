@@ -1870,21 +1870,199 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
   flushPendingValidations(line);
 }
 
-function spawnValidator(line, source, criteria, report) {
-  const implWorker = line.workers.get(source.workerId);
-  if (!implWorker) return;
+function sendFailure(res, out) {
+  const { ok, status, ...body } = out;
+  return json(res, status, body);
+}
+
+// Creates an implementor with its own worktree and branch. Returns
+// { ok: true, worker, response } or { ok: false, status, error, ...extra }.
+function createOwnWorktree(line, nodeId, fields) {
+  const fail = (status, error, extra) => ({ ok: false, status, error, ...extra });
+  const persona = fields.persona;
+  const repoName = fields.repo;
+  const repo = resolveRepo(line, repoName);
+  if (!repo) {
+    return fail(404, `no such repo: '${repoName}'. Register it first with POST /api/protocol/lines/${line.id}/repos`);
+  }
+  for (const w of line.workers.values()) {
+    if (w.name === fields.name) return fail(409, `worker '${fields.name}' already exists`);
+  }
+  const running = runningCount(line);
+  if (running >= WORKER_CAP) {
+    return fail(409, `cap reached: ${WORKER_CAP} workers/validators are running concurrently - wait for completions or stop workers`);
+  }
+  const sName = sanitizeName(fields.name);
+  if (!sName) return fail(400, "worker name must contain [a-zA-Z0-9-]");
+  const id = crypto.randomUUID();
+  const branch = implementorBranchName(line.id, sName, fields.trackerTicket);
+  const worktreePath = path.join(LINES_DIR, "worktrees", line.id, repo.name, sName);
+  // Validate the base BEFORE any branch or worktree exists.
+  let baseResolved = null;
+  try {
+    baseResolved = resolveSpawnBase(fields.base, { workers: line.workers.values(),
+      repoName: repo.name,
+      run: (args) => spawnSync("git", ["-C", repo.path, ...args], { encoding: "utf8" }) });
+  } catch (e) {
+    if (e instanceof BaseError) return fail(e.status, e.message);
+    return fail(500, `base resolution failed: ${e.message}`);
+  }
+  fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+  const wt = spawnSync("git", ["-C", repo.path, "worktree", "add", "-b", branch, worktreePath,
+    ...(baseResolved ? [baseResolved.sha] : [])],
+    { encoding: "utf8" });
+  if (wt.error) return fail(500, `git is not available: ${wt.error.message}`);
+  if (wt.status !== 0) return fail(500, "git worktree add failed", { stderr: wt.stderr });
+  // The change-set baseline: the HEAD the worktree starts from. It
+  // stays fixed for every continued run of this implementor.
+  const baseHead = spawnSync("git", ["-C", worktreePath, "rev-parse", "HEAD"],
+    { encoding: "utf8" });
+  const baseCommit = baseHead.status === 0 ? baseHead.stdout.trim() : null;
+  if (baseResolved && baseCommit !== baseResolved.sha) {
+    spawnSync("git", ["-C", repo.path, "worktree", "remove", "--force", worktreePath]);
+    spawnSync("git", ["-C", repo.path, "branch", "-D", branch]);
+    return fail(500, "worktree HEAD does not match the resolved base", { expected: baseResolved.sha, actual: baseCommit });
+  }
+  const base = baseResolved ? fields.base : null;
+  let workerPrompt;
+  let split = null;
+  try {
+    if (line.graph) {
+      const callerValues = { task: fields.prompt };
+      if (fields.trackerTicket) callerValues.trackerTicket = fields.trackerTicket;
+      const routerValues = workerRouterValues({ line, nodeId,
+        workerId: id, workerName: fields.name, repo, baseCommit,
+        baseNote: baseNote(base, baseResolved), port: PORT, changesetLimit: CHANGESET_LIMIT });
+      workerPrompt = buildPrompt(line.graph, nodeId, routerValues, callerValues);
+      split = buildPromptParts(line.graph, nodeId, routerValues, callerValues);
+    } else {
+      workerPrompt = workerBrief(fields.name, line.name, fields.prompt, persona, id, line.id, repo,
+        baseCommit, baseNote(base, baseResolved), fields.trackerTicket);
+    }
+  } catch (e) {
+    spawnSync("git", ["-C", repo.path, "worktree", "remove", "--force", worktreePath]);
+    spawnSync("git", ["-C", repo.path, "branch", "-D", branch]);
+    return fail(500, `could not build the worker prompt: ${e.message}`);
+  }
+  const worker = { id, lineId: line.id, name: fields.name, node: nodeId,
+    role: "implementor", validates: null, persona, kind: "standard", repo: repo.name,
+    trackerTicket: fields.trackerTicket || null,
+    runGeneration: 1,
+    harness: fields.harness || null, model: fields.model || null,
+    effort: fields.effort || null,
+    prompt: workerPrompt, ...splitFields(split),
+    sessionId: null, context: newContextStats(), handoff: null,
+    worktreePath, branch, status: "running", stopRequested: false,
+    baseCommit, changeset: null, base, baseResolved,
+    child: null, transcript: [] };
+  line.workers.set(id, worker);
+  if (!saveLine(line)) {
+    line.workers.delete(id);
+    spawnSync("git", ["-C", repo.path, "worktree", "remove", "--force", worktreePath]);
+    spawnSync("git", ["-C", repo.path, "branch", "-D", branch]);
+    return fail(500, "could not save the new worker");
+  }
+  slog("info", "worker.spawned", { lineId: line.id, workerId: id,
+    name: fields.name, persona, branch, repo: repo.name, repoUrl: repo.url || undefined });
+  spawnWorker(line, worker, worker.prompt);
+  broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona, repo: repo.name, ...scopeSummary(worker, line.workers) } });
+  return { ok: true, worker, response: { workerId: id, branch, worktree: worktreePath, repo: repo.name,
+    baseCommit, ...baseFields(worker) } };
+}
+
+// Creates the integration validator and its merge workspace. Returns
+// { ok: true, worker, response } or { ok: false, status, error, ...extra }.
+function createIntegration(line, nodeId, fields) {
+  const fail = (status, error, extra) => ({ ok: false, status, error, ...extra });
+  if (runningCount(line) >= WORKER_CAP) {
+    return fail(409, `cap reached: ${WORKER_CAP} workers/validators are running concurrently - wait for completions first`);
+  }
+  // The call is the planner's acceptance: every implementor must have
+  // accepted work for its latest run. Nothing may still be in flight.
+  const selection = integrationSelection(line.workers.values(), line.pendingValidations);
+  if (selection.blockers.length) {
+    return fail(409, "not all implementor work is accepted: "
+      + selection.blockers.map((b) => b.text).join("; "),
+      { blockers: selection.blockers.map(({ workerId, name: n2, reason }) => ({ workerId, name: n2, reason })) });
+  }
+  if (!selection.included.length) return fail(409, "no feature branches to integrate");
+  const entries = selection.included.map((w) => ({ workerId: w.id, name: w.name, repo: w.repo, branch: w.branch }));
+  let name = "integration-validator";
+  let n = 2;
+  while ([...line.workers.values()].some((w) => w.name === name)) {
+    name = `integration-validator-${n++}`;
+  }
+  const id = crypto.randomUUID();
+  // The workdir holds one worktree per repository: <root>/<repo>.
+  const root = path.join(LINES_DIR, "worktrees", line.id,
+    sanitizeName(name) + "-" + id.slice(0, 8));
+  const branch = `integration/${sanitizeName(name)}-${id.slice(0, 8)}`;
+  fs.mkdirSync(root, { recursive: true });
+  const prepared = prepareIntegrationWorkspace({ repos: repoList(line), entries, root, branch, path,
+    run: (cwd, args) => {
+      const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 60000 });
+      return { status: r.error ? -1 : r.status, stdout: r.stdout || "", stderr: r.error ? r.error.message : r.stderr || "" };
+    } });
+  if (!prepared.ok) {
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
+    return fail(500, prepared.error, { stderr: prepared.stderr });
+  }
+  const manifest = prepared.repos;
+  let integrationPrompt;
+  let split = null;
+  try {
+    if (line.graph) {
+      const routerValues = integrationRouterValues({ line,
+        nodeId, workerId: id, workerName: name, manifest, branch, port: PORT });
+      const callerValues = { instructions: fields.instructions };
+      integrationPrompt = buildPrompt(line.graph, nodeId, routerValues, callerValues);
+      split = buildPromptParts(line.graph, nodeId, routerValues, callerValues);
+    } else {
+      integrationPrompt = integrationValidatorBrief(line, manifest, fields.instructions, id, branch);
+    }
+  } catch (e) {
+    prepared.rollback();
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
+    return fail(500, `could not build the integration prompt: ${e.message}`);
+  }
+  const worker = { id, lineId: line.id, name, kind: "integration", node: nodeId,
+    role: "validator", validates: null, persona: "backend", repo: null,
+    integration: { startedAt: new Date().toISOString(), repos: manifest },
+    prompt: integrationPrompt, ...splitFields(split),
+    sessionId: null, worktreePath: root, branch, status: "running", stopRequested: false,
+    runGeneration: 1, child: null, transcript: [] };
+  line.workers.set(id, worker);
+  if (!saveLine(line)) {
+    line.workers.delete(id);
+    prepared.rollback();
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
+    return fail(500, "could not save the integration validator");
+  }
+  slog("info", "integration.spawned", { lineId: line.id, validatorId: id,
+    commits: manifest.flatMap((r) => r.branches.map((b) => `${r.name}:${b.branch}@${b.sha.slice(0, 12)}`)) });
+  broadcast(line, "worker_spawned", { worker: { id, name, branch, status: worker.status,
+    role: worker.role, validates: null, persona: worker.persona, kind: "integration",
+    ...scopeSummary(worker, line.workers) } });
+  spawnWorker(line, worker, worker.prompt);
+  return { ok: true, worker, response: { validatorId: id, branch, worktree: root,
+    branches: manifest.flatMap((r) => r.branches.map((b) => ({ repo: r.name, branch: b.branch, commit: b.sha }))),
+    repos: manifest.map((r) => ({ name: r.name, worktree: r.worktreePath, baseBranch: r.baseBranch, baseCommit: r.baseSha })) } };
+}
+
+// Creates a validator that checks the work of an implementor in the same
+// worktree. Returns { ok: true, worker, response } or
+// { ok: false, status, error, ...extra }. A prompt failure is status 500
+// with code "PROMPT_BUILD": the caller reports it.
+function createSourceChecker(line, nodeId, sourceInstance, fields) {
+  const fail = (status, error, extra) => ({ ok: false, status, error, ...extra });
+  const implWorker = sourceInstance;
+  const { source, criteria, report } = fields;
   let name = `validator-${implWorker.name}`;
   let n = 2;
   while ([...line.workers.values()].some((w) => w.name === name)) {
     name = `validator-${implWorker.name}-${n++}`;
   }
-  const valNode = validatorNodeFor(line.graph, implWorker.node);
-  if (!valNode) {
-    slog("warn", "validator.not-spawned", { lineId: line.id, implementorId: implWorker.id,
-      reason: "no-validator-node", node: implWorker.node || null });
-    enqueue(line, `VALIDATION NOT STARTED - pipeline has no node for the validator of implementor '${implWorker.name}'. No validator was started.`);
-    return;
-  }
+  const valNode = nodeId;
   const id = crypto.randomUUID();
   const repo = resolveRepo(line, implWorker.repo);
   const repoName = repo ? repo.name : implWorker.repo || null;
@@ -1906,10 +2084,7 @@ function spawnValidator(line, source, criteria, report) {
         implWorker.trackerTicket);
     }
   } catch (e) {
-    slog("error", "validator.prompt.failed", { lineId: line.id, implementorId: implWorker.id,
-      error: e.message });
-    enqueue(line, `VALIDATION NOT STARTED - the prompt of the validator of implementor '${implWorker.name}' could not be built: ${e.message}. No validator was started.`);
-    return;
+    return fail(500, e.message, { code: "PROMPT_BUILD" });
   }
   const worker = { id, lineId: line.id, name,
     node: valNode,
@@ -1927,6 +2102,25 @@ function spawnValidator(line, source, criteria, report) {
     status: worker.status, role: worker.role, validates: worker.validates,
     persona: worker.persona, ...scopeSummary(worker, line.workers) } });
   spawnWorker(line, worker, worker.prompt);
+  return { ok: true, worker, response: { validatorId: id, branch: worker.branch } };
+}
+
+function spawnValidator(line, source, criteria, report) {
+  const implWorker = line.workers.get(source.workerId);
+  if (!implWorker) return;
+  const valNode = validatorNodeFor(line.graph, implWorker.node);
+  if (!valNode) {
+    slog("warn", "validator.not-spawned", { lineId: line.id, implementorId: implWorker.id,
+      reason: "no-validator-node", node: implWorker.node || null });
+    enqueue(line, `VALIDATION NOT STARTED - pipeline has no node for the validator of implementor '${implWorker.name}'. No validator was started.`);
+    return;
+  }
+  const out = createSourceChecker(line, valNode, implWorker, { source, criteria, report });
+  if (!out.ok) {
+    slog("error", "validator.prompt.failed", { lineId: line.id, implementorId: implWorker.id,
+      error: out.error });
+    enqueue(line, `VALIDATION NOT STARTED - the prompt of the validator of implementor '${implWorker.name}' could not be built: ${out.error}. No validator was started.`);
+  }
 }
 
 // Evidence contract for task B: GET returns {items, history,
@@ -2515,94 +2709,11 @@ const routeRequest = (req, res) => {
         const names = [...(line.repos || new Map()).keys()];
         return json(res, 400, { error: `repo is required: name one of the registered repos (${names.length ? names.join(", ") : "none - register one with POST /api/protocol/lines/" + line.id + "/repos"})` });
       }
-      const repoName = body.repo;
-      const repo = resolveRepo(line, repoName);
-      if (!repo) {
-        return json(res, 404, { error: `no such repo: '${repoName}'. Register it first with POST /api/protocol/lines/${line.id}/repos` });
-      }
-      for (const w of line.workers.values()) {
-        if (w.name === body.name) return json(res, 409, { error: `worker '${body.name}' already exists` });
-      }
-      const running = runningCount(line);
-      if (running >= WORKER_CAP) {
-        return json(res, 409, { error: `cap reached: ${WORKER_CAP} workers/validators are running concurrently - wait for completions or stop workers` });
-      }
-      const sName = sanitizeName(body.name);
-      if (!sName) return json(res, 400, { error: "worker name must contain [a-zA-Z0-9-]" });
-      const id = crypto.randomUUID();
-      const branch = implementorBranchName(line.id, sName, body.trackerTicket);
-      const worktreePath = path.join(LINES_DIR, "worktrees", line.id, repo.name, sName);
-      // Validate the base BEFORE any branch or worktree exists.
-      let baseResolved = null;
-      try {
-        baseResolved = resolveSpawnBase(body.base, { workers: line.workers.values(),
-          repoName: repo.name,
-          run: (args) => spawnSync("git", ["-C", repo.path, ...args], { encoding: "utf8" }) });
-      } catch (e) {
-        if (e instanceof BaseError) return json(res, e.status, { error: e.message });
-        return json(res, 500, { error: `base resolution failed: ${e.message}` });
-      }
-      fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
-      const wt = spawnSync("git", ["-C", repo.path, "worktree", "add", "-b", branch, worktreePath,
-        ...(baseResolved ? [baseResolved.sha] : [])],
-        { encoding: "utf8" });
-      if (wt.error) return json(res, 500, { error: `git is not available: ${wt.error.message}` });
-      if (wt.status !== 0) return json(res, 500, { error: "git worktree add failed", stderr: wt.stderr });
-      // The change-set baseline: the HEAD the worktree starts from. It
-      // stays fixed for every continued run of this implementor.
-      const baseHead = spawnSync("git", ["-C", worktreePath, "rev-parse", "HEAD"],
-        { encoding: "utf8" });
-      const baseCommit = baseHead.status === 0 ? baseHead.stdout.trim() : null;
-      if (baseResolved && baseCommit !== baseResolved.sha) {
-        spawnSync("git", ["-C", repo.path, "worktree", "remove", "--force", worktreePath]);
-        spawnSync("git", ["-C", repo.path, "branch", "-D", branch]);
-        return json(res, 500, { error: "worktree HEAD does not match the resolved base", expected: baseResolved.sha, actual: baseCommit });
-      }
-      const base = baseResolved ? body.base : null;
-      let workerPrompt;
-      let split = null;
-      try {
-        if (line.graph) {
-          const callerValues = { task: body.prompt };
-          if (body.trackerTicket) callerValues.trackerTicket = body.trackerTicket;
-          const routerValues = workerRouterValues({ line, nodeId: implNode,
-            workerId: id, workerName: body.name, repo, baseCommit,
-            baseNote: baseNote(base, baseResolved), port: PORT, changesetLimit: CHANGESET_LIMIT });
-          workerPrompt = buildPrompt(line.graph, implNode, routerValues, callerValues);
-          split = buildPromptParts(line.graph, implNode, routerValues, callerValues);
-        } else {
-          workerPrompt = workerBrief(body.name, line.name, body.prompt, persona, id, line.id, repo,
-            baseCommit, baseNote(base, baseResolved), body.trackerTicket);
-        }
-      } catch (e) {
-        spawnSync("git", ["-C", repo.path, "worktree", "remove", "--force", worktreePath]);
-        spawnSync("git", ["-C", repo.path, "branch", "-D", branch]);
-        return json(res, 500, { error: `could not build the worker prompt: ${e.message}` });
-      }
-      const worker = { id, lineId: line.id, name: body.name, node: implNode,
-        role: "implementor", validates: null, persona, kind: "standard", repo: repo.name,
-        trackerTicket: body.trackerTicket || null,
-        runGeneration: 1,
-        harness: body.harness || null, model: body.model || null,
-        effort: body.effort || null,
-        prompt: workerPrompt, ...splitFields(split),
-        sessionId: null, context: newContextStats(), handoff: null,
-        worktreePath, branch, status: "running", stopRequested: false,
-        baseCommit, changeset: null, base, baseResolved,
-        child: null, transcript: [] };
-      line.workers.set(id, worker);
-      if (!saveLine(line)) {
-        line.workers.delete(id);
-        spawnSync("git", ["-C", repo.path, "worktree", "remove", "--force", worktreePath]);
-        spawnSync("git", ["-C", repo.path, "branch", "-D", branch]);
-        return json(res, 500, { error: "could not save the new worker" });
-      }
-      slog("info", "worker.spawned", { lineId: line.id, workerId: id,
-        name: body.name, persona, branch, repo: repo.name, repoUrl: repo.url || undefined });
-      spawnWorker(line, worker, worker.prompt);
-      broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona, repo: repo.name, ...scopeSummary(worker, line.workers) } });
-      json(res, 201, { workerId: id, branch, worktree: worktreePath, repo: repo.name,
-        baseCommit, ...baseFields(worker) });
+      const out = createOwnWorktree(line, implNode, { name: body.name, prompt: body.prompt,
+        persona, repo: body.repo, base: body.base, harness: body.harness, model: body.model,
+        effort: body.effort, trackerTicket: body.trackerTicket });
+      if (!out.ok) return sendFailure(res, out);
+      json(res, 201, out.response);
     });
     return;
   }
@@ -2768,79 +2879,9 @@ const routeRequest = (req, res) => {
       if (line.deleted || lines.get(line.id) !== line) return json(res, 404, { error: "no such line" });
       const integrationNode = integrationNodeFor(line.graph);
       if (!integrationNode) return json(res, 500, { error: "pipeline has no node for integration validator" });
-      if (runningCount(line) >= WORKER_CAP) {
-        return json(res, 409, { error: `cap reached: ${WORKER_CAP} workers/validators are running concurrently - wait for completions first` });
-      }
-      // The call is the planner's acceptance: every implementor must have
-      // accepted work for its latest run. Nothing may still be in flight.
-      const selection = integrationSelection(line.workers.values(), line.pendingValidations);
-      if (selection.blockers.length) {
-        return json(res, 409, { error: "not all implementor work is accepted: "
-          + selection.blockers.map((b) => b.text).join("; "),
-          blockers: selection.blockers.map(({ workerId, name: n2, reason }) => ({ workerId, name: n2, reason })) });
-      }
-      if (!selection.included.length) return json(res, 409, { error: "no feature branches to integrate" });
-      const entries = selection.included.map((w) => ({ workerId: w.id, name: w.name, repo: w.repo, branch: w.branch }));
-      let name = "integration-validator";
-      let n = 2;
-      while ([...line.workers.values()].some((w) => w.name === name)) {
-        name = `integration-validator-${n++}`;
-      }
-      const id = crypto.randomUUID();
-      // The workdir holds one worktree per repository: <root>/<repo>.
-      const root = path.join(LINES_DIR, "worktrees", line.id,
-        sanitizeName(name) + "-" + id.slice(0, 8));
-      const branch = `integration/${sanitizeName(name)}-${id.slice(0, 8)}`;
-      fs.mkdirSync(root, { recursive: true });
-      const prepared = prepareIntegrationWorkspace({ repos: repoList(line), entries, root, branch, path,
-        run: (cwd, args) => {
-          const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 60000 });
-          return { status: r.error ? -1 : r.status, stdout: r.stdout || "", stderr: r.error ? r.error.message : r.stderr || "" };
-        } });
-      if (!prepared.ok) {
-        try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
-        return json(res, 500, { error: prepared.error, stderr: prepared.stderr });
-      }
-      const manifest = prepared.repos;
-      let integrationPrompt;
-      let split = null;
-      try {
-        if (line.graph) {
-          const routerValues = integrationRouterValues({ line,
-            nodeId: integrationNode, workerId: id, workerName: name, manifest, branch, port: PORT });
-          const callerValues = { instructions: body.prompt };
-          integrationPrompt = buildPrompt(line.graph, integrationNode, routerValues, callerValues);
-          split = buildPromptParts(line.graph, integrationNode, routerValues, callerValues);
-        } else {
-          integrationPrompt = integrationValidatorBrief(line, manifest, body.prompt, id, branch);
-        }
-      } catch (e) {
-        prepared.rollback();
-        try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
-        return json(res, 500, { error: `could not build the integration prompt: ${e.message}` });
-      }
-      const worker = { id, lineId: line.id, name, kind: "integration", node: integrationNode,
-        role: "validator", validates: null, persona: "backend", repo: null,
-        integration: { startedAt: new Date().toISOString(), repos: manifest },
-        prompt: integrationPrompt, ...splitFields(split),
-        sessionId: null, worktreePath: root, branch, status: "running", stopRequested: false,
-        runGeneration: 1, child: null, transcript: [] };
-      line.workers.set(id, worker);
-      if (!saveLine(line)) {
-        line.workers.delete(id);
-        prepared.rollback();
-        try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
-        return json(res, 500, { error: "could not save the integration validator" });
-      }
-      slog("info", "integration.spawned", { lineId: line.id, validatorId: id,
-        commits: manifest.flatMap((r) => r.branches.map((b) => `${r.name}:${b.branch}@${b.sha.slice(0, 12)}`)) });
-      broadcast(line, "worker_spawned", { worker: { id, name, branch, status: worker.status,
-        role: worker.role, validates: null, persona: worker.persona, kind: "integration",
-        ...scopeSummary(worker, line.workers) } });
-      spawnWorker(line, worker, worker.prompt);
-      json(res, 201, { validatorId: id, branch, worktree: root,
-        branches: manifest.flatMap((r) => r.branches.map((b) => ({ repo: r.name, branch: b.branch, commit: b.sha }))),
-        repos: manifest.map((r) => ({ name: r.name, worktree: r.worktreePath, baseBranch: r.baseBranch, baseCommit: r.baseSha })) });
+      const out = createIntegration(line, integrationNode, { instructions: body.prompt });
+      if (!out.ok) return sendFailure(res, out);
+      json(res, 201, out.response);
     });
     return;
   }
