@@ -1868,6 +1868,9 @@ function startInstance(line, targetId, body, overrides = {}) {
   const graph = line.graph;
   const node = graph.nodes[targetId];
   const type = graph.types[node.type];
+  // Fields the node declares itself (pipeline `fields`) reach the prompt templates.
+  const extra = {};
+  for (const key of Object.keys(node.fields || {})) if (body[key] !== undefined) extra[key] = body[key];
   if (type.workspace === "own-worktree") {
     let wname = body.name;
     if (!wname) {
@@ -1877,7 +1880,7 @@ function startInstance(line, targetId, body, overrides = {}) {
     }
     return createOwnWorktree(line, targetId, { name: wname, prompt: body.task,
       persona: node.type.startsWith("frontend") ? "frontend" : "backend",
-      repo: body.repo, base: body.base, trackerTicket: body.trackerTicket, ...overrides });
+      repo: body.repo, base: body.base, trackerTicket: body.trackerTicket, extra, ...overrides });
   }
   if (type.workspace === "source") {
     const impl = line.workers.get(body.source);
@@ -1885,10 +1888,10 @@ function startInstance(line, targetId, body, overrides = {}) {
     const source = sourceIdentity({ workerId: impl.id, invocationId: impl.lastCompletedInvocationId,
       runId: impl.runGeneration, report: impl.lastRunText });
     return createSourceChecker(line, targetId, impl, { source, criteria: body.criteria,
-      report: reportForValidation(null, impl.lastRunText) });
+      report: reportForValidation(null, impl.lastRunText), extra });
   }
   if (type.workspace === "integration") {
-    return createIntegration(line, targetId, { instructions: body.instructions });
+    return createIntegration(line, targetId, { instructions: body.instructions, extra });
   }
   return { ok: false, status: 400, error: `the node '${targetId}' cannot be started: workspace '${type.workspace}'` };
 }
@@ -1984,7 +1987,7 @@ function createOwnWorktree(line, nodeId, fields) {
   let split = null;
   try {
     if (line.graph) {
-      const callerValues = { task: fields.prompt };
+      const callerValues = { ...fields.extra, task: fields.prompt };
       if (fields.trackerTicket) callerValues.trackerTicket = fields.trackerTicket;
       const routerValues = workerRouterValues({ line, nodeId,
         workerId: id, workerName: fields.name, repo, baseCommit,
@@ -2070,7 +2073,7 @@ function createIntegration(line, nodeId, fields) {
     if (line.graph) {
       const routerValues = integrationRouterValues({ line,
         nodeId, workerId: id, workerName: name, manifest, branch, port: PORT });
-      const callerValues = { instructions: fields.instructions };
+      const callerValues = { ...fields.extra, instructions: fields.instructions };
       integrationPrompt = buildPrompt(line.graph, nodeId, routerValues, callerValues);
       split = buildPromptParts(line.graph, nodeId, routerValues, callerValues);
     } else {
@@ -2127,7 +2130,7 @@ function createSourceChecker(line, nodeId, sourceInstance, fields) {
   let split = null;
   try {
     if (line.graph) {
-      const callerValues = { criteria };
+      const callerValues = { ...fields.extra, criteria };
       if (implWorker.trackerTicket) callerValues.trackerTicket = implWorker.trackerTicket;
       const routerValues = validatorRouterValues({ line, nodeId: valNode,
         workerId: id, workerName: name, implementor: implWorker, report, repoName, repoUrl,

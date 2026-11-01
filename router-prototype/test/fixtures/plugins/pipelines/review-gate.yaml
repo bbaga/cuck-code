@@ -1,0 +1,25 @@
+name: review-gate
+description: Implement, then a security review that can reject the work.
+start: planner
+
+nodes:
+  planner: { type: planner }
+  A:       { type: backend-implementor, harness: vibe }
+  B:
+    type: security-reviewer
+    checks: [A]
+    harness: vibe
+    prompt: |
+      The risk level of this change is {{riskLevel}}.
+      Review with the depth that fits this risk level.
+    fields:
+      riskLevel:
+        description: The risk level of the change, from the planner's assessment.
+        type: enum
+        values: [low, medium, high]
+
+edges:
+  - planner -> A: start, feedback, accept
+  - A -> planner: report
+  - planner -> B: start
+  - B -> planner: report
