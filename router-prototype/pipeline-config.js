@@ -37,6 +37,47 @@ const DEFAULTS = {
   effort: "medium",
 };
 
+// Check the run settings of one phase or node. Returns an error string or
+// null. label prefixes every message (for example "pipeline.planner").
+// opts.strict: report a key outside PIPELINE_FIELDS (default: skip it, the
+// caller checks its own keys). opts.maxContext: false means maxContext is
+// not supported here (default: true).
+function validateNodeSettings(label, settings, opts) {
+  const strict = !!(opts && opts.strict);
+  const allowContext = !opts || opts.maxContext !== false;
+  for (const field of Object.keys(settings)) {
+    if (!PIPELINE_FIELDS.includes(field)) {
+      if (strict) {
+        return `unknown field '${field}' in ${label} (allowed: ${PIPELINE_FIELDS.join(", ")})`;
+      }
+      continue;
+    }
+    const v = settings[field];
+    if (field === "harness" && !HARNESS_IDS.includes(v)) {
+      return `${label}.harness must be one of: ${HARNESS_IDS.join(", ")}`;
+    }
+    if (field === "model" && (typeof v !== "string" || !v.trim())) {
+      return `${label}.model must be a non-empty string`;
+    }
+    if (field === "effort" && !EFFORT_LEVELS.includes(v)) {
+      return `${label}.effort must be one of: ${EFFORT_LEVELS.join(", ")}`;
+    }
+    if (field === "timeLimit"
+      && (typeof v !== "number" || !Number.isFinite(v) || v <= 0)) {
+      return `${label}.timeLimit must be a positive number`;
+    }
+    if (field === "maxContext") {
+      if (!allowContext) {
+        return `${label}.maxContext is not supported (only: ${CONTEXT_PHASES.join(", ")})`;
+      }
+      if (!Number.isInteger(v) || v < 1000) {
+        return `${label}.maxContext must be an integer number of tokens, at least 1000`;
+      }
+    }
+  }
+  return null;
+}
+
 function validatePipelineConfig(raw) {
   if (raw === null || raw === undefined) return null;
   if (typeof raw !== "object" || Array.isArray(raw)) {
@@ -50,33 +91,11 @@ function validatePipelineConfig(raw) {
     if (phase === null || typeof phase !== "object" || Array.isArray(phase)) {
       return `pipeline.${key} must be an object`;
     }
-    for (const field of Object.keys(phase)) {
-      if (!PIPELINE_FIELDS.includes(field)) {
-        return `unknown field '${field}' in pipeline.${key} (allowed: ${PIPELINE_FIELDS.join(", ")})`;
-      }
-      const v = phase[field];
-      if (field === "harness" && !HARNESS_IDS.includes(v)) {
-        return `pipeline.${key}.harness must be one of: ${HARNESS_IDS.join(", ")}`;
-      }
-      if (field === "model" && (typeof v !== "string" || !v.trim())) {
-        return `pipeline.${key}.model must be a non-empty string`;
-      }
-      if (field === "effort" && !EFFORT_LEVELS.includes(v)) {
-        return `pipeline.${key}.effort must be one of: ${EFFORT_LEVELS.join(", ")}`;
-      }
-      if (field === "timeLimit"
-        && (typeof v !== "number" || !Number.isFinite(v) || v <= 0)) {
-        return `pipeline.${key}.timeLimit must be a positive number`;
-      }
-      if (field === "maxContext") {
-        if (!CONTEXT_PHASES.includes(key)) {
-          return `pipeline.${key}.maxContext is not supported (only: ${CONTEXT_PHASES.join(", ")})`;
-        }
-        if (!Number.isInteger(v) || v < 1000) {
-          return `pipeline.${key}.maxContext must be an integer number of tokens, at least 1000`;
-        }
-      }
-    }
+    const message = validateNodeSettings(`pipeline.${key}`, phase, {
+      strict: true,
+      maxContext: CONTEXT_PHASES.includes(key),
+    });
+    if (message) return message;
   }
   return null;
 }
@@ -435,6 +454,7 @@ module.exports = {
   HARNESS_IDS,
   EFFORT_LEVELS,
   validatePipelineConfig,
+  validateNodeSettings,
   defaultModelFor,
   resolvePipeline,
   HARNESS_PROBES,
