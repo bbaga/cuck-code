@@ -4,17 +4,7 @@
   if (typeof module === "object" && module.exports) module.exports = factory();
   else root.pipelineUI = factory();
 })(typeof self !== "undefined" ? self : this, function () {
-  const PHASE_ROWS = [
-    { key: "planner" },
-    { key: "implementor" },
-    { key: "validator" },
-    { key: "integration" },
-  ];
-
   const EFFORT_LEVELS = ["low", "medium", "high"];
-
-  // Phases whose sessions are resumed and take a maxContext setting.
-  const CONTEXT_PHASES = ["planner", "implementor"];
 
   const NODE_FONT = '0.8rem system-ui, sans-serif';
   const NODE_CONFIG_FONT = '0.8rem system-ui, sans-serif';
@@ -292,24 +282,6 @@
     if (worker.prompt) lines.push(["Prompt", worker.prompt]);
     return lines.filter(([, value]) => value !== null && value !== undefined && String(value) !== "")
       .map(([label, value]) => label + ": " + String(value)).join("\n\n");
-  }
-
-  function buildPipelinePayload(rows) {
-    const pipeline = {};
-    let any = false;
-    for (const { key } of PHASE_ROWS) {
-      const row = (rows && rows[key]) || {};
-      const phase = {};
-      for (const field of ["harness", "model", "effort", "timeLimit", "maxContext"]) {
-        const v = row[field];
-        if (v !== undefined && v !== null && String(v).trim() !== "") {
-          phase[field] = typeof v === "number" ? v : String(v).trim();
-          any = true;
-        }
-      }
-      if (Object.keys(phase).length) pipeline[key] = phase;
-    }
-    return any ? pipeline : null;
   }
 
   // ---- Create panel: pipeline picker and per-node settings ----
@@ -955,9 +927,7 @@
   }
 
   return {
-    PHASE_ROWS,
     EFFORT_LEVELS,
-    CONTEXT_PHASES,
     NODE_FONT,
     NODE_CONFIG_FONT,
     NODE_WIDTH_MARGIN,
@@ -985,7 +955,6 @@
     fetchPiDetail,
     clearHarnessState,
     clearProviderState,
-    buildPipelinePayload,
     pipelineOptionLabel,
     pickerPipelines,
     isFreshSessionNode,

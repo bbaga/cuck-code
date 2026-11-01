@@ -20,7 +20,7 @@ async function setup(outbox, { lines = { L1: { id: 'L1', queue: [] } }, enqueue,
   const store = createStore(file);
   await store.load();
   const calls = [];
-  const real = (line, text, noticeId) => { calls.push({ text, noticeId }); return enqueuePlannerRequest(line, plannerRequest(text, null, noticeId), () => true); };
+  const real = (line, text, noticeId) => { calls.push({ text, noticeId }); return enqueuePlannerRequest(line, plannerRequest(text, noticeId), () => true); };
   const delivery = createDelivery({ store, getLine: id => lines[id], enqueueNotice: enqueue ? (...a) => { calls.push(a); return enqueue(...a); } : real, ...(isListening ? { isListening } : {}), now: () => 1000 * DAY, log: () => {} });
   const outboxNow = async () => (await store.readSnapshot()).outbox;
   return { delivery, calls, lines, store, outboxNow };
@@ -58,7 +58,7 @@ test('several pending entries are all acknowledged and not resent (R2-03)', asyn
 
 test('failed enqueue stays pending and the next run delivers it', async () => {
   let fail = true;
-  const t = await setup([request, merge], { enqueue: (line, text, id) => fail && id === 'n1' ? { ok: false, reason: 'save-failed' } : enqueuePlannerRequest(line, plannerRequest(text, null, id), () => true) });
+  const t = await setup([request, merge], { enqueue: (line, text, id) => fail && id === 'n1' ? { ok: false, reason: 'save-failed' } : enqueuePlannerRequest(line, plannerRequest(text, id), () => true) });
   const first = await t.delivery.deliver();
   assert.equal(first.failed, 1);
   assert.equal(first.delivered, 1);
@@ -71,7 +71,7 @@ test('failed enqueue stays pending and the next run delivers it', async () => {
 test('crash before acknowledgement gives duplicate:true and no second queued request', async () => {
   const t = await setup([request]);
   const line = t.lines.L1;
-  enqueuePlannerRequest(line, plannerRequest('old', null, 'n1'), () => true);
+  enqueuePlannerRequest(line, plannerRequest('old', 'n1'), () => true);
   const out = await t.delivery.deliver();
   assert.deepEqual(out, { delivered: 0, duplicates: 1, failed: 0, dropped: 0, held: 0 });
   assert.equal(line.queue.length, 1);

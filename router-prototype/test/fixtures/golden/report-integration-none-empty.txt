@@ -1,0 +1,8 @@
+INTEGRATION REPORT - integration validator 'int' finished. The merged result is on branch int/x in its worktree; main/master is untouched.
+
+REPORT BODY (complete):
+[No integration report text was produced by this run.]
+
+DIAGNOSTIC: no explicit final VERDICT: PASS or VERDICT: FAIL line was found, or this run did not complete successfully.
+
+Decide: report completion to the user, or route fixes to the ORIGINAL implementors (continue endpoint) and start a new integration validator after they pass again.

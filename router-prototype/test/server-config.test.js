@@ -4,6 +4,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { phaseForWorker, resolveWorkerOverrides, validateWorkerSpawnBody,
   lineSummary } = require("../spawn-plan");
+const { nodeSettingsFields } = require("../line-graph");
 
 test("phase selection per role and kind", () => {
   assert.equal(phaseForWorker("validator", "integration"), "integration");
@@ -72,34 +73,25 @@ test("spawn body validation rejects bad effort values (400 cases)", () => {
     "effort must be one of: low, medium, high");
 });
 
-test("line serialization carries the resolved pipeline", () => {
+test("line serialization carries the summary fields and no per-phase pipeline", () => {
   const line = {
     id: "line-1", name: "demo", status: "idle", sessionId: "s-1",
     started: true, queue: [{}], workers: new Map([["a", {}], ["b", {}]]),
-    pipeline: { planner: { harness: "pi", timeLimit: 60 } },
   };
   const summary = lineSummary(line);
   assert.deepEqual(summary, {
     id: "line-1", name: "demo", status: "idle", humanIntervention: false, queueDepth: 1,
-    sessionId: "s-1", started: true, workers: 2,
-    pipeline: {
-      planner: { harness: "pi", model: null, effort: "medium", timeLimit: 60, maxContext: 150000 },
-      implementor: { harness: "vibe", model: "glm-5-3-flash", effort: "medium", timeLimit: 3600,
-        maxContext: 150000 },
-      validator: { harness: "vibe", model: "glm-5-3", effort: "medium", timeLimit: 3600 },
-      integration: { harness: "vibe", model: "glm-5-3", effort: "medium", timeLimit: 3600 },
-    },
-    pipelineOverrides: { planner: { harness: "pi", timeLimit: 60 } },
+    sessionId: "s-1", started: true, workers: 2, ...nodeSettingsFields(line),
   });
-  assert.equal(summary.humanIntervention, false);
+  assert.equal("pipeline" in summary, false);
+  assert.equal("pipelineOverrides" in summary, false);
 });
 
-test("line serialization works without a pipeline override", () => {
+test("line serialization works for a line without graph and settings", () => {
   const summary = lineSummary({
     id: "line-2", name: "bare", status: "standby", sessionId: null,
-    started: false, queue: [], workers: new Map(), pipeline: null,
+    started: false, queue: [], workers: new Map(),
   });
-  assert.equal(summary.pipeline.planner.harness, "vibe");
   assert.equal(summary.workers, 0);
   assert.equal(summary.queueDepth, 0);
 });

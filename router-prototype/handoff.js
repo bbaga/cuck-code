@@ -44,24 +44,6 @@ class InvocationCapture {
   }
 }
 
-function isSkipValidation(criteria) {
-  return typeof criteria === "string"
-    && criteria.trim().toUpperCase().startsWith("SKIP VALIDATION");
-}
-
-function hasCriteria(criteria) {
-  return typeof criteria === "string" && criteria.trim().length > 0;
-}
-
-function validationCriteriaBlock(criteria) {
-  return `The planner gave these acceptance criteria:\n${criteria}`;
-}
-
-function pendingValidationFor(source, criteria) {
-  return { implWorkerId: source.workerId, invocationId: source.invocationId,
-    runId: source.runId, report: source.report, criteria };
-}
-
 function reportForValidation(_worker, sourceReport) {
   const report = typeof sourceReport === "string" ? sourceReport : "";
   return report || "[No assistant implementor report text was produced by this run.]";
@@ -116,10 +98,6 @@ function completionState(worker, outcome, stopRequested, report) {
   return { status, verdict };
 }
 
-function missingCriteriaDiagnostic(workerName) {
-  return `VALIDATION NOT STARTED - no assistant acceptance criteria were returned by the current planner run for implementor '${workerName}'. No old transcript text was used. Reply with numbered criteria only, or SKIP VALIDATION.`;
-}
-
 function reportBody(report, label = "assistant report") {
   return typeof report === "string" && report.length > 0
     ? report
@@ -130,25 +108,19 @@ function runOutputNote(report, label = "assistant run output") {
   return `\n\nRUN OUTPUT (complete):\n${reportBody(report, label)}`;
 }
 
-function buildImplementorNotification(worker, report) {
-  return `IMPLEMENTOR REPORT - '${worker.name}' (workerId ${worker.id}, ${worker.harness || "vibe"} session ${worker.sessionId || "unknown"}, branch ${worker.branch}) finished.\n\nREPORT BODY (complete):\n${reportBody(report)}\n\nNow give the acceptance criteria for the validation of this work.\nReply with a numbered list of criteria only. Use the imperative. If\nthe work needs no validation, reply with SKIP VALIDATION.`;
-}
-
-function buildValidationNotification(worker, impl, report) {
-  const implName = impl ? impl.name : "unknown";
-  const implId = worker.validates || "unknown";
-  const implSession = impl ? (impl.sessionId || "unknown") : "unknown";
-  const verdictNote = worker.verdict
-    ? `\n\nFINAL VERDICT: ${worker.verdict.toUpperCase()}.`
-    : "\n\nDIAGNOSTIC: no explicit final VERDICT: PASS or VERDICT: FAIL line was found, or this run did not complete successfully.";
-  return `VALIDATION REPORT - validator '${worker.name}' checked the work of implementor '${implName}' (workerId ${implId}, ${(impl && impl.harness) || "vibe"} session ${implSession}, branch ${worker.branch}).\n\nREPORT BODY (complete):\n${reportBody(report, "validation report")}${verdictNote}\n\nDecide: accept the work, send follow-up instructions to the original implementor (POST /api/protocol/workers/${implId}/continue with {"prompt": ...}), or spawn a new implementor with a corrected prompt.`;
-}
-
-function buildIntegrationNotification(worker, report) {
-  const verdictNote = worker.verdict
-    ? `\n\nFINAL VERDICT: ${worker.verdict.toUpperCase()}.`
-    : "\n\nDIAGNOSTIC: no explicit final VERDICT: PASS or VERDICT: FAIL line was found, or this run did not complete successfully.";
-  return `INTEGRATION REPORT - integration validator '${worker.name}' finished. The merged result is on branch ${worker.branch} in its worktree; main/master is untouched.\n\nREPORT BODY (complete):\n${reportBody(report, "integration report")}${verdictNote}\n\nDecide: report completion to the user, or route fixes to the ORIGINAL implementors (continue endpoint) and start a new integration validator after they pass again.`;
+// The notice for a finished worker whose node is not in the line graph: no
+// report interaction can render it, so this one text covers every kind of
+// worker. It names the actions the planner has left.
+function buildUnroutedNotification(worker, source, report) {
+  const kind = worker.kind === "integration" ? "integration validator"
+    : worker.role === "validator" ? "validator" : "implementor";
+  const verdictNote = worker.role !== "validator" ? ""
+    : worker.verdict
+      ? `\n\nFINAL VERDICT: ${worker.verdict.toUpperCase()}.`
+      : "\n\nDIAGNOSTIC: no explicit final VERDICT: PASS or VERDICT: FAIL line was found, or this run did not complete successfully.";
+  const checks = worker.role === "validator" && worker.kind !== "integration"
+    ? ` It checked implementor '${source ? source.name : "unknown"}' (workerId ${worker.validates || "unknown"}).` : "";
+  return `WORKER REPORT - ${kind} '${worker.name}' (workerId ${worker.id}, ${worker.harness || "vibe"} session ${worker.sessionId || "unknown"}, branch ${worker.branch}) finished.${checks} Its node '${worker.node || "unknown"}' is not in the pipeline graph of this line, so the router applied no report interaction.\n\nREPORT BODY (complete):\n${reportBody(report)}${verdictNote}\n\nCheck the instance and decide how to proceed: call start on a validator node, call accept, or send feedback to the implementor.`;
 }
 
 module.exports = {
@@ -157,10 +129,6 @@ module.exports = {
   collectAssistantText,
   InvocationCapture,
   appendTranscript,
-  isSkipValidation,
-  hasCriteria,
-  validationCriteriaBlock,
-  pendingValidationFor,
   reportForValidation,
   explicitVerdict,
   completionState,
@@ -169,8 +137,5 @@ module.exports = {
   workerStatusEvent,
   reportBody,
   runOutputNote,
-  missingCriteriaDiagnostic,
-  buildImplementorNotification,
-  buildValidationNotification,
-  buildIntegrationNotification,
+  buildUnroutedNotification,
 };

@@ -1,0 +1,8 @@
+VALIDATION REPORT - validator 'api-check' checked the work of implementor 'api' (workerId w1, vibe session unknown, branch feat/x).
+
+REPORT BODY (complete):
+[No validation report text was produced by this run.]
+
+FINAL VERDICT: FAIL.
+
+Decide: accept the work, send follow-up instructions to the original implementor (POST /api/protocol/workers/w1/continue with {"prompt": ...}), or spawn a new implementor with a corrected prompt.

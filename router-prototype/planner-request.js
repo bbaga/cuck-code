@@ -3,12 +3,10 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { isSkipValidation } = require("./handoff");
 
 const NOTICE_ID_RE = /^[A-Za-z0-9:_.-]{1,128}$/;
 const MAX_KNOWN_NOTICES = 500;
-// A request that carries this flow was made by a report interaction (task C6).
-// A request without it, or with a criteria source, keeps the old criteria flow.
+// Every request made by a report interaction (task C6) carries this flow marker.
 const FLOW_INTERACTIONS = "interactions";
 
 function validNoticeId(id) {
@@ -22,9 +20,8 @@ function sourceIdentity({ workerId, invocationId, runId, report }) {
   return Object.freeze({ workerId, invocationId, runId, report });
 }
 
-function plannerRequest(text, source = null, noticeId = null, userText = null, recorded = false, id = null, flow = null) {
-  const identity = source ? sourceIdentity(source) : null;
-  const request = { id: typeof id === "string" && id ? id : crypto.randomUUID(), text, source: identity };
+function plannerRequest(text, noticeId = null, userText = null, recorded = false, id = null, flow = null) {
+  const request = { id: typeof id === "string" && id ? id : crypto.randomUUID(), text };
   if (typeof userText === "string") {
     request.fromUser = true;
     request.userText = userText;
@@ -36,62 +33,20 @@ function plannerRequest(text, source = null, noticeId = null, userText = null, r
 }
 
 function recordedPlannerRequest(request) {
-  return plannerRequest(request.text, request.source, request.noticeId,
+  return plannerRequest(request.text, request.noticeId,
     request.fromUser ? request.userText : null, true, request.id, request.flow);
 }
 
-// A report request of the interactions flow: it carries no criteria source.
+// A report request of the interactions flow.
 function interactionReportRequest(text) {
-  return plannerRequest(text, null, null, null, false, null, FLOW_INTERACTIONS);
-}
-
-function implementorReportRequest(text, worker, invocation, report) {
-  return plannerRequest(text, {
-    workerId: worker && worker.id,
-    invocationId: invocation && invocation.invocationId,
-    runId: invocation && invocation.runId,
-    report,
-  });
+  return plannerRequest(text, null, null, false, null, FLOW_INTERACTIONS);
 }
 
 function restorePlannerRequest(value) {
   if (!value || typeof value.text !== "string") return null;
   const userText = value.fromUser && typeof value.userText === "string" ? value.userText : null;
-  return plannerRequest(value.text, value.source || null, value.noticeId, userText,
+  return plannerRequest(value.text, value.noticeId, userText,
     value.recorded === true, value.id, value.flow);
-}
-
-function completePlannerCriteria(request, criteria, {
-  getWorker,
-  onCriteria,
-  onSkip = () => {},
-  onMissing = () => {},
-  onSuperseded = () => {},
-  onIncompleteSource = () => {},
-}) {
-  const source = request && request.source;
-  const trusted = source && sourceIdentity(source);
-  if (!trusted) {
-    onIncompleteSource(request || null);
-    return { decision: "incomplete-source" };
-  }
-  const worker = getWorker(trusted.workerId);
-  if (!worker || worker.status === "running"
-    || worker.runGeneration !== trusted.runId
-    || worker.lastCompletedInvocationId !== trusted.invocationId) {
-    onSuperseded(trusted, worker || null);
-    return { decision: "superseded", source: trusted };
-  }
-  if (typeof criteria !== "string" || !criteria.trim()) {
-    onMissing(trusted, worker);
-    return { decision: "missing-criteria", source: trusted };
-  }
-  if (isSkipValidation(criteria)) {
-    onSkip(trusted, worker, criteria);
-    return { decision: "skip-validation", source: trusted };
-  }
-  onCriteria(trusted, criteria, worker);
-  return { decision: "criteria", source: trusted };
 }
 
 function retryPlannerRequest(queue, request) {
@@ -102,7 +57,7 @@ function retryPlannerRequest(queue, request) {
 }
 
 function serializePlannerRequest(request) {
-  const out = { id: request.id, text: request.text, source: request.source || null };
+  const out = { id: request.id, text: request.text };
   if (validNoticeId(request.noticeId)) out.noticeId = request.noticeId;
   if (request.fromUser && typeof request.userText === "string") {
     out.fromUser = true;
@@ -227,12 +182,10 @@ module.exports = {
   enqueuePlannerRequest,
   sourceIdentity,
   plannerRequest,
-  implementorReportRequest,
   interactionReportRequest,
   FLOW_INTERACTIONS,
   restorePlannerRequest,
   recordedPlannerRequest,
-  completePlannerCriteria,
   retryPlannerRequest,
   serializePlannerRequests,
   restorePlannerRequests,

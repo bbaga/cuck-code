@@ -7,28 +7,11 @@ const path = require("node:path");
 const { loadNodeType, resolveTypes } = require("../node-types");
 const { render } = require("../template");
 
+const { golden, slug } = require("./fixtures/golden-file");
+
 const root = path.join(__dirname, "..");
-const source = fs.readFileSync(path.join(root, "server.js"), "utf8");
-
-function slice(from, to) {
-  const start = source.indexOf(from);
-  assert.ok(start >= 0, `marker "${from}" not found in server.js`);
-  const end = source.indexOf(to, start);
-  assert.ok(end > start, `marker "${to}" not found after "${from}"`);
-  return source.slice(start, end);
-}
-
-// Build the old functions from the source text; requiring server.js starts the server.
 const PORT = 7788;
 const CHANGESET_LIMIT = 500;
-const code = [
-  slice("function frontendToolsBlock(", "\nconst { wrapPlannerTurn"),
-  slice("const IMPL_PERSONA", "\nconst VAL_PERSONA"),
-  slice("function containersBlock(", "function remoteBlockImplementor("),
-  slice("function remoteBlockImplementor(", "function changesetBlock("),
-  slice("function changesetBlock(", "function remoteBlockValidator("),
-].join("\n");
-const workerBrief = new Function("PORT", "CHANGESET_LIMIT", `${code}\nreturn workerBrief;`)(PORT, CHANGESET_LIMIT);
 
 const types = {};
 for (const name of ["implementor", "backend-implementor", "frontend-implementor"]) {
@@ -41,11 +24,6 @@ const CASES = {
   "remote": { repo: { name: "app", url: "git@example.com:org/app.git" }, ticket: undefined, baseNote: "Base note.\n", baseCommit: "abc123" },
   "tracker ticket": { repo: { name: "web", url: "https://example.com/org/web.git" }, ticket: "ABC-42", baseNote: "", baseCommit: undefined },
 };
-
-function oldText(persona, c) {
-  return workerBrief("impl-1", "Line One", "Do the task.\nSecond line.", persona, "w-7", "line-9", c.repo,
-    c.baseCommit, c.baseNote, c.ticket);
-}
 
 function newText(typeName, c) {
   const values = {
@@ -61,8 +39,10 @@ function newText(typeName, c) {
 
 for (const [persona, typeName] of [["backend", "backend-implementor"], ["frontend", "frontend-implementor"]]) {
   for (const [label, c] of Object.entries(CASES)) {
-    test(`${typeName} renders the same text as workerBrief (${label})`, () => {
-      assert.equal(newText(typeName, c), oldText(persona, c));
+    // The golden files hold the output of the removed workerBrief() for the same inputs
+    // (one-off script run before D9 removed the function).
+    test(`${typeName} renders the golden text of the old workerBrief (${label})`, () => {
+      assert.equal(newText(typeName, c), golden(`implementor-${persona}-${slug(label)}`));
     });
   }
 }

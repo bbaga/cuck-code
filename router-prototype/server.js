@@ -14,8 +14,8 @@ process.env.GCM_INTERACTIVE = "Never";
 let spawnProcess = spawn;
 let lifecycleTestHooks = null;
 let timerApi = { setTimeout, clearTimeout };
-const { PHASES, HARNESS_IDS, EFFORT_LEVELS, validatePipelineConfig, validateNodeSettingsForNode,
-  resolvePipeline, probeResultFor, piProviderDetail,
+const { HARNESS_IDS, EFFORT_LEVELS, validateNodeSettingsForNode,
+  probeResultFor, piProviderDetail,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   plannerSettings, workerSettings,
@@ -23,26 +23,21 @@ const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   systemPromptOptions, briefForHarness, usesSystemChannel } = require("./spawn-plan");
 const { buildCatalog, defaultReadDir, defaultReadFile } = require("./plugin-catalog");
 const { resolvePipelineDefinition, PipelineError } = require("./resolve-pipeline");
-const { loadBuiltinPipeline, migrateLine, normalizeLine, nodeSettingsFromPipeline, pipelineFromNodeSettings,
-  nodeSettingsFields, builtinPipelineNames,
+const { loadBuiltinPipeline, migrateLine, normalizeLine, nodeSettingsFields, builtinPipelineNames,
   implementorNodeFor, validatorNodeFor, integrationNodeFor } = require("./line-graph");
 const { checkCall, checkLineValues, requiredFields, introspect } = require("./call-fields");
 const { renderReports, kindOfNode } = require("./report-interaction");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
 const { StderrCapture, describeFailure } = require("./run-failure");
-const { messageText, InvocationCapture, appendTranscript, hasCriteria,
-  validationCriteriaBlock, pendingValidationFor, reportForValidation,
-  applyCompletion, completionFields, missingCriteriaDiagnostic, runOutputNote,
-  buildImplementorNotification, buildValidationNotification,
-  buildIntegrationNotification } = require("./handoff");
-const { flushPendingValidationQueue, removePendingValidations,
-  serializePendingValidations, restorePendingValidations } = require("./validation-queue");
+const { messageText, InvocationCapture, appendTranscript, reportForValidation,
+  applyCompletion, completionFields, runOutputNote,
+  buildUnroutedNotification } = require("./handoff");
 const { CHANGESET_LIMIT, collectChangeset, changesetWakeMessage,
   changesetFields } = require("./changeset");
 const { BaseError, resolveSpawnBase, baseFields, baseNote } = require("./spawn-base");
 const { recordRequestEntry, userEntry, isPromptEcho } = require("./transcript-echo");
-const { recordedPlannerRequest, sourceIdentity, plannerRequest, implementorReportRequest, interactionReportRequest, restorePlannerRequest,
-  completePlannerCriteria, retryPlannerRequest, serializePlannerRequests,
+const { recordedPlannerRequest, sourceIdentity, plannerRequest, interactionReportRequest, restorePlannerRequest,
+  retryPlannerRequest, serializePlannerRequests,
   restorePlannerRequests, serializePlannerRequest, restoreKnownNoticeIds,
   queuedUserPromptProjection, writeFileDurable, enqueuePlannerRequest, submitPrompt,
   cancelQueuedUserPrompt } = require("./planner-request");
@@ -262,49 +257,6 @@ function cleanupStage(line, by) {
   saveLine(line);
 }
 
-function frontendToolsBlock(workerId, implId, lineId) {
-  return `
-## Browser, port, and docker tools (frontend persona)
-- Your session has its own playwright browser (MCP tools). No other
-  worker shares your browser.
-- If you serve the app, allocate a port first (idempotent):
-  curl -s http://localhost:${PORT}/api/protocol/workers/${workerId}/port
-  -> {"port": <number>}. Serve the app on that port. Record the port
-  in ui.port at the repo root.
-- You may run the app inside a docker container. Publish it on your
-  allocated port, with both labels:
-  docker run --label cuck.line=${lineId} --label cuck.worker=${workerId} -p <port>:<containerPort> ...
-  Name containers uniquely with your worker id. Stop and remove them
-  when you are done (docker rm -f <name>); the router force-removes
-  any container still carrying your labels when your run ends or the
-  line is deleted.
-- If the app depends on docker itself (compose, builds, nested
-  containers), run it inside a docker-in-docker container:
-  docker run -d --privileged --label cuck.line=${lineId} --label cuck.worker=${workerId} --name <name>-dind docker:27-dind
-  Wait for the daemon before use: docker exec <name>-dind docker info
-  Use docker exec for the docker work inside it. A --privileged
-  container is not a security boundary: use it only for trusted
-  project code. Everything nested
-  inside dies with the labeled container. Never mount the host docker
-  socket (-v /var/run/docker.sock:...): containers started through a
-  shared socket escape the label cleanup.
-${implId ? `- The implementor's app port: read ui.port at the repo root, or call
-  curl -s http://localhost:${PORT}/api/protocol/workers/${implId}/port
-  If the app is not running, you may start it yourself (directly or in
-  a docker container) on that port.` : ""}
-- Before browser tests, acquire a UI test slot (other validators may run
-  at the same time):
-  curl -s -X POST http://localhost:${PORT}/api/protocol/workers/${workerId}/uitest
-  200 = acquired (the call waits up to 120 s while others hold slots);
-  408 = timeout, wait and try again.
-- Release the slot when your tests end:
-  curl -s -X POST http://localhost:${PORT}/api/protocol/workers/${workerId}/uitest/release
-- The slot frees itself automatically if your process stops.
-- If you cannot acquire a slot, prefer parallel-safe scenarios instead:
-  unique ports, isolated containers or headless browsers, no shared
-  fixtures.`;
-}
-
 const { wrapPlannerTurn } = require("./planner-turn");
 
 const lines = new Map();
@@ -388,308 +340,6 @@ function registerRepo(line, rawName, rawUrl) {
   const repo = { name, url, path: dest };
   line.repos.set(name, repo);
   return { repo };
-}
-
-const IMPL_PERSONA = {
-  backend: `Your persona: backend / architecture.
-Priorities:
-- Keep the architecture layered and the domain logic correct.
-- Keep the data model and its integrity correct. Keep API contracts
-  clear and stable.
-- Write error handling for every failure path you add.
-- Add unit tests for the logic you change. Do not run integration
-  tests: the CI pipelines of the repository run them.
-Verify the work: run the build and the unit tests you added.`,
-  frontend: `Your persona: frontend / UX.
-Priorities:
-- Build a usable, accessible interface: semantic HTML, labels for
-  inputs, keyboard operation, sufficient contrast.
-- Keep the visual language consistent with the existing pages.
-- Make the layout responsive. Keep the state handling correct.
-Verify the work: run the app and check the rendering. Use the
-playwright browser tools (browser_navigate, browser_snapshot,
-browser_click) for a smoke pass of the pages you touched. Keep the
-browser console free of errors.`,
-};
-
-const VAL_PERSONA = {
-  backend: `Your validation persona: backend / architecture.
-Check with extra care: layer boundaries, the data model, API contract
-consistency, error paths, test coverage of the changed logic, and dead
-code.`,
-  frontend: `Your validation persona: frontend / UX.
-Check with extra care: correct rendering, layout at different widths,
-labels and keyboard access, console errors, and the flows a user
-performs. Run headless UI tests with the playwright browser tools on
-the changed pages when the work includes a user interface.`,
-};
-
-function containersBlock(workerId, lineId) {
-  return `
-## Container and process hygiene
-If you start any docker container, always set both labels on it:
---label cuck.line=${lineId} --label cuck.worker=${workerId}
-A container WITHOUT the cuck.worker label is not attributed to you:
-no stage cleanup removes it and it stays until the line is deleted.
-Always include the worker label.
-If the project depends on docker itself (docker compose, image
-builds, nested containers), start a docker-in-docker container with
-both labels and run your docker work inside it:
-docker run -d --privileged --label cuck.line=${lineId} --label cuck.worker=${workerId} --name <name>-dind docker:27-dind
-Wait for the daemon before use: docker exec <name>-dind docker info
-Then use docker exec for docker commands inside it. A --privileged
-container is not a security boundary: use it only for trusted project
-code. Everything
-started inside the dind container dies with it when the router kills
-the labeled container. Do NOT mount the host docker socket
-(-v /var/run/docker.sock:...) instead: containers started through a
-shared socket escape the label cleanup.
-If you start a background process that outlives your commands (for
-example a dev server), register it:
-curl -s -X POST http://localhost:${PORT}/api/protocol/lines/${lineId}/inventory \\
-  -H 'Content-Type: application/json' \\
-  -d '{"kind":"process","pid":<pid>,"name":"<what it is>","worker":"${workerId}"}'
-The router kills registered processes and removes labeled containers
-when your run ends and when the factory line is deleted. A router
-restart does NOT kill them: they stay available. Only an explicit user
-request keeps an item alive beyond the end of your run. Stop and
-remove your containers yourself when you finish with them
-(docker rm -f <name>).`;
-}
-
-function remoteBlockImplementor(repoUrl) {
-  if (!repoUrl) return "";
-  return `
-## Remote work
-The repository has a remote (origin): ${repoUrl}
-Confirm it first: git remote get-url origin. If that command fails,
-the remote is gone: skip the remote steps and say so in your report.
-Commit your work with clear messages. When your task is done, push
-your branch to the remote:
-git push -u origin HEAD
-Report the branch name with: git rev-parse --abbrev-ref HEAD`;
-}
-
-function changesetBlock(baseCommit, baseNoteText) {
-  return `## Change-set limit
-The router measures your change set from base commit ${baseCommit || "unknown"}
-to your branch HEAD (git diff --numstat).
-${baseNoteText || ""}The limit is ${CHANGESET_LIMIT} changed lines: additions plus deletions.
-The count covers code, tests, documentation, and configuration.
-Binary, dirty, or untracked work cannot enter validation.
-Keep your total at or below the limit. The router enforces this rule.
-If the limit is exceeded, no validator starts.
-The router wakes the planner with CHANGESET LIMIT EXCEEDED.
-The planner can continue your session to reduce or split the work.
-`;
-}
-
-function workerBrief(name, lineName, prompt, persona, workerId, lineId, repo, baseCommit, baseNoteText, trackerTicket) {
-  const repoUrl = repo && repo.url ? repo.url : null;
-  return `You are implementor worker '${name}' (id ${workerId}) on factory line '${lineName}'.
-Your repository for this task: '${repo.name}'${repoUrl ? ` (remote: ${repoUrl})` : " (no remote)"}.
-A factory line can work across several repositories - work ONLY in the
-repository named above.
-You run inside your own git worktree of that repository - all work
-happens here, do not touch other directories. NEVER use the shared
-checkout: every file you read or write must be inside your worktree.
-Commit your work with clear messages.
-Test scope: run UNIT TESTS only. Do NOT run integration tests. The CI
-pipelines of the repository run the integration tests.
-${changesetBlock(baseCommit, baseNoteText)}${containersBlock(workerId, lineId)}${remoteBlockImplementor(repoUrl)}
-
-${IMPL_PERSONA[persona] || IMPL_PERSONA.backend}
-Whenever you perform browser-based UI or UX testing, launch the browser in headless mode so it cannot disrupt the user's desktop or session.
-${trackerTicket ? `Tracker ticket: ${trackerTicket}. Your related branch must begin with exactly ${trackerTicket}.` : ""}
-${persona === "frontend" ? frontendToolsBlock(workerId, null, lineId) : ""}
-
-Task from the planner:
-${prompt}
-
-Write your report back in ASD-STE100 Simplified Technical English: use
-only approved words, keep sentences short (a maximum of 20 words), one
-topic per sentence, the active voice, numbered steps for procedures,
-and no idioms or jargon.
-
-When done, reply with a concise report: what you implemented, files
-changed, how you verified it (which unit tests you ran), the LOCATION
-OF YOUR WORKTREE (the output of: git rev-parse --show-toplevel), and
-any open issues. That report goes back to the planner verbatim. The
-planner gives your worktree location to the validator that checks
-your work.`;
-}
-
-function remoteBlockValidator(repoUrl, implName, trackerTicket) {
-  if (!repoUrl) return "";
-  return `
-## Remote validation and CI
-Draft PR description: explain the change goal and cite the applicable tracker ticket${trackerTicket ? ` ${trackerTicket}` : " when one exists"}.
-The implementor branch in your workdir has a remote (origin): ${repoUrl}
-Confirm it first: git remote get-url origin. If that command fails,
-there is no remote: skip this section and validate locally only.
-After the local criteria validation:
-1. Make sure the branch is on the remote:
-   git fetch origin
-   If origin/<branch> is missing or behind your local branch, push:
-   git push -u origin HEAD
-2. Open a DRAFT pull request:
-   gh pr create --draft --title "${implName}" --head <branch> --fill
-   (If the repository already has an open PR for this branch, use it.)
-3. Wait for the CI pipelines of the pull request (up to 20 minutes).
-   Poll with: gh pr checks
-   Use: gh pr checks --json for machine-readable results.
-4. Report the outcome:
-   - All checks pass: include the PR url and "CI: PASS". VERDICT: PASS.
-   - Checks fail: attach the failed check names and the failure log
-     excerpts (gh run view <run-id> --log-failed), write "CI: FAIL".
-     VERDICT: FAIL.
-5. Do not mark the PR ready for review. Leave it as a draft.`;
-}
-
-function validatorBrief(implName, report, criteria, persona, workerId, implId, lineId, repoName, repoUrl, trackerTicket) {
-  return `You are the VALIDATOR (id ${workerId}) for the work of implementor '${implName}' (id ${implId}).
-Your workdir is the implementor's git worktree in repository '${repoName || "unknown"}'${repoUrl ? ` (remote: ${repoUrl})` : " (no remote)"}.
-The implementor reported its location to the planner; the planner
-passed it to you. Do not change the implementation. You check the work
-only.
-Test scope: run UNIT TESTS only. Do NOT run integration tests. The
-integration tests run in the CI pipelines of the repository (see the
-CI section below when a remote exists).
-${containersBlock(workerId, lineId)}Whenever you perform browser-based UI or UX testing, launch the browser in headless mode so it cannot disrupt the user's desktop or session.
-${remoteBlockValidator(repoUrl, implName, trackerTicket)}
-
-${VAL_PERSONA[persona] || VAL_PERSONA.backend}
-${persona === "frontend" ? frontendToolsBlock(workerId, implId, lineId) : ""}
-
-The implementor reported:
-${report}
-
-${validationCriteriaBlock(criteria)}
-
-Tasks:
-1. Check the work against each criterion. For each criterion, record
-   PASS or FAIL with one sentence of evidence.
-2. You may run the code and the UNIT TESTS. Do not run integration
-   tests: the CI pipelines run them. You may run code inside docker
-   containers; publish ports only on your allocated port (see the
-   frontend tools block when present). You may run headless UI tests
-   with the playwright browser tools (browser_navigate,
-   browser_snapshot, browser_click, browser_type).
-3. Reply with a VALIDATION REPORT: one line per criterion with PASS or
-   FAIL, then a final line "VERDICT: PASS" or "VERDICT: FAIL".
-Write the report in ASD-STE100 Simplified Technical English (approved
-words, short sentences, one topic per sentence, active voice, no
-idioms).`;
-}
-
-
-// manifest: [{ name, url, worktreePath, baseBranch, baseSha, branches: [{ name, branch, sha }] }]
-function integrationValidatorBrief(line, manifest, instructions, workerId, branch) {
-  const repoBlock = manifest.map((r) => [
-    `- Repository '${r.name}'${r.url ? ` (remote ${r.url})` : " (no remote)"}`,
-    `  Directory: ${r.worktreePath}`,
-    `  Integration branch ${branch}, created from ${r.baseBranch || "HEAD"} at ${r.baseSha}.`,
-    "  Merge these commits, in this order:",
-    ...r.branches.map((b) => `  - ${b.sha} (branch ${b.branch}, implementor '${b.name}')`),
-  ].join("\n")).join("\n");
-  return `You are the INTEGRATION VALIDATOR (id ${workerId}) for factory line '${line.name}'.
-You check all the work that the planner accepted when it started you.
-The router recorded the exact commits. Do not merge other commits.
-Your workdir contains one directory for each repository below. Each
-directory is a git worktree on a fresh integration branch. The router
-created it from the default branch of that repository. Work in each
-repository only inside its directory. You NEVER commit to main/master
-and you NEVER push to any remote. All merging happens on your
-integration branches.
-
-${repoBlock}
-You are the ONLY stage that runs integration tests locally: the
-implementors and the validators run unit tests only. Run the full
-acceptance and integration test suites here.
-
-Start the isolated router in the background. Redirect all standard
-streams, and use a free PORT other than 7788 and a private LINES_DIR.
-Capture the server PID and return from the start command before any
-other tool call. Wait for HTTP readiness with a bounded timeout.
-Register the PID with the router inventory under your integration
-worker ID. Stop the server PID after tests, including after failure.
-
-Instructions from the planner:
-${instructions}
-
-Procedure:
-1. Seed the private line state before you start the isolated router. Do not
-   use the live LINES_DIR. Create the directory <private-dir>/${line.id}
-   and write <private-dir>/${line.id}/line.json with this line ID, this
-   line name, and one integration worker record with id ${workerId}, role
-   validator, kind integration, and name integration-validator. Include
-   empty repos, inventory, and evidence state as needed by the router.
-   Example:
-   mkdir -p <private-dir>/${line.id}
-   cat > <private-dir>/${line.id}/line.json <<'JSON'
-   {"id":"${line.id}","name":"${line.name}","workers":[{"id":"${workerId}","name":"integration-validator","role":"validator","kind":"integration","status":"running","worktreePath":"<integration-worktree>"}],"repos":[],"inventory":[],"evidence":[],"pendingValidations":[],"plannerQueue":[]}
-   JSON
-   Then start the isolated router:
-   PORT=<free-port> LINES_DIR=<private-dir> node router-prototype/server.js >router.log 2>&1 & SERVER_PID=$!; echo "$SERVER_PID"
-   Return from this command before any other tool call. Poll the HTTP
-   endpoint with a bounded timeout until it responds. Register the PID
-   with POST /api/protocol/lines/${line.id}/inventory, using kind process,
-   name integration-router, pid $SERVER_PID, and worker ${workerId}.
-2. In each repository directory, merge every listed commit with one
-   explicit Git merge command. Do not use a shell loop. Use one command
-   for each commit:
-   git -C <repository directory> merge --no-edit <commit>
-   Check the exit status of each command. If a command fails, stop.
-   Report the exact command, exit status, and stderr. Do not infer
-   success from silent output. After each successful merge, run:
-   git -C <repository directory> merge-base --is-ancestor <commit> HEAD
-   Check its exit status. If it is not zero, stop and report the
-   commit and the command failure.
-   Resolve conflicts yourself, keeping both features where possible.
-   If a conflict cannot be resolved sensibly, stop and report it.
-3. Commit every conflict resolution on the integration branch of its
-   repository. The router reads the HEAD of each integration branch as
-   the validated commit.
-4. When all branches are merged, run ALL acceptance tests and verify
-   everything works together. Build and run the project if needed.
-5. Record one complete showcase for this integration attempt.
-   Every browser used for UI/UX testing, acceptance testing, showcase
-   capture, or related evidence MUST be launched in headless mode so it
-   cannot affect the user's desktop or session. Use one browser context
-   for the complete demonstration.
-   Keep one continuous WebM recording through every feature transition.
-   Do not stop the recording between use cases. Use a readable pace.
-   Show every implemented feature. Capture a PNG or JPEG screenshot
-   after each significant step. Capture the screenshots in demonstration
-   order. Keep each screenshot paired with its matching title and
-   explanation. Give every step a title and an explanation that identifies
-   the visible proof and the feature it proves.
-   The ffmpeg program must be available for media validation.
-6. Close the browser context before registration. This finalizes the
-   recording. Do not register an active or incomplete recording.
-7. Register the showcase with this exact request:
-   curl -s -X POST http://localhost:${PORT}/api/protocol/workers/${workerId}/evidence \
-     -H 'Content-Type: application/json' \
-     -d '{"kind":"showcase","version":1,"useCase":"<complete demonstration title>","file":"evidence/showcase.webm","steps":[{"title":"<step title>","explanation":"<visible proof and feature>","screenshot":"evidence/step-1.png"}]}'
-   Use paths relative to your workdir (the directory that contains the
-   repository directories). Use this actual worker endpoint.
-   Report every capture or registration failure explicitly. Never replace
-   a failed showcase capture with short clips. Restart the router after
-   an API change when the running process has an older version.
-   Accepted evidence API revision: 362eff17942182a62baf05ef12423afa2dbf6613.
-   The POST response contains {evidenceId, attemptId}. The GET response
-   contains {items, history, currentAttemptId, currentAttemptIds}.
-   Current evidence is in items. Older evidence is in history. Do not mix them.
-   The router owns attempt identity. Keep the showcase tied to this attempt.
-8. Stop the server after all tests, including after failure:
-   kill "$SERVER_PID" || true
-   Remove the private router state and its process artifacts. Never remove
-   or modify the live LINES_DIR.
-9. Reply with an INTEGRATION REPORT: commits merged (per repo),
-   conflicts resolved (per branch, one line), acceptance test results,
-   the list of registered evidence use cases, then a final line
-   "VERDICT: PASS" or "VERDICT: FAIL".
-Write the report in ASD-STE100 Simplified Technical English.`;
 }
 
 function sanitizeName(name) {
@@ -884,7 +534,6 @@ function dashboardStateForLine(line) {
     humanIntervention: line.humanIntervention === true,
     error: line.error === true, lastError: line.lastError || null,
     sessionId: line.sessionId, started: line.started,
-    pipeline: resolvePipeline(line), pipelineOverrides: line.pipeline || null,
     ...nodeSettingsFields(line),
     transcript: line.transcript.slice(-50),
     queuedUserPrompts: queuedUserPromptProjection(line.queue),
@@ -951,37 +600,27 @@ migratePresets({ presetsFile: path.join(LINES_DIR, "pipeline-presets.json"), man
 rebuildCatalog();
 for (const p of CATALOG.problems) slog("warn", "catalog.problem", { layer: p.layer, path: p.path, errors: p.errors });
 
-// Settings from a request body, in either shape, for a graph. Returns
-// { error } or { nodeSettings, pipeline, harnesses }. nodeSettings is the stored
-// truth; pipeline is the legacy per-phase mirror (as given for the old shape,
-// derived from the first node of each phase for the new one).
+const PHASE_SHAPE_REMOVED = "the per-phase 'pipeline' shape was removed: send 'nodeSettings' (a map from node id to run settings)";
+
+// Node settings from a request body, for a graph. Returns { error } or
+// { nodeSettings, harnesses }. The old per-phase 'pipeline' field is refused.
 function settingsFromBody(graph, body) {
-  const hasNodes = body.nodeSettings !== undefined && body.nodeSettings !== null;
-  const hasPhases = body.pipeline !== undefined && body.pipeline !== null;
-  if (hasNodes && hasPhases) return { error: "send either nodeSettings or pipeline, not both" };
-  if (hasNodes) {
-    const raw = body.nodeSettings;
-    if (typeof raw !== "object" || Array.isArray(raw)) return { error: "nodeSettings must be an object" };
-    const nodeSettings = {};
-    for (const [id, settings] of Object.entries(raw)) {
-      if (!graph || !Object.prototype.hasOwnProperty.call(graph.nodes, id)) {
-        return { error: `nodeSettings: no such node '${id}'` };
-      }
-      if (settings === null || typeof settings !== "object" || Array.isArray(settings)) {
-        return { error: `nodeSettings.${id} must be an object` };
-      }
-      const message = validateNodeSettingsForNode(graph, id, settings);
-      if (message) return { error: message };
-      nodeSettings[id] = { ...settings };
+  if (body.pipeline !== undefined && body.pipeline !== null) return { error: PHASE_SHAPE_REMOVED };
+  const raw = body.nodeSettings === undefined || body.nodeSettings === null ? {} : body.nodeSettings;
+  if (typeof raw !== "object" || Array.isArray(raw)) return { error: "nodeSettings must be an object" };
+  const nodeSettings = {};
+  for (const [id, settings] of Object.entries(raw)) {
+    if (!graph || !Object.prototype.hasOwnProperty.call(graph.nodes, id)) {
+      return { error: `nodeSettings: no such node '${id}'` };
     }
-    return { nodeSettings, pipeline: pipelineFromNodeSettings(graph, nodeSettings),
-      harnesses: Object.values(nodeSettings).map((s) => s.harness).filter(Boolean) };
+    if (settings === null || typeof settings !== "object" || Array.isArray(settings)) {
+      return { error: `nodeSettings.${id} must be an object` };
+    }
+    const message = validateNodeSettingsForNode(graph, id, settings);
+    if (message) return { error: message };
+    nodeSettings[id] = { ...settings };
   }
-  const message = validatePipelineConfig(body.pipeline);
-  if (message) return { error: message };
-  const pipeline = body.pipeline && Object.keys(body.pipeline).length ? body.pipeline : null;
-  return { pipeline, nodeSettings: graph ? nodeSettingsFromPipeline(graph, pipeline) : {},
-    harnesses: PHASES.map((p) => pipeline && pipeline[p] && pipeline[p].harness).filter(Boolean) };
+  return { nodeSettings, harnesses: Object.values(nodeSettings).map((s) => s.harness).filter(Boolean) };
 }
 
 // The resolved graph of a catalog pipeline (cached per name). Throws PipelineError.
@@ -1132,10 +771,8 @@ function saveLine(line) {
         rolePrompt: line.rolePrompt || null,
         initialBrief: line.initialBrief || null,
         layout: 2,
-        pipeline: line.pipeline || null,
         graph: line.graph || null,
         nodeSettings: line.nodeSettings || {},
-        pendingValidations: serializePendingValidations(line.pendingValidations),
         plannerQueue: serializePlannerRequests(line.queue),
         knownNoticeIds: restoreKnownNoticeIds(line.knownNoticeIds),
         activePlannerRequest: line.activePlannerRequest
@@ -1169,7 +806,6 @@ function saveLine(line) {
           validationCriteria: w.validationCriteria || null,
           role: w.role, validates: w.validates, persona: w.persona || "backend",
           repo: w.repo || null, worktreePath: w.worktreePath,
-          validationSkipped: w.validationSkipped || null,
           node: w.node || null, acceptedRuns: w.acceptedRuns || [],
           integration: w.integration || null,
           ...changesetFields(w), ...baseFields(w),
@@ -1269,8 +905,8 @@ function enqueueRequest(line, request) {
   return result;
 }
 
-function enqueue(line, text, source = null) {
-  return enqueueRequest(line, plannerRequest(text, source));
+function enqueue(line, text) {
+  return enqueueRequest(line, plannerRequest(text));
 }
 
 const WAKE_PREFIXES = ["IMPLEMENTOR REPORT", "VALIDATION REPORT", "VALIDATOR FAILURE",
@@ -1487,46 +1123,6 @@ function pump(line) {
         }
       }
     }
-    if (!intentionalStop && result === "ok" && line.activePlannerRequest) {
-      const request = line.activePlannerRequest;
-      if (request.source) {
-        const criteria = runOutput.text();
-        const decision = completePlannerCriteria(request, criteria, {
-          getWorker: (workerId) => line.workers.get(workerId),
-          onCriteria: (source, value) => {
-            slog("info", "planner.decision", { lineId: line.id, decision: "spawn-validator",
-              workerId: source.workerId, invocationId: source.invocationId, runId: source.runId,
-              criteriaChars: value.length, criteria: preview(value, 400) });
-            trySpawnValidator(line, source, value, false);
-          },
-          onSkip: (source, worker) => {
-            // The planner accepted this run without a validator.
-            worker.validationSkipped = { runId: source.runId, invocationId: source.invocationId };
-            slog("info", "planner.decision", { lineId: line.id,
-              decision: "skip-validation", workerId: source.workerId,
-              invocationId: source.invocationId, runId: source.runId });
-          },
-          onMissing: (source, worker) => {
-            slog("warn", "planner.decision", { lineId: line.id, decision: "missing-criteria",
-              workerId: source.workerId, invocationId: source.invocationId, runId: source.runId });
-            enqueue(line, missingCriteriaDiagnostic(worker.name));
-          },
-          onSuperseded: (source) => {
-            slog("warn", "planner.criteria-superseded", { lineId: line.id,
-              workerId: source.workerId, invocationId: source.invocationId, runId: source.runId });
-            enqueue(line, `VALIDATION CRITERIA SUPERSEDED - criteria for implementor '${source.workerId}' run ${source.runId} (invocation ${source.invocationId}) arrived after that source run was superseded. No validator was started. The newer implementor report remains queued and requires its own criteria.`);
-          },
-          onIncompleteSource: () => {
-            slog("error", "planner.criteria-source-missing", { lineId: line.id });
-            enqueue(line, "VALIDATION NOT STARTED - the planner response has no trusted source report metadata. No current worker report was substituted. Request fresh criteria from the current implementor report.");
-          },
-        });
-        slog("info", "planner.criteria.completed", { lineId: line.id, decision: decision.decision });
-      } else if (request.flow !== "interactions" && request.text.startsWith("IMPLEMENTOR REPORT")) {
-        slog("error", "planner.criteria-source-missing", { lineId: line.id });
-        enqueue(line, "VALIDATION NOT STARTED - the implementor report request has no trusted source metadata. No current worker report was substituted. Request fresh criteria from the current implementor report.");
-      }
-    }
     line.lastRun = null;
     line.activePlannerRequest = null;
     if (intentionalStop) {
@@ -1544,81 +1140,6 @@ function pump(line) {
 
 function runningCount(line) {
   return [...line.workers.values()].filter((w) => w.status === "running").length;
-}
-
-function flushPendingValidations(line) {
-  if (!line.pendingValidations || !line.pendingValidations.length) return;
-  const result = flushPendingValidationQueue(line, {
-    capacity: WORKER_CAP,
-    runningCount: () => runningCount(line),
-    launch: (item) => trySpawnValidator(line, sourceIdentity({
-      workerId: item.implWorkerId, invocationId: item.invocationId,
-      runId: item.runId, report: item.report,
-    }), item.criteria, true),
-    onDiscard: (item, implWorker, reason) => {
-      slog("warn", "validator.deferred-discarded", { lineId: line.id,
-        implementorId: item.implWorkerId, runId: item.runId, reason });
-      const name = implWorker ? implWorker.name : (item && item.implWorkerId) || "unknown";
-      if (reason === "superseded") {
-        enqueue(line, `DEFERRED VALIDATION SUPERSEDED - implementor '${name}' continued after run ${item.runId} (invocation ${item.invocationId}). The older criteria and report were not used against newer work. Wait for the current run report and give new criteria.`);
-      } else if (reason === "incomplete-source") {
-        enqueue(line, `DEFERRED VALIDATION CANCELLED - queued criteria for implementor '${name}' have incomplete source metadata. No current report was substituted.`);
-      } else {
-        enqueue(line, `DEFERRED VALIDATION CANCELLED - implementor '${name}' no longer exists. Its saved criteria and report were not used.`);
-      }
-    },
-  });
-  if (result.changed) saveLine(line);
-  if (result.launchError) {
-    slog("error", "validator.deferred-launch-failed", { lineId: line.id,
-      error: String(result.launchError) });
-  }
-}
-
-// Spawn the validator for an implementor, or defer it when the line is at
-// the cap of concurrently running workers and validators.
-function trySpawnValidator(line, source, criteria, deferred) {
-  const worker = source ? line.workers.get(source.workerId) : null;
-  if (!source || !worker || worker.status === "running"
-    || worker.runGeneration !== source.runId
-    || worker.lastCompletedInvocationId !== source.invocationId) {
-    slog("warn", "validator.source-superseded", { lineId: line.id,
-      workerId: source && source.workerId, invocationId: source && source.invocationId,
-      runId: source && source.runId, workerFound: !!worker });
-    enqueue(line, `VALIDATION CRITERIA SUPERSEDED - the source report for implementor '${source ? source.workerId : "unknown"}' is no longer the current completed run. No validator was started and no current report was substituted.`);
-    return;
-  }
-  if (!hasCriteria(criteria)) {
-    slog("warn", "validator.not-spawned", { lineId: line.id,
-      implementorId: worker.id, invocationId: source.invocationId, reason: "missing-criteria" });
-    enqueue(line, missingCriteriaDiagnostic(worker.name));
-    return;
-  }
-  // Stale-state defense: recheck the change set immediately before the
-  // validator is created. State may have changed since the run ended.
-  if (worker.role === "implementor") {
-    const cs = collectChangeset(worker.worktreePath, worker.baseCommit);
-    worker.changeset = cs;
-    if (!cs.ok) {
-      saveLine(line);
-      slog("warn", "changeset.exceeded-at-validation", { lineId: line.id,
-        workerId: worker.id, reason: cs.reason, total: cs.total, limit: cs.limit });
-      enqueue(line, changesetWakeMessage(cs, worker));
-      return;
-    }
-  }
-  if (runningCount(line) >= WORKER_CAP) {
-    if (!line.pendingValidations) line.pendingValidations = [];
-    line.pendingValidations.push(pendingValidationFor(source, criteria));
-    saveLine(line);
-    slog("info", "validator.deferred", { lineId: line.id, implementorId: worker.id,
-      invocationId: source.invocationId, queued: line.pendingValidations.length });
-    if (!deferred) {
-      enqueue(line, `VALIDATION DEFERRED - the line is at the cap of ${WORKER_CAP} concurrently running workers and validators. The validation of implementor '${worker.name}' starts automatically when a slot frees. You do not need to act.`);
-    }
-    return;
-  }
-  spawnValidator(line, source, criteria, reportForValidation(null, source.report));
 }
 
 function spawnWorker(line, worker, prompt, resume) {
@@ -1803,7 +1324,7 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
     }
   } else if (worker.role === "validator" && worker.kind === "integration") {
     if (worker.status === "completed") {
-      enqueue(line, buildIntegrationNotification(worker, report));
+      enqueue(line, buildUnroutedNotification(worker, null, report));
     } else if (timedOut) {
       enqueue(line, `INTEGRATION TIMEOUT - integration validator '${worker.name}' hit the run time limit. The merged work is on branch ${worker.branch}. Decide how to proceed.` + runOutputNote(report, "integration run output") + failureNote);
     } else {
@@ -1815,7 +1336,7 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
     const implId = worker.validates || "unknown";
     const implSession = impl ? (impl.sessionId || "unknown") : "unknown";
     if (worker.status === "completed") {
-      enqueue(line, buildValidationNotification(worker, impl, report));
+      enqueue(line, buildUnroutedNotification(worker, impl, report));
     } else if (timedOut) {
       enqueue(line, `VALIDATOR TIMEOUT - the validator hit the run time limit and was interrupted. Validators are fresh sessions each time: the implementor work is unchanged, decide how to proceed (usually nothing - validation repeats after the next implementor completion).` + runOutputNote(report, "validation run output") + failureNote);
     } else if (worker.status === "failed") {
@@ -1836,9 +1357,7 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
         reason: cs.reason, total: cs.total, limit: cs.limit });
       enqueue(line, changesetWakeMessage(cs, worker));
     } else {
-      const request = implementorReportRequest(
-        buildImplementorNotification(worker, report), worker, invocation, report);
-      enqueueRequest(line, request);
+      enqueue(line, buildUnroutedNotification(worker, null, report));
     }
   } else if (timedOut) {
     enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: POST /api/protocol/workers/${worker.id}/continue with {"prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.` + runOutputNote(report, "implementor run output") + failureNote);
@@ -1847,7 +1366,6 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
   } else {
     enqueue(line, `WORKER STOPPED - '${worker.name}' (workerId ${worker.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.` + runOutputNote(report, "implementor run output") + failureNote);
   }
-  flushPendingValidations(line);
 }
 
 function sendFailure(res, out) {
@@ -2012,18 +1530,13 @@ function createOwnWorktree(line, nodeId, fields) {
   let workerPrompt;
   let split = null;
   try {
-    if (line.graph) {
-      const callerValues = { ...fields.extra, task: fields.prompt };
-      if (fields.trackerTicket) callerValues.trackerTicket = fields.trackerTicket;
-      const routerValues = workerRouterValues({ line, nodeId,
-        workerId: id, workerName: fields.name, repo, baseCommit,
-        baseNote: baseNote(base, baseResolved), port: PORT, changesetLimit: CHANGESET_LIMIT });
-      workerPrompt = buildPrompt(line.graph, nodeId, routerValues, callerValues);
-      split = buildPromptParts(line.graph, nodeId, routerValues, callerValues);
-    } else {
-      workerPrompt = workerBrief(fields.name, line.name, fields.prompt, persona, id, line.id, repo,
-        baseCommit, baseNote(base, baseResolved), fields.trackerTicket);
-    }
+    const callerValues = { ...fields.extra, task: fields.prompt };
+    if (fields.trackerTicket) callerValues.trackerTicket = fields.trackerTicket;
+    const routerValues = workerRouterValues({ line, nodeId,
+      workerId: id, workerName: fields.name, repo, baseCommit,
+      baseNote: baseNote(base, baseResolved), port: PORT, changesetLimit: CHANGESET_LIMIT });
+    workerPrompt = buildPrompt(line.graph, nodeId, routerValues, callerValues);
+    split = buildPromptParts(line.graph, nodeId, routerValues, callerValues);
   } catch (e) {
     spawnSync("git", ["-C", repo.path, "worktree", "remove", "--force", worktreePath]);
     spawnSync("git", ["-C", repo.path, "branch", "-D", branch]);
@@ -2064,7 +1577,7 @@ function createIntegration(line, nodeId, fields) {
   }
   // The call is the planner's acceptance: every implementor must have
   // accepted work for its latest run. Nothing may still be in flight.
-  const selection = integrationSelection(line.workers.values(), line.pendingValidations, line.graph);
+  const selection = integrationSelection(line.workers.values(), line.graph);
   if (selection.blockers.length) {
     return fail(409, "not all implementor work is accepted: "
       + selection.blockers.map((b) => b.text).join("; "),
@@ -2096,15 +1609,11 @@ function createIntegration(line, nodeId, fields) {
   let integrationPrompt;
   let split = null;
   try {
-    if (line.graph) {
-      const routerValues = integrationRouterValues({ line,
-        nodeId, workerId: id, workerName: name, manifest, branch, port: PORT });
-      const callerValues = { ...fields.extra, instructions: fields.instructions };
-      integrationPrompt = buildPrompt(line.graph, nodeId, routerValues, callerValues);
-      split = buildPromptParts(line.graph, nodeId, routerValues, callerValues);
-    } else {
-      integrationPrompt = integrationValidatorBrief(line, manifest, fields.instructions, id, branch);
-    }
+    const routerValues = integrationRouterValues({ line,
+      nodeId, workerId: id, workerName: name, manifest, branch, port: PORT });
+    const callerValues = { ...fields.extra, instructions: fields.instructions };
+    integrationPrompt = buildPrompt(line.graph, nodeId, routerValues, callerValues);
+    split = buildPromptParts(line.graph, nodeId, routerValues, callerValues);
   } catch (e) {
     prepared.rollback();
     try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
@@ -2155,19 +1664,13 @@ function createSourceChecker(line, nodeId, sourceInstance, fields) {
   let prompt;
   let split = null;
   try {
-    if (line.graph) {
-      const callerValues = { ...fields.extra, criteria };
-      if (implWorker.trackerTicket) callerValues.trackerTicket = implWorker.trackerTicket;
-      const routerValues = validatorRouterValues({ line, nodeId: valNode,
-        workerId: id, workerName: name, implementor: implWorker, report, repoName, repoUrl,
-        port: PORT });
-      prompt = buildPrompt(line.graph, valNode, routerValues, callerValues);
-      split = buildPromptParts(line.graph, valNode, routerValues, callerValues);
-    } else {
-      prompt = validatorBrief(implWorker.name, report, criteria,
-        implWorker.persona || "backend", id, implWorker.id, line.id, repoName, repoUrl,
-        implWorker.trackerTicket);
-    }
+    const callerValues = { ...fields.extra, criteria };
+    if (implWorker.trackerTicket) callerValues.trackerTicket = implWorker.trackerTicket;
+    const routerValues = validatorRouterValues({ line, nodeId: valNode,
+      workerId: id, workerName: name, implementor: implWorker, report, repoName, repoUrl,
+      port: PORT });
+    prompt = buildPrompt(line.graph, valNode, routerValues, callerValues);
+    split = buildPromptParts(line.graph, valNode, routerValues, callerValues);
   } catch (e) {
     return fail(500, e.message, { code: "PROMPT_BUILD" });
   }
@@ -2188,24 +1691,6 @@ function createSourceChecker(line, nodeId, sourceInstance, fields) {
     persona: worker.persona, ...scopeSummary(worker, line.workers) } });
   spawnWorker(line, worker, worker.prompt);
   return { ok: true, worker, response: { validatorId: id, branch: worker.branch } };
-}
-
-function spawnValidator(line, source, criteria, report) {
-  const implWorker = line.workers.get(source.workerId);
-  if (!implWorker) return;
-  const valNode = validatorNodeFor(line.graph, implWorker.node);
-  if (!valNode) {
-    slog("warn", "validator.not-spawned", { lineId: line.id, implementorId: implWorker.id,
-      reason: "no-validator-node", node: implWorker.node || null });
-    enqueue(line, `VALIDATION NOT STARTED - pipeline has no node for the validator of implementor '${implWorker.name}'. No validator was started.`);
-    return;
-  }
-  const out = createSourceChecker(line, valNode, implWorker, { source, criteria, report });
-  if (!out.ok) {
-    slog("error", "validator.prompt.failed", { lineId: line.id, implementorId: implWorker.id,
-      error: out.error });
-    enqueue(line, `VALIDATION NOT STARTED - the prompt of the validator of implementor '${implWorker.name}' could not be built: ${out.error}. No validator was started.`);
-  }
 }
 
 // Evidence contract for task B: GET returns {items, history,
@@ -2313,7 +1798,7 @@ registryStore.load().then(() => {
   registryDelivery = createRegistryDelivery({
     store: registryStore,
     getLine: (id) => lines.get(id),
-    enqueueNotice: (line, text, noticeId) => enqueueRequest(line, plannerRequest(text, null, noticeId)),
+    enqueueNotice: (line, text, noticeId) => enqueueRequest(line, plannerRequest(text, noticeId)),
     // A line listens to the registry only after its first prompt: the planner
     // brief always comes first. Held notices are delivered after that.
     isListening: (line) => line.started === true,
@@ -2373,10 +1858,6 @@ const routeRequest = (req, res) => {
 
   if (parts[0] === "api" && parts[1] === "pipelines") return pipelinesApi(req, res, parts);
 
-  if (parts[0] === "api" && parts[1] === "pipeline-presets") {
-    return json(res, 410, { error: "pipeline presets are replaced by pipelines", use: "/api/pipelines" });
-  }
-
   if (req.method === "PUT" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "pipeline"
     && parts.length === 4) {
     const line = lines.get(parts[2]);
@@ -2385,12 +1866,12 @@ const routeRequest = (req, res) => {
       if (err || !body) return json(res, 400, { error: "invalid JSON" });
       const parsed = settingsFromBody(line.graph, body);
       if (parsed.error) return json(res, 400, { error: parsed.error });
-      const { pipeline, nodeSettings } = parsed;
+      const { nodeSettings } = parsed;
       if (!await gateHarnesses([...new Set(parsed.harnesses)], res)) return;
       if (line.deleted) return json(res, 404, { error: "no such line" });
       // Lines restored from before session config tracking: the current
       // session belongs to the harness configured until now.
-      const previous = { pipeline: line.pipeline, sessionCfg: line.sessionCfg,
+      const previous = { sessionCfg: line.sessionCfg,
         nodeSettings: line.nodeSettings };
       if (line.sessionId && !line.sessionCfg) {
         const before = plannerSettings(line);
@@ -2398,25 +1879,20 @@ const routeRequest = (req, res) => {
           timeLimit: before.timeLimit };
       }
       line.nodeSettings = nodeSettings;
-      line.pipeline = pipeline;
       if (!saveLine(line)) {
-        line.pipeline = previous.pipeline;
         line.nodeSettings = previous.nodeSettings;
         line.sessionCfg = previous.sessionCfg;
         return json(res, 500, { error: "could not save the pipeline" });
       }
-      const resolved = resolvePipeline(line);
-      slog("info", "line.pipeline.update", { lineId: line.id, pipeline });
-      broadcast(line, "pipeline", { pipeline: resolved, overrides: line.pipeline || null,
-        ...nodeSettingsFields(line) });
+      slog("info", "line.pipeline.update", { lineId: line.id, nodeSettings });
+      broadcast(line, "pipeline", { ...nodeSettingsFields(line) });
       broadcastContext(line, "planner", line);
       for (const w of line.workers.values()) {
         if (w.role === "implementor") broadcastContext(line, w.id, w);
       }
       // A harness switch is handled before the next planner run.
       pump(line);
-      json(res, 200, { pipeline: resolved, overrides: line.pipeline || null,
-        ...nodeSettingsFields(line) });
+      json(res, 200, { ...nodeSettingsFields(line) });
     });
     return;
   }
@@ -2475,7 +1951,6 @@ const routeRequest = (req, res) => {
         workdir, status: "standby",
         started: false, planApproved: false, workers: new Map(),
         repos: draft.repos,
-        pipeline: parsed.pipeline,
         graph: JSON.parse(JSON.stringify(graph)), nodeSettings: parsed.nodeSettings,
         inventory: new Map(),
         queue: [], activePlannerRequest: null, activePlannerRun: null, runId: null,
@@ -2539,7 +2014,7 @@ const routeRequest = (req, res) => {
           text = `PLAN FEEDBACK from the user: ${body.text}. Revise plan.md accordingly. Do not spawn workers yet.`;
         } catch {}
       }
-      const request = plannerRequest(text, null, null, body.text);
+      const request = plannerRequest(text, null, body.text);
       const out = submitPrompt(line, request, {
         wasStarted, save: saveLine, pump,
         onQueued: () => {
@@ -2844,15 +2319,6 @@ const routeRequest = (req, res) => {
       }
     }
     line.workers.delete(worker.id);
-    if (worker.role === "implementor") {
-      const cancelled = removePendingValidations(line.pendingValidations, worker.id);
-      if (cancelled.length) {
-        slog("info", "validator.deferred-cancelled", { lineId: line.id,
-          implementorId: worker.id, count: cancelled.length, reason: "implementor-removed" });
-        broadcast(line, "validation_queue_cancelled", { implementorId: worker.id,
-          count: cancelled.length, reason: "implementor-removed" });
-      }
-    }
     // Discard the local work of a removed implementor or integration
     // validator: drop its worktree and branch so the name and branch can
     // be reused. Standard validators share the implementor's worktree -
@@ -3503,7 +2969,6 @@ function loadLines() {
           handoff: typeof w.handoff === "string" ? w.handoff : null,
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           repo: workerRepo(w),
-          validationSkipped: w.validationSkipped || null,
           node: w.node || null, acceptedRuns: Array.isArray(w.acceptedRuns) ? w.acceptedRuns : [],
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
           lastError: w.lastError || null,
@@ -3563,7 +3028,6 @@ function loadLines() {
         rolePrompt: typeof meta.rolePrompt === "string" && meta.rolePrompt ? meta.rolePrompt : null,
         initialBrief: meta.initialBrief && typeof meta.initialBrief.full === "string"
           && typeof meta.initialBrief.task === "string" ? meta.initialBrief : null,
-        pipeline: meta.pipeline || null,
         graph: meta.graph, nodeSettings: meta.nodeSettings || {},
         repos: new Map(migration.repos.map((r) => [r.name, r])),
         workdir: path.join(LINES_DIR, entry.name),
@@ -3576,7 +3040,6 @@ function loadLines() {
         started,
         planApproved: meta.planApproved === true, workers, inventory,
         evidence: new Map((meta.evidence || []).map((e) => [e.id, e])),
-        pendingValidations: restorePendingValidations(meta.pendingValidations),
         clients: new Set(), transcript: [] };
       const activeRequest = restorePlannerRequest(meta.activePlannerRequest);
       // An active request can also be present in the persisted queue when a
@@ -3587,11 +3050,6 @@ function loadLines() {
         line.queue.unshift(activeRequest);
       }
       lines.set(meta.id, line);
-      if (line.pendingValidations.length && line.planApproved) {
-        slog("info", "boot.pending-validations", { lineId: meta.id,
-          count: line.pendingValidations.length });
-        flushPendingValidations(line);
-      }
       const hadRunning = (meta.workers || []).some((w) => w.status === "running");
       if (hadRunning) {
         slog("info", "boot.stale-running", { lineId: meta.id,

@@ -1,6 +1,6 @@
 "use strict";
 
-// Pipeline configuration layer: per-phase harness/model/effort/timeLimit
+// Pipeline configuration layer: per-node harness/model/effort/timeLimit
 // (and maxContext for resumed sessions) resolution and harness availability probes. Pure logic, no I/O except
 // through the injected run() function in probeHarnesses().
 
@@ -25,7 +25,7 @@ const PHASE_ENV_PREFIX = {
   integration: "INTEGRATION",
 };
 
-// Code defaults, before env and line.pipeline overrides.
+// Code defaults, before env and node settings.
 const DEFAULTS = {
   harness: "vibe",
   model: {
@@ -78,28 +78,6 @@ function validateNodeSettings(label, settings, opts) {
   return null;
 }
 
-function validatePipelineConfig(raw) {
-  if (raw === null || raw === undefined) return null;
-  if (typeof raw !== "object" || Array.isArray(raw)) {
-    return "pipeline must be an object";
-  }
-  for (const key of Object.keys(raw)) {
-    if (!PHASES.includes(key)) {
-      return `unknown pipeline phase: '${key}' (allowed: ${PHASES.join(", ")})`;
-    }
-    const phase = raw[key];
-    if (phase === null || typeof phase !== "object" || Array.isArray(phase)) {
-      return `pipeline.${key} must be an object`;
-    }
-    const message = validateNodeSettings(`pipeline.${key}`, phase, {
-      strict: true,
-      maxContext: CONTEXT_PHASES.includes(key),
-    });
-    if (message) return message;
-  }
-  return null;
-}
-
 // A model id belongs to one harness. The code default models are Vibe
 // models, so every other harness defaults to null: its CLI then uses its
 // own configured default model.
@@ -108,7 +86,7 @@ function defaultModelFor(harness, phase) {
 }
 
 // Merge order, most specific wins: code defaults, then environment
-// variables, then line.pipeline[phase]. Env values are read at resolve time.
+// variables, then the node settings. Env values are read at resolve time.
 // The env model (e.g. IMPLEMENTOR_MODEL) applies only while the phase runs
 // the env/default harness: a line that switches the phase to another
 // harness without naming a model gets that harness's default instead of a
@@ -161,8 +139,8 @@ function validateNodeSettingsForNode(graph, nodeId, settings) {
 
 // Run settings of one node, most specific wins: code defaults for the phase
 // of the node type, env vars of that phase, the pipeline file node settings,
-// the legacy line.pipeline[phase] override, then line.nodeSettings[nodeId].
-// The env model applies only to the env harness (see resolvePipeline).
+// then line.nodeSettings[nodeId].
+// The env model applies only to the env harness (see mergePhase).
 // maxContext is set only for a node type with session: resume.
 function resolveNodeSettings(line, nodeId, env) {
   const e = env || process.env;
@@ -171,39 +149,30 @@ function resolveNodeSettings(line, nodeId, env) {
   if (!node) throw new Error(`no such node '${nodeId}'`);
   const phase = phaseOfType(graph, node.type);
   if (!phase) throw new Error(`node '${nodeId}' has a type without a phase`);
-  // line.nodeSettings is the stored truth. The phase overrides apply only to a
-  // line that has no node settings (line.pipeline is then the only record).
-  const legacy = !line.nodeSettings && line.pipeline && line.pipeline[phase] ? line.pipeline[phase] : {};
   const own = line.nodeSettings && line.nodeSettings[nodeId] ? line.nodeSettings[nodeId] : {};
-  const merged = { ...(node.settings || {}), ...legacy, ...own };
+  const merged = { ...(node.settings || {}), ...own };
   const resumes = nodeResumes(graph, nodeId);
   const result = mergePhase(phase, e, merged, resumes);
   if (!resumes) delete result.maxContext;
   return result;
 }
 
-// The old per-phase view. With a graph, each phase uses the first node of
-// that phase in graph order; without one (or without such a node) the old
-// line.pipeline overrides apply as before.
-function resolvePipeline(line, env) {
+// Run settings for a worker whose node is not in the graph: the first node of
+// its phase in graph order, or the env and code defaults when there is none.
+function fallbackPhaseSettings(line, phase, env) {
   const e = env || process.env;
-  const pipeline = line && line.pipeline ? line.pipeline : {};
   const graph = line && line.graph;
-  const result = {};
-  for (const phase of PHASES) {
-    const nodeId = graph && graph.nodes
-      ? Object.keys(graph.nodes).find((id) => phaseOfType(graph, graph.nodes[id].type) === phase)
-      : null;
-    if (nodeId && (!CONTEXT_PHASES.includes(phase) || nodeResumes(graph, nodeId))) {
-      result[phase] = resolveNodeSettings(line, nodeId, e);
-      if (CONTEXT_PHASES.includes(phase) && result[phase].maxContext === undefined) {
-        result[phase].maxContext = parseAutoThreshold(e.COMPACT_AUTO_TOKENS);
-      }
-    } else {
-      result[phase] = mergePhase(phase, e, pipeline[phase] || {}, CONTEXT_PHASES.includes(phase));
+  const nodeId = graph && graph.nodes
+    ? Object.keys(graph.nodes).find((id) => phaseOfType(graph, graph.nodes[id].type) === phase)
+    : null;
+  if (nodeId) {
+    const result = resolveNodeSettings(line, nodeId, e);
+    if (CONTEXT_PHASES.includes(phase) && result.maxContext === undefined) {
+      result.maxContext = parseAutoThreshold(e.COMPACT_AUTO_TOKENS);
     }
+    return result;
   }
-  return result;
+  return mergePhase(phase, e, {}, CONTEXT_PHASES.includes(phase));
 }
 
 // One probe definition per harness. authCmd must never print credentials.
@@ -520,10 +489,9 @@ module.exports = {
   CONTEXT_PHASES,
   HARNESS_IDS,
   EFFORT_LEVELS,
-  validatePipelineConfig,
   validateNodeSettings,
   defaultModelFor,
-  resolvePipeline,
+  fallbackPhaseSettings,
   resolveNodeSettings,
   validateNodeSettingsForNode,
   HARNESS_PROBES,

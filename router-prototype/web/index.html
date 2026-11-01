@@ -322,8 +322,8 @@
 <script src="registry-line.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
-  const { PHASE_ROWS, nodeRowsFromResolved, layoutGraph, nodeRowsFromGraphView, nodeSummaryText, edgeTextLines, buildNodeSettingsPayload, buildCreateBody, pickerPipelines,
-    pipelineOptionLabel, pipelineErrorsText, EFFORT_LEVELS, CONTEXT_PHASES, parseContextSize, formatTokens, filterInstalled, buildPipelinePayload, authBadge, previewForIntegration,
+  const { nodeRowsFromResolved, layoutGraph, nodeRowsFromGraphView, nodeSummaryText, edgeTextLines, buildNodeSettingsPayload, buildCreateBody, pickerPipelines,
+    pipelineOptionLabel, pipelineErrorsText, EFFORT_LEVELS, parseContextSize, formatTokens, filterInstalled, authBadge, previewForIntegration,
     previewSelectionKey, previewSelectionExists, isPassingIntegration, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
     PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
@@ -1779,16 +1779,15 @@ window.addEventListener("DOMContentLoaded", () => {
     sel.value = v;
   }
 
-  // One pipeline settings form: a row per phase with harness, Pi auth mode,
-  // model, effort, and (for resumed phases) max context. Used by the create
-  // panel and by each line's Pipeline page. read() returns { pipeline } or
-  // { error }; set() fills the form from a pipeline override object.
-  // With `rowSpecs` (from nodeRowsFromResolved) the form has one row per graph
-  // node and read() returns { nodeSettings }; setRows() swaps the rows later.
+  // One pipeline settings form: a row per graph node with harness, Pi auth
+  // mode, model, effort, and (for resumed nodes) max context. Used by the
+  // create panel and by each line's Pipeline page. `rowSpecs` (from
+  // nodeRowsFromResolved or nodeRowsFromGraphView) gives the rows. read()
+  // returns { nodeSettings } or { error }; set() fills the form from a map
+  // from node id to settings; setRows() swaps the rows later.
   function createPipelineForm(idPrefix, rowSpecs) {
     const el = document.createElement("div");
     el.className = "pipeForm";
-    const nodeMode = Array.isArray(rowSpecs);
     const harnessSelects = {}, authModeSelects = {}, modelSelects = {},
       effortSelects = {}, authHints = {}, maxContextInputs = {};
     const phaseState = {};
@@ -1808,7 +1807,7 @@ window.addEventListener("DOMContentLoaded", () => {
       rows = specs;
       for (const { key, title, maxContext } of specs) {
         const row = document.createElement("div");
-        row.className = "phaseRow" + (nodeMode ? " nodeRow" : "");
+        row.className = "phaseRow nodeRow";
         const phaseName = document.createElement("span");
         phaseName.className = "phaseName";
         phaseName.textContent = title || key;
@@ -1858,9 +1857,7 @@ window.addEventListener("DOMContentLoaded", () => {
         amSel.addEventListener("change", () => onAuthModeChange(key));
       }
     }
-    buildRows(nodeMode
-      ? rowSpecs.map((r) => ({ key: r.id, title: r.title, maxContext: r.maxContext }))
-      : PHASE_ROWS.map(({ key }) => ({ key, maxContext: CONTEXT_PHASES.includes(key) })));
+    buildRows(rowSpecs.map((r) => ({ key: r.id, title: r.title, maxContext: r.maxContext })));
     function syncPhaseRow(key) {
       const state = phaseState[key];
       const harness = harnessSelects[key].value;
@@ -2013,7 +2010,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return out;
     }
 
-    // Replace the rows (node mode). Values typed for a node id that is still
+    // Replace the rows. Values typed for a node id that is still
     // present are kept. A Pi row keeps only harness, effort and max context: its
     // model list depends on the auth mode, which is fetched again.
     function setRows(specs) {
@@ -2051,8 +2048,7 @@ window.addEventListener("DOMContentLoaded", () => {
           values[key].maxContext = maxContext;
         }
       }
-      if (nodeMode) return { nodeSettings: buildNodeSettingsPayload(values) };
-      return { pipeline: buildPipelinePayload(values) };
+      return { nodeSettings: buildNodeSettingsPayload(values) };
     }
 
     return { el, set, read, setRows, reset: () => set(null),

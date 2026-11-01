@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { normalizeLine, loadBuiltinPipeline, phaseOfType } = require("../line-graph");
-const { resolveNodeSettings, resolvePipeline } = require("../pipeline-config");
+const { resolveNodeSettings } = require("../pipeline-config");
 const { renderReports, kindOfNode } = require("../report-interaction");
 const { startRouter, stopRouter, wait } = require("./fixtures/router-process");
 
@@ -43,12 +43,15 @@ test("legacy pipeline settings are copied to every node of the phase, and equal 
   assert.equal("maxContext" in out.nodeSettings["backend-val"], false, "fresh node drops maxContext");
   assert.equal(out.nodeSettings["backend-val"].timeLimit, 600);
   assert.ok(logs.some((l) => l.event === "boot.migrate" && l.step === "pipeline-to-node-settings"));
-  // The effective settings equal the old per-phase resolution (env-free).
+  // The effective settings of each node equal the settings of its phase (env-free).
+  // (Before D9 this was compared with the removed per-phase resolution.)
   const env = {};
-  const oldResult = resolvePipeline({ graph: clone(resolved), pipeline }, env);
   for (const [id, node] of Object.entries(out.graph.nodes)) {
     const phase = phaseOfType(out.graph, node.type);
-    assert.deepEqual(resolveNodeSettings(out, id, env), oldResult[phase], `node ${id}`);
+    const expected = { ...pipeline[phase] };
+    if (out.graph.types[node.type].session === "fresh") delete expected.maxContext;
+    const effective = resolveNodeSettings(out, id, env);
+    for (const [key, value] of Object.entries(expected)) assert.equal(effective[key], value, `node ${id} ${key}`);
   }
   // An existing node entry wins.
   const kept = run({ ...graphOnly, nodeSettings: { "backend-impl": { model: "own" } } }).out;
@@ -76,7 +79,7 @@ test("workers without a node get one; a node missing from the graph warns and ke
   assert.deepEqual(warn.map((l) => l.workerId), ["i3"]);
 });
 
-test("old-style planner requests become report requests; a gone worker drops the request", () => {
+test("old-style planner requests become report requests or notices; a gone worker drops the request", () => {
   const meta = { id: "L", graph: clone(resolved), nodeSettings: {}, workers: [impl()],
     plannerQueue: [oldRequest(), oldRequest({ id: "req-2", source: { workerId: "gone", invocationId: "x", runId: 1, report: "r" } }),
       { id: "req-3", text: "plain user text", source: null }],
@@ -85,7 +88,7 @@ test("old-style planner requests become report requests; a gone worker drops the
   assert.deepEqual(out.plannerQueue.map((r) => r.id), ["req-1", "req-3"]);
   const converted = out.plannerQueue[0];
   assert.equal(converted.flow, "interactions");
-  assert.equal(converted.source, null);
+  assert.equal("source" in converted, false);
   assert.equal(converted.noticeId, "n1");
   assert.match(converted.text, /IMPLEMENTOR REPORT - 'api' \(workerId i1/);
   assert.match(converted.text, /All done\./);
@@ -94,15 +97,21 @@ test("old-style planner requests become report requests; a gone worker drops the
   assert.equal(out.activePlannerRequest.flow, "interactions");
   assert.ok(logs.some((l) => l.step === "planner-request-dropped" && l.requestId === "req-2"));
   assert.equal(logs.filter((l) => l.step === "planner-request-to-report").length, 2);
-  // A request of a worker without a completed run is kept as it is.
+  const noticeText = /An older validation request for implementor 'api' \(req-1\) could not be restored\..*call start on a validator node, or call accept/s;
+  // A request of a worker without a completed run becomes a plain notice with the same id.
   const kept = run({ ...meta, workers: [impl({ status: "stopped" })], plannerQueue: [oldRequest()],
     activePlannerRequest: null }).out;
-  assert.equal(kept.plannerQueue[0].source.workerId, "i1");
-  // A worker the template cannot render for is kept too, with a warning and no crash.
+  assert.equal(kept.plannerQueue[0].id, "req-1");
+  assert.equal(kept.plannerQueue[0].flow, "interactions");
+  assert.equal("source" in kept.plannerQueue[0], false);
+  assert.match(kept.plannerQueue[0].text, noticeText);
+  // A worker the template cannot render for also becomes a notice, with a warning and no crash.
   const bad = run({ ...meta, workers: [impl({ branch: undefined })], plannerQueue: [oldRequest()],
     activePlannerRequest: null });
-  assert.equal(bad.out.plannerQueue[0].source.workerId, "i1");
+  assert.equal(bad.out.plannerQueue[0].flow, "interactions");
+  assert.match(bad.out.plannerQueue[0].text, noticeText);
   assert.ok(bad.logs.some((l) => l.step === "planner-request-render-failed"));
+  assert.ok(!bad.out.plannerQueue.concat(kept.plannerQueue).some((q) => q.source));
 });
 
 test("pendingValidations become one planner request each and the list is cleared", () => {
@@ -116,7 +125,7 @@ test("pendingValidations become one planner request each and the list is cleared
   assert.equal(out.plannerQueue.length, 2);
   const r = out.plannerQueue[1];
   assert.equal(r.flow, "interactions");
-  assert.equal(r.source, null);
+  assert.equal("source" in r, false);
   assert.match(r.text, /'api' \(workerId i1\)/);
   assert.match(r.text, /did not start/);
   assert.match(r.text, /The endpoint returns 200\./);
@@ -169,7 +178,7 @@ test("a router converts old-format lines at boot", async () => {
       await wait(50);
     }
     assert.deepEqual(saved.workers[0].acceptedRuns, [{ runId: 1, invocationId: "inv-1", by: "migration" }]);
-    assert.deepEqual(saved.pendingValidations, []);
+    assert.equal(saved.pendingValidations, undefined, "the router no longer writes the old field");
     const requests = [...(saved.plannerQueue || []), ...(saved.activePlannerRequest ? [saved.activePlannerRequest] : [])];
     const reports = requests.filter((r) => r.flow === "interactions" && /IMPLEMENTOR REPORT/.test(r.text));
     assert.equal(reports.length, 1);

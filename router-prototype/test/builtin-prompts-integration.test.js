@@ -7,13 +7,9 @@ const path = require("node:path");
 const { loadNodeType, resolveTypes } = require("../node-types");
 const { render } = require("../template");
 
+const { golden } = require("./fixtures/golden-file");
+
 const root = path.join(__dirname, "..");
-const source = fs.readFileSync(path.join(root, "server.js"), "utf8");
-const start = source.indexOf("function integrationValidatorBrief(");
-const end = source.indexOf("\nfunction sanitizeName", start);
-assert.ok(start >= 0 && end > start, "integrationValidatorBrief not found in server.js");
-// server.js starts a server when required: build the old function from its source.
-const oldBrief = new Function("PORT", `${source.slice(start, end)}\nreturn integrationValidatorBrief;`)(7788);
 
 const dir = path.join(root, "node-types", "integration-validator");
 const readFile = (f) => fs.readFileSync(f, "utf8");
@@ -61,18 +57,20 @@ test("the type resolves: only instructions is a declared field", () => {
   assert.deepEqual(Object.keys(resolved["integration-validator"].fields), ["instructions"]);
 });
 
-test("new template renders exactly the old integrationValidatorBrief text", () => {
+// The golden files hold the output of the removed integrationValidatorBrief() for the same
+// inputs (one-off script run before D9 removed the function).
+test("new template renders exactly the golden text of the old integrationValidatorBrief", () => {
   const line = { id: "line-42", name: "Demo" };
-  const old = oldBrief(line, manifest, "Merge it\nthen test it", "worker-1", "integration/x-1");
+  const old = golden("integration-three-repositories");
   const neu = render(type.body, values(manifest, "Merge it\nthen test it", line, "worker-1", "integration/x-1"));
   assert.equal(neu, old);
   assert.match(neu, /Repository 'api' \(no remote\)/);
   assert.match(neu, /created from HEAD at 2{40}/);
 });
 
-test("equality holds for a single repository with one branch", () => {
+test("equality with the golden text holds for a single repository with one branch", () => {
   const one = [manifest[0]].map((r) => ({ ...r, branches: [r.branches[0]] }));
   const line = { id: "L", name: "N" };
   assert.equal(render(type.body, values(one, "x", line, "w", "integration/y")),
-    oldBrief(line, one, "x", "w", "integration/y"));
+    golden("integration-single-repository"));
 });

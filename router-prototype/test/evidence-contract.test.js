@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+// The instructions live in the integration-validator node type (they were in server.js before D9).
+const serverSource = fs.readFileSync(path.join(__dirname, '..', 'node-types', 'integration-validator', 'NODE.md'), 'utf8');
 
 function registrationExample() {
   const match = serverSource.match(/-d '({"kind":"showcase".*?})'/);
@@ -51,7 +52,7 @@ test('registration example has the exact versioned showcase shape', () => {
 });
 
 test('instructions use the worker evidence endpoint and preserve ordered steps', () => {
-  assert.match(serverSource, /POST http:\/\/localhost:\$\{PORT\}\/api\/protocol\/workers\/\$\{workerId\}\/evidence/);
+  assert.match(serverSource, /POST \{\{router\.url\}\}\/api\/protocol\/workers\/\{\{instance\.id\}\}\/evidence/);
   assert.match(serverSource, /Use paths relative to your workdir/);
   assert.match(serverSource, /screenshots in demonstration\s+order/);
   assert.match(serverSource, /accepted A|362eff17942182a62baf05ef12423afa2dbf6613/);

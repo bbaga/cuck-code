@@ -1,0 +1,9 @@
+VALIDATION REPORT - validator 'api-check' checked the work of implementor 'api' (workerId w1, claude session s1, branch feat/x).
+
+REPORT BODY (complete):
+Checked.
+VERDICT: PASS
+
+FINAL VERDICT: FAIL.
+
+Decide: accept the work, send follow-up instructions to the original implementor (POST /api/protocol/workers/w1/continue with {"prompt": ...}), or spawn a new implementor with a corrected prompt.

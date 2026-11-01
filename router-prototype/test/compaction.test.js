@@ -11,10 +11,11 @@ const {
   contextSize, contextView, shouldAutoCompact, parseAutoThreshold, compactionPrompt,
   acceptSummary, handoffBlock, workerReseedPrompt,
 } = require("../compaction");
-const { resolvePipeline, validatePipelineConfig } = require("../pipeline-config");
+const { fallbackPhaseSettings, validateNodeSettings } = require("../pipeline-config");
+const { loadBuiltinPipeline } = require("../line-graph");
 const { createHarness } = require("../harness");
 const { vibeContextTokens, codexContextTokens, sessionContextTokens } = require("../context-probe");
-const { parseContextSize, formatTokens, buildPipelinePayload } = require("../web/pipeline-ui");
+const { parseContextSize, formatTokens } = require("../web/pipeline-ui");
 
 test("context size prefers harness tokens over the character estimate", () => {
   const stats = newContextStats();
@@ -76,15 +77,18 @@ test("summaries and reseed prompts keep the brief, the summary, and the new inst
 });
 
 test("pipeline maxContext is set per resumed phase and falls back to the env default", () => {
-  assert.strictEqual(validatePipelineConfig({ planner: { maxContext: 200000 }, implementor: { maxContext: 50000 } }), null);
-  assert.match(validatePipelineConfig({ validator: { maxContext: 50000 } }), /not supported/);
-  assert.match(validatePipelineConfig({ planner: { maxContext: 500 } }), /at least 1000/);
-  assert.match(validatePipelineConfig({ planner: { maxContext: "200K" } }), /integer number of tokens/);
-  const r = resolvePipeline({ pipeline: { planner: { maxContext: 200000 } } }, { COMPACT_AUTO_TOKENS: "90000" });
-  assert.strictEqual(r.planner.maxContext, 200000);
-  assert.strictEqual(r.implementor.maxContext, 90000);
-  assert.strictEqual(r.validator.maxContext, undefined);
-  assert.strictEqual(resolvePipeline({}, { COMPACT_AUTO_TOKENS: "0" }).planner.maxContext, 0);
+  const withContext = { strict: true, maxContext: true };
+  assert.strictEqual(validateNodeSettings("n", { maxContext: 200000 }, withContext), null);
+  assert.match(validateNodeSettings("n", { maxContext: 50000 }, { strict: true, maxContext: false }), /not supported/);
+  assert.match(validateNodeSettings("n", { maxContext: 500 }, withContext), /at least 1000/);
+  assert.match(validateNodeSettings("n", { maxContext: "200K" }, withContext), /integer number of tokens/);
+  const graph = loadBuiltinPipeline("default", require("node:fs"), require("node:path").join(__dirname, ".."));
+  const line = { graph, nodeSettings: { planner: { maxContext: 200000 } } };
+  const env = { COMPACT_AUTO_TOKENS: "90000" };
+  assert.strictEqual(fallbackPhaseSettings(line, "planner", env).maxContext, 200000);
+  assert.strictEqual(fallbackPhaseSettings(line, "implementor", env).maxContext, 90000);
+  assert.strictEqual(fallbackPhaseSettings(line, "validator", env).maxContext, undefined);
+  assert.strictEqual(fallbackPhaseSettings({}, "planner", { COMPACT_AUTO_TOKENS: "0" }).maxContext, 0);
 });
 
 test("claude and pi adapters report the latest context size", () => {
@@ -145,6 +149,4 @@ test("the create form reads max context in thousands", () => {
   assert.strictEqual(formatTokens(950), "950");
   assert.strictEqual(formatTokens(52400), "52K");
   assert.strictEqual(formatTokens(1200000), "1.2M");
-  assert.deepStrictEqual(buildPipelinePayload({ planner: { maxContext: 200000 }, implementor: { maxContext: null } }),
-    { planner: { maxContext: 200000 } });
 });

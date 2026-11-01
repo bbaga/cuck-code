@@ -2,7 +2,8 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { resolvePipeline } = require("../pipeline-config");
+const { fallbackPhaseSettings } = require("../pipeline-config");
+const resolvePipeline = (line, env) => new Proxy({}, { get: (_t, phase) => fallbackPhaseSettings(line, phase, env) });
 const { planPlannerRun, planWorkerRun, implementorBranchName } = require("../spawn-plan");
 
 // Regression guarantee: with the default config (no env overrides, no

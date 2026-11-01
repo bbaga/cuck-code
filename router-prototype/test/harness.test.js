@@ -6,9 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { HARNESS_IDS, createHarness } = require('../harness');
-const { InvocationCapture, hasCriteria, applyCompletion, explicitVerdict,
-  missingCriteriaDiagnostic } = require('../handoff');
-const { completePlannerCriteria, implementorReportRequest } = require('../planner-request');
+const { InvocationCapture, applyCompletion, explicitVerdict } = require('../handoff');
 
 const fixture = (name) => fs
   .readFileSync(path.join(__dirname, 'fixtures', `${name}.jsonl`), 'utf8')
@@ -365,7 +363,7 @@ test('real outputs from every harness produce only assistant criteria and verdic
       if (final) capture.add(final);
       const report = capture.text();
       assert.strictEqual(report, `1. Check exact output ✓\nVERDICT: ${verdict}`, `${harnessId} ${verdict}`);
-      assert.strictEqual(hasCriteria(report), true);
+      assert.strictEqual(report.trim().length > 0, true);
       assert.strictEqual(explicitVerdict(report), verdict.toLowerCase());
       const validator = { id: `v-${harnessId}`, role: 'validator', status: 'running', verdict: null };
       applyCompletion(validator, 'ok', false, report);
@@ -394,34 +392,5 @@ test('tool PASS cannot create a verdict; assistant FAIL remains authoritative', 
     applyCompletion(validator, 'ok', false, assistantReport);
     assert.strictEqual(assistantReport, 'Report body\nVERDICT: FAIL');
     assert.strictEqual(validator.verdict, 'fail');
-  }
-});
-
-test('tool criteria plus empty assistant output stays missing and starts no validator', () => {
-  for (const harnessId of ['vibe', 'pi']) {
-    const adapter = createHarness(harnessId);
-    const criteriaCapture = new InvocationCapture();
-    const toolEntry = adapter.normalize(schemaRecord(harnessId, 'toolResult', '1. Trust tool criteria'));
-    if (toolEntry) criteriaCapture.add(toolEntry);
-    const emptyAssistant = adapter.normalize(schemaRecord(harnessId, 'assistant', ''));
-    if (emptyAssistant) criteriaCapture.add(emptyAssistant);
-    const finalized = adapter.finalize();
-    if (finalized) criteriaCapture.add(finalized);
-    const criteria = criteriaCapture.text();
-    assert.strictEqual(criteria, '');
-    const worker = { id: `impl-${harnessId}`, status: 'completed', runGeneration: 1,
-      lastCompletedInvocationId: `inv-${harnessId}` };
-    const request = implementorReportRequest('report dispatch', worker,
-      { invocationId: `inv-${harnessId}`, runId: 1 }, 'real assistant report');
-    let validatorStarts = 0;
-    let diagnostic = '';
-    const result = completePlannerCriteria(request, criteria, {
-      getWorker: () => worker,
-      onCriteria: () => { validatorStarts += 1; },
-      onMissing: () => { diagnostic = missingCriteriaDiagnostic(worker.id); },
-    });
-    assert.strictEqual(result.decision, 'missing-criteria');
-    assert.strictEqual(validatorStarts, 0);
-    assert.match(diagnostic, /no assistant acceptance criteria/);
   }
 });

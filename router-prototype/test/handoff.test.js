@@ -10,19 +10,12 @@ const {
   collectAssistantText,
   InvocationCapture,
   appendTranscript,
-  isSkipValidation,
-  hasCriteria,
-  validationCriteriaBlock,
-  pendingValidationFor,
   reportForValidation,
-  missingCriteriaDiagnostic,
   runOutputNote,
+  buildUnroutedNotification,
   explicitVerdict,
   applyCompletion,
   completionFields,
-  buildImplementorNotification,
-  buildValidationNotification,
-  buildIntegrationNotification,
 } = require("../handoff");
 
 function fixture(name) {
@@ -47,8 +40,6 @@ test("chains real Pi stream output through normalized assistant text into exact 
   if (finalized) output.add(finalized);
   const criteria = output.text();
   assert.equal(criteria, "1. Check all paths.\n2. Keep Unicode ✓ and punctuation: !");
-  assert.equal(validationCriteriaBlock(criteria),
-    `The planner gave these acceptance criteria:\n${criteria}`);
 });
 
 test("chains a real Vibe adapter report into full notifications and final verdict state", () => {
@@ -62,18 +53,14 @@ test("chains a real Vibe adapter report into full notifications and final verdic
   const report = run.text();
   assert.equal(report, "Hello from vibe\nSecond part\nImplementor details ✓\nVERDICT: FAIL");
   const implementor = { id: "impl-3", name: "worker", harness: "vibe", sessionId: "s3", branch: "b3" };
-  assert.ok(buildImplementorNotification(implementor, report).includes(
-    `REPORT BODY (complete):\n${report}\n\nNow give`));
 
   const validator = { id: "validator-3", role: "validator", name: "validator-worker",
     validates: implementor.id, branch: "b3" };
   const event = applyCompletion(validator, "ok", false, report);
   assert.equal(validator.verdict, "fail");
   assert.deepEqual(event, { workerId: validator.id, status: "completed", verdict: "fail" });
-  assert.ok(buildValidationNotification(validator, implementor, report).includes(
+  assert.ok(buildUnroutedNotification(validator, implementor, report).includes(
     `REPORT BODY (complete):\n${report}\n\nFINAL VERDICT: FAIL.`));
-  assert.ok(buildIntegrationNotification({ ...validator, name: "integration-worker", branch: "int" }, report)
-    .includes(`REPORT BODY (complete):\n${report}\n\nFINAL VERDICT: FAIL.`));
 });
 
 test("supports normalized text and legacy string or text-block content", () => {
@@ -110,24 +97,11 @@ test("uses an empty current invocation instead of old transcript output", () => 
   const current = new InvocationCapture();
   assert.equal(previous.text(), "old criteria");
   assert.equal(current.text(), "");
-  assert.equal(hasCriteria(current.text()), false);
-  assert.equal(isSkipValidation(current.text()), false);
-  assert.equal(isSkipValidation("  SKIP VALIDATION"), true);
-  assert.equal(isSkipValidation(""), false);
-  assert.match(missingCriteriaDiagnostic("impl"), /current planner run/);
-  assert.match(missingCriteriaDiagnostic("impl"), /No old transcript text was used/);
 });
 
-test("keeps deferred criteria and report paired across a later implementor continuation", () => {
-  const source = { workerId: "impl-2", invocationId: "inv-1", runId: 1,
-    report: "first completed report ✓" };
-  const worker = { id: "impl-2", lastRunText: "first completed report ✓" };
-  const pending = pendingValidationFor(source, "1. Check first run.\n2. Verify ✓.");
-  worker.lastRunText = "later continued run report";
-  assert.equal(pending.criteria, "1. Check first run.\n2. Verify ✓.");
-  assert.equal(pending.invocationId, "inv-1");
-  assert.equal(pending.runId, 1);
-  assert.equal(reportForValidation(worker, pending.report), "first completed report ✓");
+test("the report for a validation falls back to a fixed text when the run had none", () => {
+  const worker = { id: "impl-2", lastRunText: "later continued run report" };
+  assert.equal(reportForValidation(worker, "first completed report ✓"), "first completed report ✓");
   assert.equal(reportForValidation(worker, undefined),
     "[No assistant implementor report text was produced by this run.]");
   assert.equal(reportForValidation({ lastRunText: "" }, ""),
@@ -148,25 +122,27 @@ test("keeps invocation output outside the capped UI transcript", () => {
   assert.ok(run.text().startsWith("item-0\n"));
 });
 
-test("builds full implementor, validation, and integration reports without dot-only text", () => {
+test("builds the unrouted notice for each worker kind without dot-only text", () => {
   const report = "Changed it ✓\nLine two!\nVERDICT: PASS";
-  const worker = { id: "impl-1", name: "impl", harness: "pi", sessionId: "s-1", branch: "b" };
-  const implNotice = buildImplementorNotification(worker, report);
-  assert.ok(implNotice.includes(`REPORT BODY (complete):\n${report}\n\nNow give`));
+  const worker = { id: "impl-1", name: "impl", harness: "pi", sessionId: "s-1", branch: "b", node: "gone" };
+  const implNotice = buildUnroutedNotification(worker, null, report);
+  assert.ok(implNotice.includes(`REPORT BODY (complete):\n${report}\n\nCheck the instance`));
   assert.ok(!implNotice.includes("finished: ."));
-  assert.ok(buildImplementorNotification(worker, "").includes(
+  assert.ok(implNotice.includes("node 'gone' is not in the pipeline graph"));
+  assert.ok(buildUnroutedNotification(worker, null, "").includes(
     "[No assistant report text was produced by this run.]"));
   assert.equal(runOutputNote("partial ✓\nline!"), "\n\nRUN OUTPUT (complete):\npartial ✓\nline!");
   assert.match(runOutputNote("", "validation run output"), /No validation run output text was produced/);
 
-  const validator = { id: "val-1", name: "validator-impl", validates: worker.id,
+  const validator = { id: "val-1", name: "validator-impl", role: "validator", validates: worker.id,
     branch: "b", verdict: "pass" };
-  const validation = buildValidationNotification(validator, worker, report);
+  const validation = buildUnroutedNotification(validator, worker, report);
   assert.ok(validation.includes(`REPORT BODY (complete):\n${report}\n\nFINAL VERDICT: PASS.`));
-  assert.ok(validation.includes("/continue"));
+  assert.ok(validation.includes("checked implementor 'impl'") || validation.includes("It checked implementor 'impl'"));
 
-  const integration = buildIntegrationNotification({ ...validator, name: "integration", branch: "i" }, report);
+  const integration = buildUnroutedNotification({ ...validator, kind: "integration", name: "integration", branch: "i" }, null, report);
   assert.ok(integration.includes(`REPORT BODY (complete):\n${report}\n\nFINAL VERDICT: PASS.`));
+  assert.ok(integration.includes("integration validator 'integration'"));
 });
 
 test("parses only complete explicit verdict lines outside quotes and code fences", () => {
@@ -194,7 +170,7 @@ test("publishes completion state before API, saved-state, and event projections"
     assert.equal(worker.verdict, expected);
     assert.deepEqual(saved, api);
     assert.deepEqual(event, { workerId: "v-1", status: "completed", verdict: expected });
-    const notice = buildValidationNotification({ ...worker, name: "v", validates: "i", branch: "b" }, null, report);
+    const notice = buildUnroutedNotification({ ...worker, name: "v", validates: "i", branch: "b" }, null, report);
     if (expected) assert.ok(notice.includes(`FINAL VERDICT: ${expected.toUpperCase()}.`));
     else assert.ok(notice.includes("DIAGNOSTIC: no explicit final"));
   }

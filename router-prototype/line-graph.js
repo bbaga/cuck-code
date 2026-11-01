@@ -57,17 +57,6 @@ function nodeSettingsFromPipeline(graph, pipeline) {
   return out;
 }
 
-// The old per-phase mirror of node settings: for each phase, the settings of
-// the first node of that phase (in graph order) that has any. Null if none.
-function pipelineFromNodeSettings(graph, nodeSettings) {
-  const out = {};
-  for (const [id, node] of Object.entries(graph.nodes)) {
-    const phase = phaseOfType(graph, node.type);
-    if (phase && !has(out, phase) && has(nodeSettings, id)) out[phase] = { ...nodeSettings[id] };
-  }
-  return Object.keys(out).length ? out : null;
-}
-
 // The graph as the API shows it: name, start, nodes with type and phase, edges.
 // Each edge also carries `kinds`: for every interaction name its { effect,
 // trigger } from the resolved interactions, so a client can lay the graph out.
@@ -151,6 +140,12 @@ function isOldStyleRequest(r) {
   return !!r && typeof r === "object" && !!r.source && r.flow !== FLOW_INTERACTIONS;
 }
 
+// The text that replaces an old validation request that cannot be restored.
+function unrestorableRequestNotice(name, requestId) {
+  return `An older validation request for implementor '${name}' (${requestId || "no id"}) could not be restored. `
+    + "The planner must check the instance and call start on a validator node, or call accept.";
+}
+
 // The text that tells the planner a deferred validation did not start.
 function deferredValidationNotice(item, impl, validatorNode) {
   const target = validatorNode ? `the validator node '${validatorNode}'` : "the validator node of this implementor";
@@ -229,11 +224,11 @@ function normalizeLine(meta, resolvedDefault, opts = {}) {
         workerId: worker.id, error: String(error && error.message || error) });
     }
     if (typeof text !== "string" || !text) {
-      note("warn", { step: "planner-request-kept", where, requestId: r.id || null,
+      text = unrestorableRequestNotice(worker.name, r.id);
+      note("warn", { step: "planner-request-to-notice", where, requestId: r.id || null,
         workerId: worker.id, reason: "no completed run to report" });
-      return r;
     }
-    const next = { text, source: null, flow: FLOW_INTERACTIONS };
+    const next = { text, flow: FLOW_INTERACTIONS };
     for (const key of ["id", "noticeId", "recorded"]) if (r[key] !== undefined) next[key] = r[key];
     note("info", { step: "planner-request-to-report", where, requestId: r.id || null, workerId: worker.id });
     return next;
@@ -258,7 +253,7 @@ function normalizeLine(meta, resolvedDefault, opts = {}) {
       }
       out.plannerQueue.push({ id: `migrated-validation-${impl.id}-${item.invocationId || item.runId}`,
         text: deferredValidationNotice(item, impl, validatorNodeFor(graph, impl.node)),
-        source: null, flow: FLOW_INTERACTIONS });
+        flow: FLOW_INTERACTIONS });
       note("info", { step: "pending-validation-to-request", workerId: impl.id, runId: item.runId });
     }
   }
@@ -289,5 +284,5 @@ function loadBuiltinPipeline(name, fs, root) {
 }
 
 module.exports = { PHASE_TYPES, phaseOfType, migrateLine, normalizeLine, nodeSettingsFromPipeline,
-  pipelineFromNodeSettings, graphView, nodeSettingsFields, builtinPipelineNames,
+  graphView, nodeSettingsFields, builtinPipelineNames,
   implementorNodeFor, validatorNodeFor, integrationNodeFor, loadBuiltinPipeline };

@@ -110,21 +110,13 @@ without LF. It does not split on Unicode line separators.
 
 The planner gives the criteria for validation in an explicit `start` call of a
 validator node, with `criteria` and `source` (see "Validation loop"). It
-accepts work without a check with the `accept` interaction; the text
-`SKIP VALIDATION` is no longer the way to do this. The rest of this
-paragraph describes the older flow, which the router keeps only for a planner
-request that already waits for criteria (it is removed in a later release, task
-D9). In that flow the criteria come only from the current planner run.
-Empty criteria produce a `VALIDATION NOT STARTED` diagnostic. They do not use
-old transcript text and do not start a validator. `SKIP VALIDATION` is
-still understood there. Each implementor report enters the planner queue
-with trusted internal source metadata: worker ID, invocation ID, run generation,
-and the immutable report body. Planner dispatch and wake retries preserve that
-metadata. Criteria are accepted only for that exact source, never by parsing
-worker IDs from prompt text or reading the worker's mutable latest report. If a
-continuation supersedes the source before criteria return, the router reports
-cancellation and keeps the newer report request intact. Deferred validation
-stores its criteria, report, and invocation identity together. Worker
+accepts work without a check with the `accept` interaction. The router does not
+read criteria from the planner's reply, and the text `SKIP VALIDATION` has no
+meaning any more. Each implementor report enters the planner queue as a plain
+request that carries the `flow: "interactions"` marker. A validator that the
+planner starts records which implementor run it checks (the `validationSource`
+of the validator: worker ID, invocation ID, run generation, and the immutable
+report body), and the integration rule uses that record. Worker
 completion sets status and verdict before
 saving state or sending the status event. A verdict requires the final non-empty
 report line to be exactly `VERDICT: PASS` or `VERDICT: FAIL`; a missing or
@@ -150,8 +142,9 @@ message it delivers. The built-in files live in `router-prototype/pipelines/`,
 pipelines HTTP API and the web UI are built. In the web UI, the create panel has
 a pipeline picker and one settings row per node, the Pipeline tab of a line
 shows the graph and the settings of each node, and the `/pipelines` page lists,
-edits and checks pipelines. The old per-phase `pipeline` request shape and the
-old routes still work for one release (see "Pipeline settings").
+edits and checks pipelines. The old per-phase `pipeline` request shape was
+removed (it answers 400, see "Pipeline settings"). The three old protocol routes
+`/workers`, `/continue` and `/integration` still work as deprecated aliases.
 
 ### Concepts
 
@@ -166,9 +159,8 @@ old routes still work for one release (see "Pipeline settings").
 A line stores the resolved pipeline in `line.json` as `graph` when it is
 created (`POST /api/lines {pipelineName}`, default `default`; an unknown name is
 400 and lists the known names). Editing a file later does not change a running
-line. A line saved before this feature gets the `default` graph when it loads;
-its `pipeline` overrides become `nodeSettings`, each worker gets a `node`, and
-an earlier `validationSkipped` becomes an entry in `acceptedRuns`.
+line. A line saved before this feature gets the `default` graph when it loads
+(see "Old data on load" below).
 
 ### Pipeline file
 
@@ -504,9 +496,37 @@ the `default` pipeline with the preset settings placed on the nodes of each phas
 and the description `Migrated from preset '<old name>'`. A preset name that is
 not a safe file name is changed (lowercase, `a-z0-9-`, at most 60 characters,
 `-2`, `-3` ... for a clash) and the boot log shows `preset migrated: '<old>' ->
-'<new>'`. The old file is renamed to `pipeline-presets.json.migrated`. The
-routes `GET`, `PUT` and `DELETE /api/pipeline-presets*` answer 410
-`{error, use: "/api/pipelines"}`.
+'<new>'`. The old file is renamed to `pipeline-presets.json.migrated`. This
+first-boot conversion is the only thing left of the presets: the routes
+`/api/pipeline-presets*` were removed and answer 404 like any unknown route.
+Use the pipelines API (`/api/pipelines`) to save and list pipelines.
+
+### Old data on load
+
+Every `line.json` goes through `normalizeLine` (in `line-graph.js`) when the
+router loads it. The function is pure and idempotent, and it logs each
+conversion as `boot.migrate`. The router writes the converted form on the next
+save. It converts five things:
+
+1. The old per-phase `pipeline` overrides become `nodeSettings` on every node of
+   the mapped phase (an existing node entry wins; a node with a fresh session
+   drops `maxContext`). A line without a `graph` gets the `default` pipeline.
+2. A worker's `validationSkipped` becomes an `acceptedRuns` entry
+   (`by: "migration"`).
+3. Every worker gets a `node` (backend or frontend implementor or validator, or
+   the integration node). A node that is not in the graph is kept and logged.
+4. An old planner request (a criteria `source` and no `flow`) becomes a report
+   request with the text of the new `report` interaction. If its worker is gone
+   the request is dropped. If the worker has no completed run, or the report
+   cannot be rendered, the request becomes a plain notice (same id,
+   `flow: "interactions"`, no `source`) that says an older validation request
+   for the implementor could not be restored and that the planner must check the
+   instance and call `start` on a validator node, or `accept`.
+5. A deferred validation in `pendingValidations` becomes one planner notice
+   (`VALIDATION NOT STARTED ...`, with the saved criteria) and the list is
+   emptied. The router no longer writes `pendingValidations`.
+
+No old-style request can survive loading.
 
 ## Write a node type
 
@@ -671,25 +691,24 @@ applies to every node of its phase.
   maxContext?} }`. An unknown node or an unknown key is 400. The pipeline file
   can also hold the settings of its nodes (`harness`, `model`, ...); the line
   settings win over them.
-- The old per-phase shape `pipeline: {<phase>: settings}` is still accepted on
-  `POST /api/lines` and `PUT /api/lines/:id/pipeline`; the router maps it to the
-  nodes of that phase. Send either `nodeSettings` or `pipeline`, not both (400).
-- Change a running line with `PUT /api/lines/:id/pipeline {nodeSettings}` (or
-  `{pipeline}`). The new map replaces the old one; `pipeline: null` resets to the
-  defaults. Only the run settings can change, never the graph. Changes apply
+- The old per-phase shape `pipeline: {<phase>: settings}` was removed.
+  `POST /api/lines` and `PUT /api/lines/:id/pipeline` answer 400 `{"error": "the
+  per-phase 'pipeline' shape was removed: send 'nodeSettings' (a map from node id
+  to run settings)"}` when the body has a `pipeline` field.
+- Change a running line with `PUT /api/lines/:id/pipeline {nodeSettings}`. The
+  new map replaces the old one; `nodeSettings: {}` resets to the defaults. Only the run settings can change, never the graph. Changes apply
   from the next run: running sessions finish unchanged, and existing workers
   keep the harness, model, and effort they were spawned with. A session belongs
   to the harness that created it, so after a planner harness change the router
   compacts the planner session on the old harness and continues in a fresh
   session on the new one.
-- Line state and the `PUT` answer carry `graph`, `nodeSettings`,
-  `effectiveNodeSettings` (the result per node), and the old per-phase view
-  `pipeline` (effective) and `pipelineOverrides`. The old per-phase view uses
-  the first node of each phase.
+- Line state and the `PUT` answer carry `graph`, `nodeSettings` and
+  `effectiveNodeSettings` (the result per node). The old per-phase `pipeline`
+  and `pipelineOverrides` fields are gone.
 - Presets (named settings in `pipeline-presets.json`) no longer exist; they
   became pipeline files (see "Presets are now pipelines").
 - The web UI sends `pipelineName` and `nodeSettings` (create panel and Pipeline
-  tab). Only scripts and older clients use the per-phase `pipeline` shape.
+  tab).
 
 ## Context compaction
 
@@ -710,8 +729,7 @@ tool output and is shown as `~` in the UI.
 
 - Automatic: before the next run, a session at or above its threshold is
   compacted. Set it per line with `nodeSettings.<node>.maxContext` for a node
-  whose type has `session: resume` (the old shape `pipeline.planner.maxContext`
-  and `pipeline.implementor.maxContext` still works; tokens; the create form
+  whose type has `session: resume` (tokens; the create form
   takes `200K`, `50K`, `1M`). The default is `COMPACT_AUTO_TOKENS` (150000; `0` turns it
   off). A failed automatic compaction is not retried on the same session.
 - Manual: the Compact button next to the context meter of the selected
@@ -908,7 +926,7 @@ When an implementor finishes, the router wakes the planner with the
 IMPLEMENTOR REPORT (the `report` interaction of the pipeline). The report tells
 the planner to start a validator with acceptance criteria, or to accept the
 work. Both are explicit calls to the interactions API; the router no longer
-reads the criteria from the planner's reply:
+reads the criteria from the planner's reply (the older flow was removed):
 
 - `POST /api/protocol/lines/:id/interactions/start {to: "<validator node>",
   criteria, source: "<implementor id>"}` starts a VALIDATOR. `source` must be
@@ -917,8 +935,8 @@ reads the criteria from the planner's reply:
   `frontend-impl`); `criteria` is a numbered list. The call is checked like
   every other call (see "Strict calls").
 - `POST /api/protocol/lines/:id/interactions/accept {instance, reason}`
-  accepts the latest run of an instance without a check. It replaces the old
-  `SKIP VALIDATION` reply, and the integration rule counts it like a `PASS`.
+  accepts the latest run of an instance without a check. The integration rule
+  counts it like a `PASS`.
 
 The validator is a fresh session, running in the implementor's worktree (no new
 worktree, no new branch), with a brief containing the implementor's report and
@@ -932,9 +950,9 @@ implementor session through the `feedback` interaction (the implementor keeps
 its session memory and worktree, and validation repeats after it finishes
 again), or start a new implementor.
 
-A planner request that already waits for criteria when the router is updated
-keeps the old flow once: the router reads the criteria (or `SKIP VALIDATION`)
-from the reply. New implementor reports use the explicit calls only.
+A planner request of an older release that still waits for criteria is
+converted when the line loads (see "Old data on load"); the router never reads
+criteria from a reply.
 
 Validators are never resumed: each validation is a fresh session by
 construction, so no validator state can pollute later runs. A second
@@ -949,7 +967,7 @@ resolved `base` when the spawn gave one, so a stacked child does not recount
 its parent's lines);
 the base stays fixed across continued runs and router restarts. After each
 successful implementor run — and again immediately before a validator is
-created, as a stale-state defense — the router runs `git diff --numstat` from
+created — the router runs `git diff --numstat` from
 the base commit to the branch HEAD and counts additions plus deletions over
 code, tests, documentation, and configuration. Totals up to 500 pass; 501 or
 more are rejected. A numstat row is binary only when BOTH count columns are
@@ -959,8 +977,7 @@ malformed non-empty numstat row, a failed git command, or a missing commit
 makes the change set uncountable, which escalates as well; the result reports
 only the offending lines, never unrelated command output, and keeps the
 resolved HEAD. An oversized or uncountable change set never reaches the
-validation handoff: the router does not request criteria and does not spawn a
-validator, and instead wakes the planner with `CHANGESET LIMIT EXCEEDED`
+validation handoff: the router does not send the report and instead wakes the planner with `CHANGESET LIMIT EXCEEDED`
 (worker and session IDs, base and head commits, additions, deletions, total,
 binary/dirty/untracked paths, and per-file values). The implementor session
 and worktree are preserved for the `feedback` interaction: the planner can
@@ -981,22 +998,12 @@ loop). Only the integration validator runs integration tests locally.
 
 The cap of 8 counts concurrently RUNNING implementors and validators
 together — never finished, stopped, or failed workers, which stay in
-the line's history (implementors are only removed explicitly). A
-router-driven validator that would exceed the cap is deferred: it is
-queued per line (`pendingValidations` in `line.json`), spawns
-automatically when a worker closes, and survives restarts. The
-planner-driven spawns (workers, integration validator) get a 409 and
-the planner brief tells the planner to wait for completions and retry.
-
-A deferred validation stays queued while its implementor is running. Each flush
-checks at most the items that were queued at the start of that pass. It rotates
-blocked items so ready validations can use free capacity. Removing an
-implementor removes its pending validations and records that cancellation.
-Each queued item stores its criteria, report, worker ID, invocation ID, and
-run generation. A continuation advances that generation. If it changes the
-work before a queued validation starts, the router cancels the old item with a
-diagnostic. The new run needs new criteria. Planner request metadata, pending
-validation metadata, and run generations persist in `line.json`.
+the line's history (implementors are only removed explicitly). The
+planner-driven spawns (workers, integration validator) get a 409 at the cap
+and the planner brief tells the planner to wait for completions and retry.
+The router no longer keeps a queue of deferred validations. Run generations
+persist in `line.json`; a continuation advances the generation of its
+implementor.
 
 ### Worktree discipline
 
@@ -1035,9 +1042,7 @@ Precedence, most specific wins:
    of its phase.
 3. The settings in the node of the pipeline file (`harness`, `model`, ...).
 4. The line settings: `nodeSettings.<node>` (set at line creation or with
-   `PUT /api/lines/:id/pipeline`, persisted in `line.json`). A line that has
-   no `nodeSettings`, only the old per-phase `pipeline` overrides, applies those
-   overrides over the pipeline file settings.
+   `PUT /api/lines/:id/pipeline`, persisted in `line.json`).
 5. A per-worker override: `harness`, `model`, and `effort` fields on the body of
    the deprecated `POST .../workers` call (they win over the node settings and
    are stored on the worker record).
@@ -1051,7 +1056,7 @@ phase to another harness without naming a model gets that harness's
 default, never a model id meant for a different CLI.
 `VIBE_MODELS` is a comma-separated list of extra Vibe model choices offered
 in the UI (empty values are ignored); it does not change the resolved
-`pipeline.<phase>.model`, which stays a plain string. `authMode` is never
+node model, which stays a plain string. `authMode` is never
 saved in the pipeline.
 
 Example settings on `POST /api/lines` (node ids of the `default` pipeline):
@@ -1067,8 +1072,8 @@ Example settings on `POST /api/lines` (node ids of the `default` pipeline):
 }
 ```
 
-The old per-phase shape is still accepted: `"pipeline": {"implementor": {...},
-"validator": {...}}` sets the same settings on every node of that phase.
+The old per-phase shape `"pipeline": {"implementor": {...}}` answers 400 (see
+above).
 
 `GET /api/harnesses` probes every harness (version and auth commands, 2 s
 timeout each) and returns `{ harnesses: [...], probedAt }`. Results are
@@ -1300,10 +1305,10 @@ validator's job:
 
 - **Accepted work only.** Every implementor must have an accepted result for
   its latest run: a validator with `VERDICT: PASS` for that run, or an
-  `accept` call for that run (`POST .../interactions/accept`; before this
-  feature, a `SKIP VALIDATION` decision, which old lines keep as an accepted run). Otherwise the router answers 409
+  `accept` call for that run (`POST .../interactions/accept`; an old
+  `SKIP VALIDATION` decision became an accepted run when the line loaded). Otherwise the router answers 409
   with `blockers: [{workerId, name, reason}]`; reasons are `running`,
-  `not-completed`, `validation-queued`, `validation-running`,
+  `not-completed`, `validation-running`,
   `awaiting-criteria`, `verdict-fail`, and `verdict-missing`. The planner
   continues or removes each blocker first. 409 also at the concurrent-worker cap.
 - **Recorded commits.** At the call, the router fetches each repository that

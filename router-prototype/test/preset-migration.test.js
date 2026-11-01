@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { migratePresets, safeFileName } = require("../preset-migration");
+const { migratePresets, safeFileName, validatePipelineConfig, presetError, restorePresets } = require("../preset-migration");
 const { loadBuiltinPipeline } = require("../line-graph");
 const { buildCatalog } = require("../plugin-catalog");
 const { resolvePipelineDefinition } = require("../resolve-pipeline");
@@ -38,6 +38,86 @@ const files = (ctx) => {
 const FAST = { planner: { harness: "claude", model: "opus" },
   implementor: { effort: "low", timeLimit: 600, maxContext: 50000 },
   validator: { model: "haiku" }, integration: { effort: "high" } };
+
+// ---- the validation of old presets (moved from pipeline-config.test.js and pipeline-presets.test.js) ----
+
+test("validatePipelineConfig accepts null and valid configs", () => {
+  assert.strictEqual(validatePipelineConfig(null), null);
+  assert.strictEqual(validatePipelineConfig(undefined), null);
+  assert.strictEqual(validatePipelineConfig({}), null);
+  assert.strictEqual(validatePipelineConfig({
+    planner: { harness: "vibe", model: "m1", effort: "high", timeLimit: 60 },
+    implementor: { harness: "pi" },
+    validator: { model: "glm-5-3" },
+    integration: { timeLimit: 120 },
+  }), null);
+});
+
+test("validatePipelineConfig rejects non-object values", () => {
+  assert.match(validatePipelineConfig("nope"), /must be an object/);
+  assert.match(validatePipelineConfig(42), /must be an object/);
+  assert.match(validatePipelineConfig([]), /must be an object/);
+  assert.match(validatePipelineConfig({ planner: "vibe" }), /must be an object/);
+  assert.match(validatePipelineConfig({ planner: null }), /must be an object/);
+  assert.match(validatePipelineConfig({ planner: [] }), /must be an object/);
+});
+
+test("validatePipelineConfig rejects unknown phase keys and fields", () => {
+  assert.match(validatePipelineConfig({ deploy: {} }), /unknown pipeline phase/);
+  assert.match(validatePipelineConfig({ planner: { nope: 1 } }), /unknown field/);
+});
+
+test("validatePipelineConfig rejects unknown harnesses", () => {
+  assert.match(validatePipelineConfig({ planner: { harness: "gemini" } }), /harness must be one of/);
+});
+
+test("validatePipelineConfig rejects empty and non-string models", () => {
+  assert.match(validatePipelineConfig({ planner: { model: "" } }), /non-empty string/);
+  assert.match(validatePipelineConfig({ planner: { model: "  " } }), /non-empty string/);
+  assert.match(validatePipelineConfig({ planner: { model: 5 } }), /non-empty string/);
+});
+
+test("validatePipelineConfig rejects bad efforts", () => {
+  assert.match(validatePipelineConfig({ planner: { effort: "ultra" } }), /effort must be one of/);
+  assert.match(validatePipelineConfig({ planner: { effort: 2 } }), /effort must be one of/);
+});
+
+test("validatePipelineConfig rejects bad timeLimits", () => {
+  assert.match(validatePipelineConfig({ planner: { timeLimit: 0 } }), /positive number/);
+  assert.match(validatePipelineConfig({ planner: { timeLimit: -5 } }), /positive number/);
+  assert.match(validatePipelineConfig({ planner: { timeLimit: "60" } }), /positive number/);
+  assert.match(validatePipelineConfig({ planner: { timeLimit: Number.NaN } }), /positive number/);
+});
+
+test("validatePipelineConfig rejects authMode: model stays a string", () => {
+  assert.match(
+    validatePipelineConfig({ planner: { authMode: "anthropic" } }),
+    /unknown field/);
+  assert.strictEqual(validatePipelineConfig({ planner: { model: "provider/model" } }), null);
+});
+
+
+test("presets need a name and a valid, non-empty pipeline", () => {
+  assert.match(presetError("", { planner: { harness: "claude" } }), /name/);
+  assert.match(presetError("x".repeat(61), { planner: { harness: "claude" } }), /at most 60/);
+  assert.match(presetError("fast", null), /at least one phase/);
+  assert.match(presetError("fast", {}), /at least one phase/);
+  assert.match(presetError("fast", { planner: { harness: "nope" } }), /harness must be one of/);
+  assert.strictEqual(presetError("fast", { planner: { harness: "claude", maxContext: 200000 } }), null);
+});
+
+test("restorePresets drops invalid and duplicate entries and sorts by name", () => {
+  const restored = restorePresets([
+    { name: "zeta", pipeline: { implementor: { effort: "high" } }, updatedAt: "t1" },
+    { name: "bad", pipeline: { validator: { maxContext: 5000 } } },
+    { name: " alpha ", pipeline: { planner: { harness: "pi" } } },
+    { name: "alpha", pipeline: { planner: { harness: "codex" } } },
+    null,
+  ]);
+  assert.deepStrictEqual(restored.map((p) => p.name), ["alpha", "zeta"]);
+  assert.strictEqual(restored[0].pipeline.planner.harness, "pi");
+  assert.deepStrictEqual(restorePresets("garbage"), []);
+});
 
 test("two presets become two pipeline files with settings on the mapped nodes", () => {
   const ctx = setup([{ name: "Fast", pipeline: FAST, updatedAt: "x" },
@@ -143,7 +223,7 @@ test("a second boot does nothing; no presets file does nothing", () => {
   assert.deepEqual(files(ctx), before);
 });
 
-test("router: migrates at boot, serves the pipeline, old routes answer 410", async () => {
+test("router: migrates at boot, serves the pipeline, the preset routes are gone (404)", async () => {
   const lines = tmp();
   fs.writeFileSync(path.join(lines, "pipeline-presets.json"), JSON.stringify([
     { name: "Fast One", pipeline: { implementor: { effort: "low" } }, updatedAt: "x" }]));
@@ -155,10 +235,7 @@ test("router: migrates at boot, serves the pipeline, old routes answer 410", asy
       ["DELETE", "/api/pipeline-presets/x"]]) {
       const res = await fetch(router.base + url, { method, headers: { "Content-Type": "application/json" },
         body: method === "PUT" ? "{}" : undefined });
-      assert.equal(res.status, 410, `${method} ${url}`);
-      const body = await res.json();
-      assert.equal(body.use, "/api/pipelines");
-      assert.ok(body.error);
+      assert.equal(res.status, 404, `${method} ${url}`);
     }
     const res = await fetch(router.base + "/api/lines", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "L", pipelineName: "fast-one" }) });

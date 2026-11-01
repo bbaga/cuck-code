@@ -2,7 +2,7 @@
 
 // C6: reports as interactions. The new template must render the old report
 // texts (one sentence of the implementor report differs), the flow flag must
-// survive a restart, and old requests keep the criteria path.
+// survive a restart.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -11,11 +11,10 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { loadBuiltinPipeline } = require("../line-graph");
 const { renderReports, reportValues, completeInteractions, kindOfNode, outcomeOf } = require("../report-interaction");
-const { buildImplementorNotification, buildValidationNotification, buildIntegrationNotification,
-  runOutputNote } = require("../handoff");
+const { runOutputNote } = require("../handoff");
+const { golden } = require("./fixtures/golden-file");
 const { plannerRequest, interactionReportRequest, serializePlannerRequest, restorePlannerRequest,
-  enqueuePlannerRequest, recordedPlannerRequest, completePlannerCriteria,
-  implementorReportRequest } = require("../planner-request");
+  enqueuePlannerRequest, recordedPlannerRequest } = require("../planner-request");
 const { startRouter, stopRouter } = require("./fixtures/router-process");
 
 const ROOT = path.join(__dirname, "..");
@@ -48,36 +47,42 @@ function newDecisions(oldText) {
 
 const NEW_CRITERIA_TAIL = "Now give the acceptance criteria for the validation of this work.\nStart a validator with the criteria. If the work needs no validation, accept it.";
 
-test("completed implementor: equals buildImplementorNotification except one sentence", () => {
-  for (const report of ["Did the work.", "", undefined, "line1\nline2"]) {
-    for (const w of [impl, { ...impl, sessionId: undefined, harness: undefined }]) {
-      const old = buildImplementorNotification(w, report);
+// The golden files test/fixtures/golden/report-* hold the output of the removed
+// buildImplementorNotification(), buildValidationNotification() and
+// buildIntegrationNotification() for the inputs below. A one-off script produced them
+// before D9 removed the functions. The tests apply the two documented text changes.
+const REPORTS = [["did-the-work", "Did the work."], ["empty", ""], ["undefined", undefined], ["two-lines", "line1\nline2"]];
+
+test("completed implementor: equals the golden old report except one sentence", () => {
+  for (const [rs, report] of REPORTS) {
+    for (const [ss, w] of [["with-session", impl], ["no-session", { ...impl, sessionId: undefined, harness: undefined }]]) {
+      const old = golden(`report-implementor-${rs}-${ss}`);
       assert.ok(old.endsWith(OLD_CRITERIA_TAIL));
       const expected = old.slice(0, old.length - OLD_CRITERIA_TAIL.length) + NEW_CRITERIA_TAIL;
-      assert.equal(newText(w, report), expected);
+      assert.equal(newText(w, report), expected, `${rs} ${ss}`);
     }
   }
 });
 
-test("completed validator: equals buildValidationNotification for pass, reject and missing", () => {
-  const source = { ...impl };
-  const sources = [source, { ...source, sessionId: undefined, harness: undefined }, null];
-  for (const s of sources) {
+test("completed validator: equals the golden old report for pass, reject and missing", () => {
+  const sources = [["session", impl], ["no-session", { ...impl, sessionId: undefined, harness: undefined }], ["no-source", null]];
+  for (const [sn, s] of sources) {
     for (const verdict of ["pass", "fail", null]) {
-      for (const report of ["Checked.\nVERDICT: PASS", ""]) {
+      for (const [rn, report] of [["verdict-line", "Checked.\nVERDICT: PASS"], ["empty", ""]]) {
         const w = { ...val, verdict };
-        assert.equal(newText(w, report, { source: s }), newDecisions(buildValidationNotification(w, s, report)),
-          `${verdict} ${s && s.sessionId} ${report}`);
+        assert.equal(newText(w, report, { source: s }),
+          newDecisions(golden(`report-validator-${sn}-${verdict || "none"}-${rn}`)), `${sn} ${verdict} ${rn}`);
       }
     }
   }
 });
 
-test("completed integration validator: equals buildIntegrationNotification", () => {
+test("completed integration validator: equals the golden old report", () => {
   for (const verdict of ["pass", "fail", null]) {
-    for (const report of ["Merged.", ""]) {
+    for (const [rn, report] of [["merged", "Merged."], ["empty", ""]]) {
       const w = { ...integ, verdict };
-      assert.equal(newText(w, report), newDecisions(buildIntegrationNotification(w, report)), `${verdict} ${report}`);
+      assert.equal(newText(w, report), newDecisions(golden(`report-integration-${verdict || "none"}-${rn}`)),
+        `${verdict} ${rn}`);
     }
   }
 });
@@ -163,7 +168,7 @@ test("a node without a complete edge, or an unknown node, delivers nothing", () 
 test("the flow flag survives serialization, restore and the recorded copy", () => {
   const request = interactionReportRequest("IMPLEMENTOR REPORT - x");
   assert.equal(request.flow, "interactions");
-  assert.equal(request.source, null);
+  assert.equal("source" in request, false);
   const stored = JSON.parse(JSON.stringify(serializePlannerRequest(request)));
   assert.equal(stored.flow, "interactions");
   const restored = restorePlannerRequest(stored);
@@ -176,36 +181,11 @@ test("the flow flag survives serialization, restore and the recorded copy", () =
   assert.equal(restorePlannerRequest({ text: "t", flow: "other" }).flow, undefined);
 });
 
-test("a new report request carries no source, so the criteria path is not entered", () => {
+test("a new report request carries the flow flag and no source", () => {
   const request = interactionReportRequest(newText(impl, "done"));
   assert.ok(request.text.startsWith("IMPLEMENTOR REPORT"));
-  assert.equal(request.source, null);
+  assert.equal("source" in request, false);
   assert.equal(request.flow, "interactions");
-  // server.js enters completePlannerCriteria only when request.source is set,
-  // and sends VALIDATION NOT STARTED only for requests without the flow.
-  const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
-  assert.match(server, /if \(request\.source\) \{/);
-  assert.match(server, /request\.flow !== "interactions" && request\.text\.startsWith\("IMPLEMENTOR REPORT"\)/);
-});
-
-test("an old-style request with a source still takes the criteria path", () => {
-  const worker = { id: "w1", status: "completed", runGeneration: 2, lastCompletedInvocationId: "inv" };
-  const old = implementorReportRequest(buildImplementorNotification(impl, "r"),
-    { id: "w1" }, { invocationId: "inv", runId: 2 }, "r");
-  assert.equal(old.flow, undefined);
-  assert.ok(old.source);
-  const seen = [];
-  const hooks = { getWorker: () => worker,
-    onCriteria: (s, c) => seen.push(["criteria", c]),
-    onSkip: () => seen.push(["skip"]), onMissing: () => seen.push(["missing"]) };
-  assert.equal(completePlannerCriteria(old, "1. Check it.", hooks).decision, "criteria");
-  assert.equal(completePlannerCriteria(old, "SKIP VALIDATION", hooks).decision, "skip-validation");
-  assert.equal(completePlannerCriteria(old, "  ", hooks).decision, "missing-criteria");
-  assert.deepEqual(seen, [["criteria", "1. Check it."], ["skip"], ["missing"]]);
-  // A request restored from line.json without a flow keeps its source.
-  const restored = restorePlannerRequest(JSON.parse(JSON.stringify(serializePlannerRequest(old))));
-  assert.deepEqual(restored.source, old.source);
-  assert.equal(restored.flow, undefined);
 });
 
 // End to end: a real router and fake agents.
@@ -269,7 +249,7 @@ test("end to end: a finished implementor sends the new report to the planner", a
     const request = saved.activePlannerRequest || (saved.queue || [])[0];
     assert.ok(request, JSON.stringify(Object.keys(saved)));
     assert.equal(request.flow, "interactions");
-    assert.equal(request.source, null);
+    assert.equal(request.source, undefined);
     assert.ok(!text.includes("VALIDATION NOT STARTED"));
   } finally {
     if (router) await stopRouter(router);

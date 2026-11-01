@@ -17,7 +17,7 @@ function harness() {
 
 test("a user request keeps raw text, not the wrapper", () => {
   const { line, sent, deps } = harness();
-  const req = plannerRequest("PLAN FEEDBACK from the user: fix it.", null, null, "fix it");
+  const req = plannerRequest("PLAN FEEDBACK from the user: fix it.", null, "fix it");
   const entry = recordRequestEntry(line, req, deps);
   assert.equal(entry.content, "fix it");
   assert.equal(entry.origin, undefined);
@@ -34,7 +34,7 @@ test("a router request makes one collapsed router entry", () => {
 });
 
 test("fromUser and recorded flags survive save and restore", () => {
-  const req = plannerRequest("wrapped", null, null, "raw");
+  const req = plannerRequest("wrapped", null, "raw");
   const back = restorePlannerRequest(JSON.parse(JSON.stringify(serializePlannerRequest(req))));
   assert.equal(back.fromUser, true);
   assert.equal(back.userText, "raw");
@@ -46,11 +46,11 @@ test("fromUser and recorded flags survive save and restore", () => {
 
 test("accepted prompt keeps the flag in the queue; rejected prompt adds none", () => {
   const line = { queue: [], started: true };
-  const ok = submitPrompt(line, plannerRequest("w", null, null, "raw"),
+  const ok = submitPrompt(line, plannerRequest("w", null, "raw"),
     { wasStarted: true, save: () => true, pump: () => {} });
   assert.equal(ok.status, 202);
   assert.equal(line.queue[0].userText, "raw");
-  const bad = submitPrompt({ queue: [], started: true }, plannerRequest("w", null, null, "raw"),
+  const bad = submitPrompt({ queue: [], started: true }, plannerRequest("w", null, "raw"),
     { wasStarted: true, save: () => false, pump: () => {} });
   assert.equal(bad.status, 500);
 });

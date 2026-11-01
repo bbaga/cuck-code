@@ -1,0 +1,8 @@
+IMPLEMENTOR REPORT - 'api' (workerId w1, claude session s1, branch feat/x) finished.
+
+REPORT BODY (complete):
+Did the work.
+
+Now give the acceptance criteria for the validation of this work.
+Reply with a numbered list of criteria only. Use the imperative. If
+the work needs no validation, reply with SKIP VALIDATION.

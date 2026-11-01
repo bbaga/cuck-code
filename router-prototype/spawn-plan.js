@@ -5,7 +5,7 @@
 // tests exercise them without starting the server or a CLI process.
 
 const { createHarness, trustedSystemChannel, writeSystemPromptFile } = require("./harness");
-const { resolvePipeline, resolveNodeSettings, defaultModelFor, EFFORT_LEVELS } = require("./pipeline-config");
+const { fallbackPhaseSettings, resolveNodeSettings, defaultModelFor, EFFORT_LEVELS } = require("./pipeline-config");
 const { nodeSettingsFields } = require("./line-graph");
 
 // Which pipeline phase a worker run belongs to.
@@ -16,18 +16,19 @@ function phaseForWorker(role, kind) {
   return "implementor";
 }
 
-// Run settings of the planner: the start node of the line graph. A line
-// without a graph uses the old per-phase view.
+// Run settings of the planner: the start node of the line graph.
 function plannerSettings(line) {
   if (line.graph && line.graph.start) return resolveNodeSettings(line, line.graph.start);
-  return resolvePipeline(line).planner;
+  return fallbackPhaseSettings(line, "planner");
 }
 
-// Run settings of a worker: its node. A worker without a node yet uses the
-// old per-phase view.
+// Run settings of a worker: its node. A worker whose node is not in the graph
+// uses the settings of the first node of its phase.
 function workerSettings(line, worker) {
-  if (worker.node && line.graph) return resolveNodeSettings(line, worker.node);
-  return resolvePipeline(line)[phaseForWorker(worker.role, worker.kind)];
+  const inGraph = worker.node && line.graph && line.graph.nodes
+    && Object.prototype.hasOwnProperty.call(line.graph.nodes, worker.node);
+  if (inGraph) return resolveNodeSettings(line, worker.node);
+  return fallbackPhaseSettings(line, phaseForWorker(worker.role, worker.kind));
 }
 
 // Per-worker overrides win over the phase config when set. A worker that
@@ -106,7 +107,7 @@ function planRun(cfg, opts) {
 }
 
 // Build the child process plan for one planner run. cfg is the resolved
-// planner config (resolvePipeline(line).planner).
+// planner config (plannerSettings(line)).
 function planPlannerRun(cfg, opts) {
   return planRun(cfg, { ...opts, phase: "planner" });
 }
@@ -151,10 +152,6 @@ function lineSummary(line) {
     sessionId: line.sessionId,
     started: line.started,
     workers: line.workers ? line.workers.size : 0,
-    pipeline: resolvePipeline(line),
-    // The line's own settings, without defaults: what the pipeline editor
-    // shows and saves.
-    pipelineOverrides: line.pipeline || null,
     ...nodeSettingsFields(line),
   };
 }

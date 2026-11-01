@@ -32,7 +32,6 @@ const PRODUCTION_SCRIPTS = [
   "handoff.js",
   "jsonl.js",
   "repo-source.js",
-  "validation-queue.js",
   "planner-request.js",
   "transcript-history.js",
   "web/pipeline-ui.js",

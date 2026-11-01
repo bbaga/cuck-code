@@ -1,6 +1,6 @@
 # Pipeline graphs, node types and interactions (design proposal)
 
-Status: Implemented. The cleanup of the old code (task D9) comes in a later release.
+Status: Implemented. The cleanup of the old code (task D9) is done: the old criteria flow, the presets API, the per-phase settings shape and `validationSkipped` were removed. Old data is converted on load by `normalizeLine`.
 
 ## Goal
 
@@ -468,19 +468,18 @@ Phases map to node types. Every mapping below uses this table:
   name that is not a safe file name is changed, and the boot log shows the
   new name.
 - **In-flight criteria.** A planner request that already waits for
-  acceptance criteria keeps the old flow until it completes: the router
-  reads the criteria from the reply and starts the validator. New implementor
-  reports use the new flow only. The old code is removed in a later release.
-- **API.** For one release, the old request shapes keep working:
-  - `POST /api/lines {pipeline: {<phase>: settings}}` and
-    `PUT /api/lines/:id/pipeline {pipeline: {...}}` map phases to nodes.
-  - `GET` responses carry both the node settings and the old per-phase view.
-  - The old routes `/workers`, `/continue` and `/integration` are aliases
-    for interactions. `/workers` with `persona` starts the matching
-    implementor node.
+  acceptance criteria is converted when the line loads: it becomes a report
+  request, or a plain notice that tells the planner to check the instance and
+  call `start` on a validator node or `accept`. The router no longer reads
+  criteria from a reply (removed in D9).
+- **API.** The per-phase `pipeline` request shape was removed in D9:
+  `POST /api/lines` and `PUT /api/lines/:id/pipeline` answer 400 and ask for
+  `nodeSettings`. The old routes `/workers`, `/continue` and `/integration`
+  stay as deprecated aliases for interactions. `/workers` with `persona`
+  starts the matching implementor node.
 - **UI.** The phase rows and the presets bar are replaced (see below). A
-  bookmark or script that uses the preset API gets 410 with a pointer to the
-  pipelines API.
+  bookmark or script that uses the preset API gets 404: the preset routes were
+  removed in D9.
 
 ## UI
 

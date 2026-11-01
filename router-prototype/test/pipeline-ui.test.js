@@ -4,7 +4,6 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
-  PHASE_ROWS,
   EFFORT_LEVELS,
   PI_HARNESS_ID,
   VIBE_HARNESS_ID,
@@ -25,7 +24,6 @@ const {
   fetchPiDetail,
   clearHarnessState,
   clearProviderState,
-  buildPipelinePayload,
   authBadge,
   isFailedValidator,
   shouldHideValidator,
@@ -181,13 +179,6 @@ test("GET preview mapping gates real integration worker states and supports stal
   assert.equal(pipelineUiModule.previewSelectionExists(reloadWorkers, pipelineUiModule.previewSelectionKey(worker.id)), true);
 });
 
-test("PHASE_ROWS lists the four pipeline phases", () => {
-  assert.deepEqual(
-    PHASE_ROWS.map((r) => r.key),
-    ["planner", "implementor", "validator", "integration"],
-  );
-});
-
 test("EFFORT_LEVELS lists low, medium, high", () => {
   assert.deepEqual(EFFORT_LEVELS, ["low", "medium", "high"]);
 });
@@ -206,43 +197,6 @@ test("filterInstalled tolerates missing or malformed input", () => {
   assert.deepEqual(filterInstalled(undefined), []);
   assert.deepEqual(filterInstalled(null), []);
   assert.deepEqual(filterInstalled([null, { id: "x" }]), []);
-});
-
-test("buildPipelinePayload returns null for all-empty input", () => {
-  const rows = {};
-  for (const { key } of PHASE_ROWS) {
-    rows[key] = { harness: "", model: "", effort: "" };
-  }
-  assert.strictEqual(buildPipelinePayload(rows), null);
-});
-
-test("buildPipelinePayload returns null for empty input object", () => {
-  assert.strictEqual(buildPipelinePayload({}), null);
-  assert.strictEqual(buildPipelinePayload(null), null);
-});
-
-test("buildPipelinePayload omits empty fields and phases", () => {
-  const rows = {
-    planner: { harness: "vibe", model: "", effort: "high" },
-    implementor: { harness: "", model: "glm-5-3", effort: "" },
-    validator: { harness: "", model: "", effort: "" },
-    integration: { harness: "pi", model: "", effort: "low" },
-  };
-  assert.deepEqual(buildPipelinePayload(rows), {
-    planner: { harness: "vibe", effort: "high" },
-    implementor: { model: "glm-5-3" },
-    integration: { harness: "pi", effort: "low" },
-  });
-});
-
-test("buildPipelinePayload keeps a phase with only one field", () => {
-  const rows = {
-    planner: { harness: "", model: "", effort: "" },
-    implementor: { harness: "", model: "", effort: "" },
-    validator: { harness: "", model: "m", effort: "" },
-    integration: { harness: "", model: "", effort: "" },
-  };
-  assert.deepEqual(buildPipelinePayload(rows), { validator: { model: "m" } });
 });
 
 test("authBadge returns the four states", () => {
@@ -446,19 +400,6 @@ test("clearProviderState keeps the auth mode but drops provider state", () => {
   assert.deepEqual(state.models, []);
   assert.strictEqual(state.piDetail, null);
   assert.strictEqual(state.statusText, "");
-});
-
-test("buildPipelinePayload keeps model as a string and omits empty values", () => {
-  const rows = {
-    planner: { harness: "pi", model: "openai/gpt-5", effort: "" },
-    implementor: { harness: "vibe", model: "", effort: "high" },
-    validator: { harness: "", model: "", effort: "" },
-    integration: { harness: "", model: "", effort: "" },
-  };
-  assert.deepEqual(buildPipelinePayload(rows), {
-    planner: { harness: "pi", model: "openai/gpt-5" },
-    implementor: { harness: "vibe", effort: "high" },
-  });
 });
 
 test("authModeSelectState resets a retained value on a non-Pi harness", () => {

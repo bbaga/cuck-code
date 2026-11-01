@@ -63,9 +63,9 @@ const val = (impl, extra = {}) => ({ id: `v-${impl.id}-${extra.n || 1}`, role: "
   status: "completed", verdict: "pass",
   validationSource: { workerId: impl.id, runId: impl.runGeneration, invocationId: impl.lastCompletedInvocationId }, ...extra });
 
-test("integrationSelection includes implementors with a PASS or a SKIP for the latest run", () => {
+test("integrationSelection includes implementors with a PASS or an accepted run for the latest run", () => {
   const a = impl("a");
-  const b = impl("b", { validationSkipped: { runId: 2, invocationId: "inv-b" } });
+  const b = impl("b", { acceptedRuns: [{ runId: 2, invocationId: "inv-b", by: "planner" }] });
   const out = integrationSelection([a, val(a), b, { id: "int", role: "validator", kind: "integration", status: "completed" }]);
   assert.deepEqual(out.included.map((w) => w.id), ["a", "b"]);
   assert.deepEqual(out.blockers, []);
@@ -74,24 +74,23 @@ test("integrationSelection includes implementors with a PASS or a SKIP for the l
 test("integrationSelection blocks every implementor without accepted work for its latest run", () => {
   const running = impl("running", { status: "running" });
   const failed = impl("failed", { status: "failed" });
-  const queued = impl("queued");
   const validating = impl("validating");
   const awaiting = impl("awaiting");
   const failing = impl("failing");
   const noVerdict = impl("noverdict");
   const stale = impl("stale");
-  const oldSkip = impl("oldskip", { validationSkipped: { runId: 1, invocationId: "inv-old" } });
-  const workers = [running, failed, queued, validating, val(validating, { status: "running", verdict: null }),
+  const oldAccept = impl("oldaccept", { acceptedRuns: [{ runId: 1, invocationId: "inv-old", by: "planner" }] });
+  const workers = [running, failed, validating, val(validating, { status: "running", verdict: null }),
     awaiting, failing, val(failing, { verdict: "fail" }), noVerdict, val(noVerdict, { verdict: null }),
     // A PASS for an older run does not count after the implementor ran again.
     stale, val(stale, { validationSource: { workerId: "stale", runId: 1, invocationId: "inv-old" } }),
-    oldSkip];
-  const out = integrationSelection(workers, [{ implWorkerId: "queued" }]);
+    oldAccept];
+  const out = integrationSelection(workers);
   assert.deepEqual(out.included, []);
   assert.deepEqual(Object.fromEntries(out.blockers.map((b) => [b.workerId, b.reason])), {
-    running: "running", failed: "not-completed", queued: "validation-queued", validating: "validation-running",
+    running: "running", failed: "not-completed", validating: "validation-running",
     awaiting: "awaiting-criteria", failing: "verdict-fail", noverdict: "verdict-missing",
-    stale: "awaiting-criteria", oldskip: "awaiting-criteria" });
+    stale: "awaiting-criteria", oldaccept: "awaiting-criteria" });
   assert.match(out.blockers[0].text, /implementor 'running' \(running\) is still running/);
 });
 
@@ -117,7 +116,7 @@ test("C5: the workspace kind of the node decides which instances need acceptance
   const coordinator = impl("co", { node: "c" });
   const checker = { id: "chk", role: "validator", node: "s", status: "completed", verdict: "pass" };
   const noNode = impl("nonode");
-  const out = integrationSelection([own, coordinator, checker, noNode], [], graph);
+  const out = integrationSelection([own, coordinator, checker, noNode], graph);
   assert.deepEqual(out.blockers.map((b) => b.workerId), ["own", "nonode"]);
 });
 

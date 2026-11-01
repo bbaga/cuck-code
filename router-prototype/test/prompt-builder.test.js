@@ -8,37 +8,16 @@ const { loadBuiltinPipeline } = require("../line-graph");
 const { buildPrompt, workerRouterValues, validatorRouterValues, integrationRouterValues,
   plannerRouterValues } = require("../prompt-builder");
 
+const { golden, slug } = require("./fixtures/golden-file");
+
 const root = path.join(__dirname, "..");
-const source = fs.readFileSync(path.join(root, "server.js"), "utf8");
 
-function cut(from, to) {
-  const start = source.indexOf(from);
-  assert.ok(start >= 0, `marker "${from}" not found in server.js`);
-  const end = source.indexOf(to, start);
-  assert.ok(end > start, `marker "${to}" not found after "${from}"`);
-  return source.slice(start, end);
-}
-
-// server.js starts a server when required: build the old functions from source.
+// The golden files in test/fixtures/golden/prompt-builder-* hold the output of the old
+// workerBrief(), validatorBrief() and integrationValidatorBrief() for the inputs below.
+// A one-off script produced them before D9 removed the functions.
 const PORT = 7788;
 const WORKER_CAP = 8;
 const CHANGESET_LIMIT = 500;
-const validationCriteriaBlock = (criteria) => `The planner gave these acceptance criteria:\n${criteria}`;
-const oldCode = [
-  cut("function frontendToolsBlock(", "\nconst { wrapPlannerTurn"),
-  cut("const IMPL_PERSONA", "\nconst VAL_PERSONA"),
-  cut("const VAL_PERSONA", "\nfunction containersBlock"),
-  cut("function containersBlock(", "\nfunction remoteBlockImplementor"),
-  cut("function remoteBlockImplementor(", "function changesetBlock("),
-  cut("function changesetBlock(", "function remoteBlockValidator("),
-  cut("function remoteBlockValidator(", "\nfunction validatorBrief"),
-  cut("function validatorBrief(", "\n\n\n// manifest:"),
-  cut("function workerBrief(", "function remoteBlockValidator("),
-  cut("function integrationValidatorBrief(", "\nfunction sanitizeName"),
-].join("\n");
-const old = new Function("PORT", "WORKER_CAP", "CHANGESET_LIMIT", "validationCriteriaBlock",
-  `${oldCode}\nreturn { workerBrief, validatorBrief, integrationValidatorBrief };`)(
-  PORT, WORKER_CAP, CHANGESET_LIMIT, validationCriteriaBlock);
 
 const graph = loadBuiltinPipeline("default", fs, root);
 const line = { id: "line-9", name: "Line One" };
@@ -69,14 +48,14 @@ for (const persona of ["backend", "frontend"]) {
     ["ticket, no base commit", { name: "web", url: "https://example.com/org/web.git" }, "ABC-42", "", null],
   ];
   for (const [label, repo, ticket, note, commit] of repos) {
-    test(`${persona} worker prompt equals workerBrief (${label})`, () => {
+    test(`${persona} worker prompt equals the golden workerBrief text (${label})`, () => {
       const nodeId = `${persona}-impl`;
       const rv = workerRouterValues({ line, nodeId, workerId: "w-7", workerName: "impl-1", repo,
         baseCommit: commit, baseNote: note, port: PORT, changesetLimit: CHANGESET_LIMIT });
       const cv = { task: "Do the task.\nSecond line." };
       if (ticket) cv.trackerTicket = ticket;
       assert.equal(buildPrompt(graph, nodeId, rv, cv),
-        old.workerBrief("impl-1", line.name, cv.task, persona, "w-7", line.id, repo, commit, note, ticket));
+        golden(`prompt-builder-worker-${persona}-${slug(label)}`));
     });
   }
 
@@ -86,7 +65,7 @@ for (const persona of ["backend", "frontend"]) {
     ["no repo name, no implementor id", "", "https://github.com/o/web.git", undefined, ""],
   ];
   for (const [label, repoName, repoUrl, ticket, implId] of vcases) {
-    test(`${persona} validator prompt equals validatorBrief (${label})`, () => {
+    test(`${persona} validator prompt equals the golden validatorBrief text (${label})`, () => {
       const nodeId = `${persona}-val`;
       const report = "Done.\nTests pass.";
       const criteria = "1. It works.\n2. It is tidy.";
@@ -95,12 +74,12 @@ for (const persona of ["backend", "frontend"]) {
       const cv = { criteria };
       if (ticket) cv.trackerTicket = ticket;
       assert.equal(buildPrompt(graph, nodeId, rv, cv),
-        old.validatorBrief("impl-a", report, criteria, persona, "v-1", implId, line.id, repoName, repoUrl, ticket));
+        golden(`prompt-builder-validator-${persona}-${slug(label)}`));
     });
   }
 }
 
-test("integration validator prompt equals integrationValidatorBrief", () => {
+test("integration validator prompt equals the golden integrationValidatorBrief text", () => {
   const manifest = [
     { name: "web", url: "https://github.com/o/web.git", worktreePath: "/wt/int/web", baseBranch: "main",
       baseSha: "a".repeat(40), branches: [{ name: "impl-a", branch: "feat/a", sha: "b".repeat(40) }] },
@@ -112,7 +91,7 @@ test("integration validator prompt equals integrationValidatorBrief", () => {
     workerName: "integration-validator", manifest, branch: "integration/x-1", port: PORT });
   const instructions = "Merge it\nthen test it";
   assert.equal(buildPrompt(graph, "integration", rv, { instructions }),
-    old.integrationValidatorBrief(line, manifest, instructions, "g-1", "integration/x-1"));
+    golden("prompt-builder-integration"));
   assert.match(buildPrompt(graph, "integration", rv, { instructions }), /created from HEAD at d{40}/);
 });
 

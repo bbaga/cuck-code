@@ -10,8 +10,7 @@ const {
   PHASES,
   HARNESS_IDS,
   EFFORT_LEVELS,
-  validatePipelineConfig,
-  resolvePipeline,
+  fallbackPhaseSettings,
   HARNESS_PROBES,
   probeHarnesses,
   probeResultFor,
@@ -24,66 +23,13 @@ const {
   piProviderDetail,
 } = require("../pipeline-config");
 
-// ---- validatePipelineConfig ----
+// ---- fallbackPhaseSettings (the phase view of a worker whose node is not in the graph) ----
 
-test("validatePipelineConfig accepts null and valid configs", () => {
-  assert.strictEqual(validatePipelineConfig(null), null);
-  assert.strictEqual(validatePipelineConfig(undefined), null);
-  assert.strictEqual(validatePipelineConfig({}), null);
-  assert.strictEqual(validatePipelineConfig({
-    planner: { harness: "vibe", model: "m1", effort: "high", timeLimit: 60 },
-    implementor: { harness: "pi" },
-    validator: { model: "glm-5-3" },
-    integration: { timeLimit: 120 },
-  }), null);
-});
+const resolvePipeline = (line, env) => Object.fromEntries(
+  PHASES.map((phase) => [phase, fallbackPhaseSettings(line || {}, phase, env)]));
 
-test("validatePipelineConfig rejects non-object values", () => {
-  assert.match(validatePipelineConfig("nope"), /must be an object/);
-  assert.match(validatePipelineConfig(42), /must be an object/);
-  assert.match(validatePipelineConfig([]), /must be an object/);
-  assert.match(validatePipelineConfig({ planner: "vibe" }), /must be an object/);
-  assert.match(validatePipelineConfig({ planner: null }), /must be an object/);
-  assert.match(validatePipelineConfig({ planner: [] }), /must be an object/);
-});
 
-test("validatePipelineConfig rejects unknown phase keys and fields", () => {
-  assert.match(validatePipelineConfig({ deploy: {} }), /unknown pipeline phase/);
-  assert.match(validatePipelineConfig({ planner: { nope: 1 } }), /unknown field/);
-});
-
-test("validatePipelineConfig rejects unknown harnesses", () => {
-  assert.match(validatePipelineConfig({ planner: { harness: "gemini" } }), /harness must be one of/);
-});
-
-test("validatePipelineConfig rejects empty and non-string models", () => {
-  assert.match(validatePipelineConfig({ planner: { model: "" } }), /non-empty string/);
-  assert.match(validatePipelineConfig({ planner: { model: "  " } }), /non-empty string/);
-  assert.match(validatePipelineConfig({ planner: { model: 5 } }), /non-empty string/);
-});
-
-test("validatePipelineConfig rejects bad efforts", () => {
-  assert.match(validatePipelineConfig({ planner: { effort: "ultra" } }), /effort must be one of/);
-  assert.match(validatePipelineConfig({ planner: { effort: 2 } }), /effort must be one of/);
-});
-
-test("validatePipelineConfig rejects bad timeLimits", () => {
-  assert.match(validatePipelineConfig({ planner: { timeLimit: 0 } }), /positive number/);
-  assert.match(validatePipelineConfig({ planner: { timeLimit: -5 } }), /positive number/);
-  assert.match(validatePipelineConfig({ planner: { timeLimit: "60" } }), /positive number/);
-  assert.match(validatePipelineConfig({ planner: { timeLimit: Number.NaN } }), /positive number/);
-});
-
-test("validatePipelineConfig rejects authMode: model stays a string", () => {
-  assert.match(
-    validatePipelineConfig({ planner: { authMode: "anthropic" } }),
-    /unknown field/);
-  assert.strictEqual(validatePipelineConfig({ planner: { model: "provider/model" } }), null);
-});
-
-// ---- resolvePipeline ----
-
-test("resolvePipeline defaults equal today behavior", () => {
+test("fallbackPhaseSettings defaults equal today behavior", () => {
   const r = resolvePipeline({}, {});
   assert.deepStrictEqual(r.planner, {
     harness: "vibe", model: null, effort: "medium", timeLimit: 1800, maxContext: 150000 });
@@ -96,7 +42,7 @@ test("resolvePipeline defaults equal today behavior", () => {
   assert.deepStrictEqual(Object.keys(r), PHASES);
 });
 
-test("resolvePipeline reads env time limits at resolve time", () => {
+test("fallbackPhaseSettings reads env time limits at resolve time", () => {
   const r = resolvePipeline({}, { PLANNER_TIME_LIMIT: "99", WORKER_TIME_LIMIT: "77" });
   assert.strictEqual(r.planner.timeLimit, 99);
   assert.strictEqual(r.implementor.timeLimit, 77);
@@ -104,7 +50,7 @@ test("resolvePipeline reads env time limits at resolve time", () => {
   assert.strictEqual(r.integration.timeLimit, 77);
 });
 
-test("resolvePipeline applies env overrides per phase", () => {
+test("fallbackPhaseSettings applies env overrides per phase", () => {
   const env = {
     PLANNER_HARNESS: "pi",
     IMPLEMENTOR_MODEL: "impl-x",
@@ -125,19 +71,19 @@ test("resolvePipeline applies env overrides per phase", () => {
   assert.strictEqual(r.validator.model, "glm-5-3");
 });
 
-test("resolvePipeline applies line pipeline overrides over env", () => {
-  const line = { pipeline: { implementor: { harness: "claude", model: "line-m" } } };
+test("fallbackPhaseSettings applies node settings over env", () => {
+  const line = lineWithGraph({ nodeSettings: { "backend-impl": { harness: "claude", model: "line-m" } } });
   const r = resolvePipeline(line, { IMPLEMENTOR_MODEL: "env-m", IMPLEMENTOR_HARNESS: "pi" });
   assert.strictEqual(r.implementor.harness, "claude");
   assert.strictEqual(r.implementor.model, "line-m");
 });
 
-test("resolvePipeline does not carry a model across harnesses", () => {
-  const line = { pipeline: {
+test("fallbackPhaseSettings does not carry a model across harnesses", () => {
+  const line = lineWithGraph({ nodeSettings: {
     planner: { harness: "claude" },
-    implementor: { harness: "claude" },
-    validator: { harness: "pi" },
-  } };
+    "backend-impl": { harness: "claude" },
+    "backend-val": { harness: "pi" },
+  } });
   const r = resolvePipeline(line, { IMPLEMENTOR_MODEL: "env-m" });
   assert.strictEqual(r.planner.model, null);
   assert.strictEqual(r.implementor.model, null);
@@ -149,13 +95,13 @@ test("resolvePipeline does not carry a model across harnesses", () => {
   assert.strictEqual(e.implementor.model, "sonnet");
   assert.strictEqual(e.validator.model, null);
   // A line that names the env harness explicitly keeps the env model.
-  const same = resolvePipeline({ pipeline: { implementor: { harness: "vibe" } } },
+  const same = resolvePipeline(lineWithGraph({ nodeSettings: { "backend-impl": { harness: "vibe" } } }),
     { IMPLEMENTOR_MODEL: "env-m" });
   assert.strictEqual(same.implementor.model, "env-m");
 });
 
-test("resolvePipeline merges per field: pipeline sets only model", () => {
-  const line = { pipeline: { validator: { model: "only-model" } } };
+test("fallbackPhaseSettings merges per field: node settings set only model", () => {
+  const line = lineWithGraph({ nodeSettings: { "backend-val": { model: "only-model" } } });
   const r = resolvePipeline(line, {});
   assert.strictEqual(r.validator.model, "only-model");
   assert.strictEqual(r.validator.harness, "vibe");
@@ -163,7 +109,7 @@ test("resolvePipeline merges per field: pipeline sets only model", () => {
   assert.strictEqual(r.validator.timeLimit, 3600);
 });
 
-test("resolvePipeline tolerates a missing line", () => {
+test("fallbackPhaseSettings tolerates a missing line", () => {
   const r = resolvePipeline(null, {});
   assert.strictEqual(r.planner.harness, "vibe");
 });
@@ -662,10 +608,4 @@ test("maxContext is allowed only on a node with a resumed session", () => {
     /maxContext is not supported/);
   line.nodeSettings = { "backend-val": { maxContext: 5000 } };
   assert.strictEqual("maxContext" in resolveNodeSettings(line, "backend-val", {}), false);
-});
-
-test("resolvePipeline keeps the old per-phase view on a line with a graph", () => {
-  const line = lineWithGraph({ pipeline: { validator: { effort: "high" }, planner: { maxContext: 7000 } } });
-  const plain = { pipeline: line.pipeline };
-  assert.deepStrictEqual(resolvePipeline(line, {}), resolvePipeline(plain, {}));
 });

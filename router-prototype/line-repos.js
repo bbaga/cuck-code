@@ -65,7 +65,6 @@ function adoptLegacyWorkdir(meta, workdir) {
 const BLOCKER_TEXT = {
   running: "is still running",
   "not-completed": "did not complete (failed or stopped); continue it or remove it",
-  "validation-queued": "has a validation waiting for a free slot",
   "validation-running": "has a validator that is still running",
   "awaiting-criteria": "has no validation decision for its latest run",
   "verdict-fail": "has VERDICT: FAIL for its latest run",
@@ -75,14 +74,13 @@ const BLOCKER_TEXT = {
 // Decide which implementors enter an integration. The planner's call to
 // start an integration is its acceptance of the validated work. Every
 // implementor must have accepted work for its latest completed run: a
-// validator with VERDICT: PASS for that run, or a SKIP VALIDATION decision
-// for that run. Anything else blocks the integration.
+// validator with VERDICT: PASS for that run, or an accept record for that
+// run. Anything else blocks the integration.
 // Returns { included: [worker], blockers: [{ workerId, name, reason, text }] }.
 // An instance needs acceptance when its node has workspace "own-worktree"
 // (graph = line.graph). A worker without a node falls back to the role test.
-// A run is accepted by: an acceptedRuns entry, a PASS from a checker, or the
-// old validationSkipped record (kept until task D9).
-function integrationSelection(workers, pendingValidations = [], graph = null) {
+// A run is accepted by: an acceptedRuns entry, or a PASS from a checker.
+function integrationSelection(workers, graph = null) {
   const all = [...workers];
   const needsAcceptance = (w) => {
     if (w.kind === "integration") return false;
@@ -100,12 +98,10 @@ function integrationSelection(workers, pendingValidations = [], graph = null) {
   for (const impl of implementors) {
     if (impl.status === "running" || impl.child) { block(impl, "running"); continue; }
     if (impl.status !== "completed") { block(impl, "not-completed"); continue; }
-    if ((pendingValidations || []).some((p) => p && p.implWorkerId === impl.id)) { block(impl, "validation-queued"); continue; }
     const validators = all.filter((v) => v.role === "validator" && v.validates === impl.id);
     if (validators.some((v) => v.status === "running")) { block(impl, "validation-running"); continue; }
     const current = (src) => src && src.runId === impl.runGeneration
       && src.invocationId === impl.lastCompletedInvocationId;
-    if (current(impl.validationSkipped)) { included.push(impl); continue; }
     if ((impl.acceptedRuns || []).some(current)) { included.push(impl); continue; }
     const latest = validators.filter((v) => current(v.validationSource)).pop();
     if (!latest) { block(impl, "awaiting-criteria"); continue; }

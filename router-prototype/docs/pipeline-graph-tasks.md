@@ -764,7 +764,9 @@ Files: `router-prototype/README.md`, `router-prototype/docs/pipeline-graph-desig
 
 Done when: the reviewer accepts the text.
 
-### D9. Remove the old code (next release)
+### D9. Remove the old code (done)
+
+Status: done in the same release as the pipeline graph (branch pg/D9b). `normalizeLine` converts old data on load; `phaseOfType`, `migrateLine`, `normalizeLine`, `preset-migration.js` and the three deprecated aliases stay. The remaining `git grep` hits are the conversion code, its tests, `preset-migration.js` and golden file names.
 
 Depends on: all other tasks, and one released version with the deprecation headers.
 Files: `server.js`, `planner-request.js`, `pipeline-config.js`, `web/pipeline-ui.js`, `line-graph.js`, tests.

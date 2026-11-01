@@ -8,30 +8,10 @@ const { loadNodeType, resolveTypes } = require("../node-types");
 const { render, placeholders } = require("../template");
 const { checkValues } = require("../fields");
 
+const { golden, slug } = require("./fixtures/golden-file");
+
 const root = path.join(__dirname, "..");
-const source = fs.readFileSync(path.join(root, "server.js"), "utf8");
-
-// Cut a piece of server.js source text from `from` up to (not including) `to`.
-function cut(from, to) {
-  const start = source.indexOf(from);
-  assert.ok(start >= 0, `marker "${from}" not found in server.js`);
-  const end = source.indexOf(to, start);
-  assert.ok(end > start, `marker "${to}" not found after "${from}"`);
-  return source.slice(start, end);
-}
-
-// server.js starts a server when required: build the old functions from source.
 const PORT = 7788;
-const oldSource = [
-  cut("function frontendToolsBlock(", "\nconst { wrapPlannerTurn }"),
-  cut("const VAL_PERSONA", "\nfunction containersBlock"),
-  cut("function containersBlock(", "\nfunction remoteBlockImplementor"),
-  cut("function remoteBlockValidator(", "\nfunction validatorBrief"),
-  cut("function validatorBrief(", "\n\n\n// manifest:"),
-].join("\n");
-const validationCriteriaBlock = (criteria) => `The planner gave these acceptance criteria:\n${criteria}`;
-const { validatorBrief } = new Function("PORT", "validationCriteriaBlock",
-  `${oldSource}\nreturn { validatorBrief };`)(PORT, validationCriteriaBlock);
 
 const types = {};
 for (const name of ["validator", "backend-validator", "frontend-validator"]) {
@@ -68,10 +48,10 @@ const cases = {
 
 for (const persona of ["backend", "frontend"]) {
   for (const [label, a] of Object.entries(cases)) {
-    test(`${persona} validator prompt equals validatorBrief(): ${label}`, () => {
-      const old = validatorBrief(a.implName, a.report, a.criteria, persona, a.workerId, a.implId, a.lineId,
-        a.repoName, a.repoUrl, a.trackerTicket);
-      assert.equal(newBrief(persona, a), old);
+    // The golden files hold the output of the removed validatorBrief() for the same inputs
+    // (one-off script run before D9 removed the function).
+    test(`${persona} validator prompt equals the golden text of the old validatorBrief: ${label}`, () => {
+      assert.equal(newBrief(persona, a), golden(`validator-${persona}-${slug(label)}`));
     });
   }
 }

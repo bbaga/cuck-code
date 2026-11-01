@@ -100,7 +100,7 @@ test("a new line stores the graph, and an old line.json gains it on the next sav
     assert.deepEqual(legacy.nodeSettings["frontend-impl"], { model: "sonnet" });
     assert.equal(legacy.workers[0].node, "frontend-impl");
     assert.deepEqual(legacy.workers[0].acceptedRuns, [{ runId: "r1", invocationId: "inv1", by: "migration" }]);
-    assert.deepEqual(legacy.pipeline, { implementor: { model: "sonnet" } });
+    assert.equal(legacy.pipeline, undefined, "the old per-phase field is not written any more");
   } finally {
     await stopRouter(router);
     fs.rmSync(root, { recursive: true, force: true });

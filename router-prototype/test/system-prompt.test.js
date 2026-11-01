@@ -12,7 +12,8 @@ const path = require('node:path');
 
 const { HARNESS_IDS, createHarness, trustedSystemChannel, writeSystemPromptFile } = require('../harness');
 const { planPlannerRun, planWorkerRun } = require('../spawn-plan');
-const { resolvePipeline } = require('../pipeline-config');
+const { fallbackPhaseSettings } = require('../pipeline-config');
+const resolvePipeline = (line, env) => new Proxy({}, { get: (_t, phase) => fallbackPhaseSettings(line, phase, env) });
 
 // The user prompt stays byte-for-byte identical, so it carries characters
 // that any prefixing or escaping mistake would change.
