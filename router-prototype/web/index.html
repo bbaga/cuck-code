@@ -88,12 +88,16 @@
     display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
     font-weight: 400; user-select: none; }
   .dot { width: 10px; height: 10px; border-radius: 50%; margin-left: auto; flex-shrink: 0; }
-  .dot.idle { background: #35c46a; }
+  .dot.marker-green { background: #35c46a; }
+  .dot.marker-blue { background: #3d8bff; }
+  .dot.marker-running { animation: pulse 1.2s infinite; }
+  .dot.marker-red { background: #ff5f6e; }
+  .dot.marker-yellow { background: #f2c94c; }
+  .dot.marker-gray { background: #6c7a8c; }
+  .dot.idle, .dot.completed { background: #35c46a; }
   .dot.running { background: #3d8bff; animation: pulse 1.2s infinite; }
-  .dot.completed { background: #35c46a; }
   .dot.failed { background: #ff5f6e; }
-  .dot.stopped { background: #6c7a8c; }
-  .dot.standby { background: #6c7a8c; }
+  .dot.stopped, .dot.standby { background: #6c7a8c; }
   .dot.attention, .dot.error { width: 18px; height: 18px; border-radius: 50%;
     display: inline-flex; align-items: center; justify-content: center;
     color: #161a20; font-size: 13px; font-weight: 800; }
@@ -112,6 +116,11 @@
   .scopeDetails { border-bottom: 1px solid #262b33; }
   .scopeDetails summary { cursor: pointer; padding: 6px 16px; color: #6c7a8c; font-size: .75rem; }
   .scopeBody { padding: 4px 16px 12px; max-height: 260px; overflow: auto; }
+  .scopeLoading[aria-busy="true"]::before { content: ""; display: inline-block; width: 10px; height: 10px;
+    margin-right: 8px; border: 2px solid #42536b; border-top-color: #8fb8ff; border-radius: 50%;
+    animation: scope-spin .8s linear infinite; }
+  @keyframes scope-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .scopeLoading[aria-busy="true"]::before { animation: none; } }
   .scopeBody pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: .75rem ui-monospace, monospace; color: #c1cad5; }
   .plan { padding: 12px 16px; border-bottom: 1px solid #262b33;
     max-height: 260px; overflow-y: auto; font-size: .85rem; }
@@ -285,6 +294,7 @@
 </main>
 <section id="registry" hidden aria-label="Registry"></section>
 <script src="pipeline-ui.js"></script>
+<script src="worker-scope.js"></script>
 <script src="markdown-renderer.js"></script>
 <script src="registry-ui-extra.js"></script>
 <script src="registry-ui.js"></script>
@@ -299,7 +309,7 @@ window.addEventListener("DOMContentLoaded", () => {
     shouldShowIntegrationValidator, buildGraphLanes,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
     evidencePollIsCurrent, promptKeyAction, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
-    formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator } = window.pipelineUI;
+    formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator, markerState } = window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
   const listEl = document.getElementById("linelist");
@@ -438,9 +448,9 @@ window.addEventListener("DOMContentLoaded", () => {
       n.appendChild(cfgEl);
     }
     const d = document.createElement("span");
-    const indicator = pipelineUI.attentionIndicator(w);
-    d.className = "dot " + (indicator || w.status);
-    d.setAttribute("aria-label", indicator === "error" ? "Error" : indicator === "attention" ? "Needs attention" : w.status);
+    const marker = markerState(w);
+    d.className = "dot " + marker.className;
+    d.setAttribute("aria-label", marker.label);
     n.append(d);
     if (w.status === "running") {
       const stop = document.createElement("button");
@@ -626,9 +636,9 @@ window.addEventListener("DOMContentLoaded", () => {
     const pd = document.createElement("span");
     const plannerState = { status: st.plannerStatus, attention: st.plannerAttention,
       humanIntervention: st.plannerHumanIntervention, error: st.plannerError };
-    const plannerIndicator = pipelineUI.attentionIndicator(plannerState);
-    pd.className = "dot " + (plannerIndicator || (st.plannerStatus === "running" ? "running" : "idle"));
-    pd.setAttribute("aria-label", plannerIndicator === "error" ? "Error" : plannerIndicator === "attention" ? "Needs attention" : st.plannerStatus);
+    const plannerMarker = markerState(plannerState);
+    pd.className = "dot " + plannerMarker.className;
+    pd.setAttribute("aria-label", plannerMarker.label);
     pn.append(pnLabel, pd);
     pn.addEventListener("click", () => selectNode(st, null));
     inner.appendChild(pn);
@@ -744,6 +754,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (st.previewPanel) st.previewPanel.hidden = true;
     if (st.selected !== id) st.followTranscript = true;
     st.selected = id;
+    if (st.historyLoader) st.historyLoader.remove(id);
     try { localStorage.removeItem("preview-selection:" + st.id); } catch {}
     const w = id !== null ? st.workers.get(id) : null;
     const isValidator = w && (w.role || "implementor") === "validator";
@@ -751,6 +762,7 @@ window.addEventListener("DOMContentLoaded", () => {
     renderGraph(st);
     renderTranscript(st);
     renderContextControls(st);
+    if (st.scopeLoader) st.scopeLoader.retry(id);
     if (typeof renderScopePanel === "function") renderScopePanel(st);
   }
 
@@ -760,7 +772,18 @@ window.addEventListener("DOMContentLoaded", () => {
       ? st.workers && st.workers.get(st.selected) : null;
     const show = !!worker && (worker.role || "implementor") !== "planner" && (st.tab || "line") === "line";
     st.scopeDetails.hidden = !show;
-    if (show) st.scopeText.textContent = formatScopePanelData(worker) || "No scope data available.";
+    if (!show) return;
+    const scope = st.scopeLoader ? st.scopeLoader.read(worker) : { state: "loaded", data: worker };
+    const loading = scope.state === "loading";
+    st.scopeDetails.setAttribute("aria-busy", String(loading));
+    if (st.scopeStatus) {
+      st.scopeStatus.hidden = scope.state === "loaded";
+      st.scopeStatus.setAttribute("aria-busy", String(loading));
+      st.scopeStatus.textContent = loading ? "Loading scope…"
+        : "Unable to load scope. Select the worker again to retry.";
+    }
+    st.scopeText.textContent = scope.state === "loaded"
+      ? formatScopePanelData({ ...worker, ...scope.data }) || "No scope data available." : "";
   }
 
   // Context meter and Compact button for the selected session: the planner
@@ -792,6 +815,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   function applyStateWorkers(st, state, { updateListEntry, refreshPreview }) {
     st.workers = new Map((state.workers || []).map((w) => [w.id, w]));
+    if (st.scopeLoader) st.scopeLoader.retain(new Set(st.workers.keys()));
     if (st.selected === null) {
       try {
         const savedPreview = localStorage.getItem("preview-selection:" + st.id);
@@ -847,16 +871,33 @@ window.addEventListener("DOMContentLoaded", () => {
   function renderTranscript(st) {
     const scrollTop = st.transcript.scrollTop;
     st.transcript.innerHTML = "";
+    const live = st.selected === null ? st.plannerTranscript : st.workerTranscripts.get(st.selected) || [];
+    const history = st.historyActive && st.historyLoader && !(typeof st.selected === "string" && st.selected.startsWith("preview:"))
+      ? st.historyLoader.read({ id: st.selected }) : null;
+    const entries = history && history.state === "loaded"
+      ? window.workerScope.mergeHistoryEntries(history.data.entries, live) : live;
+    if (history && (history.state !== "loaded" || entries.length === 0 || history.data.truncated)) {
+      const status = document.createElement("div");
+      status.className = "historyStatus scopeLoading";
+      status.setAttribute("role", "status");
+      status.setAttribute("aria-live", "polite");
+      status.setAttribute("aria-busy", String(history.state === "loading"));
+      status.textContent = history.state === "loading" ? "Loading chat history…"
+        : history.state === "error" ? "Unable to load chat history. Select the node again to retry."
+        : history.data.truncated ? "Showing the latest 500 messages."
+        : "No saved chat history is available for this node.";
+      st.transcript.appendChild(status);
+    }
     if (st.selected === null) {
-      for (const e of st.plannerTranscript) st.transcript.appendChild(entryEl(e));
+      for (const e of entries) st.transcript.appendChild(entryEl(e));
     } else {
       const w = st.workers.get(st.selected);
       const label = document.createElement("div");
       label.className = "liveLabel";
       label.textContent = "worker '" + (w ? w.name : st.selected)
-        + "' - live view (since page load)";
+        + "' - chat history";
       st.transcript.appendChild(label);
-      for (const e of st.workerTranscripts.get(st.selected) || []) {
+      for (const e of entries) {
         st.transcript.appendChild(entryEl(e));
       }
       if (w && w.lastError) {
@@ -963,7 +1004,12 @@ window.addEventListener("DOMContentLoaded", () => {
     scopeDetails.hidden = true;
     const scopeSummary = document.createElement("summary"); scopeSummary.textContent = "Scope and goals";
     const scopeBody = document.createElement("div"); scopeBody.className = "scopeBody";
-    const scopeText = document.createElement("pre"); scopeBody.appendChild(scopeText);
+    const scopeStatus = document.createElement("div");
+    scopeStatus.className = "scopeLoading";
+    scopeStatus.setAttribute("role", "status");
+    scopeStatus.setAttribute("aria-live", "polite");
+    scopeStatus.hidden = true;
+    const scopeText = document.createElement("pre"); scopeBody.append(scopeStatus, scopeText);
     scopeDetails.append(scopeSummary, scopeBody);
     const planDetails = document.createElement("details");
     planDetails.className = "planDetails";
@@ -1057,7 +1103,11 @@ window.addEventListener("DOMContentLoaded", () => {
       planContent: undefined, approved: false,
       workers: new Map(), workerTranscripts: new Map(), previewPayload: null, previewRequest: 0,
 
-      plannerTranscript: [], selected: null, scopeDetails, scopeText };
+      plannerTranscript: [], selected: null, scopeDetails, scopeText, scopeStatus };
+    st.scopeLoader = window.workerScope.createScopeLoader({ lineId: st.id,
+      fetchImpl: (url, options) => fetch(url, options), onChange: () => renderScopePanel(st) });
+    st.historyLoader = window.workerScope.createScopeLoader({ lineId: st.id, resource: "transcript",
+      fetchImpl: (url, options) => fetch(url, options), onChange: () => renderTranscript(st) });
     setupTranscriptScroll(st);
 
     tabLineBtn.addEventListener("click", () => setLineTab(st, "line"));
@@ -1159,6 +1209,7 @@ window.addEventListener("DOMContentLoaded", () => {
         if (state.started === true) st.started = true;
         updateControls(st);
         applyStateWorkers(st, state, { updateListEntry, refreshPreview });
+        // Full state is authoritative and replaces all stale marker flags.
         st.plannerAttention = state.attention === true || state.needsAttention === true;
         st.plannerHumanIntervention = state.humanIntervention === true;
         st.plannerError = state.error === true || !!state.lastError;
@@ -1166,7 +1217,21 @@ window.addEventListener("DOMContentLoaded", () => {
         renderTranscript(st);
         renderScopePanel(st);
       },
-      status(data) { setStatus(data.status); },
+      status(data) {
+        // Narrow status events may omit marker fields; omitted fields must not clear state.
+        if (Object.prototype.hasOwnProperty.call(data, "attention") || Object.prototype.hasOwnProperty.call(data, "needsAttention")) {
+          st.plannerAttention = data.attention === true || data.needsAttention === true;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, "humanIntervention")) {
+          st.plannerHumanIntervention = data.humanIntervention === true;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, "error") || Object.prototype.hasOwnProperty.call(data, "lastError")) {
+          st.plannerError = data.error === true || !!data.lastError;
+        } else if (data.status === "failed" || data.status === "error") {
+          st.plannerError = true;
+        }
+        setStatus(data.status);
+      },
       entry(entry) {
         st.plannerTranscript.push(entry);
         if (st.selected === null) appendEntry(st, entryEl(entry));
@@ -1201,6 +1266,8 @@ window.addEventListener("DOMContentLoaded", () => {
         for (const id of workerIds || []) {
           st.workers.delete(id);
           st.workerTranscripts.delete(id);
+          st.scopeLoader.remove(id);
+          st.historyLoader.remove(id);
         }
         if (st.selected !== null && !st.workers.has(st.selected)) selectNode(st, null);
         renderGraph(st); updateListEntry(st);
@@ -1240,6 +1307,7 @@ window.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify({ text }),
       });
       if (!response.ok) return;
+      if (!st.started) setStatus("running");
       input.value = "";
       input.style.height = "";
       input.style.overflowY = "hidden";
@@ -1285,6 +1353,8 @@ window.addEventListener("DOMContentLoaded", () => {
   function removeCard(id) {
     const st = cards.get(id);
     if (st) {
+      st.scopeLoader.clear();
+      st.historyLoader.clear();
       st.transcriptResizeObserver.disconnect();
       st.pipeForm.dispose();
       st.pipePresets.dispose();
@@ -1304,15 +1374,11 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function updateStatusMarker(st) {
-    const indicator = pipelineUI.attentionIndicator(statusMarkerState(st));
-    const status = indicator || (st.plannerStatus === "running" ? "running"
-      : st.plannerStatus === "standby" ? "standby" : "idle");
-    const label = indicator === "error" ? "Error" : indicator === "attention"
-      ? "Needs attention" : st.plannerStatus;
+    const markerStateValue = markerState(statusMarkerState(st));
     for (const marker of [st.dot, st.entryDot]) {
       if (!marker) continue;
-      marker.className = "dot " + status;
-      marker.setAttribute("aria-label", label);
+      marker.className = "dot " + markerStateValue.className;
+      marker.setAttribute("aria-label", markerStateValue.label);
     }
   }
 
@@ -1402,6 +1468,7 @@ window.addEventListener("DOMContentLoaded", () => {
       const show = st.id === id;
       st.card.style.display = show ? "flex" : "none";
       st.entry.classList.toggle("selected", show);
+      st.historyActive = show;
     }
     document.getElementById("empty").hidden = id !== null;
     const st = cards.get(id);
@@ -1409,6 +1476,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (st.tab === "processes") pollInventory();
     else {
       renderGraph(st);
+      renderTranscript(st);
       syncTranscriptScroll(st);
     }
   }
@@ -2044,6 +2112,7 @@ window.addEventListener("DOMContentLoaded", () => {
     try { envelope = JSON.parse(e.data); } catch { return; }
     if (!envelope || envelope.version !== 1) return;
     if (envelope.type === "snapshot_begin") {
+      for (const st of cards.values()) st.historyLoader.clear();
       const present = new Set((envelope.data.lines || []).map((line) => line.id));
       for (const id of [...cards.keys()]) if (!present.has(id)) removeCard(id);
       for (const line of envelope.data.lines || []) if (!cards.has(line.id)) addCard(line);

@@ -29,4 +29,13 @@ function scopeFields(w, workers) {
   return fields;
 }
 
-module.exports = { scopeFields, scopeText };
+// Dashboard events carry only identity/version data. The scope text is served
+// separately when a worker is selected; the revision invalidates browser caches.
+function scopeSummary(w, workers) {
+  const { createHash } = require("node:crypto");
+  const fields = scopeFields(w, workers);
+  return { validates: fields.validates, validatesName: fields.validatesName,
+    scopeRevision: createHash("sha256").update(JSON.stringify(fields)).digest("hex") };
+}
+
+module.exports = { scopeFields, scopeSummary, scopeText };

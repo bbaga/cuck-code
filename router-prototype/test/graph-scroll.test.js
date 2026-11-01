@@ -15,7 +15,7 @@ function harness() {
   const make = () => ({ style:{}, children:[], attrs:{}, append(...xs){this.children.push(...xs);}, appendChild(x){this.children.push(x);}, replaceChildren(...xs){this.children=xs;}, setAttribute(k,v){this.attrs[k]=v;}, addEventListener(type,fn){let h=handlers.get(this)||{}; h[type]=fn;handlers.set(this,h);}, className:"", textContent:"", getAttribute(k){return this.attrs[k];} });
   const document = { createElement: make, createElementNS: (_ns,_tag) => make() };
   const pipelineUI = require("../web/pipeline-ui.js");
-  const ui = vm.runInNewContext(source + "\n({ renderGraph, renderGraphContents, selectNode, selectPreview, renderPreviewPanel })", { document, SVGNS:"svg", pipelineUI, nodeWidth: pipelineUI.nodeWidth, columnWidth: pipelineUI.columnWidth, workerNode: (st,w,x,y,width)=>{const n=make();n.className="gnode worker"+(st.selected===w.id?" sel":"");n.style={left:x+"px",top:y+"px",width:width+"px"};return n;}, mapPreviewPayload:(_p,w)=>w.kind==="integration"?{eligible:true,availability:"available",steps:[]}:null, previewSelectionKey:id=>`preview:${id}`, sanitizePreviewCommand:x=>x, localStorage:{setItem(){},removeItem(){}}, navigator:{clipboard:{writeText(){}}}, renderTranscript(){}, console });
+  const ui = vm.runInNewContext(source + "\n({ renderGraph, renderGraphContents, selectNode, selectPreview, renderPreviewPanel })", { document, SVGNS:"svg", pipelineUI, markerState: pipelineUI.markerState, nodeWidth: pipelineUI.nodeWidth, columnWidth: pipelineUI.columnWidth, workerNode: (st,w,x,y,width)=>{const n=make();n.className="gnode worker"+(st.selected===w.id?" sel":"");n.style={left:x+"px",top:y+"px",width:width+"px"};return n;}, mapPreviewPayload:(_p,w)=>w.kind==="integration"?{eligible:true,availability:"available",steps:[]}:null, previewSelectionKey:id=>`preview:${id}`, sanitizePreviewCommand:x=>x, localStorage:{setItem(){},removeItem(){}}, navigator:{clipboard:{writeText(){}}}, renderTranscript(){}, console });
   function find(node,predicate){if(predicate(node))return node;for(const child of node.children||[]){const found=find(child,predicate);if(found)return found;}return null;}
   function click(node){handlers.get(node).click();}
   return {ui, graph, make, find, click};
@@ -77,7 +77,7 @@ function stateFn(h, extra = {}) {
   const src = html.slice(html.indexOf("  function applyStateWorkers("), html.indexOf("  function syncTranscriptScroll(")) + "\napplyStateWorkers";
   const pipelineUI = require("../web/pipeline-ui.js");
   const base = html.slice(start, end);
-  return vm.runInNewContext(base + "\n" + src, { document: { createElement: h.make, createElementNS: () => h.make() }, SVGNS: "svg", pipelineUI,
+  return vm.runInNewContext(base + "\n" + src, { document: { createElement: h.make, createElementNS: () => h.make() }, SVGNS: "svg", pipelineUI, markerState: pipelineUI.markerState,
     nodeWidth: pipelineUI.nodeWidth, columnWidth: pipelineUI.columnWidth, workerNode: (st, w, x, y, width) => { const n = h.make(); n.className = "gnode worker"; n.style = {}; return n; },
     mapPreviewPayload: () => null, previewSelectionKey: id => `preview:${id}`, previewSelectionExists: () => false, sanitizePreviewCommand: x => x,
     localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} }, navigator: {}, renderTranscript() {}, console, ...extra });

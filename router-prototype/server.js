@@ -37,7 +37,8 @@ const { recordedPlannerRequest, sourceIdentity, plannerRequest, implementorRepor
   restorePlannerRequests, serializePlannerRequest, restoreKnownNoticeIds,
   queuedUserPromptProjection, writeFileDurable, enqueuePlannerRequest, submitPrompt,
   cancelQueuedUserPrompt } = require("./planner-request");
-const { scopeFields } = require("./scope-fields");
+const { scopeFields, scopeSummary } = require("./scope-fields");
+const { loadTranscript } = require("./transcript-history");
 const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require("./evidence");
 const { createDashboardLive } = require("./dashboard-live");
@@ -1010,15 +1011,32 @@ function dashboardStateForLine(line) {
       attention: w.attention === true, needsAttention: w.needsAttention === true,
       humanIntervention: w.humanIntervention === true,
       error: w.error === true, ...compactionFields(w, line),
-      ...scopeFields(w, line.workers),
+      ...scopeSummary(w, line.workers),
     })) };
 }
 
 function broadcast(line, event, data) {
+  const entry = event === "entry" ? data : event === "worker_entry" ? data.entry : null;
+  if (entry && !entry.entryId) entry.entryId = crypto.randomUUID();
   if (lifecycleTestHooks && lifecycleTestHooks.broadcast) lifecycleTestHooks.broadcast(line, event, data);
   dashboardLive.publish(event === "error" ? "line_error" : event, line.id, data);
   for (const res of line.clients) {
     try { sseSend(res, event, data); } catch {}
+  }
+}
+
+// This is the only path that changes the visible planner status.
+function transitionPlannerStatus(line, status, detail = null, { broadcastState = true } = {}) {
+  const visible = ["standby", "idle", "running", "attention", "failed"];
+  if (!visible.includes(status)) throw new Error(`invalid planner status: ${status}`);
+  line.status = status;
+  line.lastError = status === "failed" ? (detail || "Planner run failed") : null;
+  line.error = status === "failed";
+  line.attention = status === "attention";
+  line.needsAttention = status === "attention";
+  if (broadcastState) {
+    broadcast(line, "state", dashboardStateForLine(line));
+    broadcast(line, "status", { status });
   }
 }
 
@@ -1041,6 +1059,7 @@ function saveLine(line) {
         repos: [...(line.repos || new Map()).values()].map((r) => ({
           name: r.name, url: r.url, path: r.path })),
         started: line.started, planApproved: line.planApproved,
+        status: line.status, error: line.error === true, lastError: line.lastError || null,
         inventory: [...(line.inventory || new Map()).values()].map((i) => ({
           id: i.id, kind: i.kind, name: i.name, by: i.by, ref: i.ref,
           keep: i.keep, status: i.status })),
@@ -1204,7 +1223,9 @@ function stopPlannerRun(line, runId, timers = {}) {
 
 function pump(line) {
   if (lifecycleTestHooks && lifecycleTestHooks.pump) lifecycleTestHooks.pump(line);
-  if (line.deleted || line.status === "running" || line.compacting || line.queue.length === 0) return;
+  if (line.deleted || (line.status === "running"
+    && (line.activePlannerRun || line.activePlannerRequest)) || line.compacting
+    || line.queue.length === 0) return;
   if (!line.context) line.context = newContextStats();
   // A session belongs to the harness that created it. After a pipeline
   // edit switched the planner harness, compact on the old harness first;
@@ -1233,9 +1254,8 @@ function pump(line) {
   const prompt = wrapPlannerTurn(turnText, { lineId: line.id, approved: line.planApproved,
     workdir: line.workdir });
   line.lastRun = text;
+  transitionPlannerStatus(line, "running", null, { broadcastState: false });
   saveLine(line);
-  line.status = "running";
-  broadcast(line, "status", { status: line.status });
   const t0 = Date.now();
   slog("info", "planner.run.start", { lineId: line.id, resume: !!line.sessionId, reseed,
     chars: text.length, prompt: preview(text, 400) });
@@ -1256,6 +1276,7 @@ function pump(line) {
   line.runId = runId;
   line.child = child;
   broadcast(line, "state", dashboardStateForLine(line));
+  broadcast(line, "status", { status: line.status });
 
   // Harnesses without a native time limit need the server to enforce it.
   let killTimer = null;
@@ -1331,6 +1352,7 @@ function pump(line) {
     cleanupStage(line, "planner");
     saveLine(line);
     if (result !== "ok" && !intentionalStop) {
+      transitionPlannerStatus(line, "failed", failure, { broadcastState: false });
       broadcast(line, "error", { message: `Planner run failed. ${failure}` });
       if (isWake(line.lastRun)) {
         line.wakeRetries = line.wakeRetries || {};
@@ -1389,7 +1411,12 @@ function pump(line) {
     }
     line.lastRun = null;
     line.activePlannerRequest = null;
-    line.status = "idle";
+    if (intentionalStop) {
+      transitionPlannerStatus(line, "idle", null, { broadcastState: false });
+    } else if (result === "ok") {
+      transitionPlannerStatus(line, !line.planApproved && line.queue.length === 0 ? "attention" : "idle",
+        null, { broadcastState: false });
+    }
     saveLine(line);
     broadcast(line, "state", dashboardStateForLine(line));
     broadcast(line, "status", { status: line.status });
@@ -1602,7 +1629,7 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
   saveLine(line);
   broadcast(line, "worker_status", { ...statusEvent, error: worker.lastError || null,
     worker: { id: worker.id, role: worker.role, persona: worker.persona,
-      repo: worker.repo, branch: worker.branch, ...scopeFields(worker, line.workers) } });
+      repo: worker.repo, branch: worker.branch, ...scopeSummary(worker, line.workers) } });
   const sid = worker.sessionId || "unknown";
   slog("info", "worker.closed", { lineId: line.id, workerId: worker.id, name: worker.name,
     role: worker.role, status: worker.status, verdict: worker.verdict || undefined,
@@ -1688,7 +1715,7 @@ function spawnValidator(line, source, criteria, report) {
     implementorId: implWorker.id, persona: worker.persona });
   broadcast(line, "worker_spawned", { worker: { id, name, branch: worker.branch,
     status: worker.status, role: worker.role, validates: worker.validates,
-    persona: worker.persona, ...scopeFields(worker, line.workers) } });
+    persona: worker.persona, ...scopeSummary(worker, line.workers) } });
   spawnWorker(line, worker, worker.prompt);
 }
 
@@ -1984,8 +2011,9 @@ const requestHandler = (req, res) => {
           // therefore see the same authoritative state as the 202 response.
           broadcast(line, "state", dashboardStateForLine(line));
         } });
-      if (out.status !== 202) console.error(`prompt rejected for line ${line.id}: ${out.body.error}`);
-      else {
+      if (out.status !== 202) {
+        console.error(`prompt rejected for line ${line.id}: ${out.body.error}`);
+      } else {
         const entry = userEntry(body.text);
         appendTranscript(line.transcript, entry);
         broadcast(line, "entry", entry);
@@ -2259,7 +2287,7 @@ const requestHandler = (req, res) => {
       slog("info", "worker.spawned", { lineId: line.id, workerId: id,
         name: body.name, persona, branch, repo: repo.name, repoUrl: repo.url || undefined });
       spawnWorker(line, worker, worker.prompt);
-      broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona, repo: repo.name, ...scopeFields(worker, line.workers) } });
+      broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona, repo: repo.name, ...scopeSummary(worker, line.workers) } });
       json(res, 201, { workerId: id, branch, worktree: worktreePath, repo: repo.name,
         baseCommit, ...baseFields(worker) });
     });
@@ -2440,7 +2468,7 @@ const requestHandler = (req, res) => {
         branches: branchEntries.map((e) => `${e.repo}:${e.branch}`) });
       broadcast(line, "worker_spawned", { worker: { id, name, branch, status: worker.status,
         role: worker.role, validates: null, persona: worker.persona, kind: "integration",
-        ...scopeFields(worker, line.workers) } });
+        ...scopeSummary(worker, line.workers) } });
       spawnWorker(line, worker, worker.prompt);
       json(res, 201, { validatorId: id, branch,
         branches: branchEntries.map((e) => ({ repo: e.repo, branch: e.branch })),
@@ -2688,12 +2716,48 @@ When done, reply with a report: what you changed, files changed, how you verifie
     catch { return json(res, 200, { eligible: false, reason: "Preview instructions are unavailable." }); }
   }
 
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines"
+    && ((parts.length === 4 && parts[3] === "transcript")
+      || (parts.length === 6 && parts[3] === "workers" && parts[5] === "transcript"))) {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    const worker = parts.length === 6 ? line.workers.get(parts[4]) : null;
+    if (parts.length === 6 && !worker) return json(res, 404, { error: "no such worker" });
+    const cfg = resolvePipeline(line)[worker ? phaseForWorker(worker.role, worker.kind) : "planner"];
+    const target = worker || line;
+    const harness = worker ? worker.harness || cfg.harness
+      : line.sessionCfg?.harness || line.plannerHarness || cfg.harness;
+    res.setHeader("Cache-Control", "no-store");
+    loadTranscript({ harness, sessionId: target.sessionId,
+      workdir: worker ? worker.worktreePath || line.workdir : line.workdir,
+      transcript: target.transcript }).then((history) => {
+      if (!res.destroyed) json(res, 200, history);
+    }).catch((error) => {
+      slog("error", "transcript.load-failed", { lineId: line.id, workerId: worker?.id, error: String(error.message) });
+      if (!res.destroyed) json(res, 500, { error: "Could not load chat history" });
+    });
+    return;
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "lines"
+    && parts[3] === "workers" && parts[5] === "scope" && parts.length === 6) {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    const worker = line.workers.get(parts[4]);
+    if (!worker) return json(res, 404, { error: "no such worker" });
+    res.setHeader("Cache-Control", "no-store");
+    return json(res, 200, { ...scopeFields(worker, line.workers),
+      scopeRevision: scopeSummary(worker, line.workers).scopeRevision });
+  }
+
   if (req.method === "GET" && url.pathname === "/api/events") {
-    dashboardLive.attach(req, res, (send) => {
+    dashboardLive.attach(req, res, function* () {
       const currentLines = [...lines.values()];
-      send("snapshot_begin", null, { lines: currentLines.map(lineSummary) });
-      for (const line of currentLines) send("state", line.id, dashboardStateForLine(line));
-      send("snapshot_end", null, {});
+      yield ["snapshot_begin", null, { lines: currentLines.map(lineSummary) }];
+      for (const line of currentLines) {
+        if (!line.deleted) yield ["state", line.id, dashboardStateForLine(line)];
+      }
+      yield ["snapshot_end", null, {}];
     });
     return;
   }
@@ -2736,7 +2800,7 @@ When done, reply with a report: what you changed, files changed, how you verifie
 
   if (req.method === "GET" && (url.pathname === "/pipeline-ui.js" || url.pathname === "/registry-ui.js"
     || url.pathname === "/markdown-renderer.js" || url.pathname === "/registry-ui-extra.js"
-    || url.pathname === "/registry-line.js")) {
+    || url.pathname === "/worker-scope.js" || url.pathname === "/registry-line.js")) {
     try {
       res.writeHead(200, { "Content-Type": "application/javascript" });
       res.end(fs.readFileSync(path.join(__dirname, "web", url.pathname.slice(1))));
@@ -2784,8 +2848,10 @@ function loadLines() {
   fs.mkdirSync(LINES_DIR, { recursive: true });
   for (const entry of fs.readdirSync(LINES_DIR, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
+    const metadataPath = path.join(LINES_DIR, entry.name, "line.json");
+    if (!fs.existsSync(metadataPath)) continue;
     try {
-      const meta = JSON.parse(fs.readFileSync(path.join(LINES_DIR, entry.name, "line.json"), "utf8"));
+      const meta = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
       const workers = new Map();
       for (const w of meta.workers || []) {
         if (w.role === "validator") continue;
@@ -2854,7 +2920,9 @@ function loadLines() {
         repos: new Map((meta.repos || []).map((r) => [r.name,
           { name: r.name, url: r.url, path: r.path }])),
         workdir: path.join(LINES_DIR, entry.name),
-        status: started ? "idle" : "standby",
+        status: ["standby", "idle", "running", "attention", "failed"].includes(meta.status)
+          ? meta.status : (started ? "idle" : "standby"),
+        error: meta.error === true, lastError: meta.lastError || null,
         queue: restorePlannerRequests(meta.plannerQueue), activePlannerRequest: null,
         activePlannerRun: null, runId: null, stopPlannerRun,
         knownNoticeIds: restoreKnownNoticeIds(meta.knownNoticeIds),
@@ -2884,8 +2952,16 @@ function loadLines() {
         saveLine(line);
       }
       if (hadLegacyRequestIds) saveLine(line);
+      // No planner process survives a restart. Keep durable approval/failure
+      // states, but recover stale running status before replaying queued work.
+      const restoredStatus = !started ? "standby"
+        : meta.status === "failed" || meta.status === "attention" ? meta.status : "idle";
+      transitionPlannerStatus(line, restoredStatus, meta.lastError, { broadcastState: false });
+      saveLine(line);
       if (line.queue.length) pump(line);
-    } catch {}
+    } catch (error) {
+      slog("error", "boot.line-load-failed", { directory: entry.name, error: String(error.message || error) });
+    }
   }
 }
 

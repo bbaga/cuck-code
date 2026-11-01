@@ -1,9 +1,21 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { scopeFields } = require("../scope-fields");
+const { scopeFields, scopeSummary } = require("../scope-fields");
 
 const impl = { id: "i1", name: "impl-one", role: "implementor", prompt: "Build X" };
 const workers = new Map([["i1", impl]]);
+
+test("scope summaries omit text and change revision when scope changes", () => {
+  const summary = scopeSummary(impl, workers);
+  assert.equal(Object.hasOwn(summary, "prompt"), false);
+  assert.equal(Object.hasOwn(summary, "criteria"), false);
+  assert.equal(summary.scopeRevision, scopeSummary({ ...impl }, workers).scopeRevision);
+  assert.notEqual(summary.scopeRevision, scopeSummary({ ...impl, prompt: "New task" }, workers).scopeRevision);
+  const validator = { role: "validator", validates: "i1", validationCriteria: "Check X" };
+  assert.equal(scopeSummary(validator, workers).validatesName, "impl-one");
+  assert.notEqual(scopeSummary(validator, workers).scopeRevision,
+    scopeSummary({ ...validator, validationCriteria: "Check Y" }, workers).scopeRevision);
+});
 
 test("implementor gets its brief", () => {
   assert.deepEqual(scopeFields(impl, workers),

@@ -11,6 +11,8 @@ function createDashboardLive({ log = () => {}, heartbeatMs = 25000, maxClients =
   function remove(client, reason) {
     if (!clients.delete(client)) return;
     clearInterval(client.heartbeat);
+    if (client.bootstrap) client.bootstrap.return?.();
+    client.bootstrap = null;
     client.res.off("drain", client.drain);
     log("dashboard.sse.close", { clients: clients.size, reason });
   }
@@ -34,9 +36,27 @@ function createDashboardLive({ log = () => {}, heartbeatMs = 25000, maxClients =
     }
   }
 
+  // Initial snapshots can exceed the live-event buffer even for fast clients.
+  // Generate one frame at a time and resume only when the socket drains.
+  function bootstrap(client) {
+    try {
+      while (clients.has(client) && client.bootstrap && !client.blocked) {
+        const next = client.bootstrap.next();
+        if (next.done) { client.bootstrap = null; break; }
+        const [type, lineId, data] = next.value;
+        write(client, frame(type, lineId, data));
+      }
+    } catch (error) {
+      log("dashboard.sse.bootstrap_failed", { error: String(error && error.message) });
+      try { client.res.end(); } catch {}
+      remove(client, "bootstrap-failed");
+    }
+  }
+
   function flush(client) {
     client.blocked = false;
-    while (clients.has(client) && client.queue.length) {
+    bootstrap(client);
+    while (clients.has(client) && !client.blocked && client.queue.length) {
       const message = client.queue.shift();
       client.queuedBytes -= Buffer.byteLength(message);
       try {
@@ -59,14 +79,20 @@ function createDashboardLive({ log = () => {}, heartbeatMs = 25000, maxClients =
     }
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform",
       "X-Accel-Buffering": "no" });
-    const client = { res, blocked: false, queue: [], queuedBytes: 0, heartbeat: null, drain: null };
+    const client = { res, blocked: false, bootstrap: null, queue: [], queuedBytes: 0, heartbeat: null, drain: null };
     client.drain = () => flush(client);
     res.on("drain", client.drain);
     client.heartbeat = setInterval(() => write(client, ": ping\n\n"), heartbeatMs);
     client.heartbeat.unref();
     clients.add(client);
     req.on("close", () => remove(client, "request-closed"));
-    try { initialize((type, lineId, data) => write(client, frame(type, lineId, data))); }
+    try {
+      const snapshot = initialize((type, lineId, data) => write(client, frame(type, lineId, data)));
+      if (snapshot && snapshot[Symbol.iterator]) {
+        client.bootstrap = snapshot[Symbol.iterator]();
+        bootstrap(client);
+      }
+    }
     catch (error) {
       log("dashboard.sse.bootstrap_failed", { error: String(error && error.message) });
       try { res.end(); } catch {}

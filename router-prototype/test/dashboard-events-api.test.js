@@ -12,7 +12,12 @@ const { spawn, execFileSync } = require("node:child_process");
 function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 async function start(root, extraEnv = {}) {
-  const port = 8200 + Math.floor(Math.random() * 400);
+  // Ask the OS for an unused port rather than occasionally connecting to an
+  // unrelated server when concurrent test files collide in a small range.
+  const probe = http.createServer();
+  await new Promise(resolve => probe.listen(0, "127.0.0.1", resolve));
+  const port = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
   const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
     env: { ...process.env, PORT: String(port), LINES_DIR: root, ...extraEnv }, stdio: "ignore",
   });
@@ -33,10 +38,227 @@ function openStream(base) {
   });
 }
 
+test("restart recovers stale running lines and persists idle state", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-stale-running-"));
+  const { child, base } = await start(root);
+  const created = await fetch(base + "/api/lines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "stale" }) });
+  const stale = await created.json();
+  const staleDir = path.join(root, stale.id);
+  const persisted = JSON.parse(fs.readFileSync(path.join(staleDir, "line.json")));
+  persisted.started = true; persisted.status = "running"; persisted.plannerQueue = []; persisted.activePlannerRequest = null;
+  fs.writeFileSync(path.join(staleDir, "line.json"), JSON.stringify(persisted));
+  child.kill("SIGTERM");
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("server did not terminate cleanly")), 3000);
+    child.once("exit", () => { clearTimeout(timer); resolve(); });
+  });
+  const restarted = await start(root);
+  t.after(() => { restarted.child.kill("SIGTERM"); fs.rmSync(root, { recursive: true, force: true }); });
+  let lines;
+  for (let i = 0; i < 100; i++) {
+    lines = (await (await fetch(restarted.base + "/api/lines")).json()).lines;
+    if (lines.find((line) => line.id === stale.id)?.status === "idle") break;
+    await wait(25);
+  }
+  assert.equal(lines.find((line) => line.id === stale.id).status, "idle");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(staleDir, "line.json"))).status, "idle");
+  restarted.child.kill("SIGKILL");
+  await wait(100);
+  const second = await start(root);
+  t.after(() => { second.child.kill("SIGKILL"); fs.rmSync(root, { recursive: true, force: true }); });
+  const secondLines = (await (await fetch(second.base + "/api/lines")).json()).lines;
+  assert.equal(secondLines.find((line) => line.id === stale.id).status, "idle");
+});
+
+test("completed planner wait for approval publishes and persists attention", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-attention-"));
+  const bin = path.join(root, "bin"); fs.mkdirSync(bin, { recursive: true });
+  const fake = path.join(bin, "vibe"); fs.writeFileSync(fake, "#!/bin/sh\nexit 0\n"); fs.chmodSync(fake, 0o755);
+  const { child, base } = await start(root, { PATH: `${bin}:${process.env.PATH}` });
+  t.after(() => { child.kill("SIGTERM"); fs.rmSync(root, { recursive: true, force: true }); });
+  const created = await fetch(base + "/api/lines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "needs approval" }) });
+  const line = await created.json();
+  const result = await fetch(`${base}/api/lines/${line.id}/prompts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "create the plan" }) });
+  assert.equal(result.status, 202);
+  for (let i = 0; i < 100; i++) {
+    const current = (await (await fetch(base + "/api/lines")).json()).lines.find((item) => item.id === line.id);
+    if (current.status === "attention") break;
+    await wait(25);
+  }
+  const current = (await (await fetch(base + "/api/lines")).json()).lines.find((item) => item.id === line.id);
+  assert.equal(current.status, "attention");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, line.id, "line.json"))).status, "attention");
+});
+
+test("restart bootstraps every persisted pipeline graph and durable marker state", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-graph-restart-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const statuses = ["standby", "running", "attention", "failed", "idle"];
+  for (const [index, status] of statuses.entries()) {
+    const id = `pipeline-${index}`;
+    fs.mkdirSync(path.join(root, id));
+    fs.writeFileSync(path.join(root, id, "line.json"), JSON.stringify({
+      id, name: id, started: status !== "standby", status,
+      planApproved: status === "idle", lastError: status === "failed" ? "planner failed" : null,
+      workers: [
+        // A multi-megabyte aggregate snapshot reproduces the production stream
+        // cutoff; small fixtures never exercised socket backpressure.
+        { id: `${id}-impl`, name: "implementor", role: "implementor", status: "running", branch: "x".repeat(600_000), prompt: "Build the selected worker feature",
+          harness: "pi", sessionId: `session-${id}`, worktreePath: path.join(root, id, "worker") },
+        { id: `${id}-val`, name: "validator", role: "validator", validates: `${id}-impl`, status: "completed", verdict: "pass", validationCriteria: "Check the selected feature carefully" },
+        { id: `${id}-integration`, name: "integration", role: "validator", kind: "integration", status: "completed", verdict: "pass" },
+      ],
+    }));
+  }
+  for (let index = 0; index < statuses.length; index++) {
+    const id = `pipeline-${index}`;
+    const sessions = path.join(root, id, "worker", "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(path.join(sessions, `time_session-${id}.jsonl`), [
+      { type: "session", id: `session-${id}` },
+      { type: "message", id: "u", parentId: null, timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content: "Historic user request" } },
+      { type: "message", id: "a", parentId: "u", timestamp: "2026-01-01T00:00:01Z", message: { role: "assistant", content: [{ type: "text", text: "Historic worker answer" }] } },
+    ].map(record => JSON.stringify(record)).join("\n") + "\n");
+  }
+  // One unreadable record must not prevent the other graphs from loading.
+  fs.mkdirSync(path.join(root, "broken"));
+  fs.writeFileSync(path.join(root, "broken", "line.json"), "{");
+  const { child, base } = await start(root);
+  t.after(() => child.kill("SIGTERM"));
+  const { request, response } = await openStream(base);
+  t.after(() => request.destroy());
+  let body = "";
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("missing restart snapshot")), 5000);
+    response.on("data", (chunk) => {
+      body += chunk;
+      if (body.includes('"type":"snapshot_end"')) { clearTimeout(timer); resolve(); }
+    });
+    response.on("error", reject);
+  });
+  assert.ok(Buffer.byteLength(body) > 1024 * 1024);
+  const events = [...body.matchAll(/^data: (.*)$/gm)].map((match) => JSON.parse(match[1]));
+  assert.equal(events[0].data.lines.length, statuses.length);
+  const states = events.filter((event) => event.type === "state");
+  assert.equal(states.length, statuses.length);
+  for (const [index, event] of states.entries()) {
+    const expected = statuses[index] === "running" ? "idle" : statuses[index];
+    assert.equal(event.data.status, expected);
+    assert.equal(event.data.attention, expected === "attention");
+    assert.equal(event.data.error, expected === "failed");
+    assert.equal(event.data.workers.length, 3);
+    assert.equal(event.data.workers[0].status, "stopped");
+    for (const worker of event.data.workers) {
+      assert.equal(Object.hasOwn(worker, "prompt"), false);
+      assert.equal(Object.hasOwn(worker, "criteria"), false);
+      assert.ok(worker.scopeRevision);
+    }
+    const disk = JSON.parse(fs.readFileSync(path.join(root, event.lineId, "line.json")));
+    assert.equal(disk.status, expected);
+    assert.equal(disk.workers.length, 3);
+  }
+
+  const scopeUrl = `${base}/api/lines/pipeline-0/workers/pipeline-0-impl/scope`;
+  const scopeResponse = await fetch(scopeUrl);
+  assert.equal(scopeResponse.status, 200);
+  assert.equal(scopeResponse.headers.get("cache-control"), "no-store");
+  assert.equal((await scopeResponse.json()).prompt, "Build the selected worker feature");
+  const validatorScope = await (await fetch(`${base}/api/lines/pipeline-0/workers/pipeline-0-val/scope`)).json();
+  assert.equal(validatorScope.criteria, "Check the selected feature carefully");
+  assert.equal(validatorScope.validatesName, "implementor");
+  const historyResponse = await fetch(`${base}/api/lines/pipeline-0/workers/pipeline-0-impl/transcript`);
+  assert.equal(historyResponse.status, 200);
+  assert.equal(historyResponse.headers.get("cache-control"), "no-store");
+  assert.deepEqual((await historyResponse.json()).entries.map(e => e.text), ["Historic user request", "Historic worker answer"]);
+  const unavailable = await (await fetch(`${base}/api/lines/pipeline-0/workers/pipeline-0-val/transcript`)).json();
+  assert.equal(unavailable.available, false);
+  assert.equal((await fetch(`${base}/api/lines/pipeline-0/workers/pipeline-1-impl/transcript`)).status, 404);
+  assert.equal((await fetch(`${base}/api/lines/pipeline-0/workers/pipeline-1-impl/scope`)).status, 404);
+  assert.equal((await fetch(`${base}/api/lines/missing/workers/pipeline-0-impl/scope`)).status, 404);
+
+  // Exercise the actual page as well as the SSE payload: every pipeline must
+  // render its planner, implementor, validator and integration nodes on reload.
+  const { openPage } = require("./fixtures/browser-driver");
+  let page;
+  try { page = await openPage(base, { initScript: `
+    window.mermaid = { initialize() {}, run() { return Promise.resolve(); } };
+    window.__scopeRequests = []; window.__releaseScope = {};
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (url, options) => {
+      if (String(url).endsWith('/scope')) {
+        window.__scopeRequests.push(String(url));
+        return new Promise(resolve => { window.__releaseScope[String(url)] = () => resolve(originalFetch(url, options)); });
+      }
+      return originalFetch(url, options);
+    };
+  ` }); }
+  catch (error) {
+    if (error.code === "BROWSER_UNAVAILABLE") { t.diagnostic("Browser graph checks unavailable: " + error.message); return; }
+    throw error;
+  }
+  try {
+    await page.waitFor("document.querySelectorAll('.card .gnode.planner').length === 5 && document.querySelectorAll('.card .gnode').length >= 20");
+    const markers = await page.evaluate(`Array.from(document.querySelectorAll('.card')).map(card => ({
+      id: card.dataset.lineId,
+      planner: card.querySelector('.gnode.planner .dot').className,
+      heading: card.querySelector('.head .dot')?.className,
+      nodes: card.querySelectorAll('.gnode').length,
+    }))`);
+    const colors = ["gray", "green", "yellow", "red", "green"];
+    for (const item of markers) {
+      const color = colors[Number(item.id.split("-")[1])];
+      assert.equal(item.planner, `dot marker-${color}`);
+      assert.equal(item.heading, item.planner);
+      assert.ok(item.nodes >= 4);
+    }
+    assert.equal(await page.evaluate("window.__scopeRequests.length"), 0, "no eager scope fetches");
+    assert.equal(page.requests().filter(url => url.includes('/workers/') && url.endsWith('/transcript')).length, 0,
+      "worker histories must not be loaded before selection");
+    const card = `document.querySelector('.card[data-line-id="pipeline-0"]')`;
+    await page.evaluate(`${card}.querySelector('.gnode.worker:not(.w-validator)').click()`);
+    await page.waitFor(`${card}.querySelector('.scopeLoading').textContent === 'Loading scope…'`);
+    assert.equal(await page.evaluate(`${card}.querySelector('.scopeDetails').open`), false,
+      "selecting a worker must not automatically expand scope");
+    await page.evaluate(`${card}.querySelector('.scopeDetails summary').click()`);
+    assert.equal(await page.evaluate(`${card}.querySelector('.scopeDetails').open`), true);
+    assert.equal(await page.evaluate(`${card}.querySelector('.scopeDetails').getAttribute('aria-busy')`), "true");
+    await page.evaluate(`${card}.querySelector('.gnode.worker.w-validator').click()`);
+    await page.waitFor("window.__scopeRequests.length === 2");
+    await page.evaluate("window.__releaseScope[window.__scopeRequests[0]]()");
+    await page.waitFor("!document.querySelector('.scopeBody pre').textContent.includes('Build the selected worker feature')");
+    await page.evaluate("window.__releaseScope[window.__scopeRequests[1]]()");
+    await page.waitFor(`${card}.querySelector('.scopeBody pre').textContent.includes('Check the selected feature carefully')`);
+    assert.equal(await page.evaluate(`${card}.querySelector('.scopeDetails').getAttribute('aria-busy')`), "false");
+    assert.equal(await page.evaluate(`${card}.querySelector('.scopeLoading').hidden`), true);
+    await page.evaluate(`(() => {
+      const original = window.fetch;
+      window.fetch = (url, options) => String(url).endsWith('/transcript')
+        ? new Promise(resolve => { window.__releaseHistory = () => resolve(original(url, options)); })
+        : original(url, options);
+    })()`);
+    await page.evaluate(`${card}.querySelector('.gnode.worker:not(.w-validator)').click()`);
+    await page.waitFor(`${card}.querySelector('.scopeBody pre').textContent.includes('Build the selected worker feature')`);
+    assert.equal(await page.evaluate("window.__scopeRequests.length"), 2, "reselect uses cached scope");
+    await page.waitFor(`${card}.querySelector('.historyStatus')?.textContent === 'Loading chat history…'`);
+    assert.equal(await page.evaluate(`${card}.querySelector('.historyStatus').getAttribute('aria-busy')`), "true");
+    await page.evaluate("window.__releaseHistory()");
+    await page.waitFor(`${card}.querySelector('.transcript .assistant')?.textContent.includes('Historic worker answer')`);
+    assert.ok(await page.evaluate(`${card}.querySelector('.transcript .user')?.textContent.includes('Historic user request')`));
+    assert.equal(await page.evaluate(`${card}.querySelector('.historyStatus')?.textContent || ''`), "");
+  } finally { await page.close(); }
+});
+
 test("shared dashboard stream bootstraps and publishes line lifecycle events", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-events-api-"));
   const { child, base } = await start(root);
-  t.after(() => { child.kill("SIGTERM"); fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise(resolve => child.once("exit", resolve));
+      child.kill("SIGTERM");
+      await exited;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
 
   const { request, response } = await openStream(base);
   assert.equal(response.headers["content-type"], "text/event-stream");
@@ -170,6 +392,7 @@ test("DELETE queued prompt uses HTTP, authoritative SSE, persistence, conflicts,
   t.after(() => { child.kill("SIGTERM"); fs.rmSync(root, { recursive: true, force: true }); });
 
   const stream = await openStream(base);
+  t.after(() => stream.request.destroy());
   let raw = ""; const states = [];
   const initial = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error("timed out waiting for cancellation snapshot")), 5000);

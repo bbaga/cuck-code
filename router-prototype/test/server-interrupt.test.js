@@ -123,7 +123,9 @@ test('production error before interruption remains an ordinary live failure', ()
   assert.equal(item.child, child); assert.equal(item.status, 'running');
   assert.equal(h.pumps, 0); assert.equal(child.signals.length, 0);
   child.emitClose(1, null);
-  assert.equal(item.child, null); assert.equal(item.status, 'idle');
+  assert.equal(item.child, null); assert.equal(item.status, 'failed');
+  assert.equal(item.error, true);
+  assert.match(item.lastError, /ordinary failure/);
   assert.ok(h.events.some((e) => e[0] === 'broadcast' && e[1] === 'error'));
   server.setLifecycleHooksForTest(null); hooks.current = null;
 });

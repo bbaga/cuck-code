@@ -16,7 +16,7 @@ function harness(opts = {}) {
     document: {}, window: {}, fetch() {}, reloadPresets() {}, pollInventory() {}, pollEvidence() {}, syncTranscriptScroll() {},
     renderGraph: (st) => { calls.push("graph"); if (opts.preview) st.previewPanel.hidden = false; },
   });
-  const el = () => ({ hidden: false, classList: { toggle() {} } });
+  const el = () => ({ hidden: false, setAttribute() {}, classList: { toggle() {} } });
   const planDetails = el(), planBody = { parentNode: opts.approved ? planDetails : null };
   const st = { id: "line-a", tab: "line", planBody, planDetails, plan: el(), graphDetails: el(), previewPanel: el(), transcriptWrap: el(),
     chatHandle: el(), row: el(), procPane: el(), evPane: el(), pipePane: el(), workPane: el(), scopeDetails: el(), scopeText: {},
