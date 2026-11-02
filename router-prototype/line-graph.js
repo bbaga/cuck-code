@@ -283,6 +283,17 @@ function loadBuiltinPipeline(name, fs, root) {
   return resolvePipelineDefinition(name, { readFile, types, interactions, pipelines });
 }
 
-module.exports = { PHASE_TYPES, phaseOfType, migrateLine, normalizeLine, nodeSettingsFromPipeline,
+// Folders inside the lines directory that are not lines: git worktrees of the workers, the managed
+// plugin files (pipelines the UI saved, converted presets) and hidden folders (system prompts, tombstones).
+const RESERVED_LINES_SUBDIRS = new Set(["worktrees", "plugins"]);
+
+// True for a directory entry of the lines directory that can hold a line (`<id>/line.json`).
+function isLineDirectory(entry) {
+  return !!entry && typeof entry.isDirectory === "function" && entry.isDirectory()
+    && typeof entry.name === "string" && !entry.name.startsWith(".") && !RESERVED_LINES_SUBDIRS.has(entry.name);
+}
+
+module.exports = {
+  RESERVED_LINES_SUBDIRS, isLineDirectory, PHASE_TYPES, phaseOfType, migrateLine, normalizeLine, nodeSettingsFromPipeline,
   graphView, nodeSettingsFields, builtinPipelineNames,
   implementorNodeFor, validatorNodeFor, integrationNodeFor, loadBuiltinPipeline };

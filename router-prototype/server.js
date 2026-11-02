@@ -24,7 +24,7 @@ const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
 const { buildCatalog, defaultReadDir, defaultReadFile } = require("./plugin-catalog");
 const { resolvePipelineDefinition, PipelineError } = require("./resolve-pipeline");
 const { loadBuiltinPipeline, migrateLine, normalizeLine, nodeSettingsFields, builtinPipelineNames,
-  implementorNodeFor, validatorNodeFor, integrationNodeFor } = require("./line-graph");
+  implementorNodeFor, validatorNodeFor, integrationNodeFor, isLineDirectory } = require("./line-graph");
 const { checkCall, checkLineValues, requiredFields, introspect } = require("./call-fields");
 const { renderReports, kindOfNode } = require("./report-interaction");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
@@ -2951,7 +2951,7 @@ process.on("SIGTERM", shutdown);
 function loadLines() {
   fs.mkdirSync(LINES_DIR, { recursive: true });
   for (const entry of fs.readdirSync(LINES_DIR, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name.startsWith(".") || entry.name === "worktrees") continue;
+    if (!isLineDirectory(entry)) continue;
     const metadataPath = path.join(LINES_DIR, entry.name, "line.json");
     if (!fs.existsSync(metadataPath)) {
       slog("error", "boot.line-quarantined", { directory: entry.name, reason: "line.json is missing" });

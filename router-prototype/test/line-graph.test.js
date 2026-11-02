@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { PHASE_TYPES, phaseOfType, migrateLine, loadBuiltinPipeline, graphView } = require("../line-graph");
+const { PHASE_TYPES, phaseOfType, migrateLine, loadBuiltinPipeline, graphView, isLineDirectory, RESERVED_LINES_SUBDIRS } = require("../line-graph");
 const { startRouter, stopRouter } = require("./fixtures/router-process");
 
 const ROOT = path.join(__dirname, "..");
@@ -123,4 +123,13 @@ test("graphView edges carry kinds taken from the resolved interactions", () => {
   // the view is a copy
   view.edges[0].interactions.push("x");
   assert.ok(!resolved.edges[0].interactions.includes("x"));
+});
+
+test("isLineDirectory skips worktrees, plugins and hidden folders but accepts a line folder", () => {
+  const dir = (name, isDir = true) => ({ name, isDirectory: () => isDir });
+  assert.equal(isLineDirectory(dir("16c33bf0-3efa-4c79-825b-963b10b32fdc")), true);
+  for (const name of ["worktrees", "plugins", ".deleted", ".system-prompts"]) assert.equal(isLineDirectory(dir(name)), false, name);
+  assert.equal(isLineDirectory(dir("pipeline-presets.json", false)), false, "a file is not a line");
+  assert.equal(isLineDirectory(null), false);
+  assert.ok(RESERVED_LINES_SUBDIRS.has("plugins") && RESERVED_LINES_SUBDIRS.has("worktrees"));
 });
