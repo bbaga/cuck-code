@@ -10,6 +10,7 @@ const { normalizeLine, loadBuiltinPipeline, phaseOfType } = require("../line-gra
 const { resolveNodeSettings } = require("../pipeline-config");
 const { renderReports, kindOfNode } = require("../report-interaction");
 const { startRouter, stopRouter, wait } = require("./fixtures/router-process");
+const { installFakeAgents } = require("./fixtures/fake-agents");
 
 const ROOT = path.join(__dirname, "..");
 const resolved = loadBuiltinPipeline("default", fs, ROOT);
@@ -163,7 +164,9 @@ test("a router converts old-format lines at boot", async () => {
     plannerQueue: [oldRequest()],
     pendingValidations: [{ implWorkerId: "i1", invocationId: "inv-1", runId: 1, report: "r", criteria: "Check the 200." }],
   }));
-  const router = await startRouter(linesDir);
+  // The converted request stays active while a (fake) planner runs. With no agent CLI at all the run
+  // fails at once and the request is gone from the saved file, as it is on a CI runner.
+  const router = await startRouter(linesDir, { PATH: `${installFakeAgents(root)}:${process.env.PATH}` });
   try {
     const res = await fetch(`${router.base}/api/lines`);
     const body = (await res.json()).lines.find((l) => l.id === "old-b");

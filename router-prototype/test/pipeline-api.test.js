@@ -8,6 +8,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { startRouter, stopRouter } = require("./fixtures/router-process");
+const { installFakeAgents } = require("./fixtures/fake-agents");
 
 async function call(base, method, pathname, body) {
   const res = await fetch(base + pathname, { method, headers: { "Content-Type": "application/json" },
@@ -20,7 +21,8 @@ test.before(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-api-"));
   linesDir = path.join(root, "lines");
   fs.mkdirSync(linesDir);
-  router = await startRouter(linesDir, {});
+  // The harness gate needs the agent CLIs to be installed: use fakes, never the CLIs of the machine.
+  router = await startRouter(linesDir, { PATH: `${installFakeAgents(root)}:${process.env.PATH}` });
   base = router.base;
 });
 test.after(async () => {
