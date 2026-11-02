@@ -51,7 +51,7 @@ test("create panel: picker lists pipelines, rows follow the picked pipeline", as
 
     await page.evaluate(`(() => { const s = document.getElementById('cp-pipeline'); s.value = 'minimal'; s.dispatchEvent(new Event('change')); })()`);
     await page.waitFor(`${ROWS}.length === 4`);
-    assert.deepEqual(await page.evaluate(ids), ['planner (planner)', 'impl (implementor)', 'val (validator)', 'integration (integration-validator)']);
+    assert.deepEqual(await page.evaluate(ids), ['planner (planner)', 'impl (backend-implementor)', 'val (backend-validator)', 'integration (integration-validator)']);
     assert.deepEqual(await page.evaluate(`${ROWS}.map((r) => !!r.querySelector('input'))`), [true, true, false, false]);
     await shot('create-minimal-1100.png');
 

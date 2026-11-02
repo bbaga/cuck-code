@@ -150,7 +150,7 @@ test("after a switch the line shows the new graph, a call on a new node works an
     { to: "backend-impl", task: "t", repo: "api" });
   assert.equal(old.status, 404);
   const fresh = await call("POST", "/api/protocol/lines/sw-main/interactions/start",
-    { to: "val", source: "i1" });
+    { to: "val", source: "i1", criteria: "1. It works." });
   assert.equal(fresh.status, 201, JSON.stringify(fresh.body));
   // a running instance blocks a further switch
   const blocked = await switchTo("sw-main", { pipelineName: "default", remap: { impl: "backend-impl", val: "backend-val" } });

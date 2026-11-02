@@ -20,9 +20,9 @@ const nodeType = (name, extra = "") => `---\nname: ${name}\ndescription: A test 
 const build = (dirs) => buildCatalog({ builtInDir: BUILT_IN, readDir: defaultReadDir, readFile: defaultReadFile, ...dirs });
 
 // The built-in minimal pipeline with another name and the implementor type swapped.
-const pipelineText = (name, implType = "implementor") =>
+const pipelineText = (name, implType = "backend-implementor") =>
   fs.readFileSync(path.join(BUILT_IN, "pipelines", "minimal.yaml"), "utf8")
-    .replace("name: minimal", `name: ${name}`).replace("type: implementor", `type: ${implType}`);
+    .replace("name: minimal", `name: ${name}`).replace("type: backend-implementor", `type: ${implType}`);
 
 test("one entry per layer, each with its layer; built-in interactions have builtIn", () => {
   const managed = tmp(), user = tmp();

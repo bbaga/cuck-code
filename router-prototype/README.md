@@ -174,8 +174,8 @@ start: planner
 
 nodes:
   planner:     { type: planner }
-  impl:        { type: implementor }
-  val:         { type: validator, checks: [impl] }
+  impl:        { type: backend-implementor }
+  val:         { type: backend-validator, checks: [impl] }
   integration: { type: integration-validator }
 
 edges:
@@ -245,6 +245,13 @@ own-worktree), `validator` (fresh, source, verdict), `integration-validator`
 (fresh, integration, verdict), and the personas `backend-implementor`,
 `frontend-implementor`, `backend-validator`, `frontend-validator`. The planner
 picks a persona by starting the node of that persona.
+
+Use the persona types for the nodes that do the work. `implementor` and
+`validator` are base types that hold only the first part of the prompt: the
+task, the report format and the criteria text sit in the persona types. A node
+of a base type has no `task` (or `criteria`) field, and its prompt is
+incomplete. Use a base type only as the parent of your own type, and put the
+rest of the prompt in that type (see "Write a node type").
 
 ### Interaction: `INTERACTION.md`
 
@@ -455,7 +462,7 @@ defaults:
 
 nodes:
   A:
-    type: implementor
+    type: backend-implementor
     prompt: |
       Follow the error-handling rules in docs/errors.md.
   B:
@@ -585,8 +592,8 @@ security defects and has one extra field of its own, `riskLevel`.
 
    nodes:
      planner: { type: planner }
-     impl:    { type: implementor }
-     val:     { type: validator, checks: [impl] }
+     impl:    { type: backend-implementor }
+     val:     { type: backend-validator, checks: [impl] }
      sec:     { type: security-reviewer, checks: [impl] }
 
    edges:

@@ -121,3 +121,24 @@ test("the report template uses router variables only and renders the old sentenc
   assert.match(as("integration", "failed"), /^INTEGRATION STOPPED\/FAILED/);
   assert.match(as("integration", "timeout"), /^INTEGRATION TIMEOUT - integration validator 'api' hit the run time limit\. The merged work is on branch feat\/x\./);
 });
+
+// A node of a base type (implementor, validator) has an incomplete prompt: no task, no criteria.
+// Every node that `start` can create in a built-in pipeline must take the field that carries its work.
+test("every node a built-in pipeline can start takes the field of its work", () => {
+  const WORK_FIELD = { "own-worktree": "task", source: "criteria", integration: "instructions" };
+  for (const name of ["default", "minimal"]) {
+    const r = resolvePipelineDefinition(name, catalog());
+    let checked = 0;
+    for (const edge of r.edges) {
+      if (!edge.interactions.includes("start")) continue;
+      const node = r.nodes[edge.to];
+      const workspace = r.types[node.type].workspace;
+      const field = WORK_FIELD[workspace];
+      if (!field) continue;
+      const need = Object.keys(requiredFields(r, "start", edge.to));
+      assert.ok(need.includes(field), `${name}: start on '${edge.to}' (${node.type}) must take '${field}', takes ${JSON.stringify(need)}`);
+      checked++;
+    }
+    assert.ok(checked >= 3, `${name}: the planner can start at least an implementor, a validator and the integration node`);
+  }
+});
