@@ -125,7 +125,7 @@ sent in full, without adding punctuation to the report text.
 
 ## Graph lanes
 
-The graph places each standard validator in the lane of the implementor it validates. The first validator shares the implementor row, and later validators use rows below it. Each implementor lane has at least one row. Unmatched validators use an ordered fallback section. Integration validators use a separate final section, with eligible Preview nodes on their integration row. The failed-validator filter runs before row sizing, so hidden validators do not leave empty rows. Graph selection keeps the fixed viewport position.
+The graph places each standard validator in the lane of the implementor it validates. The first validator shares the implementor row, and later validators use rows below it. Each implementor lane has at least one row. Unmatched validators use an ordered fallback section. Integration validators sit in the right-hand column in time order: each one is placed right after the lane of the last implementor it merged, and implementors created later start below it (several integrations after the same lane stack in creation order). The merged implementors come from the integration manifest the router writes (`merged` in the dashboard state); an old integration without a manifest is inferred from the order of the validators and integrations (it merged the implementors validated before it). An integration that cannot be placed stays in a final section at the bottom. Eligible Preview nodes sit on their integration row. The failed-validator filter runs before row sizing, so hidden validators do not leave empty rows. Graph selection keeps the fixed viewport position.
 
 ## Pipelines, node types and interactions
 

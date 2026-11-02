@@ -545,12 +545,34 @@
     return Math.max(NODE_MIN_COLUMN_WIDTH, ...widths);
   }
 
+  // The implementor ids each integration validator merged, by worker id.
+  // Exact when the router recorded them (`merged`). Otherwise inferred from the
+  // old rule: an integration started after the validators of every implementor
+  // then existing had passed, so it merged the implementors that have a validator
+  // EARLIER in the list. Only the relative order of validators and integrations
+  // is used. Empty when neither source gives anything (never guess).
+  function integrationMergedIds(list) {
+    const result = new Map();
+    const seen = new Set();
+    for (const w of list) {
+      if (!w) continue;
+      const role = w.role || "implementor";
+      if (role === "validator" && w.kind !== "integration" && w.validates) seen.add(w.validates);
+      else if (role === "validator" && w.kind === "integration") {
+        const exact = Array.isArray(w.merged) ? w.merged : [];
+        result.set(w.id, exact.length ? exact.slice() : [...seen]);
+      }
+    }
+    return result;
+  }
+
   function buildGraphLanes(workers, hideFailed) {
     const list = Array.isArray(workers) ? workers : [];
+    const mergedIds = integrationMergedIds(list);
     const implementors = list.filter((w) => w && (w.role || "implementor") !== "validator");
     const validators = list.filter((w) => w && (w.role || "implementor") === "validator"
       && w.kind !== "integration" && !shouldHideValidator(w, hideFailed));
-    const integrations = list.filter((w) => shouldShowIntegrationValidator(w, hideFailed));
+    const allIntegrations = list.filter((w) => shouldShowIntegrationValidator(w, hideFailed));
     const assigned = new Set(implementors.map((w) => w.id));
     const lanes = implementors.map((worker) => {
       const grouped = validators.filter((v) => v.validates === worker.id);
@@ -558,13 +580,42 @@
       return { worker, validators: grouped, rowCount: Math.max(1, grouped.length) };
     });
     const orphans = validators.filter((v) => !assigned.has(v.id));
+    // An integration follows the last lane of the implementors it merged.
+    const laneOf = new Map(lanes.map((lane, i) => [lane.worker.id, i]));
+    const placed = lanes.map(() => []);
+    const unplaced = [];
+    for (const g of allIntegrations) {
+      let anchor = -1;
+      for (const id of mergedIds.get(g.id) || []) {
+        if (laneOf.has(id)) anchor = Math.max(anchor, laneOf.get(id));
+      }
+      if (anchor >= 0) placed[anchor].push(g); else unplaced.push(g);
+    }
+    const integrations = [];
+    const integrationRows = [];
+    const integrationAnchors = [];
     let row = 0;
-    lanes.forEach((lane, index) => { lane.startRow = row; row += lane.rowCount; if (index < lanes.length - 1) row++; });
+    let first = true;
+    const block = (size) => { if (!first) row++; first = false; const start = row; row += size; return start; };
+    lanes.forEach((lane, index) => {
+      lane.startRow = block(lane.rowCount);
+      // Integrations after one lane stack directly under each other.
+      if (placed[index].length) {
+        const start = block(placed[index].length);
+        placed[index].forEach((g, i) => {
+          integrations.push(g); integrationAnchors.push(index); integrationRows.push(start + i);
+        });
+      }
+    });
     const orphanStartRow = orphans.length ? row + (lanes.length ? 1 : 0) : null;
     if (orphans.length) row = orphanStartRow + orphans.length;
-    const integrationStartRow = integrations.length ? row + (row ? 1 : 0) : null;
-    if (integrations.length) row = integrationStartRow + integrations.length;
-    return { lanes, orphans, orphanStartRow, integrations, integrationStartRow, totalRows: row };
+    const integrationStartRow = unplaced.length ? row + (row ? 1 : 0) : null;
+    unplaced.forEach((g, i) => {
+      integrations.push(g); integrationAnchors.push(null); integrationRows.push(integrationStartRow + i);
+    });
+    if (unplaced.length) row = integrationStartRow + unplaced.length;
+    return { lanes, orphans, orphanStartRow, integrations, integrationStartRow, integrationRows,
+      integrationAnchors, totalRows: row };
   }
 
   function previewSelectionKey(workerId) {

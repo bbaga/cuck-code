@@ -716,10 +716,11 @@ test("multiple integration validators preserve insertion order in final section"
 });
 
 test("failed standard validators are filtered before row allocation and section offsets", () => {
-  const records=[{id:"a"},{id:"bad",role:"validator",validates:"a",status:"completed",verdict:"fail"},
+  // The integrations come first in the list: with no earlier validator they cannot be placed and stay at the bottom.
+  const records=[{id:"int-a",role:"validator",kind:"integration"},{id:"int-b",role:"validator",kind:"integration"},
+    {id:"a"},{id:"bad",role:"validator",validates:"a",status:"completed",verdict:"fail"},
     {id:"bad-2",role:"validator",validates:"a",status:"completed",verdict:"fail"},{id:"b"},{id:"b-validator",role:"validator",validates:"b"},
-    {id:"orphan",role:"validator",validates:"absent"},
-    {id:"int-a",role:"validator",kind:"integration"},{id:"int-b",role:"validator",kind:"integration"}];
+    {id:"orphan",role:"validator",validates:"absent"}];
   const hidden=pipelineUiModule.buildGraphLanes(records,true);
   assert.deepEqual(hidden.lanes.map(l=>({id:l.worker.id,startRow:l.startRow,rowCount:l.rowCount})),[
     {id:"a",startRow:0,rowCount:1},{id:"b",startRow:2,rowCount:1}]);

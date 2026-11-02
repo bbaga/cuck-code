@@ -24,7 +24,7 @@ const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
 const { buildCatalog, defaultReadDir, defaultReadFile } = require("./plugin-catalog");
 const { resolvePipelineDefinition, PipelineError } = require("./resolve-pipeline");
 const { loadBuiltinPipeline, migrateLine, normalizeLine, nodeSettingsFields, builtinPipelineNames, planGraphChange,
-  implementorNodeFor, validatorNodeFor, integrationNodeFor, isLineDirectory } = require("./line-graph");
+  implementorNodeFor, validatorNodeFor, integrationNodeFor, isLineDirectory, integrationMerged } = require("./line-graph");
 const { checkCall, checkLineValues, requiredFields, introspect } = require("./call-fields");
 const { renderReports, kindOfNode } = require("./report-interaction");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
@@ -566,6 +566,7 @@ function dashboardStateForLine(line) {
       humanIntervention: w.humanIntervention === true,
       error: w.error === true, ...compactionFields(w, line),
       ...scopeSummary(w, line.workers),
+      ...(w.kind === "integration" ? { merged: integrationMerged(w) } : {}),
     })) };
 }
 
@@ -1653,7 +1654,7 @@ function createIntegration(line, nodeId, fields) {
     commits: manifest.flatMap((r) => r.branches.map((b) => `${r.name}:${b.branch}@${b.sha.slice(0, 12)}`)) });
   broadcast(line, "worker_spawned", { worker: { id, name, branch, status: worker.status,
     role: worker.role, validates: null, persona: worker.persona, kind: "integration",
-    ...scopeSummary(worker, line.workers) } });
+    merged: integrationMerged(worker), ...scopeSummary(worker, line.workers) } });
   spawnWorker(line, worker, worker.prompt);
   return { ok: true, worker, response: { validatorId: id, branch, worktree: root,
     branches: manifest.flatMap((r) => r.branches.map((b) => ({ repo: r.name, branch: b.branch, commit: b.sha }))),
@@ -2373,6 +2374,7 @@ const routeRequest = (req, res) => {
         kind: w.kind || "standard", humanIntervention: w.humanIntervention === true,
         ...changesetFields(w), ...baseFields(w),
         lastError: w.lastError || null,
+        ...(w.kind === "integration" ? { merged: integrationMerged(w) } : {}),
       })) });
     }
     if (!line.planApproved) return json(res, 409, { error: "plan not approved" });

@@ -401,7 +401,24 @@ function isLineDirectory(entry) {
     && typeof entry.name === "string" && !entry.name.startsWith(".") && !RESERVED_LINES_SUBDIRS.has(entry.name);
 }
 
+// The implementor worker ids an integration validator merged, from the manifest
+// the router wrote when it started (integration.repos[].branches[].workerId).
+// Unique ids in manifest order. Empty for any other worker or an old integration
+// without a manifest. The manifest itself is never sent to the browser.
+function integrationMerged(worker) {
+  if (!worker || worker.kind !== "integration") return [];
+  const repos = worker.integration && Array.isArray(worker.integration.repos) ? worker.integration.repos : [];
+  const ids = [];
+  for (const repo of repos) {
+    const branches = repo && Array.isArray(repo.branches) ? repo.branches : [];
+    for (const b of branches) {
+      if (b && typeof b.workerId === "string" && b.workerId && !ids.includes(b.workerId)) ids.push(b.workerId);
+    }
+  }
+  return ids;
+}
+
 module.exports = {
-  RESERVED_LINES_SUBDIRS, isLineDirectory, PHASE_TYPES, phaseOfType, migrateLine, normalizeLine, nodeSettingsFromPipeline,
+  integrationMerged, RESERVED_LINES_SUBDIRS, isLineDirectory, PHASE_TYPES, phaseOfType, migrateLine, normalizeLine, nodeSettingsFromPipeline,
   graphView, nodeSettingsFields, builtinPipelineNames, planGraphChange,
   implementorNodeFor, validatorNodeFor, integrationNodeFor, loadBuiltinPipeline };

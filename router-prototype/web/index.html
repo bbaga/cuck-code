@@ -610,7 +610,7 @@ window.addEventListener("DOMContentLoaded", () => {
   // Everything renderGraphContents draws or reads; equal signature means an identical graph.
   function graphSignature(st) {
     const fields = ["id", "name", "role", "kind", "status", "state", "verdict", "validates", "persona", "harness",
-      "model", "effort", "attention", "needsAttention", "humanIntervention", "error", "hasError", "lastError"];
+      "model", "effort", "attention", "needsAttention", "humanIntervention", "error", "hasError", "lastError", "merged"];
     const workers = [...st.workers.values()];
     return JSON.stringify([
       workers.map((w) => fields.map((f) => w[f])),
@@ -669,7 +669,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const validatorY = new Map();
     lanes.forEach((lane) => lane.validators.forEach((v, i) => validatorY.set(v.id, 14 + (lane.startRow + i) * 46)));
     layout.orphans.forEach((v, i) => validatorY.set(v.id, 14 + (layout.orphanStartRow + i) * 46));
-    const integrationY = (i) => 14 + (layout.integrationStartRow + i) * 46;
+    const integrationY = (i) => 14 + layout.integrationRows[i] * 46;
 
     const pn = document.createElement("div");
     pn.className = "gnode planner" + (st.selected === null ? " sel" : "");
