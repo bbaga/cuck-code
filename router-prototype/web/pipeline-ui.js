@@ -30,6 +30,18 @@
   }
 
   // Explicit error state wins over human intervention state.
+  // The marker of a whole line (sidebar entry and card header). The planner is idle between its turns
+  // while implementors and validators keep working: the line is still running then. Failed and
+  // needs-attention keep their priority, and a line with nothing running shows the planner's state.
+  function lineMarkerState(plannerState, workers) {
+    const base = markerState(plannerState);
+    if (base.color !== "green") return base;
+    const list = Array.isArray(workers) ? workers : [];
+    const running = list.filter((w) => w && String(w.state || w.status || "").toLowerCase() === "running").length;
+    if (!running) return base;
+    return { className: "marker-blue marker-running", color: "blue",
+      label: "Running: " + running + (running === 1 ? " worker is" : " workers are") + " active" };
+  }
   function attentionIndicator(item) {
     const value = item || {};
     const state = String(value.state || value.status || "").toLowerCase();
@@ -1098,6 +1110,7 @@
     buildGraphLanes,
     attentionIndicator,
     markerState,
+    lineMarkerState,
     nodeWidth,
     columnWidth,
     NODE_FONTS,

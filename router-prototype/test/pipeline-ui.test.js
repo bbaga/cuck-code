@@ -57,7 +57,7 @@ test("pipeline marker precedes the name and shares line-list state", () => {
   const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
   assert.match(html, /head\.append\(dot, name,/);
   assert.match(html, /for \(const marker of \[st\.dot, st\.entryDot\]\)/);
-  assert.match(html, /const markerStateValue = markerState\(statusMarkerState\(st\)\)/);
+  assert.match(html, /const markerStateValue = lineMarkerState\(statusMarkerState\(st\), \[\.\.\.st\.workers\.values\(\)\]\)/);
   assert.match(html, /\.dot\.marker-yellow \{ background:/);
   assert.deepEqual([
     pipelineUiModule.markerState({ status: "standby" }).color,
@@ -967,4 +967,29 @@ test("graph switch: preselect and completeness of the remap", () => {
   assert.equal(u.remapComplete(rows, { a: "x", b: "z" }), true);
   assert.equal(u.remapComplete(rows, { a: "x", b: "nope" }), false);
   assert.equal(u.remapComplete([], {}), true);
+});
+
+test("a line keeps showing running while workers run after the planner went idle", () => {
+  const { lineMarkerState } = pipelineUiModule;
+  const idle = { status: "idle" };
+  const running = [{ id: "a", status: "completed" }, { id: "b", status: "running" }, { id: "c", status: "running" }];
+  const busy = lineMarkerState(idle, running);
+  assert.equal(busy.color, "blue");
+  assert.match(busy.className, /marker-running/);
+  assert.equal(busy.label, "Running: 2 workers are active");
+  assert.equal(lineMarkerState(idle, [{ status: "running" }]).label, "Running: 1 worker is active");
+  // nothing running: the planner state is shown as before
+  assert.equal(lineMarkerState(idle, [{ status: "completed" }, { status: "stopped" }, { status: "failed" }]).color, "green");
+  assert.equal(lineMarkerState(idle, []).color, "green");
+  assert.equal(lineMarkerState(idle, undefined).color, "green");
+  // failed and needs attention keep their priority over running workers
+  assert.equal(lineMarkerState({ status: "failed" }, running).color, "red");
+  assert.equal(lineMarkerState({ status: "idle", error: true }, running).color, "red");
+  assert.equal(lineMarkerState({ status: "attention" }, running).color, "yellow");
+  assert.equal(lineMarkerState({ status: "idle", humanIntervention: true }, running).color, "yellow");
+  // a running planner is running; a line that has not started stays standby
+  assert.equal(lineMarkerState({ status: "running" }, []).color, "blue");
+  assert.equal(lineMarkerState({ status: "standby" }, running).color, "gray");
+  // the planner node itself still shows only the planner state
+  assert.equal(pipelineUiModule.markerState(idle).color, "green");
 });
