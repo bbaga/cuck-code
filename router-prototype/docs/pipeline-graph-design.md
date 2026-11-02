@@ -498,7 +498,14 @@ Phases map to node types. Every mapping below uses this table:
 - **Pipeline tab of a line.**
   - The graph view: nodes, with arrows labelled by interaction names.
   - The effective settings per node, and the settings form for this line.
-    The graph structure is shown read-only.
+    The graph structure is changed in the "Change the pipeline" section
+    between the graph and the form: pick a pipeline, "Check" (dry run),
+    map each node that no longer exists to a node of the new pipeline (one
+    row per node, with the workers it holds; a single candidate is
+    preselected), see the settings that will be dropped, then "Apply". The
+    section shows the blocked cases (running instances, busy planner) and
+    the router's errors, and the graph, the settings rows and the effective
+    settings follow the answer.
 - **Pipelines page** (`/pipelines`).
   - Lists every pipeline, node type and interaction, by layer.
   - Built-in and user files are read-only and have a "Duplicate to edit"

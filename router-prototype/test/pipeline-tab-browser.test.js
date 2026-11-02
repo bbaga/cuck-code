@@ -59,7 +59,7 @@ test("pipeline tab: graph of the default pipeline, settings rows, save, 375 px",
     const edgeLines = await page.evaluate(`[...${PANE}.querySelectorAll('.pipeEdgesText li')].map((l) => l.textContent)`);
     assert.equal(edgeLines.length, 10);
     assert.equal(edgeLines[0], 'planner -> backend-impl: start, feedback, accept');
-    assert.match(await page.evaluate(`${PANE}.innerText`), /The pipeline structure of a line does not change after creation\./);
+    assert.match(await page.evaluate(`${PANE}.innerText`), /Choose another pipeline to change the graph\./);
     // the old summary and the preset bar are gone
     assert.equal(await page.evaluate(`${PANE}.querySelector('.pipeCfg, .presetBar')`), null);
     assert.doesNotMatch(await page.evaluate(`${PANE}.innerText`), /Effective settings/);

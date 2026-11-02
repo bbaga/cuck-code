@@ -761,6 +761,16 @@ panel). `remap` is `{ "<oldNodeId>": "<newNodeId>" }`.
 - Limits: existing workers keep the prompt they were created with (it may name
   the old node); the router does not rewrite their history. Nothing runs during
   the change.
+- In the web UI: open the line's Pipeline tab, go to "Change the pipeline"
+  (below the graph), pick a pipeline and press Check. The check shows one of:
+  the line already uses it; blocked (running instances are listed by name, or
+  the planner is busy: wait or stop them); the pipeline's errors; ready (the
+  moved workers and the settings that will be dropped); or a mapping table
+  with one row per node that does not exist in the new pipeline (the workers
+  on it, and a choice of nodes of the same phase; a single candidate is
+  preselected). Apply is enabled when every row has a choice. It changes the
+  graph, the settings rows and the effective settings in place and says
+  whether the planner was told.
 
 ## Context compaction
 

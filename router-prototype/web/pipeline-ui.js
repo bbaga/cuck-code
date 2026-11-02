@@ -926,6 +926,66 @@
     } catch { return false; }
   }
 
+  // ---- Change the pipeline of a line (POST /api/lines/:id/graph) ----
+
+  // Request body. `remap` is kept only when it has entries; dryRun only when true.
+  function buildGraphChangeBody(pipelineName, remap, dryRun) {
+    const body = { pipelineName };
+    const entries = Object.entries(remap || {}).filter(([, to]) => typeof to === "string" && to);
+    if (entries.length) body.remap = Object.fromEntries(entries);
+    if (dryRun) body.dryRun = true;
+    return body;
+  }
+
+  // Orphan rows with the choice preselected when a node has exactly one candidate.
+  function preselectRemap(orphanRows) {
+    const choices = {};
+    for (const row of orphanRows || []) {
+      choices[row.node] = row.choice || (row.candidates && row.candidates.length === 1 ? row.candidates[0] : "");
+    }
+    return choices;
+  }
+
+  // True when every orphan has a choice that is one of its candidates.
+  function remapComplete(orphanRows, choices) {
+    const map = choices || {};
+    return (orphanRows || []).every((row) => !!map[row.node] && (row.candidates || []).includes(map[row.node]));
+  }
+
+  // Model of a dry-run answer: { state, message, orphanRows, moves, droppedSettings, canApply }.
+  function graphSwitchView(status, body) {
+    const b = body && typeof body === "object" ? body : {};
+    const base = { message: "", orphanRows: [], moves: [], droppedSettings: [], canApply: false };
+    const dropped = Array.isArray(b.droppedSettings) ? b.droppedSettings : [];
+    if (status === 409 && b.code === "INSTANCES_RUNNING") {
+      const names = Array.isArray(b.running) ? b.running : [];
+      return { ...base, state: "blocked", message: "These instances are running: " + (names.join(", ") || "unknown")
+        + ". Wait until they finish or stop them, then check again." };
+    }
+    if (status === 409 && b.code === "PLANNER_BUSY") {
+      return { ...base, state: "blocked", message: "The planner is running or compacting. Wait until it is idle, then check again." };
+    }
+    if (status !== 200) {
+      const rules = Array.isArray(b.rules) ? b.rules : (Array.isArray(b.errors) ? b.errors : []);
+      const text = b.error || (rules.length ? "" : "The pipeline could not be checked.");
+      return { ...base, state: "error", message: [text, ...rules.map((r) => (r && r.message) || String(r))].filter(Boolean).join(" ") };
+    }
+    if (b.unchanged) return { ...base, state: "unchanged", message: "This line already uses this pipeline." };
+    const moves = Array.isArray(b.moves) ? b.moves : [];
+    if (b.ok === false || (b.code === "GRAPH_REMAP_REQUIRED")) {
+      const orphanRows = (Array.isArray(b.orphans) ? b.orphans : []).map((o) => ({
+        node: o.node, phase: o.phase || "", workers: Number.isFinite(o.workers) ? o.workers : (o.workerNames || []).length,
+        workerNames: o.workerNames || [], candidates: o.candidates || (b.candidates && b.candidates[o.node]) || [], choice: "" }));
+      for (const row of orphanRows) if (row.candidates.length === 1) row.choice = row.candidates[0];
+      return { ...base, state: "needs-remap", orphanRows, moves, droppedSettings: dropped,
+        message: "Some nodes of this line do not exist in the new pipeline. Choose a node for each.",
+        canApply: remapComplete(orphanRows, preselectRemap(orphanRows)) };
+    }
+    return { ...base, state: "ready", moves, droppedSettings: dropped, canApply: true,
+      message: moves.length ? "Ready. " + moves.length + (moves.length === 1 ? " worker moves" : " workers move") + " to a node of the new pipeline."
+        : "Ready. No worker has to move." };
+  }
+
   return {
     EFFORT_LEVELS,
     NODE_FONT,
@@ -967,6 +1027,10 @@
     buildNodeSettingsPayload,
     buildCreateBody,
     pipelineErrorsText,
+    buildGraphChangeBody,
+    graphSwitchView,
+    remapComplete,
+    preselectRemap,
     formatScopePanelData,
     authBadge,
     previewForIntegration,

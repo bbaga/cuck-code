@@ -263,6 +263,29 @@
     stroke-width: 4px; stroke-linejoin: round; }
   .pipeEdgesText { margin: 8px 0 0; font-size: .72rem; color: #8fa3bd; }
   .pipeEdgesText ul { margin: 6px 0 0; padding-left: 18px; }
+  .pipeSwitch { margin: 14px 0; padding-top: 4px; border-top: 1px solid #262b33; }
+  .swPick { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+  .swPick label { font-size: .8rem; color: #8fa3bd; }
+  .swPick select, .swTable select { min-width: 0; max-width: 100%; }
+  .swStatus { margin-top: 8px; padding: 6px; border-radius: 4px; background: #1a2230; color: #d8dee6; font-size: .8rem; overflow-wrap: anywhere; }
+  .swRemap { margin-top: 8px; }
+  .swTable { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  .swTable th, .swTable td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #262b33; font-weight: normal; vertical-align: middle; }
+  .swTable thead th { color: #8fa3bd; font-size: .72rem; }
+  .swTable tbody th { color: #d8dee6; overflow-wrap: anywhere; }
+  .swPhase { color: #6c7a8c; font-size: .72rem; }
+  .swDropped { margin: 8px 0 0; font-size: .78rem; color: #e0b36a; overflow-wrap: anywhere; }
+  .pipeSwitch > button { margin-top: 10px; }
+  .pipeSwitch button:focus-visible, .pipeSwitch select:focus-visible { outline: 2px solid #7db7ff; outline-offset: 2px; }
+  @media (max-width: 640px) {
+    .swPick { grid-template-columns: 1fr; }
+    .swTable thead { position: absolute; left: -9999px; }
+    .swTable, .swTable tbody, .swTable tr, .swTable th, .swTable td { display: block; width: 100%; box-sizing: border-box; }
+    .swTable tr { padding: 6px 0; border-bottom: 1px solid #262b33; }
+    .swTable th, .swTable td { border: 0; padding: 2px 0; }
+    .swTable td[data-label]::before { content: attr(data-label) ": "; color: #6c7a8c; }
+    .swTable td select { width: 100%; }
+  }
   .pipeNote { font-size: .72rem; color: #6c7a8c; margin: 0 0 8px; }
   .nodeRow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 88px 72px; }
   .nodeRow .phaseName { grid-column: 1 / -1; color: #8fa3bd; overflow-wrap: anywhere; }
@@ -322,7 +345,7 @@
 <script src="registry-line.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
-  const { nodeRowsFromResolved, layoutGraph, nodeRowsFromGraphView, nodeSummaryText, edgeTextLines, buildNodeSettingsPayload, buildCreateBody, pickerPipelines,
+  const { nodeRowsFromResolved, layoutGraph, nodeRowsFromGraphView, nodeSummaryText, edgeTextLines, buildNodeSettingsPayload, buildCreateBody, pickerPipelines, buildGraphChangeBody, graphSwitchView, remapComplete,
     pipelineOptionLabel, pipelineErrorsText, EFFORT_LEVELS, parseContextSize, formatTokens, filterInstalled, authBadge, previewForIntegration,
     previewSelectionKey, previewSelectionExists, isPassingIntegration, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
     PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
@@ -995,9 +1018,6 @@ window.addEventListener("DOMContentLoaded", () => {
     pipePane.hidden = true;
     const pipeGraphTitle = document.createElement("h3");
     pipeGraphTitle.textContent = "Pipeline graph";
-    const pipeStructureNote = document.createElement("p");
-    pipeStructureNote.className = "pipeNote";
-    pipeStructureNote.textContent = "The pipeline structure of a line does not change after creation.";
     const pipeGraphBox = document.createElement("div");
     pipeGraphBox.className = "pipeGraphBox";
     const pipeEdgesText = document.createElement("details");
@@ -1030,7 +1050,7 @@ window.addEventListener("DOMContentLoaded", () => {
     pipeRevert.className = "secondary";
     pipeRevert.textContent = "Revert";
     pipeBtns.append(pipeSave, pipeRevert);
-    pipePane.append(pipeGraphTitle, pipeStructureNote, pipeGraphBox, pipeEdgesText,
+    pipePane.append(pipeGraphTitle, pipeGraphBox, pipeEdgesText,
       pipeEditTitle, pipeNote, pipeForm.el, pipeMsg, pipeBtns);
     const scopeDetails = document.createElement("details");
     scopeDetails.className = "scopeDetails";
@@ -1149,6 +1169,8 @@ window.addEventListener("DOMContentLoaded", () => {
     tabEvBtn.addEventListener("click", () => setLineTab(st, "evidence"));
     tabPipeBtn.addEventListener("click", () => setLineTab(st, "pipeline"));
     renderPipelineGraph(st);
+    st.pipeSwitch = createGraphSwitch(st);
+    pipePane.insertBefore(st.pipeSwitch.el, pipeEditTitle);
     pipeForm.set(st.nodeSettings);
     pipeRevert.addEventListener("click", () => { pipeForm.set(st.nodeSettings); showPipeMsg(null); });
     pipeSave.addEventListener("click", async () => {
@@ -1417,12 +1439,182 @@ window.addEventListener("DOMContentLoaded", () => {
     st.entryCount.textContent = st.workers.size ? st.workers.size + "w" : "";
   }
 
+
+  // "Change the pipeline" section of the Pipeline tab: pick, Check (dry run), map orphan nodes, Apply.
+  function createGraphSwitch(st) {
+    const mk = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text) n.textContent = text; return n; };
+    const el = mk("section", "pipeSwitch");
+    const id = "sw-" + st.id;
+    el.setAttribute("aria-labelledby", id + "-title");
+    const title = mk("h3", "", "Change the pipeline");
+    title.id = id + "-title";
+    const note = mk("p", "pipeNote", "Choose another pipeline to change the graph. Workers that already ran move to nodes of the new pipeline.");
+    const row = mk("div", "swPick");
+    const label = mk("label", "", "Pipeline");
+    label.htmlFor = id + "-pick";
+    const pick = mk("select"); pick.id = id + "-pick";
+    const checkBtn = mk("button", "secondary", "Check");
+    checkBtn.type = "button";
+    row.append(label, pick, checkBtn);
+    const status = mk("div", "swStatus"); status.setAttribute("role", "status"); status.hidden = true;
+    const alertBox = mk("div", "createErr"); alertBox.setAttribute("role", "alert"); alertBox.hidden = true;
+    const remapBox = mk("div", "swRemap"); remapBox.hidden = true;
+    const dropped = mk("p", "swDropped"); dropped.hidden = true;
+    const applyBtn = mk("button", "", "Apply"); applyBtn.type = "button"; applyBtn.disabled = true;
+    el.append(title, note, row, status, alertBox, remapBox, dropped, applyBtn);
+
+    let list = [], loaded = false, model = null, choices = {}, busy = false, pending = false, seq = 0;
+    const current = () => (st.pipeGraph && st.pipeGraph.name) || "";
+    let seenName = current();
+    const url = "/api/lines/" + encodeURIComponent(st.id) + "/graph";
+    const post = async (body) => {
+      try {
+        const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        return { status: res.status, body: await res.json().catch(() => ({})) };
+      } catch { return { status: 0, body: { error: "The request failed. Check the connection and try again." } }; }
+    };
+    const sync = () => {
+      pick.disabled = busy;
+      checkBtn.disabled = busy || !pick.value;
+      const complete = !!model && model.canApply && remapComplete(model.orphanRows, choices);
+      applyBtn.disabled = busy || pending || !complete;
+      for (const s of remapBox.querySelectorAll("select")) s.disabled = busy;
+    };
+    const show = (kind, text) => {
+      status.hidden = kind !== "status" || !text;
+      alertBox.hidden = kind !== "alert" || !text;
+      status.textContent = kind === "status" ? text || "" : "";
+      alertBox.textContent = kind === "alert" ? text || "" : "";
+    };
+    const showDropped = () => {
+      const list2 = model ? model.droppedSettings : [];
+      dropped.hidden = !list2.length;
+      dropped.textContent = list2.length ? "Settings of these nodes will be dropped: " + list2.join(", ") + "." : "";
+    };
+    const renderOptions = () => {
+      const keep = pick.value;
+      pick.innerHTML = "";
+      const names = list.length ? list : (current() ? [{ name: current() }] : []);
+      for (const p of names) {
+        const o = mk("option", "", pipelineOptionLabel(p.name === current() ? { ...p, name: p.name + " (current)" } : p));
+        o.value = p.name;
+        pick.appendChild(o);
+      }
+      if (!names.length) { const o = mk("option", "", "No pipelines available"); o.value = ""; pick.appendChild(o); }
+      pick.value = names.some((p) => p.name === keep) ? keep : current();
+      sync();
+    };
+    const renderResult = () => {
+      remapBox.textContent = ""; remapBox.hidden = true;
+      if (!model) { show(null); showDropped(); return sync(); }
+      const bad = model.state === "error" || model.state === "blocked";
+      let text = model.message;
+      if (model.state === "ready" && model.moves.length) {
+        text += " " + model.moves.map((m) => m.name + ": " + m.from + " -> " + m.to).join("; ") + ".";
+      }
+      show(bad ? "alert" : "status", text);
+      if (model.state === "needs-remap") {
+        remapBox.hidden = false;
+        const table = mk("table", "swTable");
+        table.setAttribute("aria-label", "Map the nodes that do not exist in the new pipeline");
+        const head = mk("thead"); const hr = mk("tr");
+        for (const h of ["Old node", "Workers", "New node"]) { const th = mk("th", "", h); th.scope = "col"; hr.appendChild(th); }
+        head.appendChild(hr); table.appendChild(head);
+        const body = mk("tbody");
+        for (const o of model.orphanRows) {
+          const tr = mk("tr");
+          const th = mk("th", "", o.node); th.scope = "row";
+          th.appendChild(mk("span", "swPhase", " (" + o.phase + ")"));
+          const cnt = mk("td", "", o.workers + (o.workers === 1 ? " worker" : " workers"));
+          cnt.dataset.label = "Workers"; cnt.title = o.workerNames.join(", ");
+          const td = mk("td"); td.dataset.label = "New node";
+          const sel = mk("select"); sel.id = id + "-map-" + o.node; sel.dataset.node = o.node;
+          sel.setAttribute("aria-label", "New node for " + o.node);
+          const empty = mk("option", "", "Choose a node..."); empty.value = ""; sel.appendChild(empty);
+          for (const c of o.candidates) { const op = mk("option", "", c); op.value = c; sel.appendChild(op); }
+          sel.value = choices[o.node] || "";
+          sel.addEventListener("change", () => { choices[o.node] = sel.value; recheck(); });
+          td.appendChild(sel); tr.append(th, cnt, td); body.appendChild(tr);
+        }
+        table.appendChild(body); remapBox.appendChild(table);
+      }
+      showDropped();
+      sync();
+    };
+    // After a choice: ask the router again with the mapping, so the dropped settings and errors are current.
+    const recheck = async () => {
+      const mine = ++seq;
+      model.droppedSettings = []; showDropped();
+      if (!remapComplete(model.orphanRows, choices)) { pending = false; model.canApply = false; show("status", model.message); return sync(); }
+      pending = true; sync();
+      const out = await post(buildGraphChangeBody(pick.value, choices, true));
+      if (mine !== seq) return;
+      pending = false;
+      const v = graphSwitchView(out.status, out.body);
+      model.canApply = v.state === "ready";
+      if (model.canApply) { model.droppedSettings = v.droppedSettings; show("status", "Ready. " + v.moves.length + (v.moves.length === 1 ? " worker moves" : " workers move") + " to the new nodes."); }
+      else show("alert", v.message || "The mapping is not valid.");
+      showDropped();
+      sync();
+    };
+    const reset = () => { seq++; pending = false; model = null; choices = {}; renderResult(); };
+    const load = async () => {
+      try {
+        const res = await fetch("/api/pipelines");
+        if (res.ok) { list = pickerPipelines((await res.json()).pipelines); loaded = true; }
+      } catch {}
+      renderOptions();
+    };
+    pick.addEventListener("change", () => { if (!busy) reset(); });
+    checkBtn.addEventListener("click", async () => {
+      if (busy || !pick.value) return;
+      reset(); busy = true; sync(); show("status", "Checking...");
+      const out = await post(buildGraphChangeBody(pick.value, null, true));
+      busy = false;
+      model = graphSwitchView(out.status, out.body);
+      choices = {};
+      for (const r of model.orphanRows) if (r.choice) choices[r.node] = r.choice;
+      if (model.state === "needs-remap") model.canApply = false;
+      renderResult();
+      if (model.state === "needs-remap" && remapComplete(model.orphanRows, choices)) recheck();
+    });
+    applyBtn.addEventListener("click", async () => {
+      if (busy || !model || applyBtn.disabled) return;
+      const name = pick.value;
+      busy = true; sync(); show("status", "Applying...");
+      const out = await post(buildGraphChangeBody(name, choices, false));
+      busy = false;
+      if (out.status !== 200) {
+        const v = graphSwitchView(out.status, out.body);
+        show("alert", v.message || (out.body && out.body.error) || "The pipeline could not be changed.");
+        return sync();
+      }
+      applyPipelineState(st, out.body);
+      st.pipeForm.set(st.nodeSettings);
+      seenName = current(); reset(); renderOptions();
+      show("status", "Pipeline changed to " + name + ". " + (out.body.noticeQueued
+        ? "The planner was told."
+        : "The line has not started, so no notice was needed."));
+    });
+    return {
+      el,
+      open() { if (!loaded) load(); else renderOptions(); },
+      // The graph changed (own apply or the "pipeline" event): relabel and drop a stale check.
+      graphChanged() {
+        if (seenName === current()) return;
+        seenName = current();
+        reset(); renderOptions();
+      },
+    };
+  }
+
   // Take the graph and the settings of a line from an API answer or a "pipeline" event.
   function applyPipelineState(st, data) {
     if (data.graph) st.pipeGraph = data.graph;
     st.nodeSettings = data.nodeSettings || null;
     st.effectiveNodeSettings = data.effectiveNodeSettings || null;
     renderPipelineGraph(st);
+    if (st.pipeSwitch) st.pipeSwitch.graphChanged();
   }
 
   // The graph view of the Pipeline tab: one box per node (id, type, harness / model)
@@ -1443,7 +1635,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const rows = nodeRowsFromGraphView(graph);
     const rowKey = JSON.stringify(rows.map((r) => [r.id, r.maxContext]));
     if (st.pipeRowKey !== rowKey) {
-      if (st.pipeRowKey !== undefined) st.pipeForm.setRows(rows);
+      if (st.pipeRowKey !== undefined) { st.pipeForm.setRows(rows); st.pipeForm.set(st.nodeSettings); }
       st.pipeRowKey = rowKey;
     }
     const el = (name, attrs, text) => {
@@ -1519,6 +1711,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     if (tab === "pipeline") {
       st.pipeForm.open();
+      st.pipeSwitch.open();
     }
     if (tab === "processes") pollInventory();
     if (tab === "evidence") pollEvidence();

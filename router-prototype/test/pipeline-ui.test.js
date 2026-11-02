@@ -926,3 +926,44 @@ test("D5 layout: pure, tolerant of missing data and create cycles", () => {
     { from: "a", to: "b", interactions: ["start"] }] };
   assert.deepEqual(pipelineUiModule.layoutGraph(old).nodes.map((n) => n.column), [0, 1]);
 });
+
+test("graph switch: request body", () => {
+  const u = pipelineUiModule;
+  assert.deepEqual(u.buildGraphChangeBody("minimal"), { pipelineName: "minimal" });
+  assert.deepEqual(u.buildGraphChangeBody("minimal", { a: "b", c: "" }, true), { pipelineName: "minimal", remap: { a: "b" }, dryRun: true });
+  assert.deepEqual(u.buildGraphChangeBody("minimal", {}, false), { pipelineName: "minimal" });
+});
+
+test("graph switch: view of the dry-run answers", () => {
+  const u = pipelineUiModule;
+  assert.equal(u.graphSwitchView(200, { ok: true, unchanged: true, moves: [] }).state, "unchanged");
+  const run = u.graphSwitchView(409, { code: "INSTANCES_RUNNING", running: ["api", "ui"] });
+  assert.equal(run.state, "blocked");
+  assert.match(run.message, /api, ui/);
+  assert.equal(run.canApply, false);
+  assert.match(u.graphSwitchView(409, { code: "PLANNER_BUSY" }).message, /planner is running/);
+  const bad = u.graphSwitchView(400, { error: "pipeline broken", rules: [{ message: "rule 1" }, "rule 2"] });
+  assert.equal(bad.state, "error");
+  assert.equal(bad.message, "pipeline broken rule 1 rule 2");
+  assert.equal(u.graphSwitchView(500, null).state, "error");
+  const ready = u.graphSwitchView(200, { ok: true, moves: [{ name: "api" }], orphans: [], droppedSettings: ["x"], unchanged: false });
+  assert.equal(ready.state, "ready");
+  assert.equal(ready.canApply, true);
+  assert.deepEqual(ready.droppedSettings, ["x"]);
+  const needs = u.graphSwitchView(200, { ok: false, code: "GRAPH_REMAP_REQUIRED", moves: [], droppedSettings: [],
+    orphans: [{ node: "a", phase: "implementor", workers: 1, workerNames: ["w"], candidates: ["x"] },
+      { node: "b", phase: "validator", workers: 2, workerNames: ["v", "u"], candidates: ["y", "z"] }] });
+  assert.equal(needs.state, "needs-remap");
+  assert.deepEqual(needs.orphanRows.map((r) => r.choice), ["x", ""]);
+  assert.equal(needs.canApply, false);
+});
+
+test("graph switch: preselect and completeness of the remap", () => {
+  const u = pipelineUiModule;
+  const rows = [{ node: "a", candidates: ["x"], choice: "" }, { node: "b", candidates: ["y", "z"], choice: "" }];
+  assert.deepEqual(u.preselectRemap(rows), { a: "x", b: "" });
+  assert.equal(u.remapComplete(rows, { a: "x", b: "" }), false);
+  assert.equal(u.remapComplete(rows, { a: "x", b: "z" }), true);
+  assert.equal(u.remapComplete(rows, { a: "x", b: "nope" }), false);
+  assert.equal(u.remapComplete([], {}), true);
+});
