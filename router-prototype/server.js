@@ -23,7 +23,7 @@ const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   systemPromptOptions, briefForHarness, usesSystemChannel } = require("./spawn-plan");
 const { buildCatalog, defaultReadDir, defaultReadFile } = require("./plugin-catalog");
 const { resolvePipelineDefinition, PipelineError } = require("./resolve-pipeline");
-const { loadBuiltinPipeline, migrateLine, normalizeLine, nodeSettingsFields, builtinPipelineNames,
+const { loadBuiltinPipeline, migrateLine, normalizeLine, nodeSettingsFields, builtinPipelineNames, planGraphChange,
   implementorNodeFor, validatorNodeFor, integrationNodeFor, isLineDirectory } = require("./line-graph");
 const { checkCall, checkLineValues, requiredFields, introspect } = require("./call-fields");
 const { renderReports, kindOfNode } = require("./report-interaction");
@@ -261,7 +261,7 @@ const { wrapPlannerTurn } = require("./planner-turn");
 
 const lines = new Map();
 const { buildPrompt, buildPromptParts, workerRouterValues, validatorRouterValues, integrationRouterValues,
-  plannerRouterValues } = require("./prompt-builder");
+  plannerRouterValues, protocolSection } = require("./prompt-builder");
 
 // The planner prompt. A line with a graph builds it from the template of the
 // start node (task B4). A line without a graph is an error.
@@ -270,6 +270,23 @@ function plannerPromptFor(line, task) {
   return buildPrompt(line.graph, line.graph.start,
     plannerRouterValues({ line, nodeId: line.graph.start, port: PORT, workerCap: WORKER_CAP, graph: line.graph }),
     { task });
+}
+
+// The text for the planner after the pipeline of the line changed (plain technical English).
+function graphChangeNotice(line, from, moves) {
+  const graph = line.graph;
+  const out = [`PIPELINE CHANGED - the pipeline of this line changed from '${from}' to '${graph.name}'.`];
+  if (moves.length) {
+    out.push("These workers moved to a new node:\n" + moves.map((m) => `- ${m.name}: ${m.from} -> ${m.to}`).join("\n"));
+  } else {
+    out.push("No worker moved to another node.");
+  }
+  out.push("Calls for nodes that no longer exist are not valid. Earlier calls in your history may name old nodes. "
+    + "Do not repeat them.");
+  out.push("Use only the calls in this list from now on.");
+  out.push(protocolSection(graph, graph.start, `http://localhost:${PORT}`, line.id));
+  out.push("Existing workers keep the prompt they were created with.");
+  return out.join("\n\n");
 }
 
 // The planner prompt in parts for a trusted system channel: { full, role, task }.
@@ -1877,6 +1894,115 @@ const routeRequest = (req, res) => {
   }
 
   if (parts[0] === "api" && parts[1] === "pipelines") return pipelinesApi(req, res, parts);
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "graph"
+    && parts.length === 4) {
+    const line = lines.get(parts[2]);
+    if (!line) return json(res, 404, { error: "no such line" });
+    readBody(req, res, (err, body) => {
+      if (err || !body || typeof body !== "object" || Array.isArray(body)) {
+        return json(res, 400, { error: "invalid JSON" });
+      }
+      const known = Object.keys(CATALOG.pipelines).sort();
+      const pipelineName = body.pipelineName;
+      if (typeof pipelineName !== "string" || !known.includes(pipelineName)) {
+        return json(res, 400, { error: `unknown pipeline '${pipelineName}' (known: ${known.join(", ")})` });
+      }
+      const remap = body.remap === undefined || body.remap === null ? {} : body.remap;
+      if (typeof remap !== "object" || Array.isArray(remap)
+        || Object.values(remap).some((v) => typeof v !== "string" || !v)) {
+        return json(res, 400, { error: "remap must be an object from old node id to new node id" });
+      }
+      if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") {
+        return json(res, 400, { error: "dryRun must be true or false" });
+      }
+      const dryRun = body.dryRun === true;
+      let newGraph;
+      try { newGraph = catalogPipeline(pipelineName); }
+      catch (e) {
+        if (e instanceof PipelineError) return json(res, 400, { error: e.message, rules: e.errors });
+        return json(res, 500, { error: `could not load pipeline '${pipelineName}': ${e.message}` });
+      }
+      if (line.deleted) return json(res, 404, { error: "no such line" });
+      const running = [...line.workers.values()].filter((w) => w.status === "running" || w.child).map((w) => w.name);
+      if (running.length) {
+        return json(res, 409, { code: "INSTANCES_RUNNING", running,
+          error: "instances of this line are running: stop them or wait, then try again" });
+      }
+      if (line.status === "running" || line.activePlannerRun || line.compacting) {
+        return json(res, 409, { code: "PLANNER_BUSY",
+          error: "the planner is running or compacting: wait until it is idle, then try again" });
+      }
+      const plan = planGraphChange({ line, newGraph, remap });
+      if (!plan.ok) {
+        if (plan.code === "GRAPH_REMAP_INVALID") {
+          return json(res, 400, { ok: false, code: plan.code, errors: plan.errors, error: plan.errors.join("; ") });
+        }
+        const required = Object.fromEntries(plan.orphans.map((o) => [o.node, o.candidates]));
+        if (dryRun) {
+          return json(res, 200, { ok: false, code: plan.code, moves: [], orphans: plan.orphans,
+            candidates: required, droppedSettings: [], unchanged: false });
+        }
+        return json(res, 409, { code: plan.code, orphans: plan.orphans, candidates: required,
+          error: "some nodes of this line do not exist in the new pipeline: send a remap" });
+      }
+      const candidates = Object.fromEntries(plan.orphans.map((o) => [o.node, o.candidates]));
+      for (const [id, settings] of Object.entries(plan.unchanged ? {} : plan.nodeSettings)) {
+        const message = validateNodeSettingsForNode(newGraph, id, settings);
+        if (message) return json(res, 400, { error: message, code: "GRAPH_SETTINGS_INVALID" });
+      }
+      if (dryRun || plan.unchanged) {
+        return json(res, 200, { ok: true, moves: plan.moves, orphans: plan.orphans, candidates,
+          droppedSettings: plan.droppedSettings, unchanged: plan.unchanged, unassigned: plan.unassigned });
+      }
+
+      const previous = { graph: line.graph, nodeSettings: line.nodeSettings, rolePrompt: line.rolePrompt,
+        nodes: new Map([...line.workers.values()].map((w) => [w.id, w.node])) };
+      const restore = () => {
+        line.graph = previous.graph;
+        line.nodeSettings = previous.nodeSettings;
+        line.rolePrompt = previous.rolePrompt;
+        for (const [id, node] of previous.nodes) { const w = line.workers.get(id); if (w) w.node = node; }
+      };
+      const from = line.graph ? line.graph.name : null;
+      // The line gets its own copy: the catalog cache is shared by name.
+      line.graph = JSON.parse(JSON.stringify(newGraph));
+      line.nodeSettings = plan.nodeSettings;
+      for (const m of plan.moves) {
+        const w = line.workers.get(m.workerId);
+        if (w) w.node = m.to;
+      }
+      if (line.rolePrompt) {
+        try {
+          const rebuilt = plannerPartsFor(line, "");
+          line.rolePrompt = rebuilt && rebuilt.role ? rebuilt.role : null;
+        } catch (e) {
+          restore();
+          return json(res, 500, { error: `could not build the planner prompt: ${e.message}` });
+        }
+      }
+      if (!saveLine(line)) {
+        restore();
+        return json(res, 500, { error: "could not save the pipeline" });
+      }
+      slog("info", "line.graph.changed", { lineId: line.id, from, to: pipelineName, moves: plan.moves,
+        droppedSettings: plan.droppedSettings });
+      const fields = nodeSettingsFields(line);
+      broadcast(line, "pipeline", { ...fields });
+      broadcast(line, "state", dashboardStateForLine(line));
+      broadcastContext(line, "planner", line);
+      for (const w of line.workers.values()) {
+        if (w.role === "implementor") broadcastContext(line, w.id, w);
+      }
+      let noticeQueued = false;
+      if (line.started) {
+        const queued = enqueueRequest(line, interactionReportRequest(graphChangeNotice(line, from, plan.moves)));
+        noticeQueued = queued.ok === true;
+      }
+      json(res, 200, { ...fields, moves: plan.moves, droppedSettings: plan.droppedSettings, noticeQueued });
+    });
+    return;
+  }
 
   if (req.method === "PUT" && parts[0] === "api" && parts[1] === "lines" && parts[3] === "pipeline"
     && parts.length === 4) {

@@ -119,6 +119,114 @@ function integrationNodeFor(graph) {
   return Object.keys(nodes).find((id) => phaseOfType(graph, nodes[id].type) === "integration") || null;
 }
 
+function stableJson(v) {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(",")}]`;
+  if (v !== null && typeof v === "object") {
+    return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stableJson(v[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v === undefined ? null : v);
+}
+
+// The phase a worker's old node had: from the old graph, else from the role of the worker.
+function workerPhase(graph, w, node) {
+  const nodes = (graph && graph.nodes) || {};
+  if (has(nodes, node)) return phaseOfType(graph, nodes[node].type);
+  if (w.role === "validator") return w.kind === "integration" ? "integration" : "validator";
+  if (w.role === "implementor") return "implementor";
+  return null;
+}
+
+// Plan the switch of a line to another resolved pipeline. Pure: nothing is changed.
+// line: { workers (array or Map), nodeSettings, graph }. remap: { oldNodeId: newNodeId }.
+// Result: { ok: true, unchanged, moves: [{ workerId, name, from, to }], nodeSettings, droppedSettings,
+//   orphans, unassigned } or { ok: false, code: "GRAPH_REMAP_REQUIRED", orphans }
+// or { ok: false, code: "GRAPH_REMAP_INVALID", errors: [string] }.
+function planGraphChange({ line, newGraph, remap }) {
+  const oldGraph = line.graph || { nodes: {}, edges: [] };
+  const workers = line.workers instanceof Map ? [...line.workers.values()] : (line.workers || []);
+  const oldSettings = line.nodeSettings && typeof line.nodeSettings === "object" ? line.nodeSettings : {};
+  const newNodes = newGraph.nodes || {};
+  const phaseNew = (id) => phaseOfType(newGraph, newNodes[id].type);
+  const settingsFor = (id, settings) => {
+    const copy = { ...settings };
+    const type = newGraph.types && newGraph.types[newNodes[id].type];
+    if (type && type.session === "fresh") delete copy.maxContext;
+    return copy;
+  };
+
+  if (oldGraph.name === newGraph.name && oldGraph.start === newGraph.start
+    && stableJson(oldGraph.nodes) === stableJson(newGraph.nodes)
+    && stableJson(oldGraph.edges) === stableJson(newGraph.edges)) {
+    return { ok: true, unchanged: true, moves: [], nodeSettings: { ...oldSettings }, droppedSettings: [],
+      orphans: [], unassigned: 0 };
+  }
+
+  const entries = remap === undefined || remap === null ? {} : remap;
+  if (typeof entries !== "object" || Array.isArray(entries)) {
+    return { ok: false, code: "GRAPH_REMAP_INVALID", errors: ["remap must be an object"] };
+  }
+
+  // Group the workers by node; the nodes that cannot stay are the orphans.
+  const byNode = new Map();
+  let unassigned = 0;
+  for (const w of workers) {
+    if (typeof w.node !== "string" || !w.node) { unassigned++; continue; }
+    if (!byNode.has(w.node)) byNode.set(w.node, []);
+    byNode.get(w.node).push(w);
+  }
+  const orphans = [];
+  for (const [node, list] of byNode) {
+    const phase = workerPhase(oldGraph, list[0], node);
+    if (has(newNodes, node) && phase !== null && phaseNew(node) === phase) continue;
+    const candidates = Object.keys(newNodes).filter((id) => phase !== null && phaseNew(id) === phase);
+    orphans.push({ node, phase, workers: list.length, workerNames: list.map((w) => w.name), candidates });
+  }
+
+  const errors = [];
+  const orphanById = new Map(orphans.map((o) => [o.node, o]));
+  for (const [from, to] of Object.entries(entries)) {
+    if (!byNode.has(from) && !has(oldGraph.nodes, from)) { errors.push(`remap: unknown source node '${from}'`); continue; }
+    const orphan = orphanById.get(from);
+    if (!orphan) { errors.push(`remap: node '${from}' is not an orphan: it exists in the new pipeline with the same phase`); continue; }
+    if (typeof to !== "string" || !has(newNodes, to)) { errors.push(`remap: '${from}' -> '${to}': the new pipeline has no such node`); continue; }
+    if (phaseNew(to) !== orphan.phase) {
+      errors.push(`remap: '${from}' -> '${to}': phase '${phaseNew(to)}' differs from phase '${orphan.phase}'`);
+    }
+  }
+  if (errors.length) return { ok: false, code: "GRAPH_REMAP_INVALID", errors };
+  const missing = orphans.filter((o) => !has(entries, o.node));
+  if (missing.length) return { ok: false, code: "GRAPH_REMAP_REQUIRED", orphans: missing };
+
+  const moves = [];
+  for (const w of workers) {
+    if (typeof w.node !== "string" || !w.node || !orphanById.has(w.node)) continue;
+    moves.push({ workerId: w.id, name: w.name, from: w.node, to: entries[w.node] });
+  }
+
+  // Settings: an entry of a node with the same id stays. The settings of a remapped node go to its
+  // target when the target has no entry. The settings of the old start node go to the new start node
+  // when the ids differ and the phases match (the planner keeps its settings).
+  const carry = Object.fromEntries(orphans.map((o) => [o.node, entries[o.node]]));
+  const oldStart = oldGraph.start;
+  if (oldStart && oldStart !== newGraph.start && has(newNodes, newGraph.start) && !has(carry, oldStart)
+    && has(oldGraph.nodes, oldStart)
+    && phaseOfType(oldGraph, oldGraph.nodes[oldStart].type) === phaseNew(newGraph.start)) {
+    carry[oldStart] = newGraph.start;
+  }
+  const nodeSettings = {};
+  for (const [id, settings] of Object.entries(oldSettings)) {
+    if (has(newNodes, id)) nodeSettings[id] = settingsFor(id, settings);
+  }
+  const droppedSettings = [];
+  for (const [id, settings] of Object.entries(oldSettings)) {
+    if (has(newNodes, id)) continue;
+    const to = has(carry, id) ? carry[id] : null;
+    if (to && !has(nodeSettings, to)) nodeSettings[to] = settingsFor(to, settings);
+    else droppedSettings.push(id);
+  }
+  return { ok: true, unchanged: false, moves, nodeSettings, droppedSettings, orphans, unassigned };
+}
+
 function migrateLine(meta, resolvedDefault) {
   if (meta && meta.graph) return meta;
   const graph = JSON.parse(JSON.stringify(resolvedDefault));
@@ -295,5 +403,5 @@ function isLineDirectory(entry) {
 
 module.exports = {
   RESERVED_LINES_SUBDIRS, isLineDirectory, PHASE_TYPES, phaseOfType, migrateLine, normalizeLine, nodeSettingsFromPipeline,
-  graphView, nodeSettingsFields, builtinPipelineNames,
+  graphView, nodeSettingsFields, builtinPipelineNames, planGraphChange,
   implementorNodeFor, validatorNodeFor, integrationNodeFor, loadBuiltinPipeline };

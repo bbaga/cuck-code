@@ -133,3 +133,111 @@ test("isLineDirectory skips worktrees, plugins and hidden folders but accepts a 
   assert.equal(isLineDirectory(null), false);
   assert.ok(RESERVED_LINES_SUBDIRS.has("plugins") && RESERVED_LINES_SUBDIRS.has("worktrees"));
 });
+
+// ---- planGraphChange ----
+const { planGraphChange } = require("../line-graph");
+const minimal = loadBuiltinPipeline("minimal", fs, ROOT);
+const clone = (v) => JSON.parse(JSON.stringify(v));
+
+function planLine(extra = {}) {
+  return { graph: clone(resolved), nodeSettings: {}, workers: [
+    { id: "i1", name: "api", role: "implementor", node: "backend-impl" },
+    { id: "i2", name: "ui", role: "implementor", node: "frontend-impl" },
+    { id: "v1", name: "api-val", role: "validator", node: "backend-val" },
+    { id: "g1", name: "int", role: "validator", kind: "integration", node: "integration" },
+  ], ...extra };
+}
+const FULL_REMAP = { "backend-impl": "impl", "frontend-impl": "impl", "backend-val": "val" };
+
+test("planGraphChange: the same graph is a no-op", () => {
+  const line = planLine({ nodeSettings: { planner: { model: "x" } } });
+  const out = planGraphChange({ line, newGraph: clone(resolved), remap: {} });
+  assert.equal(out.ok, true);
+  assert.equal(out.unchanged, true);
+  assert.deepEqual(out.moves, []);
+});
+
+test("planGraphChange: orphans list workers and candidates of the same phase", () => {
+  const out = planGraphChange({ line: planLine(), newGraph: minimal, remap: {} });
+  assert.equal(out.ok, false);
+  assert.equal(out.code, "GRAPH_REMAP_REQUIRED");
+  const byNode = Object.fromEntries(out.orphans.map((o) => [o.node, o]));
+  assert.deepEqual(Object.keys(byNode).sort(), ["backend-impl", "backend-val", "frontend-impl"]);
+  assert.deepEqual(byNode["backend-impl"], { node: "backend-impl", phase: "implementor", workers: 1,
+    workerNames: ["api"], candidates: ["impl"] });
+  assert.deepEqual(byNode["backend-val"].candidates, ["val"]);
+  // a partial remap lists only what is still missing
+  const partial = planGraphChange({ line: planLine(), newGraph: minimal, remap: { "backend-impl": "impl" } });
+  assert.deepEqual(partial.orphans.map((o) => o.node).sort(), ["backend-val", "frontend-impl"]);
+});
+
+test("planGraphChange: a valid remap gives the moves and keeps the nodes with the same id and phase", () => {
+  const out = planGraphChange({ line: planLine(), newGraph: minimal, remap: FULL_REMAP });
+  assert.equal(out.ok, true);
+  assert.equal(out.unchanged, false);
+  assert.deepEqual(out.moves, [
+    { workerId: "i1", name: "api", from: "backend-impl", to: "impl" },
+    { workerId: "i2", name: "ui", from: "frontend-impl", to: "impl" },
+    { workerId: "v1", name: "api-val", from: "backend-val", to: "val" },
+  ]);
+});
+
+test("planGraphChange: every invalid remap kind", () => {
+  const bad = (remap) => planGraphChange({ line: planLine(), newGraph: minimal, remap: { ...FULL_REMAP, ...remap } });
+  const kinds = [
+    [{ integration: "impl" }, /not an orphan/],
+    [{ ghost: "impl" }, /unknown source node 'ghost'/],
+    [{ "backend-impl": "nowhere" }, /no such node/],
+    [{ "backend-impl": "val" }, /phase/],
+    [{ "backend-impl": 7 }, /no such node/],
+  ];
+  for (const [remap, pattern] of kinds) {
+    const out = bad(remap);
+    assert.equal(out.ok, false);
+    assert.equal(out.code, "GRAPH_REMAP_INVALID");
+    assert.ok(out.errors.some((e) => pattern.test(e)), JSON.stringify(out.errors));
+  }
+  assert.equal(planGraphChange({ line: planLine(), newGraph: minimal, remap: [] }).code, "GRAPH_REMAP_INVALID");
+});
+
+test("planGraphChange: settings are kept, carried to the target or dropped", () => {
+  const line = planLine({ nodeSettings: {
+    planner: { model: "opus" },
+    integration: { model: "haiku", maxContext: 5000 },
+    "backend-impl": { model: "sonnet", maxContext: 9000 },
+    "frontend-impl": { model: "haiku" },
+    "backend-val": { timeLimit: 600, maxContext: 100 },
+    "frontend-val": { timeLimit: 300 },
+  } });
+  const out = planGraphChange({ line, newGraph: minimal, remap: FULL_REMAP });
+  assert.equal(out.ok, true);
+  assert.deepEqual(out.nodeSettings.planner, { model: "opus" });
+  assert.deepEqual(out.nodeSettings.integration, { model: "haiku" }, "maxContext dropped for a fresh node");
+  assert.deepEqual(out.nodeSettings.impl, { model: "sonnet", maxContext: 9000 }, "first remapped entry wins");
+  assert.deepEqual(out.nodeSettings.val, { timeLimit: 600 }, "fresh node: no maxContext");
+  assert.deepEqual(out.droppedSettings.sort(), ["frontend-impl", "frontend-val"]);
+});
+
+test("planGraphChange: a target with its own entry keeps it", () => {
+  const line = planLine({ nodeSettings: { "backend-impl": { model: "a" }, impl: { model: "b" } } });
+  const out = planGraphChange({ line, newGraph: clone(minimal), remap: FULL_REMAP });
+  assert.deepEqual(out.nodeSettings.impl, { model: "b" });
+  assert.deepEqual(out.droppedSettings, ["backend-impl"]);
+});
+
+test("planGraphChange: workers without a node do not block and are counted", () => {
+  const line = planLine();
+  line.workers.push({ id: "x", name: "lost", role: "implementor", node: null });
+  line.workers.push({ id: "y", name: "lost2", role: "implementor" });
+  const out = planGraphChange({ line, newGraph: minimal, remap: FULL_REMAP });
+  assert.equal(out.ok, true);
+  assert.equal(out.unassigned, 2);
+  assert.ok(out.moves.every((m) => m.workerId !== "x" && m.workerId !== "y"));
+});
+
+test("planGraphChange does not change its input", () => {
+  const line = planLine({ nodeSettings: { "backend-val": { timeLimit: 1 } } });
+  const before = JSON.stringify(line);
+  planGraphChange({ line, newGraph: minimal, remap: FULL_REMAP });
+  assert.equal(JSON.stringify(line), before);
+});

@@ -432,8 +432,12 @@ first turn, and again when a session is reseeded after compaction.
 A line names a pipeline when it is created (default: `default`). The router
 validates it, resolves every type and interaction, and stores the resolved
 definition in `line.json` as `graph`. Editing a file later does not change a
-running line. A running line can change only its node run settings, never
-its graph.
+running line. A running line can change its node run settings. Its graph can be
+replaced by another pipeline of the catalog (`POST /api/lines/:id/graph`) under
+these rules: no instance and no planner run is active; every worker node that
+the new graph lacks (same id and same phase) is remapped to a node of the same
+phase; the line gets its own copy of the new definition; a started line gets one
+planner notice with the new protocol section. Existing workers keep their prompts.
 
 ## Migration from the current configuration
 

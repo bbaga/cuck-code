@@ -696,7 +696,7 @@ applies to every node of its phase.
   per-phase 'pipeline' shape was removed: send 'nodeSettings' (a map from node id
   to run settings)"}` when the body has a `pipeline` field.
 - Change a running line with `PUT /api/lines/:id/pipeline {nodeSettings}`. The
-  new map replaces the old one; `nodeSettings: {}` resets to the defaults. Only the run settings can change, never the graph. Changes apply
+  new map replaces the old one; `nodeSettings: {}` resets to the defaults. This call changes only the run settings; to change the graph see "Change the pipeline of a line". Changes apply
   from the next run: running sessions finish unchanged, and existing workers
   keep the harness, model, and effort they were spawned with. A session belongs
   to the harness that created it, so after a planner harness change the router
@@ -709,6 +709,51 @@ applies to every node of its phase.
   became pipeline files (see "Presets are now pipelines").
 - The web UI sends `pipelineName` and `nodeSettings` (create panel and Pipeline
   tab).
+
+### Change the pipeline of a line
+
+`POST /api/lines/:id/graph {pipelineName, remap?, dryRun?}` replaces the graph
+of a line with another pipeline of the catalog (the same names as the create
+panel). `remap` is `{ "<oldNodeId>": "<newNodeId>" }`.
+
+- Checks, in this order: 404 unknown line; 400 unknown `pipelineName` (the
+  answer lists the known names), a pipeline that does not resolve (`rules`), or
+  a malformed `remap`/`dryRun`; 409 `INSTANCES_RUNNING` `{running: [names]}`
+  while any instance of the line runs; 409 `PLANNER_BUSY` while the planner runs
+  or compacts. Nothing changes under a running turn.
+- A node of an existing worker is kept when the new graph has a node with the
+  same id and the same phase. Any other node is an orphan and needs a remap
+  entry to a node of the same phase. Many orphans can go to one target.
+  Without the entry the answer is 409 `GRAPH_REMAP_REQUIRED` `{orphans: [{node,
+  phase, workers, workerNames, candidates}]}`. A bad entry (not an orphan,
+  unknown source, unknown target, target of another phase) is 400
+  `GRAPH_REMAP_INVALID` `{errors}`. A worker without a node stays as it is.
+- `dryRun: true` changes nothing and answers 200 `{ok, moves, orphans,
+  candidates, droppedSettings, unchanged}`. With orphans and no remap it answers
+  200 with `ok: false` and the orphan list, so a UI can show the mapping dialog.
+- The same pipeline (same name, nodes and edges) is a no-op: 200 `unchanged:
+  true`.
+- Node settings of nodes with the same id stay (`maxContext` is dropped for a
+  node with a fresh session). The settings of a remapped node are copied to its
+  target when the target has none. The settings of the old start node go to the
+  new start node when the ids differ. All other settings are dropped and listed
+  in `droppedSettings`.
+- Apply: the line gets its own copy of the resolved graph, the `node` of each
+  moved worker is rewritten, and the line is saved. A failed save restores the
+  old graph (500). The router logs `line.graph.changed`, sends the `pipeline`
+  and `state` events and answers 200 `{graph, nodeSettings,
+  effectiveNodeSettings, moves, droppedSettings, noticeQueued}`. The stored
+  planner role prompt (harnesses with a system-prompt channel) is built again
+  from the new graph.
+- A line that was started gets one planner notice (new flow, no source): the
+  pipeline changed from A to B, the moved workers (`name: old -> new`), that
+  calls for nodes that no longer exist are not valid and that earlier calls in
+  its history may name old nodes, the generated protocol section of the new
+  graph, and that existing workers keep their prompt. A line that is not started
+  gets no notice: its first prompt is built from the new graph.
+- Limits: existing workers keep the prompt they were created with (it may name
+  the old node); the router does not rewrite their history. Nothing runs during
+  the change.
 
 ## Context compaction
 
