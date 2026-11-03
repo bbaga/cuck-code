@@ -1756,10 +1756,14 @@ function currentAttemptId(worker) {
 }
 
 function isCurrentEvidence(line, item) {
+  // An empty or missing attempt identity is never a verified current
+  // attempt, even when the worker is gone. A nonempty record from a removed
+  // worker stays current, because byName/byRole survive removal.
+  if (!item.attemptId) return false;
   const worker = line.workers.get(item.by);
   if (!worker) return true;
   const attemptId = currentAttemptId(worker);
-  return attemptId !== null && item.attemptId !== null && item.attemptId === attemptId;
+  return attemptId !== null && item.attemptId === attemptId;
 }
 
 const { createRegistryRoutes } = require("./registry-routes");

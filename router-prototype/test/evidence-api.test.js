@@ -199,6 +199,39 @@ test("keeps current items empty after a later attempt and reloads history", { ti
   assert.equal(body.history.find((item) => item.id === "current").attemptId, "attempt-2");
 });
 
+test("empty attempt identity is never current, even with a deleted worker", { timeout: 30_000 }, async () => {
+  await stopRouter(router);
+  const file = path.join(root, "line-1", "line.json");
+  const data = JSON.parse(fs.readFileSync(file, "utf8"));
+  const video = data.evidence[0].path;
+  // worker-8 was removed after it registered evidence. worker-1 is live
+  // with current attempt attempt-3 (set by the previous test's rewrite).
+  data.evidence.push(
+    { id: "gone-null", useCase: "Gone null", name: "demo.webm", path: video,
+      by: "worker-8", at: 30, attemptId: null },
+    { id: "gone-empty", useCase: "Gone empty", name: "demo.webm", path: video,
+      by: "worker-8", at: 31, attemptId: "" },
+    { id: "gone-live", useCase: "Gone live", name: "demo.webm", path: video,
+      by: "worker-8", at: 32, attemptId: "attempt-2" },
+    { id: "live-match", useCase: "Live match", name: "demo.webm", path: video,
+      by: "worker-1", at: 33, attemptId: "attempt-3" },
+    { id: "live-old", useCase: "Live old", name: "demo.webm", path: video,
+      by: "worker-1", at: 34, attemptId: "attempt-2" });
+  fs.writeFileSync(file, JSON.stringify(data));
+  router = await startRouter(root);
+  base = router.base;
+  const { body } = await request(base, "/api/lines/line-1/evidence");
+  const ids = (list) => list.map((i) => i.id);
+  const byAuthor = (list, id) => list.filter((i) => i.addedBy.id === id);
+  // Deleted worker: only the nonempty record stays current.
+  assert.deepEqual(ids(byAuthor(body.items, "worker-8")), ["gone-live"]);
+  assert.deepEqual(ids(byAuthor(body.history, "worker-8")), ["gone-empty", "gone-null"]);
+  // Live worker: the matching attempt is current, older attempts are history.
+  assert.deepEqual(ids(body.items.filter((i) => i.id === "live-match")), ["live-match"]);
+  assert.deepEqual(ids(body.history.filter((i) => i.id === "live-old")), ["live-old"]);
+  assert.equal(body.currentAttemptIds["worker-1"], "attempt-3");
+});
+
 test("rejects evidence for a seeded worker without attempt identity", { timeout: 30_000 }, async () => {
   await stopRouter(router);
   const file = path.join(root, "line-1", "line.json");
