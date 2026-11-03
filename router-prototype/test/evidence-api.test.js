@@ -263,6 +263,8 @@ test("evidence names a wrong worker; inventory rejects bad worker and pid", { ti
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ useCase: "X", file: "demo.webm" }) });
   assert.equal(missing.response.status, 404);
+  // A router without the worker is the wrong base for evidence: the error
+  // must say so instead of accepting the record.
   assert.match(missing.body.error, /no such worker/);
 
   // The test process is the router's parent, so its PID is not signalable.
