@@ -354,7 +354,7 @@ window.addEventListener("DOMContentLoaded", () => {
     shouldShowIntegrationValidator, buildGraphLanes,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
     evidencePollIsCurrent, promptKeyAction, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
-    formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator, markerState } = window.pipelineUI;
+    formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator, markerState, lineMarkerState } = window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
   const listEl = document.getElementById("linelist");
@@ -1425,7 +1425,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function updateStatusMarker(st) {
-    const markerStateValue = markerState(statusMarkerState(st));
+    const markerStateValue = lineMarkerState(statusMarkerState(st), [...st.workers.values()]);
     for (const marker of [st.dot, st.entryDot]) {
       if (!marker) continue;
       marker.className = "dot " + markerStateValue.className;
