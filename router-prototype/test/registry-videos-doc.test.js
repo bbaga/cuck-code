@@ -49,4 +49,6 @@ test('evidence list and video calls use the orchestration line id', () => {
   for (const m of blocks.join('\n').matchAll(/\$ORCH\/api\/lines\/([A-Z_][A-Z0-9_]*)/g)) {
     assert.equal(m[1], 'ORCH_LINE_ID');
   }
+  // No snippet may use an undefined line id such as $LINE_ID.
+  assert.doesNotMatch(blocks.join('\n'), /\$LINE_ID/);
 });

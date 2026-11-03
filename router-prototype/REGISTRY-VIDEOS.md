@@ -191,8 +191,6 @@ The answer is 201 with `{evidenceId, attemptId}`. `attemptId` is a nonempty stri
 id `EVIDENCE_ID` must be in `items` with the same `attemptId`. Old evidence is in `history`.
 Retrieve the video with
 `curl -s "$ORCH/api/lines/$ORCH_LINE_ID/evidence/$EVIDENCE_ID/video" -o check.webm`.
-Retrieve the video with
-`curl -s "$ORCH/api/lines/$LINE_ID/evidence/$EVIDENCE_ID/video" -o check.webm`.
 
 Run the six cases in order, on one router, without a reset. Earlier cases leave lines, claims and
 requests behind, so every locator must match exactly one element. Follow these rules:
