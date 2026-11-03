@@ -1067,3 +1067,11 @@ test("harness reload: a valid response clears the error text", () => {
   });
   assert.equal(out.errorText, "");
 });
+
+test("harness reload: a throwing listener cannot stall later reloads", () => {
+  // A listener throw is not reachable from outside the page, so the guard is
+  // checked at the source: the in-flight slot must clear in a finally block.
+  const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
+  const reload = html.slice(html.indexOf("function reloadHarnesses"), html.indexOf("function setSelectOptions"));
+  assert.match(reload, /try \{[\s\S]*?for \(const listener of harnessListeners\) listener\(\);[\s\S]*?\} finally \{[\s\S]*?harnessRequest = null;/);
+});

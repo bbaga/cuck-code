@@ -1946,8 +1946,14 @@ window.addEventListener("DOMContentLoaded", () => {
       installedHarnesses = outcome.harnesses;
       harnessMissingText = outcome.missingText;
       harnessErrorText = outcome.errorText;
-      for (const listener of harnessListeners) listener();
-      harnessRequest = null;
+      // A throwing listener must not leave the slot set: every later reload
+      // would return the same settled promise and the catalog would never
+      // refresh again. The rejection stays visible for the caller.
+      try {
+        for (const listener of harnessListeners) listener();
+      } finally {
+        harnessRequest = null;
+      }
     })();
     return harnessRequest;
   }
