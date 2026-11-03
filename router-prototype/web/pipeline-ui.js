@@ -708,6 +708,35 @@
     return "unknown";
   }
 
+  // Pure decision for applying a harness catalog (probe) response. A failed,
+  // invalid, or unreachable load keeps the previous list and reports the
+  // error, so the UI never presents stale data as current. A valid response
+  // replaces the list with its installed entries and collects login hints.
+  // The catalog stays authoritative: nothing here adds or keeps a harness
+  // that the response does not report as installed.
+  function harnessReloadOutcome({ ok, status, data, fetchError, previous, previousMissingText }) {
+    const keep = { harnesses: previous || [], missingText: previousMissingText || "" };
+    if (fetchError) {
+      return { ...keep, errorText: "Harness catalog load failed: " + String(fetchError) };
+    }
+    if (!ok) {
+      return { ...keep, errorText: "Harness catalog load failed (HTTP " + status + ")" };
+    }
+    if (!data || !Array.isArray(data.harnesses)) {
+      return { ...keep, errorText: "Harness catalog response is invalid" };
+    }
+    const harnesses = filterInstalled(data.harnesses);
+    const missing = harnesses.filter((h) => h.auth === "missing");
+    return {
+      harnesses,
+      errorText: "",
+      missingText: missing.length
+        ? "Login needed: " + missing.map((h) =>
+            h.id + " (" + (h.loginHint || h.id + " login") + ")").join(", ")
+        : "",
+    };
+  }
+
   // Evidence is current only when the API identifies its integration attempt.
   // Never infer currentness from timestamps, and keep all other records in history.
   function selectEvidenceAttempt(response) {
@@ -1096,6 +1125,7 @@
     preselectRemap,
     formatScopePanelData,
     authBadge,
+    harnessReloadOutcome,
     previewForIntegration,
     isPassingIntegration,
     previewSelectionKey,
