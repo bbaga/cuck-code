@@ -159,7 +159,10 @@ curl -s -X POST "$BASE/api/protocol/workers/$WORKER_ID/evidence" -H "$JSON" \
   -d '{"useCase":"Case 1: publish a claim and see it in the Registry","file":"evidence/case-1.webm"}'
 ```
 
-The answer is 201 with `{evidenceId, attemptId}`. Use one `useCase` title per case.
+The answer is 201 with `{evidenceId, attemptId}`. `attemptId` is a nonempty string; a
+409 means the worker has no current attempt, so report that instead of retrying. Use one
+`useCase` title per case. Verify with `GET $BASE/api/lines/$LINE_ID/evidence`: the item with
+id `evidenceId` must be in `items` with the same `attemptId`. Old evidence is in `history`.
 
 Run the six cases in order, on one router, without a reset. Earlier cases leave lines, claims and
 requests behind, so every locator must match exactly one element. Follow these rules:
