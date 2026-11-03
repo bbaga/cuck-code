@@ -339,6 +339,8 @@ test("piDetailUrl encodes the provider query parameter", () => {
 
 test("piProviderFromModel reads the provider from a qualified Pi model id", () => {
   assert.strictEqual(piProviderFromModel("openai/gpt-5"), "openai");
+  // Real provider ids carry separators: the full prefix is the provider.
+  assert.strictEqual(piProviderFromModel("openai-codex/gpt-5.2"), "openai-codex");
   assert.strictEqual(piProviderFromModel("google/gemma-4-e4b"), "google");
   // A bare or absent model carries no provider: the form must not guess one.
   assert.strictEqual(piProviderFromModel("gpt-5"), "");

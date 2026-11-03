@@ -174,15 +174,13 @@
     return "/api/harnesses/pi?provider=" + encodeURIComponent(provider);
   }
 
-  // The provider of a saved Pi model id. Pi model choices are
+  // The provider of a saved Pi model id: Pi model choices are
   // provider-qualified ("provider/model"), so a saved model carries its
-  // provider and the settings form can restore the provider select from it.
-  // Returns "" when the id has no provider part (a bare or absent model).
+  // provider. Returns "" when the id has no provider part.
   function piProviderFromModel(model) {
     if (typeof model !== "string") return "";
     const cut = model.indexOf("/");
-    const provider = cut > 0 ? model.slice(0, cut).trim() : "";
-    return provider;
+    return cut > 0 ? model.slice(0, cut).trim() : "";
   }
 
   // Human-readable auth state and login hint from a Pi detail response.

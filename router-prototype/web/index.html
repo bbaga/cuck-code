@@ -1998,16 +1998,14 @@ window.addEventListener("DOMContentLoaded", () => {
     const harnessSelects = {}, authModeSelects = {}, modelSelects = {},
       effortSelects = {}, authHints = {}, maxContextInputs = {};
     const phaseState = {};
-    // Last settings each row was filled from (set() or a setRows snapshot),
-    // so a catalog that arrives late can still restore a saved Pi provider.
-    // rowTouched/modelTouched record user edits: a late catalog or provider
-    // answer must never overwrite them. piDetailLoaded/piLoading say the
-    // row's current provider answer was applied (or is in flight); a
-    // provider selected before the catalog arrived has no answer yet and is
-    // loaded when it does. hydrateSig remembers the last filled settings so
-    // a repeated set() with the same data does not refetch.
+    // Per-row hydration state: the settings the row was filled from, user
+    // edit flags (hydration only fills untouched rows), provider-answer
+    // flags, and the last filled settings (no refetch on a repeat set()).
     const savedSettings = {}, rowTouched = {}, modelTouched = {}, piDetailLoaded = {},
       piLoading = {}, hydrateSig = {};
+    // Globally unique row identity: a rebuild restarts the token count.
+    let rowGeneration = 0;
+    const rowGen = {};
     let rows = [];
     // Fields the form has no control for (timeLimit) survive a set/read.
     let extraFields = {};
@@ -2072,10 +2070,10 @@ window.addEventListener("DOMContentLoaded", () => {
         effortSelects[key] = eSel;
         authHints[key] = hint;
         phaseState[key] = clearHarnessState(null);
-        // User edits mark the row: late catalog or provider answers must not
-        // overwrite them (hydration only fills untouched rows).
+        rowGen[key] = ++rowGeneration;
+        // User edits mark the row: late answers must not overwrite them.
         hSel.addEventListener("change", () => { rowTouched[key] = true; onHarnessChange(key); });
-        amSel.addEventListener("change", () => { rowTouched[key] = true; onAuthModeChange(key); });
+        amSel.addEventListener("change", () => { rowTouched[key] = true; loadPiModels(key, ""); });
         mSel.addEventListener("change", () => { rowTouched[key] = true; modelTouched[key] = true; });
         eSel.addEventListener("change", () => { rowTouched[key] = true; });
       }
@@ -2085,10 +2083,9 @@ window.addEventListener("DOMContentLoaded", () => {
       const state = phaseState[key];
       const harness = harnessSelects[key].value;
       const amSel = authModeSelects[key];
-      // The pure state resets the value to "" for every non-Pi harness, so a
-      // stale selected mode cannot survive a harness change. A selected
-      // provider the catalog does not know stays listed, honestly labeled,
-      // instead of silently falling back to the default.
+      // The pure state resets the value to "" for every non-Pi harness, so
+      // a stale mode cannot survive a harness change; an unknown provider of
+      // a saved row stays listed, honestly labeled.
       const piOptions = harness === PI_HARNESS_ID
         ? [...authModeOptions(installedHarnesses, PI_HARNESS_ID)] : [];
       if (harness === PI_HARNESS_ID && amSel.value
@@ -2143,61 +2140,57 @@ window.addEventListener("DOMContentLoaded", () => {
       syncPhaseRow(key);
     }
 
-    // Load the chosen provider's models and apply them. `savedModel` (a
-    // hydration) is re-selected once the models arrive, unless the user
-    // edited the model select while the answer was in flight; a user
-    // selection (savedModel "") leaves the model at the default.
+    // Load the chosen provider's models; a hydration's savedModel is
+    // re-selected when they arrive, unless the user edited the model select.
     async function loadPiModels(key, savedModel) {
       const state = phaseState[key];
       const provider = authModeSelects[key].value;
+      // Bind the request to the row generation (a rebuild restarts tokens).
+      const gen = rowGen[key];
       // New mode: drop provider-specific state and invalidate older fetches.
       state.tracker.next();
       piDetailLoaded[key] = false;
       piLoading[key] = true;
       phaseState[key] = clearProviderState(state);
       syncPhaseRow(key);
-      try {
-        if (!provider) return;
-        const token = phaseState[key].tracker.next();
-        const result = await fetchPiDetail({
-          url: piDetailUrl(provider),
-          fetchImpl: fetch,
-          isCurrent: (t) => !!phaseState[key] && phaseState[key].tracker.isCurrent(t),
-          token,
-        });
-        if (result.stage === "fetch-error") {
-          if (result.current && phaseState[key]) {
-            phaseState[key].statusText = result.error;
-            updateAuthHint(key);
-          }
-          return;
-        }
-        // fetchPiDetail already dropped a response that went stale when the
-        // fetch resolved, before the status was read or the body parsed.
-        if (result.stage === "stale-after-fetch") return;
-        // Recheck after the async json() step: a newer selection must win.
-        const outcome = piDetailApply({
-          isCurrent: result.current,
-          ok: result.ok,
-          status: result.status,
-          data: result.data,
-        });
-        if (!outcome.apply || !phaseState[key]) return;
-        phaseState[key].piDetail = outcome.piDetail;
-        phaseState[key].models = outcome.models;
-        phaseState[key].statusText = outcome.statusText;
-        piDetailLoaded[key] = true;
-        syncPhaseRow(key);
-        // Re-apply the saved model of a hydration unless the user edited the
-        // model select while the answer was in flight.
-        if (savedModel && !modelTouched[key]) selectValue(modelSelects[key], savedModel);
-      } finally {
+      if (!provider) { piLoading[key] = false; return; }
+      const token = phaseState[key].tracker.next();
+      const result = await fetchPiDetail({
+        url: piDetailUrl(provider),
+        fetchImpl: fetch,
+        isCurrent: (t) => !!phaseState[key] && rowGen[key] === gen
+          && phaseState[key].tracker.isCurrent(t),
+        token,
+      });
+      if (result.stage === "fetch-error") {
         piLoading[key] = false;
+        if (result.current && phaseState[key]) {
+          phaseState[key].statusText = result.error;
+          updateAuthHint(key);
+        }
+        return;
       }
-    }
-
-    async function onAuthModeChange(key) {
-      return loadPiModels(key, "");
+      // fetchPiDetail already dropped a response that went stale when the
+      // fetch resolved, before the status was read or the body parsed.
+      if (result.stage === "stale-after-fetch") { piLoading[key] = false; return; }
+      // Recheck after the async json() step: a newer selection must win.
+      const outcome = piDetailApply({
+        isCurrent: result.current,
+        ok: result.ok,
+        status: result.status,
+        data: result.data,
+      });
+      piLoading[key] = false;
+      if (!outcome.apply || !phaseState[key]) return;
+      phaseState[key].piDetail = outcome.piDetail;
+      phaseState[key].models = outcome.models;
+      phaseState[key].statusText = outcome.statusText;
+      // Only a real detail counts as loaded: a failed answer stays
+      // retryable (later set() or catalog reload), error visible.
+      if (outcome.piDetail) piDetailLoaded[key] = true;
+      syncPhaseRow(key);
+      // A hydration re-applies its saved model over a user edit.
+      if (savedModel && !modelTouched[key]) selectValue(modelSelects[key], savedModel);
     }
 
     // Base metadata arrived: refresh harness options, auth mode options and
@@ -2225,10 +2218,8 @@ window.addEventListener("DOMContentLoaded", () => {
         }
         syncPhaseRow(key);
         selectValue(modelSelects[key], model);
-        // A saved Pi provider that could not be loaded earlier (the catalog
-        // was not there yet, or the provider was selected before it and has
-        // no model answer) becomes loadable now — but only for a row the
-        // user has not edited since it was filled.
+        // A saved provider without a loaded answer (late catalog) loads
+        // now — but only for an untouched row.
         const saved = savedSettings[key];
         if (!rowTouched[key] && saved && sel.value === PI_HARNESS_ID) {
           const provider = typeof saved.authMode === "string" && saved.authMode
@@ -2255,46 +2246,30 @@ window.addEventListener("DOMContentLoaded", () => {
     // Filling the same saved settings again over untouched controls (a
     // repeated set() or event) keeps the loaded provider answer instead of
     // refetching it; user edits are always reset.
-    // The saved max context is tokens (from the API) or display text (from a
-    // snapshot of typed values); show it as the input expects.
-    function showMaxContext(key, value) {
-      if (!maxContextInputs[key]) return;
-      maxContextInputs[key].value = typeof value === "number"
-        ? (value ? formatTokens(value) : "")
-        : (value ? String(value) : "");
-    }
-
+    // Fill one row from saved settings (a nodeSettings entry, or a snapshot
+    // of typed values): harness, Pi provider, model, effort, max context,
+    // and the hidden timeLimit. The provider comes from an explicit authMode
+    // or the provider-qualified model; a provider the catalog does not know
+    // stays selected, labeled "(not in catalog)" — no silent default. The
+    // same saved settings over untouched controls keep the loaded answer
+    // (no refetch); user edits are always reset.
     function hydrateRow(key, cfg) {
       const saved = cfg && typeof cfg === "object" ? { ...cfg } : {};
-      const sig = JSON.stringify(saved);
-      const sameSaved = sig === hydrateSig[key] && !rowTouched[key];
-      hydrateSig[key] = sig;
+      const model = typeof saved.model === "string" ? saved.model : "";
+      const provider = typeof saved.authMode === "string" && saved.authMode
+        ? saved.authMode : piProviderFromModel(model);
+      const sameSaved = JSON.stringify(saved) === hydrateSig[key] && !rowTouched[key]
+        && (harnessSelects[key].value !== PI_HARNESS_ID || !provider
+          || piDetailLoaded[key] || piLoading[key]);
+      hydrateSig[key] = JSON.stringify(saved);
       savedSettings[key] = saved;
       rowTouched[key] = false;
       modelTouched[key] = false;
-      const model = typeof saved.model === "string" ? saved.model : "";
-      if (sameSaved && (harnessSelects[key].value !== PI_HARNESS_ID
-        || !piProviderFromModel(model) || piDetailLoaded[key] || piLoading[key])) {
-        // Already showing these saved settings: re-select them (over any
-        // stale control state) and keep the loaded models and status.
-        selectValue(harnessSelects[key], saved.harness, "not installed");
-        if (harnessSelects[key].value === PI_HARNESS_ID && piProviderFromModel(model)) {
-          selectValue(authModeSelects[key],
-            typeof saved.authMode === "string" && saved.authMode ? saved.authMode : piProviderFromModel(model));
-        }
-        selectValue(modelSelects[key], model);
-        effortSelects[key].value = EFFORT_LEVELS.includes(saved.effort) ? saved.effort : "";
-        showMaxContext(key, saved.maxContext);
-        if (saved.timeLimit) extraFields[key] = { timeLimit: saved.timeLimit };
-        return;
-      }
       selectValue(harnessSelects[key], saved.harness, "not installed");
-      onHarnessChange(key);
-      if (harnessSelects[key].value === PI_HARNESS_ID) {
-        const provider = typeof saved.authMode === "string" && saved.authMode
-          ? saved.authMode : piProviderFromModel(model);
-        if (provider) {
-          selectValue(authModeSelects[key], provider);
+      if (!sameSaved) onHarnessChange(key);
+      if (harnessSelects[key].value === PI_HARNESS_ID && provider) {
+        selectValue(authModeSelects[key], provider);
+        if (!sameSaved) {
           syncPhaseRow(key);
           // Only a provider the catalog knows gets its models fetched; the
           // select also lists the saved provider itself when unknown, so the
@@ -2306,7 +2281,12 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       selectValue(modelSelects[key], model);
       effortSelects[key].value = EFFORT_LEVELS.includes(saved.effort) ? saved.effort : "";
-      showMaxContext(key, saved.maxContext);
+      if (maxContextInputs[key]) {
+        // Saved max context: tokens (API) or display text (snapshot).
+        const mc = saved.maxContext;
+        maxContextInputs[key].value = typeof mc === "number"
+          ? (mc ? formatTokens(mc) : "") : (mc ? String(mc) : "");
+      }
       if (saved.timeLimit) extraFields[key] = { timeLimit: saved.timeLimit };
     }
 
@@ -2330,9 +2310,8 @@ window.addEventListener("DOMContentLoaded", () => {
       return out;
     }
 
-    // Replace the rows. Values typed for a node id that is still present are
-    // kept, including the Pi provider and model: hydrateRow restores the
-    // provider from the snapshot's auth mode or qualified model.
+    // Replace the rows; kept node ids keep their typed values, including
+    // the Pi provider and model, via hydrateRow.
     function setRows(specs) {
       const old = snapshot();
       buildRows(specs.map((r) => ({ key: r.id, title: r.title, maxContext: r.maxContext })));
