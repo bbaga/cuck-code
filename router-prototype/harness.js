@@ -387,8 +387,9 @@ class ClaudeHarness extends BaseHarness {
   normalize(obj) {
     if (!obj || typeof obj !== 'object') return null;
     if (obj.type === 'assistant' && obj.message && obj.message.usage) {
-      // Each assistant event carries the usage of its API call: the input
-      // (fresh and cached) plus the output is the context the next call sees.
+      // Late provider usage can be absent here; completed session usage
+      // takes precedence at close (context-probe.js). Never use result totals:
+      // they aggregate every API call in the invocation.
       const u = obj.message.usage;
       this.recordContextTokens(u.input_tokens, u.cache_creation_input_tokens,
         u.cache_read_input_tokens, u.output_tokens);

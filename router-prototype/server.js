@@ -50,7 +50,7 @@ const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require("./evidence");
 const { createDashboardLive } = require("./dashboard-live");
 const { readClaudeConfig } = require("./claude-config");
-const { sessionContextTokens } = require("./context-probe");
+const { contextTokensForRun } = require("./context-probe");
 const { migratePresets } = require("./preset-migration");
 const { nameError, textError, validateText, graphPreview, buildListing, readCatalogItem, resolveSafe, readManagedText,
   renameInText, applyNodeSettingsToText, writeManagedPipeline, deleteManagedPipeline, MAX_BODY_BYTES } = require("./pipelines-api");
@@ -1034,8 +1034,10 @@ function pump(line) {
     sessionId: line.sessionId, autoApprove: AUTO_APPROVE,
     ...systemPromptOptions(cfg.harness, line.rolePrompt, SYSTEM_PROMPT_DIR) });
   const adapter = plan.adapter;
+  const runEnv = { ...process.env, ...plan.env };
+  const runCwd = plan.cwd === undefined ? process.cwd() : path.resolve(plan.cwd);
   const child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, ...plan.env },
+    env: runEnv,
     ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
   const runId = crypto.randomUUID();
   const run = { runId, child, intentionalStop: false, stopTimer: null, errorTimer: null };
@@ -1114,7 +1116,7 @@ function pump(line) {
     if (line.sessionId) {
       recordTurn(line.context, { promptChars: prompt.length,
         outputChars: runOutput.text().length,
-        tokens: adapter.contextTokens || sessionContextTokens(cfg.harness, line.sessionId) });
+        tokens: contextTokensForRun(adapter, line.sessionId, runEnv, runCwd) });
       broadcastContext(line, "planner", line);
     }
     cleanupStage(line, "planner");
@@ -1198,8 +1200,10 @@ function spawnWorker(line, worker, prompt, resume) {
     name: worker.name, role: worker.role, phase, harness: worker.harness,
     model: worker.model, resume: !!(resume && worker.sessionId),
     chars: prompt.length });
-  const child = spawn(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, ...plan.env },
+  const runEnv = { ...process.env, ...plan.env };
+  const runCwd = plan.cwd === undefined ? process.cwd() : path.resolve(plan.cwd);
+  const child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
+    env: runEnv,
     ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
   worker.child = child;
 
@@ -1257,7 +1261,7 @@ function spawnWorker(line, worker, prompt, resume) {
     if (worker.sessionId && worker.role === "implementor") {
       recordTurn(worker.context, { promptChars: prompt.length,
         outputChars: workerRunOutput.text().length,
-        tokens: adapter.contextTokens || sessionContextTokens(effective.harness, worker.sessionId) });
+        tokens: contextTokensForRun(adapter, worker.sessionId, runEnv, runCwd) });
       broadcastContext(line, worker.id, worker);
     }
     // A stop request is not a failure: it needs no error detail.
@@ -3270,7 +3274,7 @@ if (HTTPS_PORT) {
 }
 }
 
-module.exports = { stopPlannerRun, pump, dashboardStateForLine, requestHandler, lines,
+module.exports = { stopPlannerRun, pump, spawnWorker, dashboardStateForLine, requestHandler, lines,
   createServer: () => server,
   setSpawnForTest: (fn) => { spawnProcess = fn; },
   setLifecycleHooksForTest: (hooks) => { lifecycleTestHooks = hooks; },

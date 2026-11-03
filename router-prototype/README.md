@@ -782,12 +782,19 @@ carries the role brief (planner brief or the worker's original brief), the
 summary, and the new message. Validators start fresh on every run and are never
 compacted.
 
-Context size comes from the harness itself: `usage` on the claude and pi
-streams, `stats.context_tokens` in vibe's `~/.vibe/logs/session/*/meta.json`
-(`VIBE_HOME`), and the last `token_count` in codex's
-`~/.codex/sessions/**/rollout-*-<session>.jsonl` (`CODEX_HOME`). Without one,
-the router estimates prompt and reply characters / 4. That lower bound ignores
-tool output and is shown as `~` in the UI.
+Context size comes from the harness itself. For claude, the router prefers the
+latest main-session assistant usage in
+`~/.claude/projects/<workdir-slug>/<session>.jsonl` (`CLAUDE_CONFIG_DIR` overrides
+`~/.claude`). The slug replaces every non-alphanumeric work-directory character
+with `-`; workers use their own worktree directory. The reader checks the last
+4 MiB and falls back to streamed assistant usage if no usable saved usage is
+available. This handles providers that report usage after the assistant stream
+event. Final-result totals are not used: they sum multiple calls, not current
+context. Other sources are `usage` on the pi stream, `stats.context_tokens` in
+vibe's `~/.vibe/logs/session/*/meta.json` (`VIBE_HOME`), and the last `token_count`
+in codex's `~/.codex/sessions/**/rollout-*-<session>.jsonl` (`CODEX_HOME`). Without
+usable usage, the router estimates prompt and reply characters / 4. That lower
+bound ignores tool output and is shown as `~` in the UI.
 
 - Automatic: before the next run, a session at or above its threshold is
   compacted. Set it per line with `nodeSettings.<node>.maxContext` for a node

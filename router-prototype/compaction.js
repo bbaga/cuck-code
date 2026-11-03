@@ -9,10 +9,10 @@
 //      and its prompt carries the role brief plus the handoff summary.
 //
 // Context size per session is the latest token count the harness reports:
-// on its stream (claude, pi; see harness.js) or in its session files (vibe,
-// codex; see context-probe.js). Without one it falls back to a character
-// estimate of the prompts and assistant output. The estimate excludes tool
-// output, so it is a lower bound.
+// in its completed session files (claude, vibe, codex; see context-probe.js)
+// or its stream (pi, claude fallback; see harness.js). Without one it falls
+// back to a character estimate of the prompts and assistant output. The
+// estimate excludes tool output, so it is a lower bound.
 
 const CHARS_PER_TOKEN = 4;
 const DEFAULT_AUTO_TOKENS = 150000;
