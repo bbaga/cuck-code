@@ -29,6 +29,14 @@ Capture the server PID and return from the start command before any
 other tool call. Wait for HTTP readiness with a bounded timeout.
 Register the PID with the router inventory under your integration
 worker ID. Stop the server PID after tests, including after failure.
+Two routers are involved, and they are not the same:
+- The ORCHESTRATION ROUTER is the one that started you. Its URL is
+  http://localhost:7788. Send inventory and evidence calls only there. It
+  owns your worker record and your attempt identity.
+- The ISOLATED ROUTER is the application under test. It runs on its
+  own port with the private LINES_DIR you seed. Never send evidence
+  or inventory to it, and never create worker or attempt state in the
+  seed for evidence purposes.
 
 Instructions from the planner:
 Merge it
@@ -49,8 +57,11 @@ Procedure:
    PORT=<free-port> LINES_DIR=<private-dir> node router-prototype/server.js >router.log 2>&1 & SERVER_PID=$!; echo "$SERVER_PID"
    Return from this command before any other tool call. Poll the HTTP
    endpoint with a bounded timeout until it responds. Register the PID
-   with POST /api/protocol/lines/line-42/inventory, using kind process,
+   with POST http://localhost:7788/api/protocol/lines/line-42/inventory, using kind process,
    name integration-router, pid $SERVER_PID, and worker worker-1.
+   The seed is only the state of the isolated router. The orchestration
+   router at http://localhost:7788 already holds your worker record; do not
+   derive evidence or attempt identity from the seed.
 2. In each repository directory, merge every listed commit with one
    explicit Git merge command. Do not use a shell loop. Use one command
    for each commit:
@@ -83,7 +94,8 @@ Procedure:
    The ffmpeg program must be available for media validation.
 6. Close the browser context before registration. This finalizes the
    recording. Do not register an active or incomplete recording.
-7. Register the showcase with this exact request:
+7. Register the showcase with this exact request, sent to the
+   orchestration router at http://localhost:7788, never to the isolated router:
    curl -s -X POST http://localhost:7788/api/protocol/workers/worker-1/evidence      -H 'Content-Type: application/json'      -d '{"kind":"showcase","version":1,"useCase":"<complete demonstration title>","file":"evidence/showcase.webm","steps":[{"title":"<step title>","explanation":"<visible proof and feature>","screenshot":"evidence/step-1.png"}]}'
    Use paths relative to your workdir (the directory that contains the
    repository directories). Use this actual worker endpoint.
@@ -91,8 +103,12 @@ Procedure:
    a failed showcase capture with short clips. Restart the router after
    an API change when the running process has an older version.
    Accepted evidence API revision: 362eff17942182a62baf05ef12423afa2dbf6613.
-   The POST response contains {evidenceId, attemptId}. The GET response
-   contains {items, history, currentAttemptId, currentAttemptIds}.
+   The POST response contains {evidenceId, attemptId}. The attemptId must
+   be a nonempty string. If the router answers 409, your worker has no
+   current attempt: stop and report the failure. Verify with
+   GET http://localhost:7788/api/lines/line-42/evidence: the response contains
+   {items, history, currentAttemptId, currentAttemptIds}. The item with id
+   evidenceId must be in items with the same attemptId.
    Current evidence is in items. Older evidence is in history. Do not mix them.
    The router owns attempt identity. Keep the showcase tied to this attempt.
 8. Stop the server after all tests, including after failure:
