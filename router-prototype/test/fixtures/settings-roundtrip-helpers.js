@@ -1,16 +1,14 @@
 "use strict";
 // Shared setup for the settings round-trip browser tests: a dashboard fixture
 // with a fake pi CLI, a stubbed page, page helpers, and scriptable pi answers.
+// Importing this module has no side effects: every environment override is
+// scoped to the fixture run and restored afterwards.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { startDashboardFixture } = require("./dashboard-browser");
 const { openPage } = require("./browser-driver");
-
-// Line creation runs `git commit`: ignore a global GPG-sign git config.
-process.env.GIT_CONFIG_GLOBAL = "/dev/null";
-process.env.GIT_CONFIG_SYSTEM = "/dev/null";
 
 const PANE = (line) =>
   `document.querySelector('.card[data-line-id="${line}"] .pipePane')`;
@@ -61,18 +59,32 @@ const PI_SCRIPT = '#!/bin/sh\n'
   + '  auth) exit 0;; esac\nexit 1\n';
 
 // Fixture with a fake pi CLI, an optional line seed, and a ready page; the
-// holder survives a run() that swaps the page.
-async function withFixture(t, seed, run) {
+// holder survives a run() that swaps the page. opts.initScript replaces the
+// default page stubs and opts.chromePath overrides the browser lookup. The
+// environment overrides (PATH, git config) are scoped to the run: the
+// finally block restores them and removes the fake CLI on every exit path,
+// including a throwing run() and a failed page open.
+async function withFixture(t, seed, run, opts = {}) {
   const fx = await startDashboardFixture();
-  const oldPath = process.env.PATH,
-    bin = fs.mkdtempSync(path.join(os.tmpdir(), "settings-roundtrip-bin-"));
+  const oldEnv = {
+    PATH: process.env.PATH,
+    GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
+    GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
+  };
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "settings-roundtrip-bin-"));
   process.env.PATH = `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`;
+  // Line creation runs `git commit`: ignore a global GPG-sign git config.
+  process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+  process.env.GIT_CONFIG_SYSTEM = "/dev/null";
   fs.writeFileSync(path.join(bin, "pi"), PI_SCRIPT, { mode: 0o755 });
   if (seed) seed(require("../../server").lines.get(fx.lineId));
   const holder = { page: null };
   try {
     try {
-      holder.page = await openPage(fx.url, { initScript: STUBS });
+      holder.page = await openPage(fx.url, {
+        initScript: opts.initScript || STUBS,
+        chromePath: opts.chromePath,
+      });
     } catch (e) {
       if (e.code === "BROWSER_UNAVAILABLE") return t.skip("Chrome is missing: " + e.message);
       throw e;
@@ -81,7 +93,11 @@ async function withFixture(t, seed, run) {
     await holder.page.waitFor("/browser[- ]line/i.test(document.body.innerText)");
     await run(holder, fx);
   } finally {
-    process.env.PATH = oldPath;
+    process.env.PATH = oldEnv.PATH;
+    for (const k of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]) {
+      if (oldEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = oldEnv[k];
+    }
     fs.rmSync(bin, { recursive: true, force: true });
     if (holder.page) await holder.page.close();
     await fx.close();
