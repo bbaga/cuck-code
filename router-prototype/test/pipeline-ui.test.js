@@ -17,6 +17,7 @@ const {
   piDetailModels,
   modelOptionsForPhase,
   piDetailUrl,
+  piProviderFromModel,
   authModeSelectState,
   piDetailApply,
   piAuthStatusText,
@@ -334,6 +335,20 @@ test("modelOptionsForPhase returns Vibe and Claude base models and nothing for o
 test("piDetailUrl encodes the provider query parameter", () => {
   assert.strictEqual(piDetailUrl("openai"), "/api/harnesses/pi?provider=openai");
   assert.strictEqual(piDetailUrl("a b&c"), "/api/harnesses/pi?provider=a%20b%26c");
+});
+
+test("piProviderFromModel reads the provider from a qualified Pi model id", () => {
+  assert.strictEqual(piProviderFromModel("openai/gpt-5"), "openai");
+  // Real provider ids carry separators: the full prefix is the provider.
+  assert.strictEqual(piProviderFromModel("openai-codex/gpt-5.2"), "openai-codex");
+  // Only the part before the first slash is the provider.
+  assert.strictEqual(piProviderFromModel("openai/gpt-5/mini"), "openai");
+  // A bare or absent model carries no provider: the form must not guess one.
+  assert.strictEqual(piProviderFromModel("gpt-5"), "");
+  assert.strictEqual(piProviderFromModel("/gpt-5"), "");
+  assert.strictEqual(piProviderFromModel(""), "");
+  assert.strictEqual(piProviderFromModel(undefined), "");
+  assert.strictEqual(piProviderFromModel(null), "");
 });
 
 test("piAuthStatusText describes auth state and login hint", () => {
