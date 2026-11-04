@@ -11,7 +11,6 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const server = require("../server");
 const H = require("./fixtures/settings-roundtrip-helpers");
 
 const { PANE, SEL, STATE, STUBS } = H;
@@ -183,7 +182,8 @@ test("settings round trip: creation selections reach nodeSettings and Change set
     const stored = (await (await fetch(`${fx.url}/api/lines`)).json())
       .lines.find((l) => l.id === line);
     assert.deepEqual(stored.nodeSettings, expected);
-    const savedLine = [...server.lines.values()].find((l) => l.id === line);
+    // Late server load: an early load would pin the default ./lines directory.
+    const savedLine = [...require("../server").lines.values()].find((l) => l.id === line);
     assert.ok(savedLine, "the created line is registered");
     const onDisk = JSON.parse(
       fs.readFileSync(path.join(savedLine.workdir, "line.json"), "utf8"));
@@ -315,7 +315,7 @@ test("settings round trip: an intentional harness change clears the Pi state on 
     const stored = (await (await fetch(`${fx.url}/api/lines`)).json())
       .lines.find((l) => l.id === line);
     assert.deepEqual(stored.nodeSettings, expectedSwitched);
-    const savedLine = [...server.lines.values()].find((l) => l.id === line);
+    const savedLine = [...require("../server").lines.values()].find((l) => l.id === line); // late load
     const onDisk = JSON.parse(
       fs.readFileSync(path.join(savedLine.workdir, "line.json"), "utf8"));
     assert.deepEqual(onDisk.nodeSettings, expectedSwitched);
