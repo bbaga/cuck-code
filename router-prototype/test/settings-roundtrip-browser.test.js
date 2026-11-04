@@ -171,7 +171,7 @@ test("settings round trip: creation selections reach nodeSettings and Change set
     // real PUT response applied.
     await H.clickFormButton(page, line, "Save settings");
     await page.waitFor(
-      `/Saved\\. The settings apply from the next run\\./.test(${PANE(line)}.innerText)`);
+      `/Saved\\. The next run of every node uses these settings\\./.test(${PANE(line)}.innerText)`);
     const puts = await page.evaluate("window.__puts");
     assert.equal(puts.length, 1);
     assert.deepEqual(JSON.parse(puts[0].body), { nodeSettings: expected });
@@ -301,7 +301,7 @@ test("settings round trip: an intentional harness change clears the Pi state on 
     await H.changeSelect(page, pre, "model", "planner", "glm-5-3-flash");
     await H.clickFormButton(page, line, "Save settings");
     await page.waitFor(
-      `/Saved\\. The settings apply from the next run\\./.test(${PANE(line)}.innerText)`);
+      `/Saved\\. The next run of every node uses these settings\\./.test(${PANE(line)}.innerText)`);
     const expectedSwitched = {
       planner: { harness: "vibe", model: "glm-5-3-flash", effort: "high",
         maxContext: 200000, timeLimit: 1234 },
