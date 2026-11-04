@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { makeMediaFixtures } = require("./media-fixtures");
 const { startRouter, stopRouter } = require("./fixtures/router-process");
+const { spawn } = require("node:child_process");
 
 
 async function request(base, pathname, options) {
@@ -196,4 +197,92 @@ test("keeps current items empty after a later attempt and reloads history", { ti
   assert.deepEqual(body.items, []);
   assert.equal(body.history.at(-1).id, "old");
   assert.equal(body.history.find((item) => item.id === "current").attemptId, "attempt-2");
+});
+
+test("empty attempt identity is never current, even with a deleted worker", { timeout: 30_000 }, async () => {
+  await stopRouter(router);
+  const file = path.join(root, "line-1", "line.json");
+  const data = JSON.parse(fs.readFileSync(file, "utf8"));
+  const video = data.evidence[0].path;
+  // worker-8 was removed after it registered evidence. worker-1 is live
+  // with current attempt attempt-3 (set by the previous test's rewrite).
+  data.evidence.push(
+    { id: "gone-null", useCase: "Gone null", name: "demo.webm", path: video,
+      by: "worker-8", at: 30, attemptId: null },
+    { id: "gone-empty", useCase: "Gone empty", name: "demo.webm", path: video,
+      by: "worker-8", at: 31, attemptId: "" },
+    { id: "gone-live", useCase: "Gone live", name: "demo.webm", path: video,
+      by: "worker-8", at: 32, attemptId: "attempt-2" },
+    { id: "live-match", useCase: "Live match", name: "demo.webm", path: video,
+      by: "worker-1", at: 33, attemptId: "attempt-3" },
+    { id: "live-old", useCase: "Live old", name: "demo.webm", path: video,
+      by: "worker-1", at: 34, attemptId: "attempt-2" });
+  fs.writeFileSync(file, JSON.stringify(data));
+  router = await startRouter(root);
+  base = router.base;
+  const { body } = await request(base, "/api/lines/line-1/evidence");
+  const ids = (list) => list.map((i) => i.id);
+  const byAuthor = (list, id) => list.filter((i) => i.addedBy.id === id);
+  // Deleted worker: only the nonempty record stays current.
+  assert.deepEqual(ids(byAuthor(body.items, "worker-8")), ["gone-live"]);
+  assert.deepEqual(ids(byAuthor(body.history, "worker-8")), ["gone-empty", "gone-null"]);
+  // Live worker: the matching attempt is current, older attempts are history.
+  assert.deepEqual(ids(body.items.filter((i) => i.id === "live-match")), ["live-match"]);
+  assert.deepEqual(ids(body.history.filter((i) => i.id === "live-old")), ["live-old"]);
+  assert.equal(body.currentAttemptIds["worker-1"], "attempt-3");
+});
+
+test("rejects evidence for a seeded worker without attempt identity", { timeout: 30_000 }, async () => {
+  await stopRouter(router);
+  const file = path.join(root, "line-1", "line.json");
+  const data = JSON.parse(fs.readFileSync(file, "utf8"));
+  const video = data.evidence[0].path;
+  // Seeded worker as the old private-seed instructions produced it: no run
+  // state at all, so the old code stored an empty attempt identity.
+  data.workers.push({ id: "worker-9", name: "seeded", role: "validator",
+    kind: "integration", worktreePath: worktree });
+  data.evidence.push({ id: "empty", useCase: "Empty attempt", name: "demo.webm",
+    path: video, by: "worker-9", at: 20, attemptId: "" });
+  fs.writeFileSync(file, JSON.stringify(data));
+  router = await startRouter(root);
+  base = router.base;
+  const post = await request(base, "/api/protocol/workers/worker-9/evidence", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ useCase: "Seeded demo", file: "demo.webm" }) });
+  assert.equal(post.response.status, 409);
+  assert.match(post.body.error, /no current attempt/);
+  // The old empty-attempt record is history, never a verified current item.
+  const { body } = await request(base, "/api/lines/line-1/evidence");
+  assert.deepEqual(body.items.filter((i) => i.id === "empty"), []);
+  assert.equal(body.history.find((i) => i.id === "empty").attemptId, null);
+  assert.equal(body.currentAttemptIds["worker-9"], undefined);
+});
+
+test("evidence names a wrong worker; inventory rejects bad worker and pid", { timeout: 30_000 }, async () => {
+  const missing = await request(base, "/api/protocol/workers/no-such-worker/evidence", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ useCase: "X", file: "demo.webm" }) });
+  assert.equal(missing.response.status, 404);
+  // A router without the worker is the wrong base for evidence: the error
+  // must say so instead of accepting the record.
+  assert.match(missing.body.error, /no such worker/);
+
+  // The test process is the router's parent, so its PID is not signalable.
+  // Use a live dummy child instead.
+  const dummy = spawn("sleep", ["30"]);
+  try {
+    const inventory = (pid, worker) => request(base, "/api/protocol/lines/line-1/inventory", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "process", pid, name: "test", worker }) });
+    const badWorker = await inventory(dummy.pid, "worker-99");
+    assert.equal(badWorker.response.status, 400);
+    assert.match(badWorker.body.error, /unknown worker/);
+    const deadPid = await inventory(999999, "worker-1");
+    assert.equal(deadPid.response.status, 400);
+    assert.match(deadPid.body.error, /no such process/);
+    const ok = await inventory(dummy.pid, "worker-1");
+    assert.equal(ok.response.status, 201);
+  } finally {
+    dummy.kill("SIGKILL");
+  }
 });

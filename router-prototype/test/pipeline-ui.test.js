@@ -993,3 +993,85 @@ test("a line keeps showing running while workers run after the planner went idle
   // the planner node itself still shows only the planner state
   assert.equal(pipelineUiModule.markerState(idle).color, "green");
 });
+
+// ---- harnessReloadOutcome: the catalog reload decision ----
+
+const CLAUDE_ENTRY = { id: "claude", installed: true, auth: "ok", loginHint: "claude login",
+  version: "2.1.317", models: [{ value: "opus", label: "opus" }, { value: "sonnet", label: "sonnet" }] };
+
+test("harness reload: installed Claude with catalog models replaces the list", () => {
+  const out = pipelineUiModule.harnessReloadOutcome({
+    ok: true, status: 200, data: { harnesses: [CLAUDE_ENTRY] },
+    previous: [{ id: "vibe", installed: true }], previousMissingText: "",
+  });
+  assert.deepEqual(out.harnesses, [CLAUDE_ENTRY]);
+  assert.equal(out.errorText, "");
+  // auth is ok: no login hint is shown for the new list
+  assert.equal(out.missingText, "");
+});
+
+test("harness reload: installed Claude with missing auth shows its login hint", () => {
+  const out = pipelineUiModule.harnessReloadOutcome({
+    ok: true, status: 200,
+    data: { harnesses: [{ ...CLAUDE_ENTRY, auth: "missing" }] },
+    previous: [], previousMissingText: "",
+  });
+  assert.match(out.missingText, /^Login needed: claude \(claude login\)$/);
+});
+
+test("harness reload: absent Claude keeps the previous list and no login text", () => {
+  const previous = [{ id: "vibe", installed: true }];
+  const out = pipelineUiModule.harnessReloadOutcome({
+    ok: true, status: 200, data: { harnesses: [{ id: "vibe", installed: true }] },
+    previous, previousMissingText: "Login needed: vibe (vibe --setup)",
+  });
+  assert.deepEqual(out.harnesses, previous);
+  assert.ok(!out.harnesses.some((h) => h.id === "claude"));
+  // The new list has no missing-auth entry, so the previous list's login
+  // hint must not be shown as current.
+  assert.equal(out.missingText, "");
+});
+
+test("harness reload: a failed load keeps the previous list and reports the error", () => {
+  const previous = [{ id: "vibe", installed: true }];
+  const out = pipelineUiModule.harnessReloadOutcome({
+    ok: false, status: 500, previous, previousMissingText: "",
+  });
+  assert.deepEqual(out.harnesses, previous);
+  assert.match(out.errorText, /HTTP 500/);
+  assert.equal(out.missingText, "");
+});
+
+test("harness reload: a fetch error keeps the previous list and reports it", () => {
+  const previous = [];
+  const out = pipelineUiModule.harnessReloadOutcome({
+    ok: false, status: 0, fetchError: new Error("network down"), previous, previousMissingText: "",
+  });
+  assert.deepEqual(out.harnesses, previous);
+  assert.match(out.errorText, /network down/);
+});
+
+test("harness reload: an invalid body keeps the previous list and reports it", () => {
+  const previous = [{ id: "vibe", installed: true }];
+  const out = pipelineUiModule.harnessReloadOutcome({
+    ok: true, status: 200, data: { harnesses: "nope" }, previous, previousMissingText: "",
+  });
+  assert.deepEqual(out.harnesses, previous);
+  assert.match(out.errorText, /invalid/);
+});
+
+test("harness reload: a valid response clears the error text", () => {
+  const out = pipelineUiModule.harnessReloadOutcome({
+    ok: true, status: 200, data: { harnesses: [CLAUDE_ENTRY] },
+    previous: [], previousMissingText: "",
+  });
+  assert.equal(out.errorText, "");
+});
+
+test("harness reload: a throwing listener cannot stall later reloads", () => {
+  // A listener throw is not reachable from outside the page, so the guard is
+  // checked at the source: the in-flight slot must clear in a finally block.
+  const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
+  const reload = html.slice(html.indexOf("function reloadHarnesses"), html.indexOf("function setSelectOptions"));
+  assert.match(reload, /try \{[\s\S]*?for \(const listener of harnessListeners\) listener\(\);[\s\S]*?\} finally \{[\s\S]*?harnessRequest = null;/);
+});

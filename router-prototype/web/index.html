@@ -346,7 +346,7 @@
 <script>
 window.addEventListener("DOMContentLoaded", () => {
   const { nodeRowsFromResolved, layoutGraph, nodeRowsFromGraphView, nodeSummaryText, edgeTextLines, buildNodeSettingsPayload, buildCreateBody, pickerPipelines, buildGraphChangeBody, graphSwitchView, remapComplete,
-    pipelineOptionLabel, pipelineErrorsText, EFFORT_LEVELS, parseContextSize, formatTokens, filterInstalled, authBadge, previewForIntegration,
+    pipelineOptionLabel, pipelineErrorsText, EFFORT_LEVELS, parseContextSize, formatTokens, filterInstalled, authBadge, harnessReloadOutcome, previewForIntegration,
     previewSelectionKey, previewSelectionExists, isPassingIntegration, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
     PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
@@ -1920,26 +1920,40 @@ window.addEventListener("DOMContentLoaded", () => {
   createPanel.append(mkLabel("Repo URL", repoInput), repoInput);
 
   // Installed harnesses, shared by every pipeline form. A form asks for a
-  // reload when it opens; concurrent reloads share one request.
+  // reload when it opens; concurrent reloads share one request. The reload
+  // asks the server to re-probe (refresh=1): the probe cache may predate a
+  // harness installation, and a cached answer must not hide it. A failed
+  // load keeps the previous list but reports the error, so stale data is
+  // never presented as current.
   let installedHarnesses = [];
   let harnessMissingText = "";
+  let harnessErrorText = "";
   let harnessRequest = null;
   const harnessListeners = new Set();
   function reloadHarnesses() {
     if (harnessRequest) return harnessRequest;
     harnessRequest = (async () => {
+      let outcome;
       try {
-        const res = await fetch("/api/harnesses");
-        if (!res.ok) return;
-        const data = await res.json();
-        installedHarnesses = filterInstalled(data.harnesses);
-        const missing = installedHarnesses.filter((h) => h.auth === "missing");
-        harnessMissingText = missing.length
-          ? "Login needed: " + missing.map((h) =>
-              h.id + " (" + (h.loginHint || h.id + " login") + ")").join(", ")
-          : "";
+        const res = await fetch("/api/harnesses?refresh=1");
+        const data = await res.json().catch(() => null);
+        outcome = harnessReloadOutcome({ ok: res.ok, status: res.status, data,
+          previous: installedHarnesses, previousMissingText: harnessMissingText });
+      } catch (err) {
+        outcome = harnessReloadOutcome({ ok: false, status: 0, fetchError: err,
+          previous: installedHarnesses, previousMissingText: harnessMissingText });
+      }
+      installedHarnesses = outcome.harnesses;
+      harnessMissingText = outcome.missingText;
+      harnessErrorText = outcome.errorText;
+      // A throwing listener must not leave the slot set: every later reload
+      // would return the same settled promise and the catalog would never
+      // refresh again. The rejection stays visible for the caller.
+      try {
         for (const listener of harnessListeners) listener();
-      } catch {} finally { harnessRequest = null; }
+      } finally {
+        harnessRequest = null;
+      }
     })();
     return harnessRequest;
   }
@@ -2171,7 +2185,7 @@ window.addEventListener("DOMContentLoaded", () => {
         syncPhaseRow(key);
         selectValue(modelSelects[key], model);
       }
-      authSummary.textContent = harnessMissingText;
+      authSummary.textContent = [harnessErrorText, harnessMissingText].filter(Boolean).join(" ");
     }
     harnessListeners.add(applyHarnesses);
 

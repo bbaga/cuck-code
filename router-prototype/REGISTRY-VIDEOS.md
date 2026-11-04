@@ -3,6 +3,13 @@
 This guide records six videos of the work registry UI. Every curl and git command here ran once
 against a router on a free port with a temporary `LINES_DIR`. Run all commands from the repository root
 in one shell, because the variables carry over between sections. Use `bash` or `zsh`; `jq` must exist.
+Two base URLs exist, and they are not the same:
+- `BASE` is the isolated router under test. Only the browser and the registry API calls below use it.
+- `ORCH` is the orchestration router that started you. Send evidence and inventory calls only there.
+- `ORCH_LINE_ID`, `WORKER_ID`, and `WORKTREE` are required inputs. The integration start
+  response holds the worker id and the worktree:
+  `POST $ORCH/api/protocol/lines/$ORCH_LINE_ID/interactions/start` returns
+  `{"validatorId":"<id>","branch":"...","worktree":"<path>"}`.
 
 ## 0. Start the router
 
@@ -10,6 +17,11 @@ in one shell, because the variables carry over between sections. Use `bash` or `
 PORT=$(node -e 'const s=require("net").createServer().listen(0,()=>{console.log(s.address().port);s.close()})')
 WORK=$(mktemp -d); mkdir -p "$WORK/lines" "$WORK/bin" "$WORK/origins"
 BASE=http://localhost:$PORT; JSON='Content-Type: application/json'
+ORCH=<orchestration router URL, for example http://localhost:7788>
+ORCH_LINE_ID=<the id of the orchestration line you validate>
+WORKER_ID=<validatorId from the integration start response>
+WORKTREE=<worktree from the integration start response>
+ORCH=<orchestration router URL, for example http://localhost:7788>
 ```
 
 The merge verifier accepts only `https://github.com/<owner>/<repo>` remotes. Case 5 uses a local bare
@@ -46,6 +58,14 @@ start_router() {
   echo "router did not start" >&2; return 1
 }
 start_router
+```
+
+Register the isolated server PID with the orchestration router. Its cleanup kills the
+process if you forget section 10:
+
+```bash
+curl -s -X POST "$ORCH/api/protocol/lines/$ORCH_LINE_ID/inventory" -H "$JSON" \
+  -d '{"kind":"process","pid":'"$SERVER_PID"',"name":"integration-router","worker":"'"$WORKER_ID"'"}'
 ```
 
 At the end, stop it with `kill "$SERVER_PID"` and run `rm -rf "$WORK"` (section 10).
@@ -139,7 +159,7 @@ Keep the directory inside your worker worktree, because the evidence API accepts
 
 ```js
 const { chromium } = require('playwright');
-const dir = '/ABSOLUTE/PATH/TO/WORKTREE/evidence';
+const dir = process.env.WORKTREE + '/evidence';
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 },
   recordVideo: { dir, size: { width: 1280, height: 800 } } });
@@ -151,15 +171,26 @@ await ctx.close();                          // closing the context finalizes the
 ```
 
 Slow the steps down with `page.waitForTimeout(1000)` between actions, so the video shows each state.
-Rename `file` to `case-<n>.webm` after `ctx.close()`. Then register it. Use the evidence worker id and a
-path relative to the worktree. The file must be larger than 1 KB.
+Rename `file` to `case-<n>.webm` after `ctx.close()`. Then register it. Keep the directory inside your
+validator worktree (the directory that holds the repository directories), because the evidence API
+accepts only files in that worktree. The file must be larger than 1 KB.
+
+`WORKER_ID` and `WORKTREE` come from the integration start response (section 0).
+`ORCH_LINE_ID` is the orchestration line. `LINE_A` and the other line ids belong to the
+isolated router. Never use an isolated line id for evidence.
 
 ```bash
-curl -s -X POST "$BASE/api/protocol/workers/$WORKER_ID/evidence" -H "$JSON" \
+curl -s -X POST "$ORCH/api/protocol/workers/$WORKER_ID/evidence" -H "$JSON" \
   -d '{"useCase":"Case 1: publish a claim and see it in the Registry","file":"evidence/case-1.webm"}'
+EVIDENCE_ID=<evidenceId from the registration response>
 ```
 
-The answer is 201 with `{evidenceId, attemptId}`. Use one `useCase` title per case.
+The answer is 201 with `{evidenceId, attemptId}`. `attemptId` is a nonempty string; a
+409 means the worker has no current attempt, so report that instead of retrying. Use one
+`useCase` title per case. Verify with `GET $ORCH/api/lines/$ORCH_LINE_ID/evidence`: the item with
+id `EVIDENCE_ID` must be in `items` with the same `attemptId`. Old evidence is in `history`.
+Retrieve the video with
+`curl -s "$ORCH/api/lines/$ORCH_LINE_ID/evidence/$EVIDENCE_ID/video" -o check.webm`.
 
 Run the six cases in order, on one router, without a reset. Earlier cases leave lines, claims and
 requests behind, so every locator must match exactly one element. Follow these rules:
@@ -292,5 +323,8 @@ kill "$SERVER_PID"; wait "$SERVER_PID" 2>/dev/null
 rm -rf "$WORK"
 ```
 
-Register each of the six videos (section 3) before you remove `$WORK`. Keep the video files in the worktree
-`evidence` directory, not in `$WORK`.
+Register each of the six videos (section 3) with the orchestration router before you remove `$WORK`.
+Keep the video files in the worktree
+`evidence` directory, not in `$WORK`. The orchestration router kills registered inventory
+processes at cleanup. The isolated server PID is in the inventory (section 0), so cleanup
+removes it if a step fails.
