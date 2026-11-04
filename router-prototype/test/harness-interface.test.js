@@ -152,3 +152,52 @@ test("normalizeChoices returns [] for a non-array", () => {
   assert.deepStrictEqual(normalizeChoices(null), []);
   assert.deepStrictEqual(normalizeChoices("a"), []);
 });
+
+// A getter or Proxy trap in plugin code can throw. The validator must report.
+function assertReports(plugin, field) {
+  let errors;
+  assert.doesNotThrow(() => { errors = validateHarnessPlugin(plugin); });
+  assert.ok(Array.isArray(errors) && errors.length >= 1, JSON.stringify(errors));
+  if (field) assertNames(errors, field);
+  return errors;
+}
+
+function withThrowingGetter(obj, key) {
+  return Object.defineProperty(obj, key, {
+    enumerable: true,
+    get() { throw new Error("x"); },
+  });
+}
+
+test("a throwing getter on id gives an error", () => {
+  const errors = assertReports(withThrowingGetter(validPlugin(), "id"), "id");
+  assertNames(errors, "(x)");
+});
+
+test("a throwing getter on capabilities gives an error", () => {
+  assertReports(withThrowingGetter(validPlugin(), "capabilities"), "capabilities");
+});
+
+test("a throwing getter on a capabilities key gives an error", () => {
+  const caps = withThrowingGetter(
+    { resume: true, systemPrompt: "file", nativeTimeLimit: false }, "providers");
+  assertReports(validPlugin({ capabilities: caps }), "capabilities.providers");
+});
+
+test("a throwing getter on a required function gives an error", () => {
+  assertReports(withThrowingGetter(validPlugin(), "probe"), "probe");
+});
+
+test("a Proxy with a throwing ownKeys trap gives an error", () => {
+  const proxy = new Proxy(validPlugin(), {
+    ownKeys() { throw new Error("no keys"); },
+  });
+  assertReports(proxy, "plugin");
+});
+
+test("a revoked Proxy gives the generic error", () => {
+  const { proxy, revoke } = Proxy.revocable(validPlugin(), {});
+  revoke();
+  const errors = assertReports(proxy);
+  assertNames(errors, "plugin: cannot read the plugin object");
+});

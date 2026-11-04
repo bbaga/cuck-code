@@ -69,22 +69,59 @@ function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function errorMessage(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// Plugin code is untrusted: a getter or a Proxy trap can throw. These helpers
+// turn such a throw into an error message, so the validator never throws.
+function safeGet(obj, key, label, errors) {
+  try {
+    return obj[key];
+  } catch (err) {
+    errors.push(`${label}: cannot read property (${errorMessage(err)})`);
+    return undefined;
+  }
+}
+
+function safeHas(obj, key, label, errors) {
+  try {
+    return key in obj;
+  } catch (err) {
+    errors.push(`${label}: cannot read property (${errorMessage(err)})`);
+    return false;
+  }
+}
+
+function safeKeys(obj, label, errors) {
+  try {
+    return Object.keys(obj);
+  } catch (err) {
+    errors.push(`${label}: cannot list keys (${errorMessage(err)})`);
+    return [];
+  }
+}
+
 function validateCapabilities(caps, errors) {
   if (!isPlainObject(caps)) {
     errors.push("capabilities must be an object");
     return;
   }
-  for (const key of Object.keys(caps)) {
+  for (const key of safeKeys(caps, "capabilities", errors)) {
     if (!CAPABILITY_KEYS.includes(key)) errors.push(`capabilities.${key} is not a known key`);
   }
   for (const key of CAPABILITY_KEYS) {
-    if (!(key in caps)) {
+    const label = `capabilities.${key}`;
+    if (!safeHas(caps, key, label, errors)) {
       errors.push(`capabilities.${key} is missing`);
-    } else if (key === "systemPrompt") {
-      if (!SYSTEM_PROMPT_MODES.includes(caps.systemPrompt)) {
+      continue;
+    }
+    const value = safeGet(caps, key, label, errors);
+    if (key === "systemPrompt") {
+      if (!SYSTEM_PROMPT_MODES.includes(value)) {
         errors.push(`capabilities.systemPrompt must be one of: ${SYSTEM_PROMPT_MODES.join(", ")}`);
       }
-    } else if (typeof caps[key] !== "boolean") {
+    } else if (typeof value !== "boolean") {
       errors.push(`capabilities.${key} must be a boolean`);
     }
   }
@@ -96,49 +133,63 @@ function validateCapabilities(caps, errors) {
  * @param {{ expectId?: string, builtIn?: boolean }} [opts]
  * @returns {string[]} error messages; an empty array means valid
  */
-function validateHarnessPlugin(plugin, { expectId, builtIn = false } = {}) {
+function validateHarnessPlugin(plugin, opts = {}) {
+  try {
+    return checkPlugin(plugin, opts || {});
+  } catch (err) {
+    // Last resort, for example a revoked Proxy: report instead of throw.
+    return [`plugin: cannot read the plugin object (${errorMessage(err)})`];
+  }
+}
+
+function checkPlugin(plugin, { expectId, builtIn = false }) {
   if (!isPlainObject(plugin)) return ["plugin must be a non-null object"];
   const errors = [];
+  const get = (key) => safeGet(plugin, key, key, errors);
 
-  if (plugin.apiVersion !== API_VERSION) {
+  if (get("apiVersion") !== API_VERSION) {
     errors.push(`apiVersion must be ${API_VERSION}`);
   }
 
-  if (typeof plugin.id !== "string" || !ID_RE.test(plugin.id)) {
+  const id = get("id");
+  if (typeof id !== "string" || !ID_RE.test(id)) {
     errors.push(`id must match ${ID_RE}`);
   } else {
-    if (expectId !== undefined && plugin.id !== expectId) {
-      errors.push(`id "${plugin.id}" must equal the folder name "${expectId}"`);
+    if (expectId !== undefined && id !== expectId) {
+      errors.push(`id "${id}" must equal the folder name "${expectId}"`);
     }
-    if (!builtIn && BUILTIN_HARNESS_IDS.includes(plugin.id)) {
-      errors.push(`id "${plugin.id}" is reserved for a built-in harness`);
+    if (!builtIn && BUILTIN_HARNESS_IDS.includes(id)) {
+      errors.push(`id "${id}" is reserved for a built-in harness`);
     }
   }
 
-  if (plugin.displayName !== undefined
-      && (typeof plugin.displayName !== "string" || plugin.displayName.trim() === "")) {
+  const displayName = get("displayName");
+  if (displayName !== undefined
+      && (typeof displayName !== "string" || displayName.trim() === "")) {
     errors.push("displayName must be a non-empty string when present");
   }
 
-  validateCapabilities(plugin.capabilities, errors);
+  const capabilities = get("capabilities");
+  validateCapabilities(capabilities, errors);
 
   for (const name of REQUIRED_METHODS) {
-    if (typeof plugin[name] !== "function") errors.push(`${name} must be a function`);
+    if (typeof get(name) !== "function") errors.push(`${name} must be a function`);
   }
-  if (isPlainObject(plugin.capabilities) && plugin.capabilities.providers === true) {
+  if (isPlainObject(capabilities) && safeGet(capabilities, "providers", "capabilities.providers", []) === true) {
     for (const name of PROVIDER_METHODS) {
-      if (typeof plugin[name] !== "function") {
+      if (typeof get(name) !== "function") {
         errors.push(`${name} must be a function when capabilities.providers is true`);
       }
     }
   }
   for (const name of OPTIONAL_METHODS) {
-    if (plugin[name] !== undefined && typeof plugin[name] !== "function") {
+    const method = get(name);
+    if (method !== undefined && typeof method !== "function") {
       errors.push(`${name} must be a function when present`);
     }
   }
 
-  for (const key of Object.keys(plugin)) {
+  for (const key of safeKeys(plugin, "plugin", errors)) {
     if (!ALLOWED_KEYS.includes(key)) errors.push(`${key} is not a known plugin key`);
   }
   return errors;
