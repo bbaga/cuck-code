@@ -78,7 +78,7 @@ test("implementor completion reads its own worktree session rather than the plan
   const child = createFakeChild();
   const worktreePath = path.join(root, "worker-worktree");
   fs.mkdirSync(worktreePath);
-  const worker = { id: "worker-context", name: "worker", role: "implementor", harness: "claude",
+  const worker = { id: "worker-context", name: "worker", role: "implementor", overrides: { harness: "claude" },
     status: "running", worktreePath, prompt: "Work", transcript: [], sessionId: null };
   item.workers.set(worker.id, worker);
   let invocation;

@@ -37,7 +37,7 @@ function seedLine(linesDir, id, { graph } = {}) {
     repos: [{ name: "api", url: src, path: clone }],
     workers: [{ id: `${id}-i1`, name: "impl", node: "backend-impl", persona: "backend", role: "implementor",
       status: "completed", repo: "api", branch: "b/impl", runGeneration: 1,
-      lastCompletedInvocationId: "inv-1", lastRunText: "report", sessionId: "sess-1", harness: "claude",
+      lastCompletedInvocationId: "inv-1", lastRunText: "report", sessionId: "sess-1", harness: "claude", overrides: { harness: "claude" },
       acceptedRuns: [{ runId: 1, invocationId: "inv-1", by: "planner" }],
       worktreePath: clone }] };
   if (graph) meta.graph = graph;
@@ -168,8 +168,8 @@ test("the old /workers route still passes per-worker run settings through", asyn
     { name: "with-model", prompt: "x", repo: "api", model: "m-1", effort: "high" });
   assert.equal(out.status, 201, JSON.stringify(out.body));
   const w = stateOf(wrkLine, out.body.workerId);
-  assert.equal(w.model, "m-1");
-  assert.equal(w.effort, "high");
+  assert.equal(w.overrides.model, "m-1");
+  assert.equal(w.overrides.effort, "high");
 });
 
 test("/continue resumes the implementor through the feedback message", async () => {

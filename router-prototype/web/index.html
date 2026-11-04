@@ -1204,7 +1204,7 @@ window.addEventListener("DOMContentLoaded", () => {
       if (!res || !res.ok) return showPipeMsg(data.error || "Saving the settings failed.");
       applyPipelineState(st, data);
       pipeForm.set(st.nodeSettings);
-      showPipeMsg("Saved. The settings apply from the next run.", true);
+      showPipeMsg("Saved. The next run of every node uses these settings.", true);
     });
     tabWorkBtn.addEventListener("click", () => setLineTab(st, "work"));
     hideFailedCheckbox.addEventListener("change", () => {
@@ -1216,8 +1216,10 @@ window.addEventListener("DOMContentLoaded", () => {
       st.plannerStatus = status;
       updateStatusMarker(st);
       if (st.started) {
-        input.placeholder = (st.planContent && !st.approved)
-          ? "Plan proposed - type feedback here" : "Send a prompt";
+        input.placeholder = status === "running"
+          ? "The planner is running. A new prompt waits in the queue."
+          : (st.planContent && !st.approved)
+            ? "Plan proposed - type feedback here" : "Send a prompt";
       } else {
         input.placeholder = "Type the initial prompt. Shift+Enter makes a new line.";
       }
@@ -1379,15 +1381,22 @@ window.addEventListener("DOMContentLoaded", () => {
       if (!text || st.submitting) return;
       const ticket = st.draft.begin(text);
       st.submitting = true;
+      send.disabled = true;
       try {
         const response = await fetch("/api/lines/" + st.id + "/prompts", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text }),
         });
         if (cards.get(st.id) !== st) return;
-        if (!response.ok) throw new Error("HTTP " + response.status);
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          composerError.textContent = data.error || "The prompt was not sent (HTTP " + response.status + "). Your text is kept.";
+          composerError.hidden = false;
+          return;
+        }
         await response.json().catch(() => null);
         if (cards.get(st.id) !== st) return;
+        if (!st.started) setStatus("running");
         if (st.draft.canClear(ticket, input.value)) {
           input.value = "";
           input.style.height = "";
@@ -1405,6 +1414,7 @@ window.addEventListener("DOMContentLoaded", () => {
         composerError.hidden = false;
       } finally {
         st.submitting = false;
+        send.disabled = false;
       }
     };
     send.addEventListener("click", post);
