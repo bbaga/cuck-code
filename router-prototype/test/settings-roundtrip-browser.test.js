@@ -2,8 +2,9 @@
 // Real-browser check of the settings round trip: creation selections reach
 // the persisted nodeSettings and return in Change settings; both known
 // catalog providers restore; a non-Pi row round-trips in isolation; the
-// saved state is proven on the server and on disk after a real Save; and
-// failed, late, and repeated hydrations respect the guards. Skips without
+// saved state is proven on the server and on disk after a real Save; an
+// intentional same-row harness change clears the Pi state; and failed,
+// late, and repeated hydrations respect the guards. Skips without Chrome.
 // Chrome. The openai-codex answers are scripted; the anthropic answers come
 // from the live fixture catalog (the fake pi CLI), so both paths are proven.
 const test = require("node:test");
@@ -209,6 +210,96 @@ test("settings round trip: a superseded row answer cannot apply", async (t) => {
     // The new answer resolves and applies: its model option appears.
     await page.evaluate("window.__releases[1]()");
     await H.waitOption(page, "cp-model-planner", "openai-codex/gpt-new-a");
+    assert.deepEqual(await page.evaluate("window.__errs"), []);
+  });
+});
+
+test("settings round trip: an intentional harness change clears the Pi state on the same row", async (t) => {
+  await H.withFixture(t, null, async (holder, fx) => {
+    let page = holder.page;
+
+    // The fixture ships only a fake pi CLI. A minimal fake vibe CLI makes
+    // the default non-Pi harness installed too (same setup as above).
+    const binDir = process.env.PATH.split(":")[0];
+    fs.writeFileSync(path.join(binDir, "vibe"), '#!/bin/sh\necho "vibe 1.2.3"\n',
+      { mode: 0o755 });
+
+    // Seed a line: the planner on pi + openai-codex with effort, max
+    // context, and the hidden timeLimit; the backend implementor on the
+    // second known provider. The second row proves that the switch keeps
+    // unrelated overrides.
+    const post = await fetch(`${fx.url}/api/lines`, { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Harness switch line", pipelineName: "default",
+        nodeSettings: {
+          planner: { harness: "pi", model: "openai-codex/gpt-5.2",
+            effort: "high", maxContext: 200000, timeLimit: 1234 },
+          "backend-impl": { harness: "pi", model: "anthropic/claude-x", effort: "low" },
+        } }) });
+    assert.equal(post.status, 201);
+    const created = (await (await fetch(`${fx.url}/api/lines`)).json())
+      .lines.find((l) => l.name === "Harness switch line");
+    const line = created.id, pre = "lp-" + line;
+
+    // Fresh session: the planner's pi detail answer is held in flight when
+    // the row hydrates.
+    await page.close();
+    holder.page = page = await H.openPage(fx.url,
+      { initScript: STUBS + H.scriptedPi([{ hold: true,
+        models: [{ value: "openai-codex/gpt-5.2", label: "gpt-5.2" }] }]) });
+    await page.waitFor("/Harness switch line/i.test(document.body.innerText)");
+    await H.clickTab(page, line);
+    await H.wait(page, `${PANE(line)} && !${PANE(line)}.hidden`);
+    await page.waitFor(`window.__releases.length === 1`
+      + ` && ${SEL(pre, "authmode", "planner")}.value === "openai-codex"`);
+
+    // The user switches the same row to vibe through the real change event,
+    // while the Pi answer is still in flight.
+    await H.changeSelect(page, pre, "harness", "planner", "vibe");
+
+    // The switch clears the incompatible Pi state at once: the provider
+    // select is hidden and empty, the model drops to the empty default, and
+    // only vibe model choices remain (no qualified Pi id).
+    await H.wait(page, `${SEL(pre, "harness", "planner")}.value === "vibe"`
+      + ` && ${SEL(pre, "authmode", "planner")}.hidden`
+      + ` && ${SEL(pre, "authmode", "planner")}.value === ""`
+      + ` && ${SEL(pre, "model", "planner")}.value === ""`);
+    assert.equal(await page.evaluate(
+      `[...${SEL(pre, "model", "planner")}.options].some((o) => o.value.includes("/"))`),
+      false, "no Pi qualified model survives the switch");
+
+    // The held answer resolves: stale. It restores nothing on the row.
+    await page.evaluate("window.__releases[0]()");
+    await H.waitNever(page, `${SEL(pre, "model", "planner")}.value !== ""`
+      + ` || ${SEL(pre, "harness", "planner")}.value !== "vibe"`
+      + ` || !${SEL(pre, "authmode", "planner")}.hidden`
+      + ` || [...${SEL(pre, "model", "planner")}.options].some((o) => o.value.includes("/"))`);
+
+    // The user picks a vibe model and saves. Effort, max context, and the
+    // hidden timeLimit survive the harness change; the other row keeps its
+    // own overrides; no Pi value and no authMode field reach the payload.
+    await H.waitOption(page, `${pre}-model-planner`, "glm-5-3-flash");
+    await H.changeSelect(page, pre, "model", "planner", "glm-5-3-flash");
+    await H.clickFormButton(page, line, "Save settings");
+    await page.waitFor(
+      `/Saved\\. The settings apply from the next run\\./.test(${PANE(line)}.innerText)`);
+    const expectedSwitched = {
+      planner: { harness: "vibe", model: "glm-5-3-flash", effort: "high",
+        maxContext: 200000, timeLimit: 1234 },
+      "backend-impl": { harness: "pi", model: "anthropic/claude-x", effort: "low" },
+    };
+    const puts = await page.evaluate("window.__puts");
+    assert.equal(puts.length, 1);
+    assert.deepEqual(JSON.parse(puts[0].body), { nodeSettings: expectedSwitched });
+
+    // The same map is proven on the server and on the disk file.
+    const stored = (await (await fetch(`${fx.url}/api/lines`)).json())
+      .lines.find((l) => l.id === line);
+    assert.deepEqual(stored.nodeSettings, expectedSwitched);
+    const savedLine = [...server.lines.values()].find((l) => l.id === line);
+    const onDisk = JSON.parse(
+      fs.readFileSync(path.join(savedLine.workdir, "line.json"), "utf8"));
+    assert.deepEqual(onDisk.nodeSettings, expectedSwitched);
     assert.deepEqual(await page.evaluate("window.__errs"), []);
   });
 });
