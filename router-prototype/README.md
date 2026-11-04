@@ -704,11 +704,19 @@ applies to every node of its phase.
   to run settings)"}` when the body has a `pipeline` field.
 - Change a running line with `PUT /api/lines/:id/pipeline {nodeSettings}`. The
   new map replaces the old one; `nodeSettings: {}` resets to the defaults. This call changes only the run settings; to change the graph see "Change the pipeline of a line". Changes apply
-  from the next run: running sessions finish unchanged, and existing workers
-  keep the harness, model, and effort they were spawned with. A session belongs
-  to the harness that created it, so after a planner harness change the router
-  compacts the planner session on the old harness and continues in a fresh
-  session on the new one.
+  to the next run of every node: the planner, new workers, and the next
+  continuation of an existing worker. A run in progress is never stopped.
+  Explicit per-worker overrides win: the fields `harness`, `model` and `effort`
+  of the start call and of `POST /api/protocol/lines/:id/workers`. The router
+  stores them as `worker.overrides` (`{harness, model, effort}`, `null` for a
+  value that is not set) in `line.json`. A legacy worker without `overrides`
+  follows the pipeline settings. `worker.harness`, `worker.model` and
+  `worker.effort` only record the last run; they name the harness that owns
+  `worker.sessionId` and are never read as overrides. A session belongs to the
+  harness that created it. After a planner or worker harness change the router
+  compacts the session on the old harness and continues in a fresh session on
+  the new one. If that compaction fails, the run starts fresh with a note to
+  recover the state from the files and the router API.
 - Line state and the `PUT` answer carry `graph`, `nodeSettings` and
   `effectiveNodeSettings` (the result per node). The old per-phase `pipeline`
   and `pipelineOverrides` fields are gone.

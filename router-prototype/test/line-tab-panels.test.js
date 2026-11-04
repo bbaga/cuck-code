@@ -12,7 +12,7 @@ const source = slice("  function renderScopePanel(", "  // Context meter") + sli
 function harness(opts = {}) {
   const calls = [];
   const ui = vm.runInNewContext(source + "\n({ setLineTab, renderScopePanel })", {
-    formatScopePanelData: () => "scope", registryLine: { mount: () => ({ load() { calls.push("work"); } }) },
+    renderQueue() {}, formatScopePanelData: () => "scope", registryLine: { mount: () => ({ load() { calls.push("work"); } }) },
     document: {}, window: {}, fetch() {}, reloadPresets() {}, pollInventory() {}, pollEvidence() {}, syncTranscriptScroll() {},
     renderGraph: (st) => { calls.push("graph"); if (opts.preview) st.previewPanel.hidden = false; },
   });
