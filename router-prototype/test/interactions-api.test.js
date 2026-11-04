@@ -25,6 +25,7 @@ const pending = "ia-pending";
 const fbLine = "ia-feedback";
 const accLine = "ia-accept";
 const csLine = "ia-changeset";
+const bigLine = "ia-oversize";
 const capLine = "ia-cap";
 const post = (line, name, body) => call(base, "POST", `/api/protocol/lines/${line}/interactions/${name}`, body);
 
@@ -69,6 +70,14 @@ test.before(async () => {
   // Untracked work in the worktree cannot enter validation.
   fs.writeFileSync(path.join(linesDir, "worktrees", csLine, "api", "impl", "untracked.txt"), "work in progress\n");
   seedLine(linesDir, capLine, true);
+  // A clean committed change set just over the review-size target: it must
+  // enter validation with an oversize warning, not a numeric rejection.
+  seedLine(linesDir, bigLine, true);
+  const bigWt = path.join(linesDir, "worktrees", bigLine, "api", "impl");
+  fs.writeFileSync(path.join(bigWt, "big.js"),
+    Array.from({ length: 501 }, (_, i) => `// review-size line ${i + 1}`).join("\n") + "\n");
+  git(bigWt, "add", ".");
+  git(bigWt, "commit", "-qm", "big but clean work");
   git(src, "branch", "b/impl");
   git(src, "branch", "b/front");
   // Lines with idle instances that have a session (the fake agent logs its arguments).
@@ -306,6 +315,20 @@ test("a validator is refused when the change set of its implementor cannot enter
   assert.match(out.body.error, /feedback/);
   const list = await call(base, "GET", `/api/protocol/lines/${csLine}/workers`);
   assert.equal(list.body.workers.filter((w) => w.role === "validator").length, 0, "no validator was created");
+});
+
+// A clean change set just over the review-size target is a warning, not a
+// rejection: the validator starts and judges reviewability.
+test("an oversized but clean change set enters validation with a warning", async () => {
+  const out = await post(bigLine, "start", { to: "backend-val", criteria: "1. It works.", source: "i1" });
+  assert.equal(out.status, 201, JSON.stringify(out.body));
+  const list = await call(base, "GET", `/api/protocol/lines/${bigLine}/workers`);
+  const validators = list.body.workers.filter((w) => w.role === "validator");
+  assert.equal(validators.length, 1, "the validator was created");
+  const impl = list.body.workers.find((w) => w.role === "implementor");
+  assert.equal(impl.changeset.ok, true);
+  assert.equal(impl.changeset.oversized, true);
+  assert.equal(impl.changeset.total, 501);
 });
 
 test("a validator is refused at the worker cap and no validator is created", async () => {

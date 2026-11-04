@@ -33,7 +33,7 @@ const { messageText, InvocationCapture, appendTranscript, reportForValidation,
   applyCompletion, completionFields, runOutputNote,
   buildUnroutedNotification } = require("./handoff");
 const { CHANGESET_LIMIT, collectChangeset, changesetWakeMessage,
-  changesetFields } = require("./changeset");
+  changesetOversizeMessage, changesetFields } = require("./changeset");
 const { BaseError, resolveSpawnBase, baseFields, baseNote } = require("./spawn-base");
 const { recordRequestEntry, userEntry, isPromptEcho } = require("./transcript-echo");
 const { recordedPlannerRequest, sourceIdentity, plannerRequest, interactionReportRequest, restorePlannerRequest,
@@ -929,7 +929,7 @@ function enqueue(line, text) {
 
 const WAKE_PREFIXES = ["IMPLEMENTOR REPORT", "VALIDATION REPORT", "VALIDATOR FAILURE",
   "VALIDATOR STOPPED", "WORKER FAILURE", "WORKER STOPPED", "PLAN APPROVED",
-  "CHANGESET LIMIT EXCEEDED"];
+  "CHANGESET BLOCKED", "CHANGESET OVERSIZE WARNING"];
 
 function isWake(text) {
   return typeof text === "string" && WAKE_PREFIXES.some((p) => text.startsWith(p));
@@ -1320,16 +1320,21 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
     // edge that leaves the node delivers its rendered text (task C6).
     let overLimit = false;
     if (worker.status === "completed" && worker.role !== "validator") {
-      // An oversized or uncountable implementor result never reaches the
-      // planner as a report: it gets a CHANGESET LIMIT EXCEEDED wake instead.
+      // A safety-blocked or uncountable implementor result never reaches the
+      // planner as a report: it gets a CHANGESET BLOCKED wake instead. An
+      // oversized but valid result enters review with an oversize warning.
       const cs = collectChangeset(worker.worktreePath, worker.baseCommit);
       worker.changeset = cs;
       saveLine(line);
       if (worker.role === "implementor" && !cs.ok) {
         overLimit = true;
-        slog("warn", "changeset.exceeded", { lineId: line.id, workerId: worker.id,
+        slog("warn", "changeset.blocked", { lineId: line.id, workerId: worker.id,
           reason: cs.reason, total: cs.total, limit: cs.limit });
         enqueue(line, changesetWakeMessage(cs, worker));
+      } else if (worker.role === "implementor" && cs.oversized) {
+        slog("warn", "changeset.oversize", { lineId: line.id, workerId: worker.id,
+          total: cs.total, limit: cs.limit });
+        enqueue(line, changesetOversizeMessage(cs, worker));
       }
     }
     if (!overLimit) {
@@ -1368,21 +1373,29 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
     }
   } else if (worker.status === "completed") {
     // Recalculate the change set after every successful implementor run.
-    // An oversized or uncountable result never reaches the validation
-    // handoff: the planner gets a CHANGESET LIMIT EXCEEDED wake instead,
-    // and the session and worktree stay intact for the continue endpoint.
+    // A safety-blocked or uncountable result never reaches the validation
+    // handoff: the planner gets a CHANGESET BLOCKED wake instead, and the
+    // session and worktree stay intact for the feedback interaction. An
+    // oversized but valid result enters review with an oversize warning.
     const cs = collectChangeset(worker.worktreePath, worker.baseCommit);
     worker.changeset = cs;
     saveLine(line);
     if (worker.role === "implementor" && !cs.ok) {
-      slog("warn", "changeset.exceeded", { lineId: line.id, workerId: worker.id,
+      slog("warn", "changeset.blocked", { lineId: line.id, workerId: worker.id,
         reason: cs.reason, total: cs.total, limit: cs.limit });
       enqueue(line, changesetWakeMessage(cs, worker));
+    } else if (worker.role === "implementor" && cs.oversized) {
+      slog("warn", "changeset.oversize", { lineId: line.id, workerId: worker.id,
+        total: cs.total, limit: cs.limit });
+      // The warning accompanies the report: the planner keeps the full
+      // implementor report and its rationale, not the warning alone.
+      enqueue(line, changesetOversizeMessage(cs, worker));
+      enqueue(line, buildUnroutedNotification(worker, null, report));
     } else {
       enqueue(line, buildUnroutedNotification(worker, null, report));
     }
   } else if (timedOut) {
-    enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session so it can finish: POST /api/protocol/workers/${worker.id}/continue with {"prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.` + runOutputNote(report, "implementor run output") + failureNote);
+    enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session with the feedback interaction: POST /api/protocol/lines/${line.id}/interactions/feedback with {"instance":"${worker.id}","instructions":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.` + runOutputNote(report, "implementor run output") + failureNote);
   } else if (worker.status === "failed") {
     enqueue(line, `WORKER FAILURE - '${worker.name}' (workerId ${worker.id}, session ${sid}): ${worker.harness || "vibe"} failed (see FAILURE DETAIL). Decide whether to restart it with a corrected prompt (new name, e.g. ${worker.name}-2) or to proceed without it.` + runOutputNote(report, "implementor run output") + failureNote);
   } else {
@@ -1679,18 +1692,25 @@ function createSourceChecker(line, nodeId, sourceInstance, fields) {
     return fail(409, `cap reached: ${WORKER_CAP} workers/validators are running concurrently - wait for completions first`, { code: "WORKER_CAP" });
   }
   // Stale-state defense: measure the change set again immediately before the validator is created.
-  // The work can have changed since the run ended, and work over the limit must not enter validation.
+  // A safety blocker (binary, dirty, or untracked work) or an uncountable diff must not enter
+  // validation. A total over the review-size target is only a warning: the work enters
+  // independent review with the warning, and the validator judges reviewability.
   if (implWorker.role === "implementor") {
     const cs = collectChangeset(implWorker.worktreePath, implWorker.baseCommit);
     implWorker.changeset = cs;
     if (!cs.ok) {
       saveLine(line);
-      slog("warn", "changeset.exceeded-at-validation", { lineId: line.id,
+      slog("warn", "changeset.blocked-at-validation", { lineId: line.id,
         workerId: implWorker.id, reason: cs.reason, total: cs.total, limit: cs.limit });
       return fail(409, `the change set of implementor '${implWorker.name}' (${implWorker.id}) cannot enter validation `
-        + `(reason: ${cs.reason}; additions ${cs.additions}, deletions ${cs.deletions}, total ${cs.total}, limit ${cs.limit}`
-        + `${cs.error ? `; error: ${cs.error}` : ""}). Send feedback to the implementor to bring the change set within the limit.`,
+        + `(reason: ${cs.reason}; additions ${cs.additions}, deletions ${cs.deletions}, total ${cs.total}, target ${cs.limit}`
+        + `${cs.error ? `; error: ${cs.error}` : ""}). Send feedback to the implementor to resolve the blocker.`,
         { code: "CHANGESET_LIMIT", reason: cs.reason, total: cs.total, limit: cs.limit });
+    }
+    if (cs.oversized) {
+      saveLine(line);
+      slog("warn", "changeset.oversize-at-validation", { lineId: line.id,
+        workerId: implWorker.id, total: cs.total, limit: cs.limit });
     }
   }
   let name = `validator-${implWorker.name}`;
