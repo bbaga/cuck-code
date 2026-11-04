@@ -60,10 +60,13 @@ const PI_SCRIPT = '#!/bin/sh\n'
 
 // Fixture with a fake pi CLI, an optional line seed, and a ready page; the
 // holder survives a run() that swaps the page. opts.initScript replaces the
-// default page stubs and opts.chromePath overrides the browser lookup. The
-// environment overrides (PATH, git config) are scoped to the run: the
-// finally block restores them and removes the fake CLI on every exit path,
-// including a throwing run() and a failed page open.
+// default page stubs, opts.chromePath overrides the browser lookup, and the
+// opts.pageClose/opts.fixtureClose seams wrap the two close steps (tests use
+// them to prove cleanup independence). One outer guard covers every resource
+// acquired after the dashboard starts: the finally block restores the
+// environment, removes the temporary CLI directory, closes the page, and
+// closes the fixture. Each attempt is independent; failures are collected
+// and reported without masking the primary error.
 async function withFixture(t, seed, run, opts = {}) {
   const fx = await startDashboardFixture();
   const oldEnv = {
@@ -71,37 +74,64 @@ async function withFixture(t, seed, run, opts = {}) {
     GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
     GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
   };
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "settings-roundtrip-bin-"));
-  process.env.PATH = `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`;
-  // Line creation runs `git commit`: ignore a global GPG-sign git config.
-  process.env.GIT_CONFIG_GLOBAL = "/dev/null";
-  process.env.GIT_CONFIG_SYSTEM = "/dev/null";
-  fs.writeFileSync(path.join(bin, "pi"), PI_SCRIPT, { mode: 0o755 });
-  if (seed) seed(require("../../server").lines.get(fx.lineId));
   const holder = { page: null };
+  let bin = null;
+  const cleanupErrors = [];
+  const cleanup = async () => {
+    process.env.PATH = oldEnv.PATH;
+    for (const k of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]) {
+      if (oldEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = oldEnv[k];
+    }
+    if (bin) {
+      try { fs.rmSync(bin, { recursive: true, force: true }); }
+      catch (e) { cleanupErrors.push("temp CLI dir: " + e.message); }
+    }
+    try {
+      if (holder.page) await (opts.pageClose || ((p) => p.close()))(holder.page);
+    } catch (e) { cleanupErrors.push("page close: " + e.message); }
+    try { await (opts.fixtureClose || (() => fx.close()))(); }
+    catch (e) { cleanupErrors.push("fixture close: " + e.message); }
+  };
+  let failure = null;
+  let skipMessage = null;
   try {
+    bin = fs.mkdtempSync(path.join(os.tmpdir(), "settings-roundtrip-bin-"));
+    process.env.PATH = `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`;
+    // Line creation runs `git commit`: ignore a global GPG-sign git config.
+    process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+    process.env.GIT_CONFIG_SYSTEM = "/dev/null";
+    fs.writeFileSync(path.join(bin, "pi"), PI_SCRIPT, { mode: 0o755 });
+    if (seed) seed(require("../../server").lines.get(fx.lineId));
     try {
       holder.page = await openPage(fx.url, {
         initScript: opts.initScript || STUBS,
         chromePath: opts.chromePath,
       });
     } catch (e) {
-      if (e.code === "BROWSER_UNAVAILABLE") return t.skip("Chrome is missing: " + e.message);
-      throw e;
+      if (e.code === "BROWSER_UNAVAILABLE") skipMessage = "Chrome is missing: " + e.message;
+      else throw e;
     }
-    await holder.page.setViewport(1100, 1100);
-    await holder.page.waitFor("/browser[- ]line/i.test(document.body.innerText)");
-    await run(holder, fx);
+    if (!skipMessage) {
+      await holder.page.setViewport(1100, 1100);
+      await holder.page.waitFor("/browser[- ]line/i.test(document.body.innerText)");
+      await run(holder, fx);
+    }
+  } catch (e) {
+    failure = e;
   } finally {
-    process.env.PATH = oldEnv.PATH;
-    for (const k of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]) {
-      if (oldEnv[k] === undefined) delete process.env[k];
-      else process.env[k] = oldEnv[k];
-    }
-    fs.rmSync(bin, { recursive: true, force: true });
-    if (holder.page) await holder.page.close();
-    await fx.close();
+    await cleanup();
   }
+  if (failure) {
+    if (cleanupErrors.length) {
+      failure.message += " (fixture cleanup also failed: " + cleanupErrors.join("; ") + ")";
+    }
+    throw failure;
+  }
+  if (cleanupErrors.length) {
+    throw new Error("fixture cleanup failed: " + cleanupErrors.join("; "));
+  }
+  if (skipMessage) return t.skip(skipMessage);
 }
 
 const clickTab = (page, line, name = "Pipeline") => page.evaluate(
