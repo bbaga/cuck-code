@@ -75,7 +75,7 @@ test("pipeline tab: graph of the default pipeline, settings rows, save, 375 px",
     await page.evaluate(`(() => { for (const [id, v] of [['planner', 'high'], ['backend-val', 'low']]) {
       const s = document.getElementById('lp-browser-line-effort-' + id); s.value = v; s.dispatchEvent(new Event('change')); } })()`);
     await page.evaluate(`[...${PANE}.querySelectorAll('.pipeBtns button')].find((b) => b.textContent === 'Save settings').click()`);
-    await page.waitFor(`/Saved\\. The settings apply from the next run\\./.test(${PANE}.innerText)`);
+    await page.waitFor(`/Saved\\. The next run of every node uses these settings\\./.test(${PANE}.innerText)`);
     const puts = await page.evaluate("window.__puts");
     assert.equal(puts.length, 1);
     assert.match(puts[0].url, /\/api\/lines\/browser-line\/pipeline$/);

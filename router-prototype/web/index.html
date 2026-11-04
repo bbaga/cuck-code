@@ -1186,7 +1186,7 @@ window.addEventListener("DOMContentLoaded", () => {
       if (!res || !res.ok) return showPipeMsg(data.error || "Saving the settings failed.");
       applyPipelineState(st, data);
       pipeForm.set(st.nodeSettings);
-      showPipeMsg("Saved. The settings apply from the next run.", true);
+      showPipeMsg("Saved. The next run of every node uses these settings.", true);
     });
     tabWorkBtn.addEventListener("click", () => setLineTab(st, "work"));
     hideFailedCheckbox.addEventListener("change", () => {
@@ -1197,10 +1197,11 @@ window.addEventListener("DOMContentLoaded", () => {
     const setStatus = (status) => {
       st.plannerStatus = status;
       updateStatusMarker(st);
-      input.disabled = send.disabled = status === "running";
       if (st.started) {
-        input.placeholder = (st.planContent && !st.approved)
-          ? "Plan proposed - type feedback here" : "Send a prompt";
+        input.placeholder = status === "running"
+          ? "The planner is running. A new prompt waits in the queue."
+          : (st.planContent && !st.approved)
+            ? "Plan proposed - type feedback here" : "Send a prompt";
       } else {
         input.placeholder = "Type the initial prompt. Shift+Enter makes a new line.";
       }
@@ -1351,21 +1352,35 @@ window.addEventListener("DOMContentLoaded", () => {
       input.style.height = Math.min(input.scrollHeight, maxHeight) + "px";
       input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
     };
+    let posting = false;
     const post = async () => {
       const text = input.value.trim();
-      if (!text) return;
-      const response = await fetch("/api/lines/" + st.id + "/prompts", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (!response.ok) return;
-      if (!st.started) setStatus("running");
-      input.value = "";
-      input.style.height = "";
-      input.style.overflowY = "hidden";
-      if (!st.started) {
-        st.started = true;
-        input.placeholder = "Send a prompt";
+      if (!text || posting) return;
+      posting = true;
+      send.disabled = true;
+      try {
+        const response = await fetch("/api/lines/" + st.id + "/prompts", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          showError(data.error || "The prompt was not sent (HTTP " + response.status + ").");
+          return;
+        }
+        if (!st.started) setStatus("running");
+        input.value = "";
+        input.style.height = "";
+        input.style.overflowY = "hidden";
+        if (!st.started) {
+          st.started = true;
+          input.placeholder = "Send a prompt";
+        }
+      } catch {
+        showError("The prompt was not sent. Check the network connection.");
+      } finally {
+        posting = false;
+        send.disabled = false;
       }
     };
     send.addEventListener("click", post);
