@@ -79,6 +79,33 @@ for (const persona of ["backend", "frontend"]) {
   }
 }
 
+for (const persona of ["backend", "frontend"]) {
+  test(`${persona} validator prompt carries the runtime size warning and keeps the report`, () => {
+    const nodeId = `${persona}-val`;
+    const report = "Did the work.\nRationale: the parser and its tests belong together.";
+    const rv = validatorRouterValues({ line, nodeId, workerId: "v-1", workerName: "validator-impl",
+      implementor: { name: "impl-a", id: "w-3" }, report, repoName: "web",
+      repoUrl: "https://github.com/o/web.git", port: PORT,
+      changesetWarning: "The change set of the implementor is over the review-size target: "
+        + "total 501 > target 500. Judge reviewability, not the count alone." });
+    const text = buildPrompt(graph, nodeId, rv, { criteria: "1. It works." });
+    assert.ok(text.includes("Size warning from the router:"));
+    assert.ok(text.includes("total 501 > target 500"));
+    assert.ok(text.includes("Rationale: the parser and its tests belong together."));
+    assert.ok(text.includes("The review-size target is 500 changed lines."));
+  });
+
+  test(`${persona} validator prompt has no warning text without one`, () => {
+    const nodeId = `${persona}-val`;
+    const rv = validatorRouterValues({ line, nodeId, workerId: "v-1", workerName: "validator-impl",
+      implementor: { name: "impl-a", id: "w-3" }, report: "Done.", repoName: "web",
+      repoUrl: null, port: PORT });
+    const text = buildPrompt(graph, nodeId, rv, { criteria: "1. It works." });
+    assert.ok(!text.includes("Size warning from the router"));
+    assert.ok(text.includes("The review-size target is 500 changed lines."));
+  });
+}
+
 test("integration validator prompt equals the golden integrationValidatorBrief text", () => {
   const manifest = [
     { name: "web", url: "https://github.com/o/web.git", worktreePath: "/wt/int/web", baseBranch: "main",

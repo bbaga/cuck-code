@@ -911,8 +911,10 @@ The planner talks to its pipeline through interactions. The old routes
   planner to that node for that interaction; 409 before plan approval, at the
   worker cap, and (for a validator) with `code: "CHANGESET_LIMIT"` when the
   router measures the change set of the implementor again right before the
-  start and the work cannot enter validation (over the limit, binary, dirty or
-  untracked work). The planner then sends `feedback` to the implementor.
+  start and a safety blocker exists (binary, dirty or untracked work, or an
+  uncountable diff). A total over the review-size target is only a warning:
+  the validator starts and judges reviewability. The planner then sends
+  `feedback` to the implementor.
 - `GET /api/protocol/lines/:id/interactions` — what the planner may do, with
   the field list of every call.
 - A call with missing, invalid or unexpected fields answers 400:
@@ -1032,32 +1034,65 @@ construction, so no validator state can pollute later runs. A second
 validation of the same implementor gets a deduplicated validator name
 (`validator-<name>`, `validator-<name>-2`, ...).
 
-### Change-set limit (implementors)
+### Change-set size policy (implementors)
 
-The router enforces a 500-line limit on every implementor change set. When a
-worker worktree is created, the router records its HEAD as the `baseCommit` (the
-resolved `base` when the spawn gave one, so a stacked child does not recount
-its parent's lines);
-the base stays fixed across continued runs and router restarts. After each
-successful implementor run — and again immediately before a validator is
-created — the router runs `git diff --numstat` from
-the base commit to the branch HEAD and counts additions plus deletions over
-code, tests, documentation, and configuration. Totals up to 500 pass; 501 or
-more are rejected. A numstat row is binary only when BOTH count columns are
-dashes; one dash plus one number is malformed. Binary files, dirty worktree
-changes, and untracked files cannot bypass the limit: they escalate too. A
-malformed non-empty numstat row, a failed git command, or a missing commit
-makes the change set uncountable, which escalates as well; the result reports
-only the offending lines, never unrelated command output, and keeps the
-resolved HEAD. An oversized or uncountable change set never reaches the
-validation handoff: the router does not send the report and instead wakes the planner with `CHANGESET LIMIT EXCEEDED`
-(worker and session IDs, base and head commits, additions, deletions, total,
-binary/dirty/untracked paths, and per-file values). The implementor session
-and worktree are preserved for the `feedback` interaction: the planner can
-continue the original session to reduce or split the work. The base commit
-and the limit rule are part of the implementor brief; the latest result is
+The router measures every implementor change set and holds a review-size
+target of 500 changed lines (additions plus deletions). The target is
+strongly preferred, not an unconditional rejection: reviewability is the
+goal, and a count alone never rejects work. When a worker worktree is
+created, the router records its HEAD as the `baseCommit` (the resolved
+`base` when the spawn gave one, so a stacked child does not recount its
+parent's lines); the base stays fixed across continued runs and router
+restarts. After each successful implementor run — and again immediately
+before a validator is created — the router runs `git diff --numstat` from
+the base commit to the branch HEAD and counts additions plus deletions
+over code, tests, documentation, and configuration.
+
+Two different outcomes:
+
+- Safety blockers reject the work. Binary files, dirty worktree changes,
+  and untracked files cannot enter validation. A malformed non-empty
+  numstat row, a failed git command, or a missing commit makes the change
+  set uncountable, which rejects as well; the result reports only the
+  offending lines, never unrelated command output, and keeps the resolved
+  HEAD. A numstat row is binary only when BOTH count columns are dashes;
+  one dash plus one number is malformed. The router wakes the planner with
+  `CHANGESET BLOCKED` (worker and session IDs, base and head commits,
+  additions, deletions, total, target, binary/dirty/untracked paths, and
+  per-file values). The implementor session and worktree are preserved
+  for the `feedback` interaction.
+- Oversize is a warning, not a rejection. A total over the target keeps
+  `ok: true` and sets `oversized: true` in the change-set result. The
+  work enters independent review: the router wakes the planner with
+  `CHANGESET OVERSIZE WARNING` (totals, per-file sizes, and the feedback
+  interaction) together with the full implementor report, and a validator
+  start proceeds. The planner decides between accepting the size with a
+  recorded rationale and a real split into coherent, independently
+  testable parts. Never minify code, join unrelated statements, or remove
+  tests, assertions, or explanations to pass the count: a compressed
+  unreadable diff can still fail review, while a clean cohesive diff just
+  above the target can pass.
+
+Examples: a clean 501-line cohesive diff gets the warning and independent
+review; a compressed 499-line unreadable diff can fail review; dirty,
+untracked, binary, or uncountable work stays blocked. The base commit is
+part of the implementor brief; the latest result is
 persisted in `line.json` and exposed in the worker API responses
-(`baseCommit`, `changeset`). The limit applies to implementors only.
+(`baseCommit`, `changeset`). Legacy `changeset` records from before this
+policy may carry `reason: "oversized"` with `ok: false`; current records
+report oversize with `ok: true`, `oversized: true`, and `reason: null`.
+The size rule applies to implementors only. The implementor and planner
+briefs teach the size assessment, the early escalation, and the real
+split. The validator brief carries the same policy as a reviewability
+check: it judges readability, cohesion, and retained test coverage, not
+only the size. The validator prompt holds the review-size target, and —
+when the change set is over the target — a size warning with the exact
+total, the base and head commits, and the per-file counts. The warning
+accompanies the full implementor report; it never replaces it. The
+validator fails the review when the change is unreadable, when it
+removes an essential test, or when it was compressed to pass the count,
+even below the target. It does not fail a readable, cohesive change only
+because its total is over the target.
 
 ### Test scope
 
@@ -1401,9 +1436,12 @@ validator's job:
   redirected. It uses a free `PORT` other than `7788` and a private `LINES_DIR`.
   It captures the server PID and returns from the start command before other
   tool calls. It waits for HTTP readiness with a bounded timeout. It registers
-  the PID at `POST /api/protocol/lines/:id/inventory` with kind `process`, the
-  integration worker ID, and the PID. It stops the PID after tests, including
-  after failure. Example:
+  the PID at `POST /api/protocol/lines/:id/inventory` on the **orchestration
+  router** (the router that started it) with kind `process`, the
+  integration worker ID, and the PID. The isolated router is the application
+  under test: it never receives inventory or evidence calls, and the private
+  seed never manufactures worker or attempt state for evidence. It stops the
+  PID after tests, including after failure. Example:
 
   ```sh
   PORT=7789 LINES_DIR=/tmp/integration-lines node router-prototype/server.js \
@@ -1416,11 +1454,16 @@ validator's job:
   order. Each screenshot stays paired with its matching title and
   explanation. It closes the context before registration. It registers the
   versioned request `{kind: 'showcase', version: 1, useCase, file, steps:
-  [{title, explanation, screenshot}]}` with the worker evidence endpoint.
-  All media paths are relative to the workdir. Accepted API revision:
+  [{title, explanation, screenshot}]}` with the worker evidence endpoint on
+  the orchestration router. All media paths are relative to the workdir.
+  Accepted API revision:
   `362eff17942182a62baf05ef12423afa2dbf6613`. POST returns
-  `{evidenceId, attemptId}`. GET returns `{items, history, currentAttemptId,
-  currentAttemptIds}`. The router owns attempt identity.
+  `{evidenceId, attemptId}`; `attemptId` is always a nonempty string on 201.
+  A worker without router-run state has no attempt: the router answers
+  409 with `worker has no current attempt` instead of storing evidence that
+  can never count as a verified current attempt. GET returns `{items,
+  history, currentAttemptId, currentAttemptIds}`. The router owns attempt
+  identity.
   Each record in `items` and `history` has `addedBy: {id, name, role}`.
   `role` is `integration validator`, `validator`, `implementor`, or null.
   The router stores the name and role at registration, so they stay correct
@@ -1456,6 +1499,49 @@ validator's job:
   an API change when the running process has an older version.
 - Integration workers, their branches, and evidence items persist across
   restarts.
+
+### Evidence example
+
+Two base URLs exist. `ORCH` is the orchestration router that started the
+worker; it serves the protocol API. `APP` is an isolated application router
+under test; it never receives evidence or inventory calls. `WORKER_ID` is the
+worker's own id, and media paths are relative to that worker's worktree.
+
+```sh
+ORCH=http://localhost:7788   # orchestration router (protocol API)
+APP=http://localhost:7789    # isolated application under test (no evidence calls)
+
+# Register a finalized recording (browser context closed, file > 1 KB):
+curl -s -X POST "$ORCH/api/protocol/workers/$WORKER_ID/evidence" \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"showcase","version":1,"useCase":"Complete demo","file":"evidence/showcase.webm",
+       "steps":[{"title":"Step 1","explanation":"The visible proof","screenshot":"evidence/step-1.png"}]}'
+# -> 201 {"evidenceId":"<id>","attemptId":"<nonempty>"}
+# Errors: 400 invalid media or path outside the worktree; 404 no such worker;
+# 409 worker has no current attempt (report it, do not retry blindly).
+
+# Verify the registration is a current attempt:
+curl -s "$ORCH/api/lines/$LINE_ID/evidence"
+# -> {"items":[...],"history":[...],"currentAttemptId":"<id>|null","currentAttemptIds":{...}}
+# The item with id evidenceId must be in items with the same attemptId.
+
+# Retrieve the video:
+curl -s "$ORCH/api/lines/$LINE_ID/evidence/$EVIDENCE_ID/video" -o check.webm
+```
+
+Inventory holds processes and containers that a stage started and must not
+leak. For an integration validator that is the isolated application router's
+PID (and any containers it started, with the line and worker labels). The
+validator stops the PID itself after tests; the router kills anything left at
+cleanup. Register it on the orchestration router:
+
+```sh
+curl -s -X POST "$ORCH/api/protocol/lines/$LINE_ID/inventory" \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"process","pid":'"$SERVER_PID"',"name":"integration-router","worker":"'"$WORKER_ID"'"}'
+# -> 201 {"itemId":"<id>"}
+# Errors: 400 pid not a positive live process, or worker not on this line.
+```
 
 The graph renders four tiers: planner -> implementors -> validators ->
 integration validators. When a validator or integration validator pushes

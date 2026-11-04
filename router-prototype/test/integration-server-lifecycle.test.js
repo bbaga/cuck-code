@@ -46,7 +46,7 @@ test('integration brief bootstraps the private line before registration', () => 
   assert.match(brief, /integration worker record with id worker-1/);
   assert.match(brief, /role\\?\"?:\\?\"?validator/);
   assert.match(brief, /kind\\?\"?:\\?\"?integration/);
-  assert.match(brief, /POST \/api\/protocol\/lines\/line-42\/inventory/);
+  assert.match(brief, /POST http:\/\/localhost:7788\/api\/protocol\/lines\/line-42\/inventory/);
   assert.match(brief, /Never remove\s+or modify the live LINES_DIR/);
 });
 
@@ -71,6 +71,16 @@ test('integration brief requires isolated port, readiness, registration, and cle
   assert.match(brief, /bounded timeout/);
   assert.match(brief, /worker worker-1/);
   assert.match(brief, /kill "\$SERVER_PID" \|\| true/);
+});
+
+test('integration brief separates the orchestration router from the isolated router', () => {
+  assert.match(brief, /ORCHESTRATION ROUTER is the one that started you\. Its URL is http:\/\/localhost:7788/);
+  assert.match(brief, /ISOLATED ROUTER is the application under test/);
+  assert.match(brief, /Never send evidence or inventory to it/);
+  assert.match(brief, /sent to the orchestration router at http:\/\/localhost:7788, never to the isolated router/);
+  assert.match(brief, /The attemptId must be a nonempty string/);
+  assert.match(brief, /GET http:\/\/localhost:7788\/api\/lines\/line-42\/evidence/);
+  assert.match(brief, /do not derive evidence or attempt identity from the seed/);
 });
 
 test('integrationValidatorBrief renders the recorded commits per repository', () => {

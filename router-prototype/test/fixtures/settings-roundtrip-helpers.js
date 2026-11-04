@@ -206,8 +206,69 @@ const failHoldSucceedPi = scriptedPi([
   { models: [{ value: "openai-codex/gpt-5.2", label: "gpt-5.2" }] },
 ]);
 
+// A scriptable pi detail stub that separates the observable moments of one
+// request. Call n answers with calls[n] (the last one repeats). One call is
+// { hold, models, status, body } with hold "fetch" (the fetch promise stays
+// pending), "body" (the response arrives but its JSON body stays pending),
+// or "reject" (the fetch promise rejects with a network error). Every hold
+// opens only through window.__piHolds[n](). Events land in window.__piEvents:
+//   enter:n    the application called fetch
+//   release:n  the test opened the hold (not a completion)
+//   json:n     the application entered the response JSON wrapper
+//   parsed:n   the real JSON parse finished with the body
+//   done:n     a macrotask after the parse or the rejection: the
+//              application's continuation already ran (promise jobs first)
+const heldPi = (calls) => `(() => {
+  window.__piEvents = []; window.__piHolds = []; window.__piCalls = 0;
+  const log = (e) => window.__piEvents.push(e);
+  const answers = ${JSON.stringify(calls)};
+  const real = window.fetch;
+  const wrapJson = (res, n) => {
+    const parse = res.json.bind(res);
+    res.json = () => {
+      log("json:" + n);
+      return parse().then((v) => {
+        log("parsed:" + n);
+        setTimeout(() => log("done:" + n), 0);
+        return v;
+      });
+    };
+    return res;
+  };
+  window.fetch = (url, opts) => {
+    const u = String(url);
+    if (!u.includes("provider=openai-codex")) return real(url, opts);
+    window.__piFetches.push(u);
+    const n = window.__piCalls++;
+    const a = answers[Math.min(n, answers.length - 1)];
+    log("enter:" + n);
+    const text = a.body || JSON.stringify(
+      { id: "pi", authMode: "openai-codex", auth: "ok", models: a.models });
+    let open;
+    const gate = new Promise((resolve) => { open = resolve; });
+    window.__piHolds[n] = () => { log("release:" + n); open(); };
+    const init = { status: a.status || 200 };
+    const res = wrapJson(a.hold === "body"
+      ? new Response(new ReadableStream({ start(c) {
+        gate.then(() => { c.enqueue(new TextEncoder().encode(text)); c.close(); });
+      } }), init)
+      : new Response(text, init), n);
+    if (a.hold === "fetch") return gate.then(() => res);
+    if (a.hold === "reject") {
+      const failed = gate.then(() => { throw new TypeError("pi network down"); });
+      failed.catch(() => setTimeout(() => log("done:" + n), 0));
+      return failed;
+    }
+    return Promise.resolve(res);
+  };
+})();`;
+
+const waitPiEvent = (page, event) => page.waitFor(
+  `window.__piEvents.includes(${JSON.stringify(event)})`, { timeoutMs: 10000 });
+const releasePi = (page, n) => page.evaluate(`window.__piHolds[${n}]()`);
+
 module.exports = {
   withFixture, openPage, STUBS, PANE, SEL, STATE, clickTab, clickFormButton,
   changeSelect, openCreatePlannerPi, wait, waitOption, waitNever, scriptedPi,
-  holdOldThenNew, failHoldSucceedPi,
+  holdOldThenNew, failHoldSucceedPi, heldPi, waitPiEvent, releasePi,
 };

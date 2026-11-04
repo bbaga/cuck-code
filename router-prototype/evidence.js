@@ -38,11 +38,15 @@ function checkedFile(worktree, value, kind) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${kind} file is required`);
   const root = fs.realpathSync(worktree);
   const resolved = path.resolve(root, value.trim());
-  if (!insideWorktree(root, resolved)) throw new Error(`${kind} file must be inside your workdir`);
+  if (!insideWorktree(root, resolved)) {
+    throw new Error(`${kind} file must be a worktree-relative path inside ${root}`);
+  }
   let real;
   try { real = fs.realpathSync(resolved); }
-  catch { throw new Error(`${kind} file must be inside your workdir or exist`); }
-  if (!insideWorktree(root, real)) throw new Error(`${kind} file must be inside your workdir`);
+  catch { throw new Error(`${kind} file does not exist inside ${root}`); }
+  if (!insideWorktree(root, real)) {
+    throw new Error(`${kind} file must be a worktree-relative path inside ${root}`);
+  }
   const stat = fs.statSync(real);
   if (!stat.isFile()) throw new Error(`${kind} path is not a file`);
   if (stat.size === 0) throw new Error(`${kind} file is empty`);
