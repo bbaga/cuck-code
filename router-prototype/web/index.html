@@ -353,7 +353,7 @@
 <script>
 window.addEventListener("DOMContentLoaded", () => {
   const { nodeRowsFromResolved, layoutGraph, nodeRowsFromGraphView, nodeSummaryText, edgeTextLines, buildNodeSettingsPayload, buildCreateBody, pickerPipelines, buildGraphChangeBody, graphSwitchView, remapComplete,
-    pipelineOptionLabel, pipelineErrorsText, EFFORT_LEVELS, parseContextSize, formatTokens, filterInstalled, authBadge, harnessReloadOutcome, previewForIntegration,
+    pipelineOptionLabel, pipelineErrorsText, EFFORT_LEVELS, parseContextSize, formatTokens, filterInstalled, authBadge, harnessOptionLabel, pluginProblemsSummary, harnessReloadOutcome, previewForIntegration,
     previewSelectionKey, previewSelectionExists, isPassingIntegration, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
     VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, harnessHasProviders, providerDetailUrl, providerFromModel, authStatusText,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
@@ -2056,6 +2056,7 @@ window.addEventListener("DOMContentLoaded", () => {
   let installedHarnesses = [];
   let harnessMissingText = "";
   let harnessErrorText = "";
+  let harnessPluginProblems = [];
   let harnessRequest = null;
   const harnessListeners = new Set();
   function reloadHarnesses() {
@@ -2066,13 +2067,16 @@ window.addEventListener("DOMContentLoaded", () => {
         const res = await fetch("/api/harnesses?refresh=1");
         const data = await res.json().catch(() => null);
         outcome = harnessReloadOutcome({ ok: res.ok, status: res.status, data,
-          previous: installedHarnesses, previousMissingText: harnessMissingText });
+          previous: installedHarnesses, previousMissingText: harnessMissingText,
+          previousPluginProblems: harnessPluginProblems });
       } catch (err) {
         outcome = harnessReloadOutcome({ ok: false, status: 0, fetchError: err,
-          previous: installedHarnesses, previousMissingText: harnessMissingText });
+          previous: installedHarnesses, previousMissingText: harnessMissingText,
+          previousPluginProblems: harnessPluginProblems });
       }
       installedHarnesses = outcome.harnesses;
       harnessMissingText = outcome.missingText;
+      harnessPluginProblems = outcome.pluginProblems;
       harnessErrorText = outcome.errorText;
       // A throwing listener must not leave the slot set: every later reload
       // would return the same settled promise and the catalog would never
@@ -2142,6 +2146,8 @@ window.addEventListener("DOMContentLoaded", () => {
     const authSummary = document.createElement("div");
     authSummary.className = "authSummary";
     el.appendChild(authSummary);
+    // Created only when a plugin failed, so no empty element stays.
+    let pluginWarning = null;
 
     function buildRows(specs) {
       for (const old of [...el.querySelectorAll(".phaseRow")]) old.remove();
@@ -2321,6 +2327,7 @@ window.addEventListener("DOMContentLoaded", () => {
         ok: result.ok,
         status: result.status,
         data: result.data,
+        harnessId,
       });
       if (!outcome.apply || !phaseState[key]) return;
       piLoading[key] = false;
@@ -2348,7 +2355,8 @@ window.addEventListener("DOMContentLoaded", () => {
         for (const h of installedHarnesses) {
           const o = document.createElement("option");
           o.value = h.id;
-          o.textContent = h.id + (h.version ? " (" + h.version + ")" : "");
+          o.textContent = harnessOptionLabel(h);
+          if (h.plugin && h.plugin.folder) o.title = h.plugin.folder;
           sel.appendChild(o);
         }
         selectValue(sel, current, "not installed");
@@ -2373,6 +2381,19 @@ window.addEventListener("DOMContentLoaded", () => {
             loadPiModels(key, typeof saved.model === "string" ? saved.model : "");
           }
         }
+      }
+      const problems = pluginProblemsSummary(harnessPluginProblems);
+      if (problems && !pluginWarning) {
+        pluginWarning = document.createElement("div");
+        pluginWarning.className = "authSummary pluginProblems";
+        el.insertBefore(pluginWarning, authSummary);
+      }
+      if (problems) {
+        pluginWarning.textContent = problems.text;
+        pluginWarning.title = problems.title;
+      } else if (pluginWarning) {
+        pluginWarning.remove();
+        pluginWarning = null;
       }
       authSummary.textContent = [harnessErrorText, harnessMissingText].filter(Boolean).join(" ");
     }
