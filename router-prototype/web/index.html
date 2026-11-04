@@ -1390,8 +1390,10 @@ window.addEventListener("DOMContentLoaded", () => {
         if (cards.get(st.id) !== st) return;
         if (!response.ok) {
           const data = await response.json().catch(() => ({}));
-          composerError.textContent = data.error || "The prompt was not sent (HTTP " + response.status + "). Your text is kept.";
+          const message = data.error || "The prompt was not sent (HTTP " + response.status + "). Your text is kept.";
+          composerError.textContent = message;
           composerError.hidden = false;
+          showError(message);
           return;
         }
         await response.json().catch(() => null);
@@ -1412,6 +1414,7 @@ window.addEventListener("DOMContentLoaded", () => {
         if (cards.get(st.id) !== st) return;
         composerError.textContent = "Could not send the prompt. Your text is kept.";
         composerError.hidden = false;
+        showError("The prompt was not sent. Check the network connection.");
       } finally {
         st.submitting = false;
         send.disabled = false;
