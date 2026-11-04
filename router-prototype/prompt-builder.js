@@ -7,7 +7,6 @@
 const { render, TASK_MARKER, TASK_MARKER_LINE } = require("./template");
 const { isRouterVariable } = require("./fields");
 const { introspect } = require("./call-fields");
-const { CHANGESET_LIMIT } = require("./changeset");
 
 function has(obj, key) {
   return obj !== null && typeof obj === "object" && Object.prototype.hasOwnProperty.call(obj, key);
@@ -103,17 +102,13 @@ function workerRouterValues({ line, nodeId, workerId, workerName, repo, baseComm
   };
 }
 
-function validatorRouterValues({ line, nodeId, workerId, workerName, implementor, report,
-  repoName, repoUrl, port, changesetWarning }) {
+function validatorRouterValues({ line, nodeId, workerId, workerName, implementor, report, repoName, repoUrl, port }) {
   const repo = {};
   if (repoName) repo.name = repoName;
   if (repoUrl) repo.url = repoUrl;
   const source = { name: implementor.name, id: implementor.id || "", report };
-  // Present only when the implementor change set is over the review-size
-  // target: the validator judges reviewability with the warning in view.
-  if (changesetWarning) source.changesetWarning = changesetWarning;
   return {
-    line: { ...lineValues(line), changesetLimit: String(CHANGESET_LIMIT) },
+    line: lineValues(line),
     node: { id: nodeId },
     instance: { id: workerId, name: workerName },
     source,

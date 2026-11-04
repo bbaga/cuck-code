@@ -1065,23 +1065,25 @@ Two different outcomes:
   `ok: true` and sets `oversized: true` in the change-set result. The
   work enters independent review: the router wakes the planner with
   `CHANGESET OVERSIZE WARNING` (totals, per-file sizes, and the feedback
-  interaction), and the validator prompt carries the size warning. The
-  planner decides between accepting the size with a recorded rationale
-  and a real split into coherent, independently testable parts. Never
-  minify code, join unrelated statements, or remove tests, assertions,
-  or explanations to pass the count: a compressed unreadable diff can
-  still fail review, while a clean cohesive diff just above the target
-  can pass.
+  interaction) together with the full implementor report, and a validator
+  start proceeds. The planner decides between accepting the size with a
+  recorded rationale and a real split into coherent, independently
+  testable parts. Never minify code, join unrelated statements, or remove
+  tests, assertions, or explanations to pass the count: a compressed
+  unreadable diff can still fail review, while a clean cohesive diff just
+  above the target can pass.
 
 Examples: a clean 501-line cohesive diff gets the warning and independent
 review; a compressed 499-line unreadable diff can fail review; dirty,
-untracked, binary, or uncountable work stays blocked. The base commit and
-the size rule are part of the implementor brief; the latest result is
+untracked, binary, or uncountable work stays blocked. The base commit is
+part of the implementor brief; the latest result is
 persisted in `line.json` and exposed in the worker API responses
 (`baseCommit`, `changeset`). Legacy `changeset` records from before this
 policy may carry `reason: "oversized"` with `ok: false`; current records
 report oversize with `ok: true`, `oversized: true`, and `reason: null`.
-The size rule applies to implementors only.
+The size rule applies to implementors only. The worker, planner, and
+validator brief wording that teaches the size assessment and the
+reviewability check ships in a separate guidance change.
 
 ### Test scope
 

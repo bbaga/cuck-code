@@ -3,8 +3,7 @@
 const ROUTER_VARIABLES = [
   "line.*", "node.*", "instance.*", "from.*",
   "repo.url", "repo.name", "router.url", "router.workerCap",
-  "source.name", "source.report", "source.id", "source.harness", "source.session",
-  "source.changesetWarning", "report", "outcome", "outcome.*",
+  "source.name", "source.report", "source.id", "source.harness", "source.session", "report", "outcome", "outcome.*",
   "integration.*", "protocol",
 ];
 

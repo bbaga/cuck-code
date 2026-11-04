@@ -24,18 +24,6 @@ Test scope: run UNIT TESTS only. Do NOT run integration tests. The
 integration tests run in the CI pipelines of the repository (see the
 CI section below when a remote exists).
 
-## Reviewability check
-Judge readability, cohesion, and test coverage, not only the size.
-The review-size target is {{line.changesetLimit}} changed lines, but a
-diff below the target can still be unreviewable, and a diff above it
-can still be readable. Flag padding, minification, joined unrelated
-statements, removed tests, removed assertions, or removed explanations.
-Reject a genuinely unreviewable change with VERDICT: FAIL, even below
-the target. Do not reject a readable change only because its total is
-over the target.
-{{#source.changesetWarning}}{{source.changesetWarning}}
-{{/source.changesetWarning}}
-
 ## Container and process hygiene
 If you start any docker container, always set both labels on it:
 --label cuck.line={{line.id}} --label cuck.worker={{instance.id}}

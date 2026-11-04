@@ -34,17 +34,6 @@ test("the planner prompt keeps the role, task and tracker ticket sentences", () 
   assert.ok(text.includes("## Harness readiness"));
 });
 
-test("the planner prompt carries the review-size policy", () => {
-  const text = plannerPrompt(graph);
-  assert.ok(text.includes("The review-size target counts from it."));
-  assert.ok(!text.includes("500-line limit"));
-  assert.ok(text.includes("CHANGESET OVERSIZE WARNING"));
-  assert.ok(text.includes("Respond with real decomposition"));
-  assert.ok(text.includes("Never split solely to pass the count"));
-  assert.ok(text.includes("never ask an implementor to compress or minify readable work"));
-  assert.ok(text.includes("record the task and its rationale in\n   plan.md"));
-});
-
 test("the protocol markers wrap the factory protocol and the generated section", () => {
   const b = type.body;
   const s = b.indexOf("<!-- protocol:start -->\n## Factory protocol");

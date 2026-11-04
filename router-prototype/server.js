@@ -1387,12 +1387,15 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
     } else if (worker.role === "implementor" && cs.oversized) {
       slog("warn", "changeset.oversize", { lineId: line.id, workerId: worker.id,
         total: cs.total, limit: cs.limit });
+      // The warning accompanies the report: the planner keeps the full
+      // implementor report and its rationale, not the warning alone.
       enqueue(line, changesetOversizeMessage(cs, worker));
+      enqueue(line, buildUnroutedNotification(worker, null, report));
     } else {
       enqueue(line, buildUnroutedNotification(worker, null, report));
     }
   } else if (timedOut) {
-    enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session with the feedback interaction: POST /api/protocol/lines/${line.id}/interactions/feedback with {"instance":"${worker.id}","prompt":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.` + runOutputNote(report, "implementor run output") + failureNote);
+    enqueue(line, `WORKER TIMEOUT - worker hit the run time limit and was interrupted. Its session and its work are intact. Continue the ORIGINAL session with the feedback interaction: POST /api/protocol/lines/${line.id}/interactions/feedback with {"instance":"${worker.id}","instructions":"Finish the work from where the run was interrupted. Then report."}. After it completes, the validation loop runs as usual.` + runOutputNote(report, "implementor run output") + failureNote);
   } else if (worker.status === "failed") {
     enqueue(line, `WORKER FAILURE - '${worker.name}' (workerId ${worker.id}, session ${sid}): ${worker.harness || "vibe"} failed (see FAILURE DETAIL). Decide whether to restart it with a corrected prompt (new name, e.g. ${worker.name}-2) or to proceed without it.` + runOutputNote(report, "implementor run output") + failureNote);
   } else {
@@ -1727,12 +1730,7 @@ function createSourceChecker(line, nodeId, sourceInstance, fields) {
     if (implWorker.trackerTicket) callerValues.trackerTicket = implWorker.trackerTicket;
     const routerValues = validatorRouterValues({ line, nodeId: valNode,
       workerId: id, workerName: name, implementor: implWorker, report, repoName, repoUrl,
-      port: PORT,
-      changesetWarning: implWorker.changeset && implWorker.changeset.oversized
-        ? `The change set of the implementor is over the review-size target: `
-          + `total ${implWorker.changeset.total} > target ${implWorker.changeset.limit}. `
-          + `Judge reviewability, not the count alone.`
-        : null });
+      port: PORT });
     prompt = buildPrompt(line.graph, valNode, routerValues, callerValues);
     split = buildPromptParts(line.graph, valNode, routerValues, callerValues);
   } catch (e) {
