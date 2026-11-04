@@ -30,18 +30,18 @@ const SETTLED_PI = `
   };
 `;
 
-// The install gate re-probes the fake CLI on every request. Under heavy
-// parallel browser load one probe can exceed its 2 s timeout, and the gate
-// then wrongly reports the harness as missing. Retry only that error.
+// The install gate re-probes the fake CLI per request; under heavy parallel
+// browser load one probe can exceed its 2 s timeout. Retry only the gate's
+// own rejection: HTTP 400 plus its exact message for the seeded harness.
 async function seedLine(fx, nodeSettings) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = await fetch(`${fx.url}/api/lines`, { method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: "Harness switch line", pipelineName: "default", nodeSettings }) });
     const data = await res.json().catch(() => ({}));
-    if (res.status === 201 || !/not installed/.test(data.error || "")) return res;
+    if (res.status !== 400 || data.error !== "harness 'pi' is not installed on this system") return res;
   }
-  throw new Error("the line seed kept failing with 'not installed'");
+  throw new Error("the line seed kept failing with the install-gate rejection");
 }
 
 test("settings round trip: creation selections reach nodeSettings and Change settings", async (t) => {
