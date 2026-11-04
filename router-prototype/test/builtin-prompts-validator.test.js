@@ -12,6 +12,7 @@ const { golden, slug } = require("./fixtures/golden-file");
 
 const root = path.join(__dirname, "..");
 const PORT = 7788;
+const CHANGESET_LIMIT = 500;
 
 const types = {};
 for (const name of ["validator", "backend-validator", "frontend-validator"]) {
@@ -21,7 +22,7 @@ const resolved = resolveTypes(types);
 
 function newBrief(persona, a) {
   const values = {
-    line: { id: a.lineId },
+    line: { id: a.lineId, changesetLimit: String(CHANGESET_LIMIT) },
     instance: { id: a.workerId },
     source: { name: a.implName, id: a.implId, report: a.report },
     router: { url: `http://localhost:${PORT}` },
@@ -31,6 +32,7 @@ function newBrief(persona, a) {
   if (a.repoName) values.repo.name = a.repoName;
   if (a.repoUrl) values.repo.url = a.repoUrl;
   if (a.trackerTicket) values.trackerTicket = a.trackerTicket;
+  if (a.changesetWarning) values.source.changesetWarning = a.changesetWarning;
   return render(resolved[`${persona}-validator`].body, values);
 }
 
@@ -55,6 +57,19 @@ for (const persona of ["backend", "frontend"]) {
     });
   }
 }
+
+test("an oversize warning reaches the validator prompt", () => {
+  const text = newBrief("backend", { ...base, repoUrl: "https://github.com/o/web.git",
+    changesetWarning: "The change set of the implementor is over the review-size target: "
+      + "total 501 > target 500. Judge reviewability, not the count alone." });
+  assert.ok(text.includes("total 501 > target 500"));
+  assert.ok(text.includes("Judge reviewability, not the count alone"));
+});
+
+test("without an oversize warning the prompt carries no warning text", () => {
+  const text = newBrief("backend", { ...base });
+  assert.ok(!text.includes("Judge reviewability, not the count alone"));
+});
 
 test("validator header and fields", () => {
   const v = resolved.validator;

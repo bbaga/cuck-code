@@ -911,8 +911,10 @@ The planner talks to its pipeline through interactions. The old routes
   planner to that node for that interaction; 409 before plan approval, at the
   worker cap, and (for a validator) with `code: "CHANGESET_LIMIT"` when the
   router measures the change set of the implementor again right before the
-  start and the work cannot enter validation (over the limit, binary, dirty or
-  untracked work). The planner then sends `feedback` to the implementor.
+  start and a safety blocker exists (binary, dirty or untracked work, or an
+  uncountable diff). A total over the review-size target is only a warning:
+  the validator starts and judges reviewability. The planner then sends
+  `feedback` to the implementor.
 - `GET /api/protocol/lines/:id/interactions` — what the planner may do, with
   the field list of every call.
 - A call with missing, invalid or unexpected fields answers 400:
@@ -1032,32 +1034,54 @@ construction, so no validator state can pollute later runs. A second
 validation of the same implementor gets a deduplicated validator name
 (`validator-<name>`, `validator-<name>-2`, ...).
 
-### Change-set limit (implementors)
+### Change-set size policy (implementors)
 
-The router enforces a 500-line limit on every implementor change set. When a
-worker worktree is created, the router records its HEAD as the `baseCommit` (the
-resolved `base` when the spawn gave one, so a stacked child does not recount
-its parent's lines);
-the base stays fixed across continued runs and router restarts. After each
-successful implementor run — and again immediately before a validator is
-created — the router runs `git diff --numstat` from
-the base commit to the branch HEAD and counts additions plus deletions over
-code, tests, documentation, and configuration. Totals up to 500 pass; 501 or
-more are rejected. A numstat row is binary only when BOTH count columns are
-dashes; one dash plus one number is malformed. Binary files, dirty worktree
-changes, and untracked files cannot bypass the limit: they escalate too. A
-malformed non-empty numstat row, a failed git command, or a missing commit
-makes the change set uncountable, which escalates as well; the result reports
-only the offending lines, never unrelated command output, and keeps the
-resolved HEAD. An oversized or uncountable change set never reaches the
-validation handoff: the router does not send the report and instead wakes the planner with `CHANGESET LIMIT EXCEEDED`
-(worker and session IDs, base and head commits, additions, deletions, total,
-binary/dirty/untracked paths, and per-file values). The implementor session
-and worktree are preserved for the `feedback` interaction: the planner can
-continue the original session to reduce or split the work. The base commit
-and the limit rule are part of the implementor brief; the latest result is
+The router measures every implementor change set and holds a review-size
+target of 500 changed lines (additions plus deletions). The target is
+strongly preferred, not an unconditional rejection: reviewability is the
+goal, and a count alone never rejects work. When a worker worktree is
+created, the router records its HEAD as the `baseCommit` (the resolved
+`base` when the spawn gave one, so a stacked child does not recount its
+parent's lines); the base stays fixed across continued runs and router
+restarts. After each successful implementor run — and again immediately
+before a validator is created — the router runs `git diff --numstat` from
+the base commit to the branch HEAD and counts additions plus deletions
+over code, tests, documentation, and configuration.
+
+Two different outcomes:
+
+- Safety blockers reject the work. Binary files, dirty worktree changes,
+  and untracked files cannot enter validation. A malformed non-empty
+  numstat row, a failed git command, or a missing commit makes the change
+  set uncountable, which rejects as well; the result reports only the
+  offending lines, never unrelated command output, and keeps the resolved
+  HEAD. A numstat row is binary only when BOTH count columns are dashes;
+  one dash plus one number is malformed. The router wakes the planner with
+  `CHANGESET BLOCKED` (worker and session IDs, base and head commits,
+  additions, deletions, total, target, binary/dirty/untracked paths, and
+  per-file values). The implementor session and worktree are preserved
+  for the `feedback` interaction.
+- Oversize is a warning, not a rejection. A total over the target keeps
+  `ok: true` and sets `oversized: true` in the change-set result. The
+  work enters independent review: the router wakes the planner with
+  `CHANGESET OVERSIZE WARNING` (totals, per-file sizes, and the feedback
+  interaction), and the validator prompt carries the size warning. The
+  planner decides between accepting the size with a recorded rationale
+  and a real split into coherent, independently testable parts. Never
+  minify code, join unrelated statements, or remove tests, assertions,
+  or explanations to pass the count: a compressed unreadable diff can
+  still fail review, while a clean cohesive diff just above the target
+  can pass.
+
+Examples: a clean 501-line cohesive diff gets the warning and independent
+review; a compressed 499-line unreadable diff can fail review; dirty,
+untracked, binary, or uncountable work stays blocked. The base commit and
+the size rule are part of the implementor brief; the latest result is
 persisted in `line.json` and exposed in the worker API responses
-(`baseCommit`, `changeset`). The limit applies to implementors only.
+(`baseCommit`, `changeset`). Legacy `changeset` records from before this
+policy may carry `reason: "oversized"` with `ok: false`; current records
+report oversize with `ok: true`, `oversized: true`, and `reason: null`.
+The size rule applies to implementors only.
 
 ### Test scope
 

@@ -9,6 +9,7 @@ const {
   summarizeChanges,
   collectChangeset,
   changesetWakeMessage,
+  changesetOversizeMessage,
   changesetFields,
 } = require("../changeset");
 
@@ -80,41 +81,57 @@ test("summarizes additions plus deletions with sorted per-file rows", () => {
   assert.deepEqual(summary.files.map((f) => f.path), ["a.js", "z.js"]);
 });
 
-test("accepts 499 changed lines", () => {
+test("accepts 499 changed lines without a warning", () => {
   const cs = collectChangeset("/wt", "base123", {
     run: fakeRun({ numstat: numstatRow("a.js", 400, 99) }),
   });
   assert.equal(cs.ok, true);
+  assert.equal(cs.oversized, false);
+  assert.equal(cs.warning, null);
   assert.equal(cs.total, 499);
   assert.equal(cs.limit, CHANGESET_LIMIT);
 });
 
-test("accepts exactly 500 changed lines", () => {
+test("accepts exactly 500 changed lines without a warning", () => {
   const cs = collectChangeset("/wt", "base123", {
     run: fakeRun({ numstat: numstatRow("a.js", 250, 250) }),
   });
   assert.equal(cs.ok, true);
+  assert.equal(cs.oversized, false);
   assert.equal(cs.total, 500);
 });
 
-test("rejects 501 changed lines as oversized", () => {
+test("501 changed lines stay valid with an oversize warning", () => {
   const cs = collectChangeset("/wt", "base123", {
     run: fakeRun({ numstat: `${numstatRow("a.js", 250, 250)}\n${numstatRow("b.js", 1, 0)}` }),
   });
-  assert.equal(cs.ok, false);
-  assert.equal(cs.reason, "oversized");
+  assert.equal(cs.ok, true, "oversize is a warning, never a rejection");
+  assert.equal(cs.reason, null);
+  assert.equal(cs.oversized, true);
   assert.equal(cs.total, 501);
+  assert.equal(cs.limit, CHANGESET_LIMIT);
+  assert.match(cs.warning, /review-size target exceeded/);
+  assert.match(cs.warning, /total 501 > target 500/);
 });
 
-test("rejects 766 additions plus 15 deletions", () => {
+test("766 additions plus 15 deletions stay valid with an oversize warning", () => {
   const cs = collectChangeset("/wt", "base123", {
     run: fakeRun({ numstat: `${numstatRow("big.js", 700, 10)}\n${numstatRow("more.js", 66, 5)}` }),
   });
-  assert.equal(cs.ok, false);
-  assert.equal(cs.reason, "oversized");
+  assert.equal(cs.ok, true);
+  assert.equal(cs.oversized, true);
   assert.equal(cs.additions, 766);
   assert.equal(cs.deletions, 15);
   assert.equal(cs.total, 781);
+});
+
+test("a safety blocker wins over the oversize warning", () => {
+  const cs = collectChangeset("/wt", "base123", {
+    run: fakeRun({ numstat: `-\t-\tlogo.png\n${numstatRow("a.js", 400, 200)}` }),
+  });
+  assert.equal(cs.ok, false);
+  assert.equal(cs.reason, "binary");
+  assert.equal(cs.oversized, true, "the size signal stays visible next to the blocker");
 });
 
 test("escalates a binary file", () => {
@@ -199,18 +216,19 @@ test("the wake message reports the parse error details", () => {
   });
   const msg = changesetWakeMessage(cs, { id: "w1", name: "impl-1",
     sessionId: "s-77", branch: "br" });
-  assert.ok(msg.startsWith("CHANGESET LIMIT EXCEEDED"));
+  assert.ok(msg.startsWith("CHANGESET BLOCKED"));
   assert.ok(msg.includes("reason: uncountable"));
   assert.ok(msg.includes("malformed numstat output"));
   assert.ok(msg.includes("broken row"));
 });
 
-test("a custom limit overrides the default", () => {
+test("a custom limit overrides the default target", () => {
   const cs = collectChangeset("/wt", "base123", {
     limit: 10,
     run: fakeRun({ numstat: numstatRow("a.js", 6, 5) }),
   });
-  assert.equal(cs.reason, "oversized");
+  assert.equal(cs.ok, true);
+  assert.equal(cs.oversized, true);
   assert.equal(cs.limit, 10);
 });
 
@@ -230,14 +248,33 @@ test("the wake message carries worker, commits, totals, and paths", () => {
     run: fakeRun({ numstat: `-\t-\tlogo.png\n${numstatRow("a.js", 300, 201)}` }),
   });
   const msg = changesetWakeMessage(cs, { id: "w1", name: "impl-1",
-    sessionId: "s-77", branch: "br" });
-  assert.ok(msg.startsWith("CHANGESET LIMIT EXCEEDED"));
+    sessionId: "s-77", branch: "br", lineId: "line-9" });
+  assert.ok(msg.startsWith("CHANGESET BLOCKED"));
   assert.ok(msg.includes("workerId w1"));
   assert.ok(msg.includes("Base commit base123"));
   assert.ok(msg.includes("head commit headabc123"));
   assert.ok(msg.includes("Additions 300, deletions 201, total 501"));
   assert.ok(msg.includes("a.js: +300/-201"));
-  assert.ok(msg.includes("/continue"));
+  // The feedback interaction, not the deprecated continue endpoint.
+  assert.ok(msg.includes("/api/protocol/lines/line-9/interactions/feedback"));
+  assert.ok(!msg.includes("/continue"));
+});
+
+test("the oversize message reports the size and the review path", () => {
+  const cs = collectChangeset("/wt", "base123", {
+    run: fakeRun({ numstat: numstatRow("a.js", 300, 201) }),
+  });
+  assert.equal(cs.ok, true);
+  assert.equal(cs.oversized, true);
+  const msg = changesetOversizeMessage(cs, { id: "w1", name: "impl-1",
+    sessionId: "s-77", branch: "br", lineId: "line-9" });
+  assert.ok(msg.startsWith("CHANGESET OVERSIZE WARNING"));
+  assert.ok(msg.includes("can enter independent review"));
+  assert.ok(msg.includes("Additions 300, deletions 201, total 501, target 500"));
+  assert.ok(msg.includes("a.js: +300/-201"));
+  assert.ok(msg.includes("Do not ask the implementor to minify code"));
+  assert.ok(msg.includes("/api/protocol/lines/line-9/interactions/feedback"));
+  assert.ok(!msg.includes("/continue"));
 });
 
 test("change-set fields survive a JSON round trip (persistence and restart)", () => {
@@ -247,6 +284,8 @@ test("change-set fields survive a JSON round trip (persistence and restart)", ()
   const restored = JSON.parse(JSON.stringify(changesetFields(
     { baseCommit: "base123", changeset: cs })));
   assert.equal(restored.baseCommit, "base123");
-  assert.equal(restored.changeset.reason, "oversized");
+  assert.equal(restored.changeset.ok, true, "oversize stays valid across persistence");
+  assert.equal(restored.changeset.oversized, true);
+  assert.equal(restored.changeset.reason, null);
   assert.deepEqual(changesetFields({}), { baseCommit: null, changeset: null });
 });
