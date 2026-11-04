@@ -1083,8 +1083,16 @@ policy may carry `reason: "oversized"` with `ok: false`; current records
 report oversize with `ok: true`, `oversized: true`, and `reason: null`.
 The size rule applies to implementors only. The implementor and planner
 briefs teach the size assessment, the early escalation, and the real
-split; the validator brief wording follows in a separate guidance
-change.
+split. The validator brief carries the same policy as a reviewability
+check: it judges readability, cohesion, and retained test coverage, not
+only the size. The validator prompt holds the review-size target, and —
+when the change set is over the target — a size warning with the exact
+total, the base and head commits, and the per-file counts. The warning
+accompanies the full implementor report; it never replaces it. The
+validator fails the review when the change is unreadable, when it
+removes an essential test, or when it was compressed to pass the count,
+even below the target. It does not fail a readable, cohesive change only
+because its total is over the target.
 
 ### Test scope
 

@@ -33,7 +33,7 @@ const { messageText, InvocationCapture, appendTranscript, reportForValidation,
   applyCompletion, completionFields, runOutputNote,
   buildUnroutedNotification } = require("./handoff");
 const { CHANGESET_LIMIT, collectChangeset, changesetWakeMessage,
-  changesetOversizeMessage, changesetFields } = require("./changeset");
+  changesetOversizeMessage, changesetValidatorWarning, changesetFields } = require("./changeset");
 const { BaseError, resolveSpawnBase, baseFields, baseNote } = require("./spawn-base");
 const { recordRequestEntry, userEntry, isPromptEcho } = require("./transcript-echo");
 const { recordedPlannerRequest, sourceIdentity, plannerRequest, interactionReportRequest, restorePlannerRequest,
@@ -1730,7 +1730,7 @@ function createSourceChecker(line, nodeId, sourceInstance, fields) {
     if (implWorker.trackerTicket) callerValues.trackerTicket = implWorker.trackerTicket;
     const routerValues = validatorRouterValues({ line, nodeId: valNode,
       workerId: id, workerName: name, implementor: implWorker, report, repoName, repoUrl,
-      port: PORT });
+      port: PORT, changesetWarning: changesetValidatorWarning(implWorker.changeset) });
     prompt = buildPrompt(line.graph, valNode, routerValues, callerValues);
     split = buildPromptParts(line.graph, valNode, routerValues, callerValues);
   } catch (e) {
