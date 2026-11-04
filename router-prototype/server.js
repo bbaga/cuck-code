@@ -402,7 +402,7 @@ function runSummaryTurn(plan, timeLimitSec, setChild, cb) {
   const adapter = plan.adapter;
   let child;
   try {
-    child = spawn(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
+    child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, ...plan.env },
       ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
   } catch (err) {
@@ -498,7 +498,10 @@ function compactPlanner(line, reason, sessionCfg = null) {
 // Compact an idle implementor session the same way. The next continuation
 // starts a fresh session with the worker brief, the summary, and the new
 // instructions. then(error) runs after the attempt, whether it worked or not.
-function compactWorker(line, worker, reason, then = () => {}) {
+// sessionCfg names the harness, model and effort that own the session. It
+// defaults to the record of the last run (worker.harness, model, effort), so
+// the summary turn never runs on newer pipeline settings.
+function compactWorker(line, worker, reason, then = () => {}, sessionCfg = null) {
   // Without the original brief a fresh session could not be reseeded.
   if (worker.compacting || worker.child || !worker.sessionId || !worker.prompt) return false;
   worker.compacting = true;
@@ -506,7 +509,13 @@ function compactWorker(line, worker, reason, then = () => {}) {
   if (!worker.context) worker.context = newContextStats();
   const phase = phaseForWorker(worker.role, worker.kind);
   const cfg = workerSettings(line, worker);
-  const effective = resolveWorkerOverrides(cfg, worker, phase);
+  const resolved = resolveWorkerOverrides(cfg, worker, phase);
+  const owner = sessionCfg || (worker.harness
+    ? { harness: worker.harness, model: worker.model, effort: worker.effort } : {});
+  const effective = { harness: owner.harness || resolved.harness,
+    model: owner.model || (owner.harness && owner.harness !== resolved.harness
+      ? defaultModelFor(owner.harness, phase) : resolved.model),
+    effort: owner.effort || resolved.effort };
   const plan = planWorkerRun({ ...cfg, ...effective }, { phase,
     prompt: compactionPrompt("implementor"), workdir: worker.worktreePath,
     sessionId: worker.sessionId, autoApprove: AUTO_APPROVE,
@@ -778,6 +787,14 @@ function pipelinesApi(req, res, parts) {
   return json(res, 405, { error: "method not allowed" });
 }
 
+// The explicit per-worker run settings. A legacy record without them (or a
+// worker created without them) follows the pipeline settings: all null.
+function overridesOf(w) {
+  const o = w && w.overrides && typeof w.overrides === "object" ? w.overrides : {};
+  const pick = (v) => (typeof v === "string" && v ? v : null);
+  return { harness: pick(o.harness), model: pick(o.model), effort: pick(o.effort) };
+}
+
 function saveLine(line) {
   if (lifecycleTestHooks && lifecycleTestHooks.save) lifecycleTestHooks.save(line);
   if (line.deleted) return false;
@@ -828,6 +845,7 @@ function saveLine(line) {
           integration: w.integration || null,
           ...changesetFields(w), ...baseFields(w),
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
+          overrides: overridesOf(w),
           lastError: w.lastError || null,
           kind: w.kind || "standard", validatedCommit: w.validatedCommit || null })) }));
     return true;
@@ -1021,24 +1039,44 @@ function pump(line) {
   const prompt = wrapPlannerTurn(turnText, { lineId: line.id, approved: line.planApproved,
     workdir: line.workdir });
   line.lastRun = text;
+  const t0 = Date.now();
+  let plan, adapter, runEnv, runCwd, child, prevSessionCfg = line.sessionCfg;
+try {
   transitionPlannerStatus(line, "running", null, { broadcastState: false });
   saveLine(line);
-  const t0 = Date.now();
   slog("info", "planner.run.start", { lineId: line.id, resume: !!line.sessionId, reseed,
     chars: text.length, prompt: preview(text, 400) });
 
   line.plannerHarness = cfg.harness;
+  prevSessionCfg = line.sessionCfg;
   line.sessionCfg = { harness: cfg.harness, model: cfg.model, effort: cfg.effort,
     timeLimit: cfg.timeLimit };
-  const plan = planPlannerRun(cfg, { prompt, workdir: line.workdir,
+  plan = planPlannerRun(cfg, { prompt, workdir: line.workdir,
     sessionId: line.sessionId, autoApprove: AUTO_APPROVE,
     ...systemPromptOptions(cfg.harness, line.rolePrompt, SYSTEM_PROMPT_DIR) });
-  const adapter = plan.adapter;
-  const runEnv = { ...process.env, ...plan.env };
-  const runCwd = plan.cwd === undefined ? process.cwd() : path.resolve(plan.cwd);
-  const child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
+  adapter = plan.adapter;
+  runEnv = { ...process.env, ...plan.env };
+  runCwd = plan.cwd === undefined ? process.cwd() : path.resolve(plan.cwd);
+  child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
     env: runEnv,
     ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
+  } catch (error) {
+    // The run never started: no child exists. Keep the request, show the
+    // failure, and do not pump (a retry loop). The next prompt or settings
+    // save calls pump.
+    const message = error && error.message ? error.message : String(error);
+    slog("error", "planner.spawn.failed", { lineId: line.id, error: preview(message, 500) });
+    line.sessionCfg = prevSessionCfg;
+    if (line.activePlannerRequest) line.queue.unshift(line.activePlannerRequest);
+    line.activePlannerRequest = null;
+    line.activePlannerRun = null;
+    line.child = null;
+    line.runId = null;
+    transitionPlannerStatus(line, "failed", `Planner run could not start. ${message}`);
+    broadcast(line, "error", { message: `Planner run could not start. ${message}` });
+    saveLine(line);
+    return;
+  }
   const runId = crypto.randomUUID();
   const run = { runId, child, intentionalStop: false, stopTimer: null, errorTimer: null };
   line.activePlannerRun = run;
@@ -1096,6 +1134,8 @@ function pump(line) {
     line.activePlannerRun = null;
     line.runId = null;
     if (line.deleted) return;
+    let caught = null;
+  try {
     const intentionalStop = run.intentionalStop;
     for (const raw of stdoutRecords.finish()) consumePlannerRecord(raw);
     const finished = adapter.finalize();
@@ -1151,10 +1191,23 @@ function pump(line) {
       transitionPlannerStatus(line, !line.planApproved && line.queue.length === 0 ? "attention" : "idle",
         null, { broadcastState: false });
     }
-    saveLine(line);
-    broadcast(line, "state", dashboardStateForLine(line));
-    broadcast(line, "status", { status: line.status });
-    pump(line);
+    } catch (error) {
+      caught = error;
+      slog("error", "planner.close.failed", { lineId: line.id, error: preview(String(error && error.message || error), 500) });
+    } finally {
+      // No path may leave the status "running" without a child process.
+      if (line.status === "running") {
+        const detail = caught ? `Planner close handling failed. ${caught.message || caught}` : "Planner run ended without a status.";
+        line.lastRun = null;
+        line.activePlannerRequest = null;
+        transitionPlannerStatus(line, "failed", detail, { broadcastState: false });
+        broadcast(line, "error", { message: detail });
+      }
+      try { saveLine(line); } catch {}
+      broadcast(line, "state", dashboardStateForLine(line));
+      broadcast(line, "status", { status: line.status });
+      pump(line);
+    }
   });
 }
 
@@ -1168,9 +1221,11 @@ function spawnWorker(line, worker, prompt, resume) {
   worker.runGeneration = runId;
   worker.activeInvocationId = invocationId;
   saveLine(line);
-  const phase = phaseForWorker(worker.role, worker.kind);
-  const cfg = workerSettings(line, worker);
-  const effective = resolveWorkerOverrides(cfg, worker, phase);
+  let phase, cfg, effective, plan, adapter, runEnv, runCwd, child;
+try {
+  phase = phaseForWorker(worker.role, worker.kind);
+  cfg = workerSettings(line, worker);
+  effective = resolveWorkerOverrides(cfg, worker, phase);
   worker.lastError = null;
   worker.harness = effective.harness;
   worker.model = effective.model;
@@ -1188,24 +1243,33 @@ function spawnWorker(line, worker, prompt, resume) {
   } else if (!resume && prompt === worker.prompt) {
     prompt = brief;
   }
-  const plan = planWorkerRun({ ...cfg, ...effective }, {
+  plan = planWorkerRun({ ...cfg, ...effective }, {
     phase, prompt, workdir: worker.worktreePath,
     sessionId: resume && worker.sessionId ? worker.sessionId : null,
     autoApprove: AUTO_APPROVE,
     ...systemPromptOptions(effective.harness, worker.rolePrompt, SYSTEM_PROMPT_DIR),
   });
-  const adapter = plan.adapter;
+  adapter = plan.adapter;
   worker.adapter = adapter;
   slog("info", "worker.run.start", { lineId: line.id, workerId: worker.id,
     name: worker.name, role: worker.role, phase, harness: worker.harness,
     model: worker.model, resume: !!(resume && worker.sessionId),
     chars: prompt.length });
-  const runEnv = { ...process.env, ...plan.env };
-  const runCwd = plan.cwd === undefined ? process.cwd() : path.resolve(plan.cwd);
-  const child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
+  runEnv = { ...process.env, ...plan.env };
+  runCwd = plan.cwd === undefined ? process.cwd() : path.resolve(plan.cwd);
+  child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
     env: runEnv,
     ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
   worker.child = child;
+  } catch (error) {
+    // The run never started. Report it as a failed worker run.
+    const message = error && error.message ? error.message : String(error);
+    slog("error", "worker.spawn.failed", { lineId: line.id, workerId: worker.id, error: preview(message, 500) });
+    worker.child = null;
+    worker.lastError = `The worker run could not start. ${message}`;
+    workerClosed(line, worker, null, null, new InvocationCapture(), { invocationId, runId, outcome: "fail" });
+    return;
+  }
 
   // Harnesses without a native time limit need the server to enforce it.
   let killTimer = null;
@@ -1502,6 +1566,29 @@ function deliverToInstance(line, worker, message, { logText } = {}) {
   slog("info", "worker.continued", { lineId: line.id, workerId: worker.id,
     chars: shown.length, prompt: preview(shown, 400) });
   const run = () => spawnWorker(line, worker, message, true);
+  // A session belongs to the harness that created it. When the pipeline
+  // settings now name another harness, compact on the old harness first; the
+  // run then starts a fresh session on the new one.
+  const next = resolveWorkerOverrides(workerSettings(line, worker), worker,
+    phaseForWorker(worker.role, worker.kind));
+  if (worker.sessionId && worker.harness && worker.harness !== next.harness) {
+    const afterSwitch = (error) => {
+      if (line.deleted || !line.workers.has(worker.id)) return;
+      if (error || worker.sessionId) {
+        // The old session cannot be summarized: the run starts fresh.
+        worker.sessionId = null;
+        worker.handoff = "No summary is available: the previous session could not be summarized before the harness switch. Read the worktree and the git log to recover the current state.";
+        worker.context = resetForFreshSession(worker.context || newContextStats());
+        saveLine(line);
+      }
+      if (worker.stopRequested) {
+        workerClosed(line, worker, null, "SIGTERM", new InvocationCapture(), { outcome: "fail" });
+      } else run();
+    };
+    const owner = { harness: worker.harness, model: worker.model, effort: worker.effort };
+    if (!compactWorker(line, worker, "harness-switch", afterSwitch, owner)) afterSwitch(new Error("no compaction possible"));
+    return { ok: true, compacting: true };
+  }
   const autoCompact = worker.sessionId
     && shouldAutoCompact(worker.context, maxContextFor(line, worker))
     && compactWorker(line, worker, "auto", () => {
@@ -1581,8 +1668,8 @@ function createOwnWorktree(line, nodeId, fields) {
     role: "implementor", validates: null, persona, kind: "standard", repo: repo.name,
     trackerTicket: fields.trackerTicket || null,
     runGeneration: 1,
-    harness: fields.harness || null, model: fields.model || null,
-    effort: fields.effort || null,
+    overrides: { harness: fields.harness || null, model: fields.model || null,
+      effort: fields.effort || null },
     prompt: workerPrompt, ...splitFields(split),
     sessionId: null, context: newContextStats(), handoff: null,
     worktreePath, branch, status: "running", stopRequested: false,
@@ -3168,6 +3255,7 @@ function loadLines() {
           repo: workerRepo(w),
           node: w.node || null, acceptedRuns: Array.isArray(w.acceptedRuns) ? w.acceptedRuns : [],
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
+          overrides: overridesOf(w),
           lastError: w.lastError || null,
           sessionId: w.sessionId,
           worktreePath: w.worktreePath
@@ -3195,6 +3283,7 @@ function loadLines() {
           repo: impl ? impl.repo : workerRepo(w),
           integration: w.integration || null,
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
+          overrides: overridesOf(w),
           lastError: w.lastError || null,
           sessionId: w.sessionId,
           worktreePath: w.worktreePath
@@ -3319,7 +3408,7 @@ if (HTTPS_PORT) {
 }
 }
 
-module.exports = { stopPlannerRun, pump, spawnWorker, dashboardStateForLine, requestHandler, lines,
+module.exports = { stopPlannerRun, pump, spawnWorker, deliverToInstance, loadLines, dashboardStateForLine, requestHandler, lines,
   createServer: () => server,
   setSpawnForTest: (fn) => { spawnProcess = fn; },
   setLifecycleHooksForTest: (hooks) => { lifecycleTestHooks = hooks; },
