@@ -1,0 +1,108 @@
+{
+  "list": {
+    "status": 200,
+    "body": {
+      "harnesses": [
+        {
+          "id": "vibe",
+          "installed": true,
+          "auth": "unknown",
+          "loginHint": "vibe --setup",
+          "version": "vibe 3.0.2",
+          "models": [
+            {
+              "value": "glm-5-3-flash",
+              "label": "glm-5-3-flash"
+            },
+            {
+              "value": "glm-5-3",
+              "label": "glm-5-3"
+            }
+          ]
+        },
+        {
+          "id": "pi",
+          "installed": true,
+          "auth": "unknown",
+          "loginHint": "pi /login (in the pi TUI)",
+          "version": "pi 0.87.1",
+          "authModes": [
+            {
+              "value": "anthropic",
+              "label": "anthropic"
+            },
+            {
+              "value": "openai",
+              "label": "openai"
+            }
+          ],
+          "models": [
+            {
+              "value": "anthropic/claude-sonnet-4",
+              "label": "claude-sonnet-4"
+            },
+            {
+              "value": "openai/gpt-5",
+              "label": "gpt-5"
+            }
+          ]
+        },
+        {
+          "id": "codex",
+          "installed": false,
+          "auth": "unknown",
+          "loginHint": "codex login",
+          "version": null
+        },
+        {
+          "id": "claude",
+          "installed": false,
+          "auth": "unknown",
+          "loginHint": "claude login",
+          "version": null,
+          "models": [
+            {
+              "value": "opus",
+              "label": "opus"
+            },
+            {
+              "value": "sonnet",
+              "label": "sonnet"
+            },
+            {
+              "value": "haiku",
+              "label": "haiku"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "piDetail": {
+    "status": 200,
+    "body": {
+      "id": "pi",
+      "authMode": "anthropic",
+      "auth": "ok",
+      "loginHint": "run pi /login",
+      "models": [
+        {
+          "value": "anthropic/claude-sonnet-4",
+          "label": "claude-sonnet-4"
+        }
+      ]
+    }
+  },
+  "piMissingProvider": {
+    "status": 400,
+    "body": {
+      "error": "provider query parameter is required"
+    }
+  },
+  "piUnknownProvider": {
+    "status": 400,
+    "body": {
+      "error": "unknown provider 'gemini' (known providers: anthropic, openai)"
+    }
+  }
+}
