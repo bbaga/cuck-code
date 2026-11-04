@@ -236,7 +236,8 @@
   // Pure decision for applying a Pi detail response. Call it after every
   // asynchronous boundary (fetch and response.json()) with a fresh
   // isCurrent check, so a stale response never touches newer state.
-  function piDetailApply({ isCurrent, ok, status, data }) {
+  // harnessId names the harness in texts; Pi texts stay as they were.
+  function piDetailApply({ isCurrent, ok, status, data, harnessId = PI_HARNESS_ID }) {
     if (!isCurrent) return { apply: false };
     if (!ok) {
       const error =
@@ -245,7 +246,8 @@
           : null;
       return {
         apply: true,
-        statusText: error || "Pi detail failed (HTTP " + status + ")",
+        statusText: error || (harnessId === PI_HARNESS_ID ? "Pi" : harnessId)
+          + " detail failed (HTTP " + status + ")",
         models: [],
         piDetail: null,
       };
@@ -764,6 +766,24 @@
     return text;
   }
 
+  // Option text for a harness select: the display name (or id), a plugin
+  // marker, and the version. A built-in keeps its "id (version)" text.
+  function harnessOptionLabel(entry) {
+    const name = entry.displayName || entry.id;
+    return name + (entry.plugin ? " (plugin)" : "")
+      + (entry.version ? " (" + entry.version + ")" : "");
+  }
+
+  // Warning for plugins that failed to load, or null when there is none.
+  // The paths go in the title so the line stays short.
+  function pluginProblemsSummary(problems) {
+    if (!Array.isArray(problems) || problems.length === 0) return null;
+    return {
+      text: problems.length + " harness plugin(s) failed to load",
+      title: problems.map((p) => (p && p.path) || "unknown path").join("\n"),
+    };
+  }
+
   function authBadge(entry) {
     if (!entry || entry.installed !== true) return "not installed";
     if (entry.auth === "ok") return "ok";
@@ -777,8 +797,9 @@
   // replaces the list with its installed entries and collects login hints.
   // The catalog stays authoritative: nothing here adds or keeps a harness
   // that the response does not report as installed.
-  function harnessReloadOutcome({ ok, status, data, fetchError, previous, previousMissingText }) {
-    const keep = { harnesses: previous || [], missingText: previousMissingText || "" };
+  function harnessReloadOutcome({ ok, status, data, fetchError, previous, previousMissingText, previousPluginProblems }) {
+    const keep = { harnesses: previous || [], missingText: previousMissingText || "",
+      pluginProblems: previousPluginProblems || [] };
     if (fetchError) {
       return { ...keep, errorText: "Harness catalog load failed: " + String(fetchError) };
     }
@@ -792,6 +813,7 @@
     const missing = harnesses.filter((h) => h.auth === "missing");
     return {
       harnesses,
+      pluginProblems: Array.isArray(data.pluginProblems) ? data.pluginProblems : [],
       errorText: "",
       missingText: missing.length
         ? "Login needed: " + missing.map((h) =>
@@ -1193,6 +1215,8 @@
     preselectRemap,
     formatScopePanelData,
     authBadge,
+    harnessOptionLabel,
+    pluginProblemsSummary,
     harnessReloadOutcome,
     previewForIntegration,
     isPassingIntegration,

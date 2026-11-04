@@ -30,6 +30,8 @@ const {
   clearHarnessState,
   clearProviderState,
   authBadge,
+  harnessOptionLabel,
+  pluginProblemsSummary,
   isFailedValidator,
   shouldHideValidator,
   shouldShowIntegrationValidator,
@@ -1170,4 +1172,37 @@ test("modelOptionsForPhase: providers harness uses detail, others use base model
     [{ value: "m", label: "M" }],
   );
   assert.deepStrictEqual(modelOptionsForPhase({ harnesses, harnessId: "codex" }), []);
+});
+
+test("harnessOptionLabel keeps built-in labels and marks plugins", () => {
+  assert.strictEqual(harnessOptionLabel({ id: "pi", version: "0.87" }), "pi (0.87)");
+  assert.strictEqual(harnessOptionLabel({ id: "pi" }), "pi");
+  assert.strictEqual(
+    harnessOptionLabel({ id: "acme", displayName: "Acme", version: "1.0", plugin: { folder: "acme" } }),
+    "Acme (plugin) (1.0)");
+  assert.strictEqual(harnessOptionLabel({ id: "acme", plugin: { folder: "acme" } }), "acme (plugin)");
+});
+
+test("pluginProblemsSummary is null without problems and counts them otherwise", () => {
+  assert.strictEqual(pluginProblemsSummary(undefined), null);
+  assert.strictEqual(pluginProblemsSummary([]), null);
+  assert.deepStrictEqual(
+    pluginProblemsSummary([{ layer: "user", path: "/a", errors: [] }, { path: "/b" }]),
+    { text: "2 harness plugin(s) failed to load", title: "/a\n/b" });
+});
+
+test("harnessReloadOutcome carries pluginProblems and keeps them on failure", () => {
+  const problems = [{ layer: "user", path: "/a", errors: ["x"] }];
+  const ok = pipelineUiModule.harnessReloadOutcome({ ok: true, status: 200,
+    data: { harnesses: [], pluginProblems: problems } });
+  assert.deepStrictEqual(ok.pluginProblems, problems);
+  assert.deepStrictEqual(pipelineUiModule.harnessReloadOutcome({ ok: true, status: 200, data: { harnesses: [] } })
+    .pluginProblems, []);
+  assert.deepStrictEqual(pipelineUiModule.harnessReloadOutcome({ ok: false, status: 500, previousPluginProblems: problems })
+    .pluginProblems, problems);
+});
+
+test("piDetailApply names a plugin harness in its failure text", () => {
+  const out = piDetailApply({ isCurrent: true, ok: false, status: 502, data: null, harnessId: "acme" });
+  assert.strictEqual(out.statusText, "acme detail failed (HTTP 502)");
 });

@@ -377,8 +377,49 @@ test("harness reload: a plugin with providers loads its own provider models", as
     assert.ok((await page.evaluate("window.__harnessFetches"))
       .includes("/api/harnesses/acme?provider=north"));
     assert.match(await page.evaluate(
-      "document.querySelector('#createPanel .authHint, #createPanel [id^=cp-hint]').textContent"),
+      "document.querySelector('#createPanel .authHint, #createPanel .authHint').textContent"),
       /acme auth ok/);
+    assert.deepEqual(await page.evaluate("window.__errs"), []);
+  } finally {
+    if (page) await page.close();
+    await fx.close();
+  }
+});
+
+// A plugin label with its folder title, plus one warning line for failed plugins.
+test("harness reload: a plugin is labeled and a plugin problem shows one warning", async (t) => {
+  const fx = await startDashboardFixture();
+  let page = null;
+  const catalog = { harnesses: [
+    { id: "vibe", installed: true, auth: "unknown", version: "3.0.2" },
+    { id: "acme", displayName: "Acme", installed: true, auth: "missing", loginHint: "acme login --now",
+      version: "1.0", plugin: { layer: "user", folder: "acme-dir" } }],
+  pluginProblems: [{ layer: "user", path: "/plugins/broken", errors: ["bad"] }] };
+  try {
+    try { page = await openPage(fx.url, { initScript: STUBS }); }
+    catch (e) {
+      if (e.code === "BROWSER_UNAVAILABLE") return t.skip("Chrome is missing: " + e.message);
+      throw e;
+    }
+    await page.evaluate(`(() => {
+      window.__harnessFetchImpl = () => Promise.resolve(new Response(
+        JSON.stringify(${JSON.stringify(catalog)}), { status: 200 }));
+    })()`);
+    await openCreate(page);
+    await waitSettled(page, 1);
+    assert.deepEqual(await page.evaluate(
+      `[...${HARNESS_SEL}.options].filter((o) => o.value).map((o) => o.textContent)`),
+      ["vibe (3.0.2)", "Acme (plugin) (1.0)"]);
+    assert.equal(await page.evaluate(
+      `[...${HARNESS_SEL}.options].find((o) => o.value === 'acme').title`), "acme-dir");
+    assert.equal(await page.evaluate(
+      "document.querySelector('#createPanel .pluginProblems').textContent"),
+      "1 harness plugin(s) failed to load");
+    assert.equal(await page.evaluate(
+      "document.querySelector('#createPanel .pluginProblems').title"), "/plugins/broken");
+    await selectHarness(page, "acme");
+    assert.match(await page.evaluate(
+      "document.querySelector('#createPanel .authHint').textContent"), /acme login --now/);
     assert.deepEqual(await page.evaluate("window.__errs"), []);
   } finally {
     if (page) await page.close();
