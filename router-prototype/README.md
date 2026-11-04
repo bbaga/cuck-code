@@ -1081,9 +1081,10 @@ persisted in `line.json` and exposed in the worker API responses
 (`baseCommit`, `changeset`). Legacy `changeset` records from before this
 policy may carry `reason: "oversized"` with `ok: false`; current records
 report oversize with `ok: true`, `oversized: true`, and `reason: null`.
-The size rule applies to implementors only. The worker, planner, and
-validator brief wording that teaches the size assessment and the
-reviewability check ships in a separate guidance change.
+The size rule applies to implementors only. The implementor and planner
+briefs teach the size assessment, the early escalation, and the real
+split; the validator brief wording follows in a separate guidance
+change.
 
 ### Test scope
 
