@@ -10,6 +10,7 @@ const {
   collectChangeset,
   changesetWakeMessage,
   changesetOversizeMessage,
+  changesetValidatorWarning,
   changesetFields,
 } = require("../changeset");
 
@@ -275,6 +276,36 @@ test("the oversize message reports the size and the review path", () => {
   assert.ok(msg.includes("Do not ask the implementor to minify code"));
   assert.ok(msg.includes("/api/protocol/lines/line-9/interactions/feedback"));
   assert.ok(!msg.includes("/continue"));
+});
+
+test("the validator warning carries size, base, head, and per-file counts", () => {
+  const cs = collectChangeset("/wt", "base123", {
+    run: fakeRun({ numstat: `${numstatRow("src/a.js", 280, 200)}\n${numstatRow("test/a.test.js", 20, 1)}` }),
+  });
+  assert.equal(cs.oversized, true);
+  const warning = changesetValidatorWarning(cs);
+  assert.ok(warning, "an oversized change set produces a warning");
+  assert.ok(warning.includes("total 501 > target 500"));
+  assert.ok(warning.includes("Base commit base123, head commit headabc123"));
+  assert.ok(warning.includes("Per file: src/a.js: +280/-200; test/a.test.js: +20/-1"));
+  assert.ok(warning.includes("Judge reviewability, not the count alone"));
+});
+
+test("a change set within the target produces no validator warning", () => {
+  const cs = collectChangeset("/wt", "base123", {
+    run: fakeRun({ numstat: numstatRow("a.js", 300, 200) }),
+  });
+  assert.equal(cs.oversized, false);
+  assert.equal(changesetValidatorWarning(cs), null);
+});
+
+test("the validator warning is null for missing or legacy change-set records", () => {
+  assert.equal(changesetValidatorWarning(null), null);
+  assert.equal(changesetValidatorWarning(undefined), null);
+  // A legacy record may carry reason "oversized" with ok false and no
+  // oversized flag: it produces no warning instead of a wrong transfer.
+  assert.equal(changesetValidatorWarning({ ok: false, reason: "oversized", total: 501,
+    limit: 500, files: [] }), null);
 });
 
 test("change-set fields survive a JSON round trip (persistence and restart)", () => {

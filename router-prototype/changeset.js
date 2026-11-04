@@ -176,6 +176,23 @@ function changesetOversizeMessage(cs, worker) {
     + `or explanations to pass the count. ${feedbackNote(worker)}`;
 }
 
+// The size warning for the validator prompt: the exact size, the base and
+// head commits, and the per-file counts, so the validator can judge
+// reviewability with the numbers in view. Null when the change set is
+// within the target. The implementor rationale stays in the report; the
+// warning never replaces it.
+function changesetValidatorWarning(cs) {
+  if (!cs || !cs.oversized) return null;
+  const perFile = cs.files.length
+    ? cs.files.map((f) => `${f.path}: +${f.additions}/-${f.deletions}`).join("; ")
+    : "none";
+  return `The change set of the implementor is over the review-size target: `
+    + `total ${cs.total} > target ${cs.limit}. `
+    + `Base commit ${cs.baseCommit || "unknown"}, head commit ${cs.headCommit || "unknown"}. `
+    + `Per file: ${perFile}. `
+    + `Judge reviewability, not the count alone.`;
+}
+
 // The persisted and API-visible change-set fields of a worker record.
 function changesetFields(worker) {
   return { baseCommit: worker.baseCommit || null, changeset: worker.changeset || null };
@@ -189,5 +206,6 @@ module.exports = {
   collectChangeset,
   changesetWakeMessage,
   changesetOversizeMessage,
+  changesetValidatorWarning,
   changesetFields,
 };
