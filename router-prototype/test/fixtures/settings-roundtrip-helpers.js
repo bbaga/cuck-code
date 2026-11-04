@@ -64,22 +64,24 @@ const PI_SCRIPT = '#!/bin/sh\n'
 // opts.pageClose/opts.fixtureClose seams wrap the two close steps (tests use
 // them to prove cleanup independence). One outer guard covers every resource
 // acquired after the dashboard starts: the finally block restores the
-// environment, removes the temporary CLI directory, closes the page, and
-// closes the fixture. Each attempt is independent; failures are collected
-// and reported without masking the primary error.
+// environment (including the LINES_DIR the dashboard fixture rewrites),
+// removes the temporary CLI directory, closes the page, and closes the
+// fixture. Each attempt is independent; failures are collected and reported
+// without masking the primary error.
 async function withFixture(t, seed, run, opts = {}) {
-  const fx = await startDashboardFixture();
   const oldEnv = {
     PATH: process.env.PATH,
     GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
     GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
+    LINES_DIR: process.env.LINES_DIR,
   };
+  const fx = await startDashboardFixture();
   const holder = { page: null };
   let bin = null;
   const cleanupErrors = [];
   const cleanup = async () => {
     process.env.PATH = oldEnv.PATH;
-    for (const k of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]) {
+    for (const k of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "LINES_DIR"]) {
       if (oldEnv[k] === undefined) delete process.env[k];
       else process.env[k] = oldEnv[k];
     }
