@@ -4,9 +4,9 @@
 // catalog providers restore; a non-Pi row round-trips in isolation; the
 // saved state is proven on the server and on disk after a real Save; an
 // intentional same-row harness change clears the Pi state; and failed,
-// late, and repeated hydrations respect the guards. Skips without Chrome.
-// Chrome. The openai-codex answers are scripted; the anthropic answers come
-// from the live fixture catalog (the fake pi CLI), so both paths are proven.
+// late, and repeated hydrations respect the guards. The openai-codex
+// answers are scripted; the anthropic answers come from the live fixture
+// catalog, so both paths are proven. Skips without Chrome.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -15,6 +15,34 @@ const server = require("../server");
 const H = require("./fixtures/settings-roundtrip-helpers");
 
 const { PANE, SEL, STATE, STUBS } = H;
+
+// A test-side fetch-boundary observer for the scripted pi request: it marks
+// the real settlement of the returned promise, in a macrotask after the
+// settled promise reached the application. It proves delivery, not release.
+const SETTLED_PI = `
+  window.__settledPi = 0;
+  const __sf = window.fetch;
+  window.fetch = (url, opts) => {
+    const p = __sf(url, opts);
+    if (String(url).includes("provider=openai-codex")) Promise.resolve(p).catch(() => {})
+      .then(() => setTimeout(() => { window.__settledPi += 1; }, 0));
+    return p;
+  };
+`;
+
+// The install gate re-probes the fake CLI on every request. Under heavy
+// parallel browser load one probe can exceed its 2 s timeout, and the gate
+// then wrongly reports the harness as missing. Retry only that error.
+async function seedLine(fx, nodeSettings) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(`${fx.url}/api/lines`, { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Harness switch line", pipelineName: "default", nodeSettings }) });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 201 || !/not installed/.test(data.error || "")) return res;
+  }
+  throw new Error("the line seed kept failing with 'not installed'");
+}
 
 test("settings round trip: creation selections reach nodeSettings and Change settings", async (t) => {
   await H.withFixture(t, null, async (holder, fx) => {
@@ -28,8 +56,7 @@ test("settings round trip: creation selections reach nodeSettings and Change set
       { mode: 0o755 });
 
     // Create a line: pi + openai-codex on the planner (scripted later, live
-    // here), pi + anthropic on the backend implementor (always the live
-    // fixture catalog), with effort and max context; defaults elsewhere.
+    // here), pi + anthropic on the backend implementor (live catalog).
     await H.openCreatePlannerPi(page);
     await H.waitOption(page, "cp-model-planner", "openai-codex/gpt-5.2");
     await H.changeSelect(page, "cp", "model", "planner", "openai-codex/gpt-5.2");
@@ -45,8 +72,8 @@ test("settings round trip: creation selections reach nodeSettings and Change set
     await page.evaluate(`[...document.querySelectorAll("#createPanel button")].find((b) => b.textContent === "Create line").click()`);
     await page.waitFor(`[...document.querySelectorAll(".card")].some((c) => c.dataset.lineId !== "browser-line")`);
 
-    // The persisted result lists explicit overrides only; fresh-session
-    // nodes have no maxContext, and untouched nodes inherit the defaults.
+    // The persisted result lists explicit overrides only; untouched nodes
+    // inherit the defaults.
     const created = (await (await fetch(`${fx.url}/api/lines`)).json())
       .lines.find((l) => l.name === "Round trip line");
     assert.ok(created, "the created line is listed");
@@ -69,8 +96,7 @@ test("settings round trip: creation selections reach nodeSettings and Change set
     assert.equal(put.status, 200);
 
     // Fresh session: the scripted pi answers (two failures, then a held
-    // success) install at document start, so the card's own hydration hits
-    // them. Reopen the dashboard and the line's settings.
+    // success) hit the card's own hydration. Reopen the dashboard.
     await page.close();
     holder.page = page = await H.openPage(fx.url,
       { initScript: STUBS + H.failHoldSucceedPi });
@@ -110,8 +136,7 @@ test("settings round trip: creation selections reach nodeSettings and Change set
     // Every supported field is restored: the catalog label replaces the raw
     // id, the second known provider comes back from the live catalog, the
     // unknown provider stays honest, the bare model keeps its raw value,
-    // the non-Pi row keeps its own harness and model, and defaults stay
-    // default.
+    // the non-Pi row keeps its own harness and model, defaults stay default.
     await page.waitFor([
       `${SEL(pre, "authmode", "planner")}.value === "openai-codex"`,
       `${SEL(pre, "model", "planner")}.selectedOptions[0].textContent === "gpt-5.2"`,
@@ -143,8 +168,8 @@ test("settings round trip: creation selections reach nodeSettings and Change set
       "the vibe revert triggers no Pi refetch");
 
     // A no-op Save keeps every stored field, timeLimit included, and adds
-    // nothing for the default nodes. The wait below covers the real Save
-    // round trip: the message appears only after the PUT response applied.
+    // nothing for the default nodes. The message appears only after the
+    // real PUT response applied.
     await H.clickFormButton(page, line, "Save settings");
     await page.waitFor(
       `/Saved\\. The settings apply from the next run\\./.test(${PANE(line)}.innerText)`);
@@ -153,9 +178,8 @@ test("settings round trip: creation selections reach nodeSettings and Change set
     assert.deepEqual(JSON.parse(puts[0].body), { nodeSettings: expected });
 
     // Independent proof beyond the captured PUT body: GET the line (the
-    // server's stored state) and read line.json (the disk file the fixture
-    // writes through saveLine). Both must carry the same overrides,
-    // including the hidden timeLimit.
+    // server's stored state) and read line.json (the disk file written
+    // through saveLine). Both must carry the same overrides, timeLimit too.
     const stored = (await (await fetch(`${fx.url}/api/lines`)).json())
       .lines.find((l) => l.id === line);
     assert.deepEqual(stored.nodeSettings, expected);
@@ -218,43 +242,36 @@ test("settings round trip: an intentional harness change clears the Pi state on 
   await H.withFixture(t, null, async (holder, fx) => {
     let page = holder.page;
 
-    // The fixture ships only a fake pi CLI. A minimal fake vibe CLI makes
-    // the default non-Pi harness installed too (same setup as above).
+    // The same minimal fake vibe CLI as above, so vibe counts as installed.
     const binDir = process.env.PATH.split(":")[0];
     fs.writeFileSync(path.join(binDir, "vibe"), '#!/bin/sh\necho "vibe 1.2.3"\n',
       { mode: 0o755 });
 
     // Seed a line: the planner on pi + openai-codex with effort, max
     // context, and the hidden timeLimit; the backend implementor on the
-    // second known provider. The second row proves that the switch keeps
-    // unrelated overrides.
-    const post = await fetch(`${fx.url}/api/lines`, { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "Harness switch line", pipelineName: "default",
-        nodeSettings: {
-          planner: { harness: "pi", model: "openai-codex/gpt-5.2",
-            effort: "high", maxContext: 200000, timeLimit: 1234 },
-          "backend-impl": { harness: "pi", model: "anthropic/claude-x", effort: "low" },
-        } }) });
+    // second known provider, to prove the switch keeps unrelated overrides.
+    const post = await seedLine(fx, {
+      planner: { harness: "pi", model: "openai-codex/gpt-5.2",
+        effort: "high", maxContext: 200000, timeLimit: 1234 },
+      "backend-impl": { harness: "pi", model: "anthropic/claude-x", effort: "low" },
+    });
     assert.equal(post.status, 201);
     const created = (await (await fetch(`${fx.url}/api/lines`)).json())
       .lines.find((l) => l.name === "Harness switch line");
     const line = created.id, pre = "lp-" + line;
 
-    // Fresh session: the planner's pi detail answer is held in flight when
-    // the row hydrates.
+    // Fresh session: the planner's pi detail answer is held in flight.
     await page.close();
     holder.page = page = await H.openPage(fx.url,
       { initScript: STUBS + H.scriptedPi([{ hold: true,
-        models: [{ value: "openai-codex/gpt-5.2", label: "gpt-5.2" }] }]) });
+        models: [{ value: "openai-codex/gpt-5.2", label: "gpt-5.2" }] }]) + SETTLED_PI });
     await page.waitFor("/Harness switch line/i.test(document.body.innerText)");
     await H.clickTab(page, line);
     await H.wait(page, `${PANE(line)} && !${PANE(line)}.hidden`);
     await page.waitFor(`window.__releases.length === 1`
       + ` && ${SEL(pre, "authmode", "planner")}.value === "openai-codex"`);
 
-    // The user switches the same row to vibe through the real change event,
-    // while the Pi answer is still in flight.
+    // The user switches the same row to vibe, while the answer is in flight.
     await H.changeSelect(page, pre, "harness", "planner", "vibe");
 
     // The switch clears the incompatible Pi state at once: the provider
@@ -268,16 +285,18 @@ test("settings round trip: an intentional harness change clears the Pi state on 
       `[...${SEL(pre, "model", "planner")}.options].some((o) => o.value.includes("/"))`),
       false, "no Pi qualified model survives the switch");
 
-    // The held answer resolves: stale. It restores nothing on the row.
+    // Await the settlement marker of that exact fetch, not the release
+    // call: the assertions below observe the row after delivery to the app.
     await page.evaluate("window.__releases[0]()");
+    await page.waitFor("window.__settledPi >= 1");
     await H.waitNever(page, `${SEL(pre, "model", "planner")}.value !== ""`
       + ` || ${SEL(pre, "harness", "planner")}.value !== "vibe"`
       + ` || !${SEL(pre, "authmode", "planner")}.hidden`
       + ` || [...${SEL(pre, "model", "planner")}.options].some((o) => o.value.includes("/"))`);
 
     // The user picks a vibe model and saves. Effort, max context, and the
-    // hidden timeLimit survive the harness change; the other row keeps its
-    // own overrides; no Pi value and no authMode field reach the payload.
+    // hidden timeLimit survive the harness change; no Pi value and no
+    // authMode field reach the payload; the other row keeps its overrides.
     await H.waitOption(page, `${pre}-model-planner`, "glm-5-3-flash");
     await H.changeSelect(page, pre, "model", "planner", "glm-5-3-flash");
     await H.clickFormButton(page, line, "Save settings");
