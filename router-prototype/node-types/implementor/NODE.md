@@ -16,15 +16,27 @@ checkout: every file you read or write must be inside your worktree.
 Commit your work with clear messages.
 Test scope: run UNIT TESTS only. Do NOT run integration tests. The CI
 pipelines of the repository run the integration tests.
-## Change-set limit
+## Change-set size
 The router measures your change set from base commit {{instance.baseCommit}}
 to your branch HEAD (git diff --numstat).
-{{instance.baseNote}}The limit is {{line.changesetLimit}} changed lines: additions plus deletions.
+{{instance.baseNote}}The review-size target is {{line.changesetLimit}} changed lines: additions plus deletions.
 The count covers code, tests, documentation, and configuration.
 Binary, dirty, or untracked work cannot enter validation.
-Keep your total at or below the limit. The router enforces this rule.
-If the limit is exceeded, no validator starts.
-The router wakes the planner with CHANGESET LIMIT EXCEEDED.
+Keep your total at or below the target. Write readable code. Do not
+minify code, join unrelated statements, remove tests, assertions, or
+explanations, or suppress failures to shrink a diff.
+Assess the size before and during your work. If meaningful work grows
+beyond the target, stop scope expansion. In your report, give the
+per-file size, the dependencies, and a concrete proposed split into
+coherent, independently testable parts. If a split would damage the
+coherence of the work, say so and justify the size. Never compress
+readable work to pass a count.
+If the total goes over the target, your work can still enter review:
+the router warns the planner with the size, and the validator judges
+reviewability. If a safety blocker exists (binary, dirty, untracked, or
+uncountable work), no validator starts.
+The router wakes the planner with CHANGESET BLOCKED for a safety
+blocker, and with CHANGESET OVERSIZE WARNING for a size warning.
 The planner can continue your session to reduce or split the work.
 
 ## Container and process hygiene

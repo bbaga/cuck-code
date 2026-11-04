@@ -59,3 +59,18 @@ test("implementor headers", () => {
     assert.deepEqual(Object.keys(resolved[name].fields).sort(), ["task", "trackerTicket"]);
   }
 });
+
+test("the rendered implementor prompt carries the review-size policy", () => {
+  const text = newText("implementor", CASES["no remote"]);
+  assert.ok(text.includes("The review-size target is 500 changed lines"));
+  assert.ok(!text.includes("The limit is"));
+  assert.ok(text.includes("Do not\nminify code, join unrelated statements, remove tests, assertions, or\nexplanations, or suppress failures to shrink a diff."));
+  assert.ok(text.includes("Never compress\nreadable work to pass a count."));
+  assert.ok(text.includes("Assess the size before and during your work."));
+  assert.ok(text.includes("stop scope expansion"));
+  assert.ok(text.includes("a concrete proposed split into\ncoherent, independently testable parts"));
+  assert.ok(text.includes("If a split would damage the\ncoherence of the work, say so and justify the size."));
+  assert.ok(text.includes("CHANGESET BLOCKED"));
+  assert.ok(text.includes("CHANGESET OVERSIZE WARNING"));
+  assert.ok(!text.includes("CHANGESET LIMIT EXCEEDED"));
+});
