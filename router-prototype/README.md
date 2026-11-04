@@ -1436,9 +1436,12 @@ validator's job:
   redirected. It uses a free `PORT` other than `7788` and a private `LINES_DIR`.
   It captures the server PID and returns from the start command before other
   tool calls. It waits for HTTP readiness with a bounded timeout. It registers
-  the PID at `POST /api/protocol/lines/:id/inventory` with kind `process`, the
-  integration worker ID, and the PID. It stops the PID after tests, including
-  after failure. Example:
+  the PID at `POST /api/protocol/lines/:id/inventory` on the **orchestration
+  router** (the router that started it) with kind `process`, the
+  integration worker ID, and the PID. The isolated router is the application
+  under test: it never receives inventory or evidence calls, and the private
+  seed never manufactures worker or attempt state for evidence. It stops the
+  PID after tests, including after failure. Example:
 
   ```sh
   PORT=7789 LINES_DIR=/tmp/integration-lines node router-prototype/server.js \
@@ -1451,11 +1454,16 @@ validator's job:
   order. Each screenshot stays paired with its matching title and
   explanation. It closes the context before registration. It registers the
   versioned request `{kind: 'showcase', version: 1, useCase, file, steps:
-  [{title, explanation, screenshot}]}` with the worker evidence endpoint.
-  All media paths are relative to the workdir. Accepted API revision:
+  [{title, explanation, screenshot}]}` with the worker evidence endpoint on
+  the orchestration router. All media paths are relative to the workdir.
+  Accepted API revision:
   `362eff17942182a62baf05ef12423afa2dbf6613`. POST returns
-  `{evidenceId, attemptId}`. GET returns `{items, history, currentAttemptId,
-  currentAttemptIds}`. The router owns attempt identity.
+  `{evidenceId, attemptId}`; `attemptId` is always a nonempty string on 201.
+  A worker without router-run state has no attempt: the router answers
+  409 with `worker has no current attempt` instead of storing evidence that
+  can never count as a verified current attempt. GET returns `{items,
+  history, currentAttemptId, currentAttemptIds}`. The router owns attempt
+  identity.
   Each record in `items` and `history` has `addedBy: {id, name, role}`.
   `role` is `integration validator`, `validator`, `implementor`, or null.
   The router stores the name and role at registration, so they stay correct
@@ -1491,6 +1499,49 @@ validator's job:
   an API change when the running process has an older version.
 - Integration workers, their branches, and evidence items persist across
   restarts.
+
+### Evidence example
+
+Two base URLs exist. `ORCH` is the orchestration router that started the
+worker; it serves the protocol API. `APP` is an isolated application router
+under test; it never receives evidence or inventory calls. `WORKER_ID` is the
+worker's own id, and media paths are relative to that worker's worktree.
+
+```sh
+ORCH=http://localhost:7788   # orchestration router (protocol API)
+APP=http://localhost:7789    # isolated application under test (no evidence calls)
+
+# Register a finalized recording (browser context closed, file > 1 KB):
+curl -s -X POST "$ORCH/api/protocol/workers/$WORKER_ID/evidence" \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"showcase","version":1,"useCase":"Complete demo","file":"evidence/showcase.webm",
+       "steps":[{"title":"Step 1","explanation":"The visible proof","screenshot":"evidence/step-1.png"}]}'
+# -> 201 {"evidenceId":"<id>","attemptId":"<nonempty>"}
+# Errors: 400 invalid media or path outside the worktree; 404 no such worker;
+# 409 worker has no current attempt (report it, do not retry blindly).
+
+# Verify the registration is a current attempt:
+curl -s "$ORCH/api/lines/$LINE_ID/evidence"
+# -> {"items":[...],"history":[...],"currentAttemptId":"<id>|null","currentAttemptIds":{...}}
+# The item with id evidenceId must be in items with the same attemptId.
+
+# Retrieve the video:
+curl -s "$ORCH/api/lines/$LINE_ID/evidence/$EVIDENCE_ID/video" -o check.webm
+```
+
+Inventory holds processes and containers that a stage started and must not
+leak. For an integration validator that is the isolated application router's
+PID (and any containers it started, with the line and worker labels). The
+validator stops the PID itself after tests; the router kills anything left at
+cleanup. Register it on the orchestration router:
+
+```sh
+curl -s -X POST "$ORCH/api/protocol/lines/$LINE_ID/inventory" \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"process","pid":'"$SERVER_PID"',"name":"integration-router","worker":"'"$WORKER_ID"'"}'
+# -> 201 {"itemId":"<id>"}
+# Errors: 400 pid not a positive live process, or worker not on this line.
+```
 
 The graph renders four tiers: planner -> implementors -> validators ->
 integration validators. When a validator or integration validator pushes

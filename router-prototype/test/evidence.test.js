@@ -102,6 +102,17 @@ test("rejects incomplete steps and unsupported or escaped files", () => {
   assert.throws(() => checkedFile(root, "escape/file.webm", "video"), /inside/);
 });
 
+test("path errors name the worktree root so the caller can fix the path", () => {
+  const root = fixture();
+  try {
+    checkedFile(root, "../outside.webm", "video");
+    assert.fail("expected a throw");
+  } catch (error) {
+    assert.match(error.message, /worktree-relative path inside/);
+    assert.ok(error.message.includes(root));
+  }
+});
+
 test("returns public URLs without local paths", () => {
   const item = { id: "e1", kind: "showcase", version: 1, useCase: "Demo", name: "demo.webm", at: 1,
     path: "/private/worktree/demo.webm", steps: [{ title: "A", explanation: "B", screenshot: "/private/worktree/a.png" }] };

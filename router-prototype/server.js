@@ -1762,14 +1762,28 @@ function createSourceChecker(line, nodeId, sourceInstance, fields) {
 // showcases) ordered steps with title, explanation, and screenshot URLs.
 // Media values are public API URLs. currentAttemptIds gives the authoritative
 // attempt per worker. History remains persisted and is exposed separately.
+// A worker without any run state (for example a hand-seeded record) has no
+// attempt identity. Return null so callers can reject instead of treating the
+// empty string as a valid attempt.
 function currentAttemptId(worker) {
-  return worker && (worker.activeInvocationId || worker.lastCompletedInvocationId
-    || String(worker.runGeneration || ""));
+  if (!worker) return null;
+  if (worker.activeInvocationId) return worker.activeInvocationId;
+  if (worker.lastCompletedInvocationId) return worker.lastCompletedInvocationId;
+  if (Number.isInteger(worker.runGeneration) && worker.runGeneration > 0) {
+    return String(worker.runGeneration);
+  }
+  return null;
 }
 
 function isCurrentEvidence(line, item) {
+  // An empty or missing attempt identity is never a verified current
+  // attempt, even when the worker is gone. A nonempty record from a removed
+  // worker stays current, because byName/byRole survive removal.
+  if (!item.attemptId) return false;
   const worker = line.workers.get(item.by);
-  return !worker || item.attemptId === currentAttemptId(worker);
+  if (!worker) return true;
+  const attemptId = currentAttemptId(worker);
+  return attemptId !== null && item.attemptId === attemptId;
 }
 
 const { createRegistryRoutes } = require("./registry-routes");
@@ -2301,7 +2315,13 @@ const routeRequest = (req, res) => {
         return json(res, 400, { error: "pid must be one positive process ID that is not the router" });
       }
       try { process.kill(body.pid, 0); } catch {
-        return json(res, 400, { error: "no such process" });
+        return json(res, 400, { error: `no such process ${body.pid}; start it first and register the live PID` });
+      }
+      // Attribution must name a worker of this line, so cleanup reaches the
+      // right owner. An unknown worker id would orphan the process.
+      if (body.worker !== undefined
+        && (typeof body.worker !== "string" || !line.workers.has(body.worker))) {
+        return json(res, 400, { error: `unknown worker on this line; use a worker id from GET /api/protocol/lines/${line.id}/workers or omit worker` });
       }
       const id = crypto.randomUUID();
       line.inventory.set(id, { id, kind: "process", name: body.name.trim(),
@@ -2753,16 +2773,21 @@ const routeRequest = (req, res) => {
         return json(res, 400, { error: error.message });
       }
       const id = crypto.randomUUID();
+      // The router owns attempt identity. Do not accept a client-supplied
+      // attemptId, because that could make old evidence current again. A
+      // worker without run state has no attempt: reject instead of storing
+      // evidence that can never count as a verified current attempt.
+      const attemptId = currentAttemptId(worker);
+      if (!attemptId) {
+        return json(res, 409, { error: "worker has no current attempt; evidence must belong to a run started by the router" });
+      }
       if (!line.evidence) line.evidence = new Map();
       line.evidence.set(id, { id, ...record, by: worker.id, byName: worker.name,
-        byRole: evidenceRole(worker), at: Date.now(),
-        // The router owns attempt identity. Do not accept a client-supplied
-        // attemptId, because that could make old evidence current again.
-        attemptId: currentAttemptId(worker) });
+        byRole: evidenceRole(worker), at: Date.now(), attemptId });
       saveLine(line);
       slog("info", "evidence.registered", { lineId: line.id, evidenceId: id,
         useCase: preview(body.useCase, 120), file: body.file.trim(), by: worker.name });
-      json(res, 201, { evidenceId: id, attemptId: currentAttemptId(worker) });
+      json(res, 201, { evidenceId: id, attemptId });
     });
     return;
   }
