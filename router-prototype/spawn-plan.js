@@ -31,16 +31,19 @@ function workerSettings(line, worker) {
   return fallbackPhaseSettings(line, phaseForWorker(worker.role, worker.kind));
 }
 
-// Per-worker overrides win over the phase config when set. A worker that
+// Explicit per-worker overrides (worker.overrides, set at start) win over the
+// phase config when set. worker.harness, worker.model and worker.effort are
+// the record of the last run and are never read here. A worker that
 // switches to another harness without naming a model gets that harness's
 // default model, never the phase model meant for a different CLI.
 function resolveWorkerOverrides(cfg, worker, phase) {
-  const harness = worker.harness || cfg.harness;
+  const o = worker.overrides || {};
+  const harness = o.harness || cfg.harness;
   const fallbackModel = harness === cfg.harness ? cfg.model : defaultModelFor(harness, phase);
   return {
     harness,
-    model: worker.model || fallbackModel,
-    effort: worker.effort || cfg.effort,
+    model: o.model || fallbackModel,
+    effort: o.effort || cfg.effort,
   };
 }
 

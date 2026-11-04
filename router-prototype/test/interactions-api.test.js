@@ -82,7 +82,7 @@ test.before(async () => {
   git(src, "branch", "b/front");
   // Lines with idle instances that have a session (the fake agent logs its arguments).
   for (const id of [fbLine, accLine]) {
-    seedLine(linesDir, id, true, { i1: { sessionId: "sess-1", harness: "claude",
+    seedLine(linesDir, id, true, { i1: { sessionId: "sess-1", harness: "claude", overrides: { harness: "claude" },
       worktreePath: path.join(linesDir, id, "repos", "api") } });
   }
   const bin = path.join(root, "bin");

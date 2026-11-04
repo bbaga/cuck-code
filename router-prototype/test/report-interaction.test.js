@@ -215,7 +215,7 @@ test("end to end: a finished implementor sends the new report to the planner", a
       repos: [{ name: "api", url: src, path: clone }],
       workers: [{ id: "i1", name: "impl", node: "backend-impl", persona: "backend", role: "implementor",
         status: "completed", repo: "api", branch: "b/impl", runGeneration: 1, sessionId: "sess-1",
-        harness: "claude", lastCompletedInvocationId: "inv-i1", baseCommit: head, worktreePath: clone }] }));
+        harness: "claude", overrides: { harness: "claude" }, lastCompletedInvocationId: "inv-i1", baseCommit: head, worktreePath: clone }] }));
     const bin = path.join(root, "bin");
     fs.mkdirSync(bin);
     const log = path.join(root, "agent-args.log");
