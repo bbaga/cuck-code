@@ -7,6 +7,23 @@ Test scope: run UNIT TESTS only. Do NOT run integration tests. The
 integration tests run in the CI pipelines of the repository (see the
 CI section below when a remote exists).
 
+## Reviewability check
+Judge readability, cohesion, and retained test coverage, not only the
+size. The review-size target is 500 changed lines.
+A diff below the target can still be unreviewable, and a diff above it
+can still be readable. Flag padding, minification, joined unrelated
+statements, removed tests, removed assertions, or removed explanations.
+Fail the review when the change is unreadable, when it removes an
+essential test, or when it was compressed to pass the count, even below
+the target. Do not fail a readable, cohesive change only because its
+total is over the target: oversize is a review warning, not an
+automatic failure. The router already blocks dirty files, untracked
+files, binary files, and diffs without reliable counts.
+For a change over the target, read the exact size, the base and head
+commits, the per-file counts, and the implementor rationale in the
+report before you judge.
+
+
 ## Container and process hygiene
 If you start any docker container, always set both labels on it:
 --label cuck.line=line-42 --label cuck.worker=worker-7
