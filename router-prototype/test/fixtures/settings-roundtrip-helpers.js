@@ -1,0 +1,207 @@
+"use strict";
+// Shared setup for the settings round-trip browser tests: a dashboard
+// fixture with a fake pi CLI, a page with console and fetch stubs, and
+// small page helpers. A test skips with a clear message when Chrome is
+// missing.
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { startDashboardFixture } = require("./dashboard-browser");
+const { openPage } = require("./browser-driver");
+
+// Line creation runs `git commit`: ignore a global GPG-sign git config.
+process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+process.env.GIT_CONFIG_SYSTEM = "/dev/null";
+
+const PANE = (line) =>
+  `document.querySelector('.card[data-line-id="${line}"] .pipePane')`;
+const SEL = (prefix, kind, node) =>
+  `document.getElementById('${prefix}-${kind}-${node}')`;
+
+// Full observable state of one line's settings form (prefix "lp-<lineId>").
+const STATE = (line) => {
+  const p = "lp-" + line, S = (k, n) => SEL(p, k, n);
+  return `(() => ({
+    harness: ${S("harness", "planner")}.value, model: ${S("model", "planner")}.value,
+    modelLabel: ${S("model", "planner")}.selectedOptions[0].textContent,
+    effort: ${S("effort", "planner")}.value, maxCtx: ${S("maxctx", "planner")}.value,
+    implMode: ${S("authmode", "backend-impl")}.value, implModel: ${S("model", "backend-impl")}.value,
+    implEffort: ${S("effort", "backend-impl")}.value, valModel: ${S("model", "backend-val")}.value,
+    valModeLabel: ${S("authmode", "backend-val")}.selectedOptions[0].textContent,
+    bareMode: ${S("authmode", "frontend-impl")}.value, bareModel: ${S("model", "frontend-impl")}.value,
+    intHarness: ${S("harness", "integration")}.value, intModel: ${S("model", "integration")}.value,
+    valMaxCtx: ${S("maxctx", "backend-val")}, intMaxCtx: ${S("maxctx", "integration")},
+  }))()`;
+};
+
+// Page stubs: capture console errors and settings PUTs, count completed
+// /api/harnesses fetches (window.__harnessDone), and list pi detail calls.
+const STUBS = `
+  window.mermaid = { initialize() {}, run() { return Promise.resolve(); } };
+  window.marked = { use() {}, parse: (t) => String(t) };
+  window.__errs = []; window.__puts = []; window.__piFetches = [];
+  window.addEventListener("error", (e) => window.__errs.push(String(e.message)));
+  window.addEventListener("unhandledrejection", (e) => window.__errs.push(String(e.reason)));
+  const __ce = console.error;
+  console.error = (...a) => { window.__errs.push(a.join(" ")); __ce.apply(console, a); };
+  const __f = window.fetch;
+  window.fetch = (url, opts) => {
+    const u = String(url), p = __f.call(window, url, opts);
+    if (u.includes("/api/harnesses")) {
+      p.finally(() => { setTimeout(() => {
+        window.__harnessDone = (window.__harnessDone || 0) + 1; }, 0); });
+    }
+    if (opts && opts.method === "PUT" && /\\/pipeline$/.test(u)) {
+      window.__puts.push({ url: u, body: opts.body });
+    }
+    return p;
+  };
+`;
+
+// A fake pi CLI: two openai-codex models and one anthropic model.
+const PI_SCRIPT = [
+  "#!/bin/sh",
+  'case "$1" in',
+  '  --version) echo "pi 0.87"; exit 0;;',
+  '  --list-models) printf "provider model ctx\\nopenai-codex gpt-5.2 400000\\n'
+    + 'openai-codex gpt-5.1 400000\\nanthropic claude-x 200000\\n"; exit 0;;',
+  "  auth) exit 0;;",
+  "esac",
+  "exit 1",
+].join("\n");
+
+// Fixture with a fake pi CLI, an optional line seed, and a ready page.
+// The holder survives a run() that swaps the page (a fresh session).
+async function withFixture(t, seed, run) {
+  const fx = await startDashboardFixture();
+  const oldPath = process.env.PATH;
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "settings-roundtrip-bin-"));
+  process.env.PATH = `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`;
+  fs.writeFileSync(path.join(bin, "pi"), PI_SCRIPT, { mode: 0o755 });
+  if (seed) seed(require("../server").lines.get(fx.lineId));
+  const holder = { page: null };
+  try {
+    try {
+      holder.page = await openPage(fx.url, { initScript: STUBS });
+    } catch (e) {
+      if (e.code === "BROWSER_UNAVAILABLE") {
+        return t.skip("Chrome is missing: " + e.message);
+      }
+      throw e;
+    }
+    await holder.page.setViewport(1100, 1100);
+    await holder.page.waitFor("/browser[- ]line/i.test(document.body.innerText)");
+    await run(holder, fx);
+  } finally {
+    process.env.PATH = oldPath;
+    fs.rmSync(bin, { recursive: true, force: true });
+    if (holder.page) await holder.page.close();
+    await fx.close();
+  }
+}
+
+const clickTab = (page, line, name = "Pipeline") => page.evaluate(
+  `[...document.querySelector('.card[data-line-id="${line}"]').querySelectorAll('button.tabBtn')]`
+  + `.find((b) => b.textContent === '${name}').click()`);
+
+const clickFormButton = (page, line, name) => page.evaluate(
+  `[...${PANE(line)}.querySelectorAll('.pipeBtns button')]`
+  + `.find((b) => b.textContent === '${name}').click()`);
+
+const changeSelect = (page, prefix, kind, node, value) => page.evaluate(`(() => {
+  const s = ${SEL(prefix, kind, node)};
+  s.value = ${JSON.stringify(value)};
+  s.dispatchEvent(new Event("change"));
+})()`);
+
+// Open the create panel and pick pi + openai-codex on the planner.
+const openCreatePlannerPi = async (page) => {
+  await page.evaluate(`document.getElementById("create").click()`);
+  await page.waitFor(`document.querySelectorAll("#createPanel .phaseRow").length === 6`);
+  await waitOption(page, "cp-harness-planner", "pi");
+  await changeSelect(page, "cp", "harness", "planner", "pi");
+  await changeSelect(page, "cp", "authmode", "planner", "openai-codex");
+};
+
+// The form fills in waves: tests wait for the expected final state, so a
+// late apply cannot race the asserts. Absence of a late effect is proven
+// by bounded polling, never by a fixed sleep.
+const wait = (page, expr) => page.waitFor(expr, { timeoutMs: 10000 });
+const waitAll = (page, exprs) => page.waitFor(exprs.join(" && "), { timeoutMs: 10000 });
+const waitOption = (page, id, value) => wait(page,
+  `[...document.getElementById('${id}').options].some((o) => o.value === '${value}')`);
+const waitSaved = (page, line) => page.waitFor(
+  `/Saved\\. The settings apply from the next run\\./.test(${PANE(line)}.innerText)`);
+const waitNever = async (page, badExpr, polls = 10) => {
+  for (let i = 0; i < polls; i++) {
+    const bad = await page.evaluate(badExpr);
+    assert.ok(!bad, "the rejected effect appeared: " + badExpr);
+    await page.evaluate("new Promise((r) => setTimeout(r, 50))");
+  }
+};
+
+// Page-side core for the pi detail stubs: an openai-codex answer's JSON
+// body can be held after the fetch resolves. Release handles land in
+// window.__jsonReleases; window.__jsonReleaseAck only acknowledges a
+// release. A parsing-completion proof must observe the app-side effect:
+// the released answer's model option appears.
+const HELD_PI_CORE = `
+  window.__jsonReleases = []; window.__jsonReleaseAck = 0;
+  const __real = window.fetch;
+  const __body = (models) => JSON.stringify(
+    { id: "pi", authMode: "openai-codex", auth: "ok", models });
+  const __heldJson = (models) => Promise.resolve(new Response(new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      window.__jsonReleases.push(() => {
+        window.__jsonReleaseAck += 1;
+        controller.enqueue(enc.encode(__body(models)));
+        controller.close();
+      });
+    },
+  })), { status: 200 }));
+  window.__heldPi = (answer) => {
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (!u.includes("provider=openai-codex")) return __real(url, opts);
+      window.__piFetches.push(u);
+      const a = answer();
+      if (a.hold) return __heldJson(a.models);
+      return Promise.resolve(new Response(
+        a.body || __body(a.models), { status: a.status || 200 }));
+    };
+  };
+`;
+
+// A scripted pi detail stub: call n answers with calls[n] (the last one
+// repeats). One call is { hold, models, status, body }; hold defers the
+// JSON body to a release handle.
+const scriptedPi = (calls) => HELD_PI_CORE + `;
+  window.__piCalls = 0;
+  const calls = ${JSON.stringify(calls)};
+  window.__heldPi(() => calls[Math.min(window.__piCalls++, calls.length - 1)]);
+`;
+
+// Call 0 is held with the old body; call 1 is held with the new bodies;
+// later calls repeat the last held answer.
+const holdPiJsonThenNew = scriptedPi([
+  { hold: true, models: [{ value: "openai-codex/gpt-old", label: "gpt-old" }] },
+  { hold: true, models: [{ value: "openai-codex/gpt-new-a", label: "gpt-new-a" },
+    { value: "openai-codex/gpt-new-b", label: "gpt-new-b" }] },
+]);
+
+// Two HTTP 500 failures, then a held success, then immediate successes.
+const failHoldSucceedPi = scriptedPi([
+  { status: 500, body: JSON.stringify({ error: "pi detail exploded" }) },
+  { status: 500, body: JSON.stringify({ error: "pi detail exploded" }) },
+  { hold: true, models: [{ value: "openai-codex/gpt-5.2", label: "gpt-5.2" }] },
+  { models: [{ value: "openai-codex/gpt-5.2", label: "gpt-5.2" }] },
+]);
+
+module.exports = {
+  withFixture, openPage, STUBS, PANE, SEL, STATE,
+  clickTab, clickFormButton, changeSelect, openCreatePlannerPi,
+  wait, waitAll, waitOption, waitSaved, waitNever,
+  HELD_PI_CORE, scriptedPi, holdPiJsonThenNew, failHoldSucceedPi,
+};
