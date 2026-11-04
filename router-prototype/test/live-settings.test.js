@@ -147,12 +147,27 @@ test("e: a planner spawn that throws sets failed, keeps the request and sends st
   assert.equal(item.activePlannerRequest, null);
   assert.equal(item.activePlannerRun, null);
   assert.equal(item.child, null);
+  assert.ok(events.some((e) => e.includes("event: state")), "a state event was sent");
   assert.ok(events.some((e) => e.includes("event: status")), "a status event was sent");
   assert.ok(events.some((e) => e.includes("event: error")), "an error event was sent");
   // The next pump (a new prompt) retries the request.
   const calls = recordSpawns();
   server.pump(item);
   assert.equal(calls.length, 1);
+  await until(() => item.status !== "running");
+});
+
+test("e2: a new user prompt after a planner start failure starts a new run", async () => {
+  const item = line({ planner: { harness: "claude" } });
+  server.setSpawnForTest(() => { throw new Error("spawn exploded"); });
+  item.queue.push({ id: "r1", text: "First", recorded: true });
+  server.pump(item);
+  assert.equal(item.status, "failed");
+  const calls = recordSpawns();
+  item.queue.push({ id: "r2", text: "Second", recorded: true });
+  server.pump(item);
+  assert.equal(calls.length, 1, "a new run started");
+  assert.ok(calls[0].args.some((a) => String(a).includes("First")), "the kept request runs first");
   await until(() => item.status !== "running");
 });
 
