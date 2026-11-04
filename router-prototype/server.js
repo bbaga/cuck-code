@@ -538,7 +538,7 @@ function compactWorker(line, worker, reason, then = () => {}, sessionCfg = null)
       worker.context = resetForFreshSession(worker.context);
       const entry = { type: "message", role: "system", at: Date.now(),
         text: `Context compacted (${reason}, ~${before.tokens} tokens). The next continuation starts a fresh session with this summary:\n\n${summary}` };
-      worker.transcript.push(entry);
+      appendTranscript(worker.transcript, entry);
       broadcast(line, "worker_entry", { workerId: worker.id, entry });
       slog("info", "worker.compact.done", { lineId: line.id, workerId: worker.id, reason,
         summaryChars: summary.length });
@@ -553,6 +553,30 @@ function compactWorker(line, worker, reason, then = () => {}, sessionCfg = null)
 const dashboardLive = createDashboardLive({
   log: (event, fields) => slog("info", event, fields),
 });
+
+function normalizeWorkerTranscriptEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const normalized = {};
+  if (typeof entry.type === "string") normalized.type = entry.type;
+  if (typeof entry.role === "string") normalized.role = entry.role;
+  if (typeof entry.text === "string") normalized.text = entry.text;
+  else if (typeof entry.content === "string" || Array.isArray(entry.content)) normalized.content = entry.content;
+  if (typeof entry.at === "number") normalized.at = entry.at;
+  // History merge matches on entryId, or on role, text and sessionId.
+  if (typeof entry.sessionId === "string") normalized.sessionId = entry.sessionId;
+  if (typeof entry.entryId === "string") normalized.entryId = entry.entryId;
+  return Object.keys(normalized).length ? normalized : null;
+}
+
+function restoreWorkerTranscript(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(-500).map(normalizeWorkerTranscriptEntry).filter(Boolean);
+}
+
+function serializeWorkerTranscript(worker, limit = 500) {
+  const t = worker && worker.transcript;
+  return restoreWorkerTranscript(Array.isArray(t) ? t.slice(-limit) : []);
+}
 
 // Revisions are in memory only; the epoch tells a browser when counters restarted.
 const stateEpoch = crypto.randomUUID();
@@ -586,6 +610,7 @@ function dashboardStateForLine(line) {
       error: w.error === true, ...compactionFields(w, line),
       ...scopeSummary(w, line.workers),
       ...(w.kind === "integration" ? { merged: integrationMerged(w) } : {}),
+      transcript: serializeWorkerTranscript(w, 50),
     })) };
 }
 
@@ -854,6 +879,7 @@ function saveLine(line) {
           node: w.node || null, acceptedRuns: w.acceptedRuns || [],
           integration: w.integration || null,
           ...changesetFields(w), ...baseFields(w),
+          transcript: serializeWorkerTranscript(w),
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
           overrides: overridesOf(w),
           lastError: w.lastError || null,
@@ -1300,8 +1326,9 @@ try {
       worker.handoff = null;
     }
     if (typeof entry.at !== "number") entry.at = Date.now();
+    if (!entry.sessionId && worker.sessionId) entry.sessionId = worker.sessionId;
     workerRunOutput.add(entry);
-    worker.transcript.push(entry);
+    appendTranscript(worker.transcript, entry);
     slog("debug", "worker.entry", { lineId: line.id, workerId: worker.id,
       type: entry.type, role: entry.role || null, chars: raw.length,
       text: preview(entryText(entry), 200) });
@@ -1328,7 +1355,7 @@ try {
     if (finished) {
       if (typeof finished.at !== "number") finished.at = Date.now();
       workerRunOutput.add(finished);
-      worker.transcript.push(finished);
+      appendTranscript(worker.transcript, finished);
       broadcast(line, "worker_entry", { workerId: worker.id, entry: finished });
     }
     const outcome = spawnError ? "fail" : adapter.outcome(code, signal);
@@ -3273,7 +3300,7 @@ function loadLines() {
           worktreePath: w.worktreePath
             || path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name)),
           branch: w.branch, status: w.status === "running" ? "stopped" : w.status,
-          stopRequested: false, child: null, transcript: [], lastRunText: w.lastRunText || "",
+          stopRequested: false, child: null, transcript: restoreWorkerTranscript(w.transcript), lastRunText: w.lastRunText || "",
           runGeneration: Number.isInteger(w.runGeneration) ? w.runGeneration : 0,
           activeInvocationId: w.activeInvocationId || null,
           lastCompletedInvocationId: w.lastCompletedInvocationId || null,
@@ -3303,7 +3330,7 @@ function loadLines() {
               : path.join(LINES_DIR, "worktrees", meta.id, sanitizeName(w.name))),
           branch: w.branch,
           status: w.status === "running" ? "stopped" : w.status,
-          stopRequested: false, child: null, transcript: [], lastRunText: w.lastRunText || "",
+          stopRequested: false, child: null, transcript: restoreWorkerTranscript(w.transcript), lastRunText: w.lastRunText || "",
           runGeneration: Number.isInteger(w.runGeneration) ? w.runGeneration : 0,
           activeInvocationId: w.activeInvocationId || null,
           lastCompletedInvocationId: w.lastCompletedInvocationId || null,
@@ -3420,7 +3447,7 @@ if (HTTPS_PORT) {
 }
 }
 
-module.exports = { stopPlannerRun, pump, spawnWorker, deliverToInstance, loadLines, dashboardStateForLine, requestHandler, lines,
+module.exports = { saveLine, loadLines, restoreWorkerTranscript, normalizeWorkerTranscriptEntry, stopPlannerRun, pump, spawnWorker, deliverToInstance, dashboardStateForLine, requestHandler, lines,
   createServer: () => server,
   setSpawnForTest: (fn) => { spawnProcess = fn; },
   setLifecycleHooksForTest: (hooks) => { lifecycleTestHooks = hooks; },
