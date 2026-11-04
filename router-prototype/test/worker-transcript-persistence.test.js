@@ -60,3 +60,19 @@ test("saveLine and loadLines round trip a worker transcript", () => {
   assert.equal(tr[0].text, "m20");
   assert.equal(tr[499].text, "m519");
 });
+
+test("state transcript entries merge with saved history without duplicates", () => {
+  const { mergeHistoryEntries } = require("../web/worker-scope.js");
+  const saved = [{ type: "message", role: "assistant", text: "Unique-entry-ALPHA", sessionId: "s1",
+    at: 1000, entryId: "session:s1:rec1" }];
+  // A live entry as the router stores it: stamped with sessionId and entryId.
+  const stored = { type: "message", role: "assistant", text: "Unique-entry-ALPHA", sessionId: "s1",
+    at: 1200, entryId: "uuid-1", extra: "x" };
+  const line = makeLine([stored]);
+  const state = server.dashboardStateForLine(line).workers[0].transcript;
+  assert.equal(state[0].sessionId, "s1");
+  assert.equal(state[0].entryId, "uuid-1");
+  assert.equal(state[0].extra, undefined);
+  const merged = mergeHistoryEntries(saved, state);
+  assert.equal(merged.filter((e) => e.text === "Unique-entry-ALPHA").length, 1);
+});

@@ -553,6 +553,9 @@ function normalizeWorkerTranscriptEntry(entry) {
   if (typeof entry.text === "string") normalized.text = entry.text;
   else if (typeof entry.content === "string" || Array.isArray(entry.content)) normalized.content = entry.content;
   if (typeof entry.at === "number") normalized.at = entry.at;
+  // History merge matches on entryId, or on role, text and sessionId.
+  if (typeof entry.sessionId === "string") normalized.sessionId = entry.sessionId;
+  if (typeof entry.entryId === "string") normalized.entryId = entry.entryId;
   return Object.keys(normalized).length ? normalized : null;
 }
 
@@ -1249,6 +1252,7 @@ function spawnWorker(line, worker, prompt, resume) {
       worker.handoff = null;
     }
     if (typeof entry.at !== "number") entry.at = Date.now();
+    if (!entry.sessionId && worker.sessionId) entry.sessionId = worker.sessionId;
     workerRunOutput.add(entry);
     appendTranscript(worker.transcript, entry);
     slog("debug", "worker.entry", { lineId: line.id, workerId: worker.id,
