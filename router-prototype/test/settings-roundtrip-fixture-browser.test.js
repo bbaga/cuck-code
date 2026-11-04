@@ -4,12 +4,17 @@
 // distinct qualified models, a headless page boots with the stubs and no
 // console errors, and the environment restores after a successful run, after
 // a failing callback, after a throwing seed, and after close failures.
-// Skips when no Chrome is available.
+// The server module loads lazily, after the fixture installs its private
+// LINES_DIR. Skips when no Chrome is available.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const server = require("../server");
 const H = require("./fixtures/settings-roundtrip-helpers");
+
+// Read the server registry only after a fixture run. The fixture installs its
+// private LINES_DIR before it loads the server, so this late require never
+// binds the default ./lines directory of the caller's cwd.
+const serverRegistry = () => require("../server").lines;
 
 const envBefore = () => ({
   PATH: process.env.PATH,
@@ -75,7 +80,7 @@ test("fixture smoke: a throwing seed still cleans up and restores the environmen
   // and the fixture itself were cleaned up without a page ever existing.
   assertEnvRestored(before);
   assert.equal(fs.existsSync(binPath), false, "the temporary CLI directory is removed");
-  assert.equal(server.lines.size, 0, "the fixture closed its line registry");
+  assert.equal(serverRegistry().size, 0, "the fixture closed its line registry");
 });
 
 test("fixture smoke: close failures do not stop the other cleanup attempts", async (t) => {
@@ -100,7 +105,7 @@ test("fixture smoke: close failures do not stop the other cleanup attempts", asy
   // failure), and the environment and the temporary directory were restored.
   assertEnvRestored(before);
   assert.equal(fs.existsSync(binPath), false, "the temporary CLI directory is removed");
-  assert.equal(server.lines.size, 0, "the fixture closed its line registry");
+  assert.equal(serverRegistry().size, 0, "the fixture closed its line registry");
 });
 
 test("fixture smoke: a cleanup failure after a successful run is reported", async (t) => {
@@ -114,5 +119,5 @@ test("fixture smoke: a cleanup failure after a successful run is reported", asyn
     }),
     /fixture cleanup failed: fixture close: fixture close exploded/);
   assertEnvRestored(before);
-  assert.equal(server.lines.size, 0, "the fixture closed its line registry");
+  assert.equal(serverRegistry().size, 0, "the fixture closed its line registry");
 });
