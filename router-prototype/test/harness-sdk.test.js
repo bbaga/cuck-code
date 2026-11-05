@@ -82,6 +82,9 @@ test("spawnJsonl reports a missing binary as fail with spawnError", async () => 
   const result = await run.done;
   assert.equal(result.outcome, "fail");
   assert.equal(result.spawnError.code, "ENOENT");
+  // Node reports a negative close code (e.g. -2) for a spawn error; it varies by platform.
+  assert.ok(result.exitCode === null || typeof result.exitCode === "number");
+  assert.notEqual(result.exitCode, 0);
   assert.equal(parser.seen.ended, 1);
 });
 
