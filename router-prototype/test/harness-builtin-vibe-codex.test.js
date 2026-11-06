@@ -197,3 +197,55 @@ test("listModels and readTranscript", async () => {
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("context probe gets the requested session id when the stream has none", () => {
+  const contextProbe = require("../context-probe");
+  const original = contextProbe.contextTokensForRun;
+  const seen = [];
+  contextProbe.contextTokensForRun = (adapter, sessionId) => { seen.push({ id: adapter.id, sessionId }); return 42; };
+  try {
+    for (const id of ["vibe", "codex"]) {
+      const { sdk, specs } = makeSdk();
+      const sink = makeSink();
+      load(id, sdk).resumeSession({ sdk, env: {}, log() {} }, { ...CTX_REQUEST, sessionId: "req-1" }, sink);
+      specs[0].parser.end(sink); // no record carried a session id
+      assert.deepStrictEqual(sink.tokens, [42]);
+    }
+    assert.deepStrictEqual(seen, [{ id: "vibe", sessionId: "req-1" }, { id: "codex", sessionId: "req-1" }]);
+
+    // A session id from the stream wins over the requested one.
+    seen.length = 0;
+    const { sdk, specs } = makeSdk();
+    const sink = makeSink();
+    load("vibe", sdk).resumeSession({ sdk, env: {}, log() {} }, { ...CTX_REQUEST, sessionId: "req-1" }, sink);
+    specs[0].parser.record({ type: "message", role: "assistant", sessionId: "stream-1",
+      content: [{ type: "text", text: "hi" }] }, sink);
+    specs[0].parser.end(sink);
+    assert.strictEqual(seen[0].sessionId, "stream-1");
+  } finally {
+    contextProbe.contextTokensForRun = original;
+  }
+});
+
+test("sink.error receives the same texts as adapter.errorText()", () => {
+  const { CodexHarness, VibeHarness } = require("../harness");
+  const cases = [
+    ["codex", CodexHarness, [{ type: "error", message: "rate limited" }]],
+    ["vibe", VibeHarness, [{ type: "error", message: "vibe failed" }]],
+  ];
+  for (const [id, Adapter, records] of cases) {
+    const reference = new Adapter(id);
+    for (const r of records) reference.normalize(r);
+
+    const { sdk, specs } = makeSdk();
+    const sink = makeSink();
+    load(id, sdk).startSession({ sdk, env: {}, log() {} }, CTX_REQUEST, sink);
+    for (const r of records) specs[0].parser.record(r, sink);
+    specs[0].parser.end(sink);
+    assert.strictEqual(sink.errors.join("\n") || null, reference.errorText(), id);
+  }
+  // The codex error is really recorded, so the comparison is not vacuous.
+  const codex = new CodexHarness("codex");
+  codex.normalize({ type: "error", message: "rate limited" });
+  assert.strictEqual(codex.errorText(), "rate limited");
+});

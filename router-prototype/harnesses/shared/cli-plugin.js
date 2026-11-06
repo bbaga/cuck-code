@@ -5,7 +5,8 @@
 // plugin interface, so the built-ins behave exactly as before.
 
 const path = require("node:path");
-const { contextTokensForRun } = require("../../context-probe");
+// Kept as a module object so a test can observe the call.
+const contextProbe = require("../../context-probe");
 
 // Starts one CLI session. The request fields equal the old ctx fields, so
 // adapter.buildRun(request) gives the same plan as before. A buildRun throw
@@ -31,7 +32,9 @@ function cliSessionRun(sdk, ctx, AdapterClass, id, request, sink) {
       // Same env and cwd as the server used for the context probe.
       const env = { ...process.env, ...plan.env };
       const cwd = plan.cwd === undefined ? process.cwd() : path.resolve(plan.cwd);
-      runSink.contextTokens(contextTokensForRun(adapter, adapter.sessionId, env, cwd));
+      // A resumed stream can omit the session id: fall back to the requested one.
+      const sessionId = adapter.sessionId || request.sessionId;
+      runSink.contextTokens(contextProbe.contextTokensForRun(adapter, sessionId, env, cwd));
     },
     outcome(code, signal) {
       return adapter.outcome(code, signal);
