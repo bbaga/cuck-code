@@ -15,7 +15,7 @@ let spawnProcess = spawn;
 let lifecycleTestHooks = null;
 let timerApi = { setTimeout, clearTimeout };
 const { bootHarnesses } = require("./harness-boot");
-const { isHarness, harnessIds } = require("./harness-registry");
+const { isHarness, harnessIds, registerHarness, unregisterPluginHarnesses } = require("./harness-registry");
 // Built-in harnesses boot first: preset migration validates harness ids.
 // The wrappers read spawnProcess at call time, so setSpawnForTest keeps working.
 const HARNESS_SDK = bootHarnesses({
@@ -637,9 +637,25 @@ const MANAGED_PLUGINS_DIR = path.join(LINES_DIR, "plugins");
 const USER_PLUGINS_DIR = process.env.CUCK_HOME || path.join(os.homedir(), ".cuck");
 let CATALOG = null;
 const CATALOG_GRAPHS = new Map();
+const HARNESS_CACHE_MS = 30000;
+let harnessCache = null; // { atIso, harnesses }; declared before the first rebuildCatalog
+// Register errors of the last rebuild: [{ layer, path, errors }].
+let harnessRegisterProblems = [];
 function rebuildCatalog() {
   CATALOG = buildCatalog({ managedDir: MANAGED_PLUGINS_DIR, userDir: USER_PLUGINS_DIR,
-    builtInDir: __dirname, readDir: defaultReadDir, readFile: defaultReadFile });
+    builtInDir: __dirname, harnessSdk: HARNESS_SDK, readDir: defaultReadDir, readFile: defaultReadFile });
+  unregisterPluginHarnesses();
+  harnessRegisterProblems = [];
+  for (const entry of Object.values(CATALOG.harnesses)) {
+    try {
+      registerHarness(entry.plugin, { layer: entry.layer, folder: entry.folder, builtIn: false });
+    } catch (err) {
+      const problem = { layer: entry.layer, path: path.join(entry.folder, "index.js"), errors: [err.message] };
+      harnessRegisterProblems.push(problem);
+      slog("warn", "catalog.problem", problem);
+    }
+  }
+  harnessCache = null;
   CATALOG_GRAPHS.clear();
   return CATALOG;
 }
@@ -932,8 +948,11 @@ async function harnessInstalled(harnessId) {
   return result.installed;
 }
 
-const HARNESS_CACHE_MS = 30000;
-let harnessCache = null; // { atIso, harnesses }
+// Catalog problems under a harnesses folder, plus the register errors.
+function harnessPluginProblems() {
+  const marker = path.sep + "harnesses" + path.sep;
+  return [...CATALOG.problems.filter((p) => p.path.includes(marker)), ...harnessRegisterProblems];
+}
 
 // Base harness probe with the 30-second cache. The cache holds only the
 // base probe; per-provider detail results are computed per request and
@@ -1969,7 +1988,7 @@ const routeRequest = (req, res) => {
   if (req.method === "GET" && url.pathname === "/api/harnesses") {
     const refresh = url.searchParams.get("refresh") === "1";
     harnessProbe(refresh).then((cached) => {
-      json(res, 200, { harnesses: cached.harnesses, probedAt: cached.atIso });
+      json(res, 200, { harnesses: cached.harnesses, probedAt: cached.atIso, pluginProblems: harnessPluginProblems() });
     }).catch(() => json(res, 500, { error: "harness probe failed" }));
     return;
   }
