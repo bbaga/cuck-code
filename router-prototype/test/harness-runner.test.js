@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startRun, buildCtx } = require("../harness-runner");
+const { ON_SETTLE } = require("../harness-sdk");
 const { createFakeClock } = require("./fixtures/fake-clock");
 
 function fakePlugin({ native = false, rejectDone = false, onStart } = {}) {
@@ -143,4 +144,55 @@ test("buildCtx", () => {
   assert.notEqual(ctx.env, env);
   ctx.log("info", "ev", { k: 1 });
   assert.deepEqual(logs, [["info", "ev", { k: 1, plugin: "fake" }]]);
+});
+
+// A plugin run like the SDK one: it settles synchronously through ON_SETTLE.
+function settlingPlugin() {
+  const callbacks = [];
+  let resolveDone;
+  const result = { outcome: "ok", exitCode: 0, signal: null, command: "x", spawnError: null, stderr: null };
+  const child = { pid: 1 };
+  return {
+    settle: () => { resolveDone(result); for (const cb of callbacks) cb(result); },
+    entry: { plugin: { id: "settling", capabilities: { nativeTimeLimit: true },
+      startSession: () => {
+        const run = { stop: () => true, child,
+          done: new Promise((resolve) => { resolveDone = resolve; }) };
+        Object.defineProperty(run, ON_SETTLE, { value: (cb) => { callbacks.push(cb); } });
+        return run;
+      } } },
+    child,
+  };
+}
+
+test("onDone runs synchronously for a run with ON_SETTLE", async () => {
+  const fake = settlingPlugin();
+  const seen = [];
+  const handle = startRun({ entry: fake.entry, ctx: {}, request: req(),
+    hooks: { onDone: (r) => seen.push(r) } });
+  fake.settle();
+  assert.equal(seen.length, 1);
+  assert.equal(await handle.done, seen[0]);
+  assert.equal(seen.length, 1);
+});
+
+test("onDone runs after done for a run without ON_SETTLE, one time", async () => {
+  const fake = fakePlugin({ native: true });
+  const seen = [];
+  const handle = startRun({ entry: fake.entry, ctx: {}, request: req(),
+    hooks: { onDone: (r) => seen.push(r) } });
+  fake.finish({});
+  assert.equal(seen.length, 0);
+  const result = await handle.done;
+  assert.deepEqual(seen, [result]);
+  await handle.done;
+  assert.equal(seen.length, 1);
+});
+
+test("handle.child is the run child or null", () => {
+  const fake = settlingPlugin();
+  const withChild = startRun({ entry: fake.entry, ctx: {}, request: req() });
+  assert.equal(withChild.child, fake.child);
+  const plain = startRun({ entry: fakePlugin({ native: true }).entry, ctx: {}, request: req() });
+  assert.equal(plain.child, null);
 });

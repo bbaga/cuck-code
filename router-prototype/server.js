@@ -1067,7 +1067,8 @@ function pump(line) {
     workdir: line.workdir });
   line.lastRun = text;
   const t0 = Date.now();
-  let plan, adapter, runEnv, runCwd, child, prevSessionCfg = line.sessionCfg;
+  let plan, handle, closePlanner, prevSessionCfg = line.sessionCfg;
+  const runOutput = new InvocationCapture();
 try {
   transitionPlannerStatus(line, "running", null, { broadcastState: false });
   saveLine(line);
@@ -1078,15 +1079,35 @@ try {
   prevSessionCfg = line.sessionCfg;
   line.sessionCfg = { harness: cfg.harness, model: cfg.model, effort: cfg.effort,
     timeLimit: cfg.timeLimit };
-  plan = planPlannerRun(cfg, { prompt, workdir: line.workdir,
+  plan = planHarnessRun(cfg, { phase: "planner", prompt, workdir: line.workdir,
     sessionId: line.sessionId, autoApprove: AUTO_APPROVE,
     ...systemPromptOptions(cfg.harness, line.rolePrompt, SYSTEM_PROMPT_DIR) });
-  adapter = plan.adapter;
-  runEnv = { ...process.env, ...plan.env };
-  runCwd = plan.cwd === undefined ? process.cwd() : path.resolve(plan.cwd);
-  child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
-    env: runEnv,
-    ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
+  // The runner enforces the time limit (timers are read now, so tests can
+  // swap the clock). A synchronous throw lands in the catch below.
+  handle = startRun({ entry: plan.entry,
+    ctx: buildCtx({ entry: plan.entry, env: process.env, log: slog, sdk: HARNESS_SDK }),
+    request: plan.request, timers: timerApi,
+    hooks: {
+      // Runs inside the process close event when the run has a child.
+      onDone: (runResult) => closePlanner(runResult),
+      // The first session id ends the fresh-session seeding.
+      onSession: (id) => {
+        if (line.sessionId) return;
+        line.sessionId = id;
+        // The fresh session has received the handoff summary.
+        line.handoff = null;
+        line.initialBrief = null;
+      },
+      onEntry: (entry) => {
+        if (typeof entry.at !== "number") entry.at = Date.now();
+        runOutput.add(entry);
+        if (isPromptEcho(entry)) return;
+        appendTranscript(line.transcript, entry);
+        slog("debug", "planner.entry", { lineId: line.id, type: entry.type,
+          role: entry.role || null, chars: entry.text.length, text: preview(entryText(entry), 200) });
+        broadcast(line, "entry", entry);
+      },
+    } });
   } catch (error) {
     // The run never started: no child exists. Keep the request, show the
     // failure, and do not pump (a retry loop). The next prompt or settings
@@ -1105,57 +1126,18 @@ try {
     return;
   }
   const runId = crypto.randomUUID();
-  const run = { runId, child, intentionalStop: false, stopTimer: null, errorTimer: null };
+  // The raw child (when the run has one) is the stop target and the
+  // stale-run key; a plugin run without a child uses the handle.
+  const runChild = handle.child || handle;
+  const run = { runId, child: runChild, intentionalStop: false, stopTimer: null, errorTimer: null };
   line.activePlannerRun = run;
   line.runId = runId;
-  line.child = child;
+  line.child = runChild;
   broadcast(line, "state", dashboardStateForLine(line));
   broadcast(line, "status", { status: line.status });
 
-  // Harnesses without a native time limit need the server to enforce it.
-  let killTimer = null;
-  if (!adapter.supportsNativeTimeLimit) {
-    killTimer = timerApi.setTimeout(() => { try { child.kill("SIGTERM"); } catch {} },
-      cfg.timeLimit * 1000);
-  }
-
-  const runOutput = new InvocationCapture();
-  const stdoutRecords = new JsonlDecoder();
-  const consumePlannerRecord = (raw) => {
-    const parsed = parseJsonRecord(raw);
-    if (!parsed) return;
-    const entry = adapter.normalize(parsed);
-    if (!entry) return;
-    if (!line.sessionId && entry.sessionId) {
-      line.sessionId = entry.sessionId;
-      // The fresh session has received the handoff summary.
-      line.handoff = null;
-      line.initialBrief = null;
-    }
-    if (typeof entry.at !== "number") entry.at = Date.now();
-    runOutput.add(entry);
-    if (isPromptEcho(entry)) return;
-    appendTranscript(line.transcript, entry);
-    slog("debug", "planner.entry", { lineId: line.id, type: entry.type,
-      role: entry.role || null, chars: raw.length, text: preview(entryText(entry), 200) });
-    broadcast(line, "entry", entry);
-  };
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    for (const raw of stdoutRecords.push(chunk)) consumePlannerRecord(raw);
-  });
-
-  const stderr = new StderrCapture();
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (c) => stderr.push(c));
-  // A CLI that cannot start (e.g. not on PATH) emits "error" before
-  // "close"; without this listener the router process would crash.
-  let spawnError = null;
-  child.on("error", (err) => { spawnError = err; });
-
-  child.on("close", (code, signal) => {
-    if (line.activePlannerRun !== run || line.child !== child) return;
-    if (killTimer) timerApi.clearTimeout(killTimer);
+  closePlanner = (runResult) => {
+    if (line.activePlannerRun !== run || line.child !== runChild) return;
     if (run.clearTimers) run.clearTimers();
     line.child = null;
     line.activePlannerRun = null;
@@ -1164,26 +1146,19 @@ try {
     let caught = null;
   try {
     const intentionalStop = run.intentionalStop;
-    for (const raw of stdoutRecords.finish()) consumePlannerRecord(raw);
-    const finished = adapter.finalize();
-    if (finished) {
-      if (typeof finished.at !== "number") finished.at = Date.now();
-      runOutput.add(finished);
-      appendTranscript(line.transcript, finished);
-      broadcast(line, "entry", finished);
-    }
-    const result = spawnError ? "fail" : adapter.outcome(code, signal);
+    const result = runResult.outcome;
     const failure = result !== "ok"
-      ? describeFailure({ cmd: plan.cmd, code, signal, outcome: result, spawnError,
-        streamError: adapter.errorText(), stderr: stderr.text() })
+      ? describeFailure({ cmd: runResult.command, code: runResult.exitCode,
+        signal: runResult.signal, outcome: result, spawnError: runResult.spawnError,
+        streamError: runResult.errorText, stderr: runResult.stderr })
       : null;
-    slog("info", "planner.run.end", { lineId: line.id, code, result,
+    slog("info", "planner.run.end", { lineId: line.id, code: runResult.exitCode, result,
       ms: Date.now() - t0,
       error: failure ? preview(failure, 500) : undefined });
     if (line.sessionId) {
       recordTurn(line.context, { promptChars: prompt.length,
         outputChars: runOutput.text().length,
-        tokens: contextTokensForRun(adapter, line.sessionId, runEnv, runCwd) });
+        tokens: runResult.contextTokens });
       broadcastContext(line, "planner", line);
     }
     cleanupStage(line, "planner");
@@ -1235,7 +1210,7 @@ try {
       broadcast(line, "status", { status: line.status });
       pump(line);
     }
-  });
+  };
 }
 
 function runningCount(line) {

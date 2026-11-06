@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { createSdk, defaultRunCommand } = require("../harness-sdk");
+const { createSdk, defaultRunCommand, ON_SETTLE } = require("../harness-sdk");
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "harness-sdk-"));
 test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -173,4 +173,38 @@ test("runCommand returns null for a missing binary", async () => {
 test("defaultRunCommand returns null when spawn throws", async () => {
   const r = await defaultRunCommand(["x"], {}, () => { throw new Error("no"); });
   assert.equal(r, null);
+});
+
+test("ON_SETTLE runs callbacks inside the close event, in order", async () => {
+  const fake = fakeChild();
+  const custom = createSdk({ spawn: () => fake });
+  const run = custom.spawnJsonl({ cmd: "tool" }, recordingParser());
+  const order = [];
+  run[ON_SETTLE](() => order.push("first"));
+  run[ON_SETTLE](() => order.push("second"));
+  fake.emit("close", 0, null);
+  // No await yet: the callbacks already ran.
+  assert.deepEqual(order, ["first", "second"]);
+  await run.done;
+});
+
+test("ON_SETTLE gives a late callback the same result at once", async () => {
+  const fake = fakeChild();
+  const custom = createSdk({ spawn: () => fake });
+  const run = custom.spawnJsonl({ cmd: "tool" }, recordingParser());
+  let early;
+  run[ON_SETTLE]((r) => { early = r; });
+  fake.emit("close", 0, null);
+  let late;
+  run[ON_SETTLE]((r) => { late = r; });
+  assert.equal(late, early);
+  assert.equal(await run.done, early);
+});
+
+test("ON_SETTLE is not an enumerable key of the run", () => {
+  const custom = createSdk({ spawn: () => fakeChild() });
+  const run = custom.spawnJsonl({ cmd: "tool" }, recordingParser());
+  assert.equal(typeof run[ON_SETTLE], "function");
+  assert.equal(Object.keys(run).includes(String(ON_SETTLE)), false);
+  assert.deepEqual(Object.getOwnPropertySymbols(run).filter((k) => Object.getOwnPropertyDescriptor(run, k).enumerable), []);
 });
