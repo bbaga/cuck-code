@@ -14,7 +14,9 @@ process.env.GCM_INTERACTIVE = "Never";
 let spawnProcess = spawn;
 let lifecycleTestHooks = null;
 let timerApi = { setTimeout, clearTimeout };
-const { HARNESS_IDS, EFFORT_LEVELS, validateNodeSettingsForNode,
+const { bootHarnesses } = require("./harness-boot");
+const { isHarness, harnessIds } = require("./harness-registry");
+const { EFFORT_LEVELS, validateNodeSettingsForNode,
   probeResultFor, piProviderDetail,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
@@ -659,6 +661,12 @@ migratePresets({ presetsFile: path.join(LINES_DIR, "pipeline-presets.json"), man
   defaultPipelineText: fs.readFileSync(path.join(__dirname, "pipelines", "default.yaml"), "utf8"),
   defaultGraph: DEFAULT_PIPELINE, fs, reservedNames: builtinPipelineNames(fs, __dirname),
   log: (message) => slog("info", "preset.migrate", { message }) });
+// Built-in harnesses register before the first catalog build. The wrappers
+// read spawnProcess at call time, so setSpawnForTest keeps working.
+const HARNESS_SDK = bootHarnesses({
+  spawn: (...args) => spawnProcess(...args),
+  runCommand: (argv, options) => runProbe(argv, options && options.timeoutMs),
+});
 rebuildCatalog();
 for (const p of CATALOG.problems) slog("warn", "catalog.problem", { layer: p.layer, path: p.path, errors: p.errors });
 
@@ -2554,8 +2562,8 @@ const routeRequest = (req, res) => {
         return json(res, 400, { error: "expected {name, prompt}" });
       }
       if (body.harness !== undefined && body.harness !== null
-        && (typeof body.harness !== "string" || !HARNESS_IDS.includes(body.harness))) {
-        return json(res, 400, { error: `harness must be one of: ${HARNESS_IDS.join(", ")}` });
+        && (typeof body.harness !== "string" || !isHarness(body.harness))) {
+        return json(res, 400, { error: `harness must be one of: ${harnessIds().join(", ")}` });
       }
       if (body.harness && !await gateHarnesses([body.harness], res)) return;
       if (line.deleted || lines.get(line.id) !== line) return json(res, 404, { error: "no such line" });
