@@ -6,8 +6,11 @@
 // injected so the server can keep setSpawnForTest working.
 
 const childProcess = require("node:child_process");
+const path = require("node:path");
 const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
 const { StderrCapture } = require("./run-failure");
+const { normalizeChoices } = require("./harness-interface");
+const { cliSessionRun, probeCli } = require("./harnesses/shared/cli-plugin");
 
 function missingBuiltin() {
   throw new Error("built-in harnesses are not registered");
@@ -118,7 +121,47 @@ function createSdk({
     return run;
   }
 
-  return { apiVersion: 1, spawnJsonl, runCommand, builtin: getBuiltin };
+  // A command that starts with "./" belongs to the plugin folder. It resolves
+  // at call time, because ctx.pluginDir is only known then.
+  const resolveCommand = (command, ctx) => (
+    command.startsWith("./") ? path.resolve(ctx.pluginDir, command) : command);
+
+  // Builds a complete plugin on top of a built-in CLI harness: same argv,
+  // parser, resume and transcripts, but another command runs in front.
+  function extendBuiltin(baseId, opts) {
+    const base = getBuiltin(baseId);
+    if (!base) throw new Error(`unknown built-in harness: ${baseId}`);
+    const { id, displayName, command, args = [], env = {}, probe = {}, models } = opts;
+    // Late require: harness.js loads the plugin modules, which load this file.
+    const { createHarness } = require("./harness");
+    const AdapterClass = createHarness(baseId).constructor;
+    const { versionArgs = ["--version"], authArgs, loginHint = `see the ${id} plugin docs` } = probe;
+
+    const session = (ctx, request, sink) => cliSessionRun(sdk, ctx, AdapterClass, baseId, request, sink,
+      { command: resolveCommand(command, ctx), args, env });
+    const plugin = {
+      apiVersion: 1,
+      id,
+      displayName: displayName || id,
+      capabilities: { ...base.capabilities, providers: false },
+      probe(ctx) {
+        const argv = [resolveCommand(command, ctx), ...args];
+        return probeCli(sdk, {
+          versionCmd: [...argv, ...versionArgs],
+          authCmd: authArgs ? [...argv, ...authArgs] : null,
+          loginHint,
+        });
+      },
+      listModels: models ? async () => normalizeChoices(models) : (ctx, query) => base.listModels(ctx, query),
+      startSession: session,
+      resumeSession: session,
+    };
+    if (base.readTranscript) plugin.readTranscript = (ctx, q) => base.readTranscript(ctx, q);
+    return plugin;
+  }
+
+  const sdk = { apiVersion: 1, spawnJsonl, runCommand, builtin: getBuiltin, extendBuiltin };
+  return sdk;
 }
 
 module.exports = { createSdk, defaultRunCommand, ON_SETTLE };
