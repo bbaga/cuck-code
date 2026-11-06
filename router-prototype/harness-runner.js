@@ -4,6 +4,8 @@
 // starts or resumes the plugin session, enforces the time limit and turns
 // every outcome (including a rejected `done`) into one result object.
 
+const { ON_SETTLE } = require("./harness-sdk");
+
 const MAX_ERRORS = 5;
 
 function createRunState(hooks) {
@@ -58,6 +60,35 @@ function startRun({ entry, ctx, request, hooks = {}, timers = {} }) {
     timer = setTimer(() => run.stop("SIGTERM"), request.timeLimitSec * 1000);
   }
 
+  // The final result is built once; both settle paths share it, and
+  // hooks.onDone runs one time.
+  let final = null;
+  let doneCalled = false;
+  const finish = (result) => {
+    if (!final) {
+      if (timer !== null) clearTimer(timer);
+      final = {
+        ...result,
+        sessionId: state.sessionId,
+        contextTokens: state.contextTokens,
+        errorText: state.errors.length ? state.errors.join("\n") : null,
+      };
+    }
+    return final;
+  };
+  const notify = (result) => {
+    const finished = finish(result);
+    if (!doneCalled) {
+      doneCalled = true;
+      if (hooks.onDone) hooks.onDone(finished);
+    }
+    return finished;
+  };
+
+  // A run with the SDK settle hook calls onDone inside the process close
+  // event. Other runs call it after done resolves.
+  if (typeof run[ON_SETTLE] === "function") run[ON_SETTLE](notify);
+
   const done = Promise.resolve(run.done)
     .catch((err) => ({
       outcome: "fail",
@@ -68,16 +99,16 @@ function startRun({ entry, ctx, request, hooks = {}, timers = {} }) {
       stderr: null,
     }))
     .then((result) => {
-      if (timer !== null) clearTimer(timer);
-      return {
-        ...result,
-        sessionId: state.sessionId,
-        contextTokens: state.contextTokens,
-        errorText: state.errors.length ? state.errors.join("\n") : null,
-      };
+      try {
+        return notify(result);
+      } catch (err) {
+        // done never rejects: a hook error surfaces as an uncaught error.
+        process.nextTick(() => { throw err; });
+        return finish(result);
+      }
     });
 
-  return { kill: (signal) => run.stop(signal), done };
+  return { kill: (signal) => run.stop(signal), done, child: run.child || null };
 }
 
 function buildCtx({ entry, env, log, sdk }) {

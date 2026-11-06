@@ -15,6 +15,11 @@ function cliSessionRun(sdk, ctx, AdapterClass, id, request, sink) {
   const adapter = new AdapterClass(id);
   const plan = adapter.buildRun(request);
 
+  // Same env and cwd as the server used for the context probe. They are fixed
+  // at start: the process env can change before the stream ends.
+  const env = { ...process.env, ...plan.env };
+  const cwd = plan.cwd === undefined ? process.cwd() : path.resolve(plan.cwd);
+
   const parser = {
     record(obj, runSink) {
       const entry = adapter.normalize(obj);
@@ -29,9 +34,6 @@ function cliSessionRun(sdk, ctx, AdapterClass, id, request, sink) {
         runSink.entry(last);
       }
       for (const text of adapter.streamErrors || []) runSink.error(text);
-      // Same env and cwd as the server used for the context probe.
-      const env = { ...process.env, ...plan.env };
-      const cwd = plan.cwd === undefined ? process.cwd() : path.resolve(plan.cwd);
       // A resumed stream can omit the session id: fall back to the requested one.
       const sessionId = adapter.sessionId || request.sessionId;
       runSink.contextTokens(contextProbe.contextTokensForRun(adapter, sessionId, env, cwd));

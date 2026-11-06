@@ -1067,7 +1067,7 @@ function pump(line) {
     workdir: line.workdir });
   line.lastRun = text;
   const t0 = Date.now();
-  let plan, handle, prevSessionCfg = line.sessionCfg;
+  let plan, handle, closePlanner, prevSessionCfg = line.sessionCfg;
   const runOutput = new InvocationCapture();
 try {
   transitionPlannerStatus(line, "running", null, { broadcastState: false });
@@ -1088,6 +1088,8 @@ try {
     ctx: buildCtx({ entry: plan.entry, env: process.env, log: slog, sdk: HARNESS_SDK }),
     request: plan.request, timers: timerApi,
     hooks: {
+      // Runs inside the process close event when the run has a child.
+      onDone: (runResult) => closePlanner(runResult),
       // The first session id ends the fresh-session seeding.
       onSession: (id) => {
         if (line.sessionId) return;
@@ -1124,15 +1126,18 @@ try {
     return;
   }
   const runId = crypto.randomUUID();
-  const run = { runId, child: handle, intentionalStop: false, stopTimer: null, errorTimer: null };
+  // The raw child (when the run has one) is the stop target and the
+  // stale-run key; a plugin run without a child uses the handle.
+  const runChild = handle.child || handle;
+  const run = { runId, child: runChild, intentionalStop: false, stopTimer: null, errorTimer: null };
   line.activePlannerRun = run;
   line.runId = runId;
-  line.child = handle;
+  line.child = runChild;
   broadcast(line, "state", dashboardStateForLine(line));
   broadcast(line, "status", { status: line.status });
 
-  handle.done.then((runResult) => {
-    if (line.activePlannerRun !== run || line.child !== handle) return;
+  closePlanner = (runResult) => {
+    if (line.activePlannerRun !== run || line.child !== runChild) return;
     if (run.clearTimers) run.clearTimers();
     line.child = null;
     line.activePlannerRun = null;
@@ -1205,7 +1210,7 @@ try {
       broadcast(line, "status", { status: line.status });
       pump(line);
     }
-  });
+  };
 }
 
 function runningCount(line) {

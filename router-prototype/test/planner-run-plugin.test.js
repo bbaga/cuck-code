@@ -134,3 +134,18 @@ test("the router time limit stops a plugin run without nativeTimeLimit", async (
   await until(() => item.status !== "running");
   assert.equal(item.status, "failed");
 });
+
+test("a plugin run without ON_SETTLE or a child still completes", async () => {
+  register("fake-planner-plain", (sink, finish, request, done) => {
+    sink.entry({ role: "assistant", text: "plain done" });
+    setImmediate(() => finish({ outcome: "ok" }));
+    return { stop: () => true, done };
+  });
+  const item = line("fake-planner-plain");
+  server.pump(item);
+  assert.equal(item.status, "running");
+  assert.equal(typeof item.child.kill, "function");
+  await until(() => item.status !== "running");
+  assert.equal(item.child, null);
+  assert.ok(item.transcript.some((e) => e.text === "plain done"));
+});

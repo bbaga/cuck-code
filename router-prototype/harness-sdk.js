@@ -41,6 +41,9 @@ function defaultRunCommand(argv, { timeoutMs = 2000 } = {}, spawn = childProcess
   });
 }
 
+// Key of the router-only synchronous settle hook on a run from spawnJsonl.
+const ON_SETTLE = Symbol("harness.run.onSettle");
+
 function createSdk({
   spawn = childProcess.spawn,
   runCommand = defaultRunCommand,
@@ -69,6 +72,8 @@ function createSdk({
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", (err) => { spawnError = err; });
 
+    let settled = null;
+    const settleCallbacks = [];
     const done = new Promise((resolve) => {
       child.on("close", (code, signal) => {
         let outcome = "fail";
@@ -81,14 +86,20 @@ function createSdk({
           spawnError = spawnError || err;
           outcome = "fail";
         }
-        resolve({
+        settled = {
           outcome,
           exitCode: typeof code === "number" ? code : null,
           signal: signal || null,
           command: spec.cmd,
           spawnError,
           stderr: stderr.text(),
-        });
+        };
+        resolve(settled);
+        // Settle callbacks run in the close event itself, so the router can
+        // finish a run without waiting for a promise tick. A callback error
+        // is not caught: it reaches the event emitter, as an error in a
+        // direct close handler did.
+        for (const cb of settleCallbacks.splice(0)) cb(settled);
       });
     });
 
@@ -99,10 +110,15 @@ function createSdk({
       done,
     };
     Object.defineProperty(run, "child", { value: child, enumerable: true, writable: false });
+    // Router-only hook (not part of the plugin contract): cb(result) runs
+    // synchronously when the run settles, or at once if it already did.
+    Object.defineProperty(run, ON_SETTLE, { value: (cb) => {
+      if (settled) cb(settled); else settleCallbacks.push(cb);
+    } });
     return run;
   }
 
   return { apiVersion: 1, spawnJsonl, runCommand, builtin: getBuiltin };
 }
 
-module.exports = { createSdk, defaultRunCommand };
+module.exports = { createSdk, defaultRunCommand, ON_SETTLE };
