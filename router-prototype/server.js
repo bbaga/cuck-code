@@ -3058,9 +3058,13 @@ const routeRequest = (req, res) => {
     const harness = worker ? worker.harness || cfg.harness
       : line.sessionCfg?.harness || line.plannerHarness || cfg.harness;
     res.setHeader("Cache-Control", "no-store");
+    const entry = getHarness(harness);
+    const options = entry
+      ? { entry, ctx: buildCtx({ entry, env: process.env, log: slog, sdk: HARNESS_SDK }), log: slog }
+      : undefined;
     loadTranscript({ harness, sessionId: target.sessionId,
       workdir: worker ? worker.worktreePath || line.workdir : line.workdir,
-      transcript: target.transcript }).then((history) => {
+      transcript: target.transcript }, options).then((history) => {
       if (!res.destroyed) json(res, 200, history);
     }).catch((error) => {
       slog("error", "transcript.load-failed", { lineId: line.id, workerId: worker?.id, error: String(error.message) });

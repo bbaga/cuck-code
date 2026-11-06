@@ -109,14 +109,38 @@ function sameMessage(a, b) {
       && Math.abs((a.at || 0) - (b.at || 0)) < 10_000);
 }
 
+// A plugin's readTranscript replaces the file lookup. A throw or a bad result
+// counts as "no saved entries": the history still shows the live entries.
+async function loadPluginSaved(target, options) {
+  try {
+    const result = await options.entry.plugin.readTranscript(options.ctx,
+      { sessionId: target.sessionId, workdir: target.workdir });
+    return Array.isArray(result) ? result : null;
+  } catch (error) {
+    if (typeof options.log === "function") {
+      options.log("warn", "transcript.plugin-failed", { harness: target.harness, error: String(error?.message || error) });
+    }
+    return null;
+  }
+}
+
 async function loadTranscript(target, options = {}) {
-  const file = await findSession(target, options.env);
-  const saved = file ? await readSession(file, target.harness, target.sessionId) : [];
+  let saved;
+  let found;
+  if (typeof options.entry?.plugin?.readTranscript === "function") {
+    const result = await loadPluginSaved(target, options);
+    saved = result || [];
+    found = !!result;
+  } else {
+    const file = await findSession(target, options.env);
+    saved = file ? await readSession(file, target.harness, target.sessionId) : [];
+    found = !!file;
+  }
   const live = target.transcript || [];
   const entries = saved.filter(entry => !live.some(other => sameMessage(entry, other))).concat(live);
   entries.sort((a, b) => (a.at || 0) - (b.at || 0));
   return { entries: entries.slice(-LIMIT), truncated: entries.length > LIMIT,
-    available: !!file || live.length > 0 };
+    available: found || live.length > 0 };
 }
 
 module.exports = { findSession, readSession, loadTranscript, sameMessage, historyEntry };
