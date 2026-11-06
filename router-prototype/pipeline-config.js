@@ -404,6 +404,8 @@ function claudeModelChoices(config) {
   return choices;
 }
 
+// The server no longer calls probeHarnesses: discovery runs through the
+// harness plugins (harness-discovery.js). It stays for its existing tests.
 // run(cmdArray) returns a Promise of { code, stdout }, or null when the
 // command cannot start or times out. Returns one result per harness:
 // { id, installed, auth, loginHint, version } plus, for vibe and claude,

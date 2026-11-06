@@ -23,8 +23,9 @@ const HARNESS_SDK = bootHarnesses({
   runCommand: (argv, options) => runProbe(argv, options && options.timeoutMs),
 });
 const { EFFORT_LEVELS, validateNodeSettingsForNode,
-  probeResultFor, piProviderDetail,
-  probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
+  probeResultFor, piProviderDetail } = require("./pipeline-config");
+const { discoverHarnesses, probeHarness } = require("./harness-discovery");
+const { getHarness } = require("./harness-registry");
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   plannerSettings, workerSettings,
   validateWorkerSpawnBody, implementorBranchName, lineSummary,
@@ -57,7 +58,6 @@ const { loadTranscript } = require("./transcript-history");
 const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require("./evidence");
 const { createDashboardLive } = require("./dashboard-live");
-const { readClaudeConfig } = require("./claude-config");
 const { contextTokensForRun } = require("./context-probe");
 const { migratePresets } = require("./preset-migration");
 const { nameError, textError, validateText, graphPreview, buildListing, readCatalogItem, resolveSafe, readManagedText,
@@ -941,14 +941,14 @@ function runProbe(cmd, timeoutMs = 2000) {
   });
 }
 
-// Probe a single harness and report whether it is installed. An unknown
-// harness id has no probe entry and counts as not installed.
+// Probe a single harness and report whether it is installed. The probe is
+// fresh on each call (no cache). An unknown harness id counts as not installed.
 async function harnessInstalled(harnessId) {
-  const probe = HARNESS_PROBES.find((h) => h.id === harnessId);
-  if (!probe) return false;
-  const results = await probeHarnesses((cmd) => runProbe(cmd), undefined, readClaudeConfig);
-  const result = probeResultFor(results, harnessId);
-  return !!(result && result.installed);
+  const entry = getHarness(harnessId);
+  if (!entry) return false;
+  const result = await probeHarness(entry,
+    { sdk: HARNESS_SDK, env: process.env, log: slog });
+  return result.installed;
 }
 
 const HARNESS_CACHE_MS = 30000;
@@ -962,7 +962,7 @@ async function harnessProbe(refresh) {
     && Date.now() - Date.parse(harnessCache.atIso) < HARNESS_CACHE_MS) {
     return harnessCache;
   }
-  const harnesses = await probeHarnesses((cmd) => runProbe(cmd), undefined, readClaudeConfig);
+  const harnesses = await discoverHarnesses({ sdk: HARNESS_SDK, env: process.env, log: slog });
   harnessCache = { atIso: new Date().toISOString(), harnesses };
   return harnessCache;
 }
