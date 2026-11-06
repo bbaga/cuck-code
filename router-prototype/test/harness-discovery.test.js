@@ -4,6 +4,10 @@ const { test, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 
 const registry = require("../harness-registry");
+const { createSdk } = require("../harness-sdk");
+const { registerBuiltins } = require("../harness-builtins");
+const { probeHarnesses } = require("../pipeline-config");
+const { PI_CATALOG } = require("./fixtures/fake-harness-clis");
 const { discoverHarnesses } = require("../harness-discovery");
 
 afterEach(() => registry.resetRegistryForTest());
@@ -87,4 +91,24 @@ test("a built-in without model listing emits no models and no plugin key", async
   const { harnesses } = await discover();
   assert.equal("models" in harnesses[0], false);
   assert.equal("plugin" in harnesses[0], false);
+});
+
+test("built-in entry keys keep the old probe order; new keys follow", async () => {
+  // Same fake CLIs for both paths: vibe and pi installed, codex and claude not.
+  const run = async (cmd) => {
+    if (cmd[0] === "vibe" && cmd[1] === "--version") return { code: 0, stdout: "vibe 3.0.2\n" };
+    if (cmd[0] === "pi" && cmd[1] === "--version") return { code: 0, stdout: "pi 0.87.1\n" };
+    if (cmd[0] === "pi" && cmd[1] === "--list-models") return { code: 0, stdout: PI_CATALOG };
+    return null;
+  };
+  const sdk = createSdk({ runCommand: run, getBuiltin: (id) => registry.getHarness(id).plugin });
+  registerBuiltins(registry, sdk);
+  const old = await probeHarnesses(run, {}, async () => null);
+  const { harnesses } = await discover();
+  assert.equal(harnesses.length, 4);
+  for (const entry of harnesses) {
+    const oldKeys = Object.keys(old.find((o) => o.id === entry.id));
+    assert.deepEqual(Object.keys(entry),
+      [...oldKeys, "displayName", "capabilities"], `keys of ${entry.id}`);
+  }
 });

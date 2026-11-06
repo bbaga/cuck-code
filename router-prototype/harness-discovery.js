@@ -2,7 +2,7 @@
 
 // Discovery of the registered harnesses for GET /api/harnesses. Each plugin
 // call has a timeout and a try/catch: one broken plugin never breaks the
-// list. Calls for one harness run in parallel and share one ctx.
+// list. Harnesses run in parallel. One harness shares one ctx.
 
 const { harnessEntries } = require("./harness-registry");
 const { buildCtx } = require("./harness-runner");
@@ -65,8 +65,11 @@ async function discoverEntry(entry, options) {
   const providers = Boolean(plugin.capabilities && plugin.capabilities.providers);
   const wantModels = !entry.builtIn || BUILTIN_WITH_MODELS.has(plugin.id);
 
-  const [probe, models, authModes] = await Promise.all([
-    guarded(ctx, entry, "probe", null, timeoutMs, () => plugin.probe(ctx)),
+  // The probe runs first, then the list calls run in parallel. A plugin CLI
+  // then never gets its version and catalog commands at the same time, as
+  // before (the fake pi CLI log interleaves concurrent calls).
+  const probe = await guarded(ctx, entry, "probe", null, timeoutMs, () => plugin.probe(ctx));
+  const [models, authModes] = await Promise.all([
     wantModels
       ? guarded(ctx, entry, "listModels", [], timeoutMs, () => plugin.listModels(ctx, {}))
       : null,
@@ -76,8 +79,9 @@ async function discoverEntry(entry, options) {
   ]);
 
   const result = { id: plugin.id, ...normalizeProbe(probe) };
-  if (wantModels) result.models = Array.isArray(models) ? models : [];
+  // authModes before models: the old pi probe result had this order.
   if (providers) result.authModes = Array.isArray(authModes) ? authModes : [];
+  if (wantModels) result.models = Array.isArray(models) ? models : [];
   result.displayName = plugin.displayName || plugin.id;
   result.capabilities = plugin.capabilities;
   if (!entry.builtIn) result.plugin = { layer: entry.layer, folder: entry.folder };
