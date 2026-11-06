@@ -28,7 +28,7 @@ const { discoverHarnesses, probeHarness, providerDetail } = require("./harness-d
 const { ID_RE } = require("./harness-interface");
 const { getHarness } = require("./harness-registry");
 const { startRun, buildCtx } = require("./harness-runner");
-const { planHarnessRun, planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
+const { planHarnessRun, phaseForWorker, resolveWorkerOverrides,
   plannerSettings, workerSettings,
   validateWorkerSpawnBody, implementorBranchName, lineSummary,
   systemPromptOptions, briefForHarness, usesSystemChannel } = require("./spawn-plan");
@@ -38,8 +38,7 @@ const { loadBuiltinPipeline, migrateLine, normalizeLine, nodeSettingsFields, bui
   implementorNodeFor, validatorNodeFor, integrationNodeFor, isLineDirectory, integrationMerged } = require("./line-graph");
 const { checkCall, checkLineValues, requiredFields, introspect } = require("./call-fields");
 const { renderReports, kindOfNode } = require("./report-interaction");
-const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
-const { StderrCapture, describeFailure } = require("./run-failure");
+const { describeFailure } = require("./run-failure");
 const { messageText, InvocationCapture, appendTranscript, reportForValidation,
   applyCompletion, completionFields, runOutputNote,
   buildUnroutedNotification } = require("./handoff");
@@ -60,7 +59,6 @@ const { loadTranscript } = require("./transcript-history");
 const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require("./evidence");
 const { createDashboardLive } = require("./dashboard-live");
-const { contextTokensForRun } = require("./context-probe");
 const { migratePresets } = require("./preset-migration");
 const { nameError, textError, validateText, graphPreview, buildListing, readCatalogItem, resolveSafe, readManagedText,
   renameInText, applyNodeSettingsToText, writeManagedPipeline, deleteManagedPipeline, MAX_BODY_BYTES } = require("./pipelines-api");
@@ -1223,7 +1221,8 @@ function spawnWorker(line, worker, prompt, resume) {
   worker.runGeneration = runId;
   worker.activeInvocationId = invocationId;
   saveLine(line);
-  let phase, cfg, effective, plan, adapter, runEnv, runCwd, child;
+  let phase, cfg, effective, plan, handle, closeWorker;
+  const workerRunOutput = new InvocationCapture();
 try {
   phase = phaseForWorker(worker.role, worker.kind);
   cfg = workerSettings(line, worker);
@@ -1245,24 +1244,41 @@ try {
   } else if (!resume && prompt === worker.prompt) {
     prompt = brief;
   }
-  plan = planWorkerRun({ ...cfg, ...effective }, {
+  plan = planHarnessRun({ ...cfg, ...effective }, {
     phase, prompt, workdir: worker.worktreePath,
     sessionId: resume && worker.sessionId ? worker.sessionId : null,
     autoApprove: AUTO_APPROVE,
     ...systemPromptOptions(effective.harness, worker.rolePrompt, SYSTEM_PROMPT_DIR),
   });
-  adapter = plan.adapter;
-  worker.adapter = adapter;
   slog("info", "worker.run.start", { lineId: line.id, workerId: worker.id,
     name: worker.name, role: worker.role, phase, harness: worker.harness,
     model: worker.model, resume: !!(resume && worker.sessionId),
     chars: prompt.length });
-  runEnv = { ...process.env, ...plan.env };
-  runCwd = plan.cwd === undefined ? process.cwd() : path.resolve(plan.cwd);
-  child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
-    env: runEnv,
-    ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
-  worker.child = child;
+  // The runner enforces the time limit with the global timers. A synchronous
+  // throw lands in the catch below.
+  handle = startRun({ entry: plan.entry,
+    ctx: buildCtx({ entry: plan.entry, env: process.env, log: slog, sdk: HARNESS_SDK }),
+    request: plan.request,
+    hooks: {
+      // Runs inside the process close event when the run has a child.
+      onDone: (result) => closeWorker(result),
+      // The first session id ends the fresh-session seeding.
+      onSession: (id) => {
+        if (worker.sessionId) return;
+        worker.sessionId = id;
+        worker.handoff = null;
+      },
+      onEntry: (entry) => {
+        if (typeof entry.at !== "number") entry.at = Date.now();
+        if (!entry.sessionId && worker.sessionId) entry.sessionId = worker.sessionId;
+        workerRunOutput.add(entry);
+        appendTranscript(worker.transcript, entry);
+        slog("debug", "worker.entry", { lineId: line.id, workerId: worker.id,
+          type: entry.type, role: entry.role || null, chars: entry.text.length,
+          text: preview(entryText(entry), 200) });
+        broadcast(line, "worker_entry", { workerId: worker.id, entry });
+      },
+    } });
   } catch (error) {
     // The run never started. Report it as a failed worker run.
     const message = error && error.message ? error.message : String(error);
@@ -1272,79 +1288,32 @@ try {
     workerClosed(line, worker, null, null, new InvocationCapture(), { invocationId, runId, outcome: "fail" });
     return;
   }
+  // The raw child (when the run has one) is the stop target; a plugin run
+  // without a child uses the handle.
+  const runChild = handle.child || handle;
+  worker.child = runChild;
 
-  // Harnesses without a native time limit need the server to enforce it.
-  let killTimer = null;
-  if (!adapter.supportsNativeTimeLimit) {
-    killTimer = setTimeout(() => { try { child.kill("SIGTERM"); } catch {} },
-      cfg.timeLimit * 1000);
-  }
-
-  const workerRunOutput = new InvocationCapture();
-  const stdoutRecords = new JsonlDecoder();
-  const consumeWorkerRecord = (raw) => {
-    const parsed = parseJsonRecord(raw);
-    if (!parsed) return;
-    const entry = adapter.normalize(parsed);
-    if (!entry) return;
-    if (!worker.sessionId && entry.sessionId) {
-      worker.sessionId = entry.sessionId;
-      worker.handoff = null;
-    }
-    if (typeof entry.at !== "number") entry.at = Date.now();
-    if (!entry.sessionId && worker.sessionId) entry.sessionId = worker.sessionId;
-    workerRunOutput.add(entry);
-    appendTranscript(worker.transcript, entry);
-    slog("debug", "worker.entry", { lineId: line.id, workerId: worker.id,
-      type: entry.type, role: entry.role || null, chars: raw.length,
-      text: preview(entryText(entry), 200) });
-    broadcast(line, "worker_entry", { workerId: worker.id, entry });
-  };
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    for (const raw of stdoutRecords.push(chunk)) consumeWorkerRecord(raw);
-  });
-
-  // Drain stderr: an unread pipe can fill up and block the child.
-  const stderr = new StderrCapture();
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (c) => stderr.push(c));
-  // A CLI that cannot start emits "error" before "close"; without this
-  // listener the router process would crash.
-  let spawnError = null;
-  child.on("error", (err) => { spawnError = err; });
-
-  child.on("close", (code, signal) => {
-    if (killTimer) clearTimeout(killTimer);
-    for (const raw of stdoutRecords.finish()) consumeWorkerRecord(raw);
-    const finished = adapter.finalize();
-    if (finished) {
-      if (typeof finished.at !== "number") finished.at = Date.now();
-      workerRunOutput.add(finished);
-      appendTranscript(worker.transcript, finished);
-      broadcast(line, "worker_entry", { workerId: worker.id, entry: finished });
-    }
-    const outcome = spawnError ? "fail" : adapter.outcome(code, signal);
+  closeWorker = (result) => {
     if (worker.sessionId && worker.role === "implementor") {
       recordTurn(worker.context, { promptChars: prompt.length,
         outputChars: workerRunOutput.text().length,
-        tokens: contextTokensForRun(adapter, worker.sessionId, runEnv, runCwd) });
+        tokens: result.contextTokens });
       broadcastContext(line, worker.id, worker);
     }
     // A stop request is not a failure: it needs no error detail.
-    worker.lastError = outcome !== "ok" && !worker.stopRequested
-      ? describeFailure({ cmd: plan.cmd, code, signal, outcome, spawnError,
-        streamError: adapter.errorText(), stderr: stderr.text() })
+    worker.lastError = result.outcome !== "ok" && !worker.stopRequested
+      ? describeFailure({ cmd: result.command, code: result.exitCode,
+        signal: result.signal, outcome: result.outcome, spawnError: result.spawnError,
+        streamError: result.errorText, stderr: result.stderr })
       : null;
-    workerClosed(line, worker, code, signal, workerRunOutput, { invocationId, runId, outcome });
-  });
+    workerClosed(line, worker, result.exitCode, result.signal, workerRunOutput,
+      { invocationId, runId, outcome: result.outcome });
+  };
 }
 
 function workerClosed(line, worker, code, signal, workerRunOutput = new InvocationCapture(), invocation = {}) {
   worker.child = null;
-  const outcome = invocation.outcome || (worker.adapter
-    ? worker.adapter.outcome(code, signal)
-    : (code === 0 ? "ok" : "fail"));
+  const outcome = invocation.outcome || (code === 0 ? "ok" : "fail");
   const report = workerRunOutput.text();
   const statusEvent = applyCompletion(worker, outcome, worker.stopRequested, report);
   if (worker.kind === "integration") {
