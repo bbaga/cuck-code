@@ -46,7 +46,10 @@ test("HTTP harness metadata matches the golden; only plugin keys may be added", 
   const golden = readGolden("harness-api.json");
 
   assert.strictEqual(actual.list.status, golden.list.status);
-  assertSubsetWithAllowedExtras(actual.list.body, golden.list.body, TOP_EXTRA_KEYS, "list.body");
+  // The entries are compared one by one below, where additive keys are allowed.
+  const { harnesses: goldenEntries, ...goldenTop } = golden.list.body;
+  const { harnesses: actualEntries, ...actualTop } = actual.list.body;
+  assertSubsetWithAllowedExtras(actualTop, goldenTop, TOP_EXTRA_KEYS, "list.body");
   assert.strictEqual(actual.list.body.harnesses.length, golden.list.body.harnesses.length);
   golden.list.body.harnesses.forEach((goldenEntry, i) => {
     assertSubsetWithAllowedExtras(

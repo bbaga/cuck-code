@@ -16,9 +16,18 @@ module.exports = function createHarnessPlugin(sdk) {
 
   // One catalog command per call. A failed command gives an empty catalog,
   // whatever it printed: error prose must never become a catalog row.
-  async function readCatalog() {
+  async function runCatalog() {
     const res = await sdk.runCommand(PI_PROBE.listModelsCmd);
     return res && res.code === 0 ? parsePiModelCatalog(res.stdout) : { providers: [], models: [] };
+  }
+
+  // Discovery calls listProviders and listModels with one ctx. The memo,
+  // keyed by that ctx, keeps the catalog command at one run per discovery.
+  const catalogByCtx = new WeakMap();
+  function readCatalog(ctx) {
+    if (!ctx || typeof ctx !== "object") return runCatalog();
+    if (!catalogByCtx.has(ctx)) catalogByCtx.set(ctx, runCatalog());
+    return catalogByCtx.get(ctx);
   }
 
   return {
@@ -28,11 +37,11 @@ module.exports = function createHarnessPlugin(sdk) {
     capabilities: { resume: true, systemPrompt: "file", nativeTimeLimit: false, providers: true },
     // No provider-free auth check exists, so auth stays "unknown" by design.
     probe: () => probeCli(sdk, { versionCmd: PI_PROBE.versionCmd, loginHint: PI_PROBE.loginHint }),
-    async listProviders() {
-      return (await readCatalog()).providers;
+    async listProviders(ctx) {
+      return (await readCatalog(ctx)).providers;
     },
     async listModels(ctx, query) {
-      const { models } = await readCatalog();
+      const { models } = await readCatalog(ctx);
       const provider = query && typeof query.provider === "string" ? query.provider.trim() : "";
       return provider ? models.filter((m) => m.value.startsWith(`${provider}/`)) : models;
     },
