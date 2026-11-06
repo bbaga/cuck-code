@@ -11,9 +11,16 @@ const contextProbe = require("../../context-probe");
 // Starts one CLI session. The request fields equal the old ctx fields, so
 // adapter.buildRun(request) gives the same plan as before. A buildRun throw
 // (for example a refused system prompt) propagates: "could not start".
-function cliSessionRun(sdk, ctx, AdapterClass, id, request, sink) {
+// overrides = { command, args, env } lets a derived plugin run another
+// command in front of the base argv. Without it the plan does not change.
+function cliSessionRun(sdk, ctx, AdapterClass, id, request, sink, overrides = null) {
   const adapter = new AdapterClass(id);
   const plan = adapter.buildRun(request);
+  if (overrides) {
+    plan.cmd = overrides.command;
+    plan.args = [...(overrides.args || []), ...plan.args];
+    plan.env = { ...plan.env, ...overrides.env };
+  }
 
   // Same env and cwd as the server used for the context probe. They are fixed
   // at start: the process env can change before the stream ends.
