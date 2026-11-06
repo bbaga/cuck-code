@@ -95,4 +95,42 @@ function discoverHarnesses({ sdk, env, log, timeoutMs }) {
   ));
 }
 
-module.exports = { discoverHarnesses, probeHarness, DISCOVERY_TIMEOUT_MS };
+// Detail for GET /api/harnesses/:id?provider=<p>. `cached` is the cached
+// discovery result of the harness. The provider is checked against the
+// cached authModes. Auth is checked per request, never cached, and only
+// when the cached result says the harness is installed.
+// -> { error } (HTTP 400) or { detail: { id, authMode, auth, loginHint, models } }.
+async function providerDetail({ entry, provider, cached, sdk, env, log, timeoutMs = DISCOVERY_TIMEOUT_MS }) {
+  const requested = typeof provider === "string" ? provider.trim() : "";
+  if (!requested) return { error: "provider query parameter is required" };
+
+  const { plugin } = entry;
+  const authModes = cached && Array.isArray(cached.authModes) ? cached.authModes : [];
+  if (!authModes.some((m) => m && m.value === requested)) {
+    const known = authModes.map((m) => m && m.value).filter(Boolean).join(", ");
+    return {
+      error: known
+        ? `unknown provider '${requested}' (known providers: ${known})`
+        : `unknown provider '${requested}': ${plugin.id} is not installed or reported no providers`,
+    };
+  }
+
+  const ctx = makeCtx(entry, { sdk, env, log });
+  const listed = await guarded(ctx, entry, "listModels", [], timeoutMs,
+    () => plugin.listModels(ctx, { provider: requested }));
+  const models = Array.isArray(listed) ? listed : [];
+
+  let auth = "unknown";
+  let loginHint = (cached && cached.loginHint) || "";
+  if (cached && cached.installed) {
+    const checked = await guarded(ctx, entry, "checkAuth", null, timeoutMs,
+      () => plugin.checkAuth(ctx, { provider: requested }));
+    if (checked && typeof checked === "object") {
+      if (["ok", "missing", "unknown"].includes(checked.auth)) auth = checked.auth;
+      if (typeof checked.loginHint === "string" && checked.loginHint) loginHint = checked.loginHint;
+    }
+  }
+  return { detail: { id: plugin.id, authMode: requested, auth, loginHint, models } };
+}
+
+module.exports = { discoverHarnesses, probeHarness, providerDetail, DISCOVERY_TIMEOUT_MS };
