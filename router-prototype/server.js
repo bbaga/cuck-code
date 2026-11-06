@@ -16,6 +16,12 @@ let lifecycleTestHooks = null;
 let timerApi = { setTimeout, clearTimeout };
 const { bootHarnesses } = require("./harness-boot");
 const { isHarness, harnessIds } = require("./harness-registry");
+// Built-in harnesses boot first: preset migration validates harness ids.
+// The wrappers read spawnProcess at call time, so setSpawnForTest keeps working.
+const HARNESS_SDK = bootHarnesses({
+  spawn: (...args) => spawnProcess(...args),
+  runCommand: (argv, options) => runProbe(argv, options && options.timeoutMs),
+});
 const { EFFORT_LEVELS, validateNodeSettingsForNode,
   probeResultFor, piProviderDetail,
   probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
@@ -661,12 +667,6 @@ migratePresets({ presetsFile: path.join(LINES_DIR, "pipeline-presets.json"), man
   defaultPipelineText: fs.readFileSync(path.join(__dirname, "pipelines", "default.yaml"), "utf8"),
   defaultGraph: DEFAULT_PIPELINE, fs, reservedNames: builtinPipelineNames(fs, __dirname),
   log: (message) => slog("info", "preset.migrate", { message }) });
-// Built-in harnesses register before the first catalog build. The wrappers
-// read spawnProcess at call time, so setSpawnForTest keeps working.
-const HARNESS_SDK = bootHarnesses({
-  spawn: (...args) => spawnProcess(...args),
-  runCommand: (argv, options) => runProbe(argv, options && options.timeoutMs),
-});
 rebuildCatalog();
 for (const p of CATALOG.problems) slog("warn", "catalog.problem", { layer: p.layer, path: p.path, errors: p.errors });
 
