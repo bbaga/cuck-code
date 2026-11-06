@@ -27,7 +27,8 @@ const { EFFORT_LEVELS, validateNodeSettingsForNode,
 const { discoverHarnesses, probeHarness, providerDetail } = require("./harness-discovery");
 const { ID_RE } = require("./harness-interface");
 const { getHarness } = require("./harness-registry");
-const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
+const { startRun, buildCtx } = require("./harness-runner");
+const { planHarnessRun, planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   plannerSettings, workerSettings,
   validateWorkerSpawnBody, implementorBranchName, lineSummary,
   systemPromptOptions, briefForHarness, usesSystemChannel } = require("./spawn-plan");
@@ -405,50 +406,31 @@ function broadcastContext(line, target, owner) {
 // Run one summary turn on an existing session and return its assistant
 // text. The turn uses the session's own harness config. It neither streams
 // to the transcript nor changes router state; callers decide what to do with
-// the summary. setChild receives the child process (null when it ends) so
-// stop and delete can kill it.
-function runSummaryTurn(plan, timeLimitSec, setChild, cb) {
-  const adapter = plan.adapter;
-  let child;
+// the summary. setChild receives the run handle (null when it ends) so stop
+// and delete can kill it. startRun enforces the time limit. The callback gets
+// (error, summary, { sessionId, contextTokens }); the last is null when the
+// run could not start.
+function runSummaryTurn({ entry, request }, setChild, cb) {
+  const output = new InvocationCapture();
+  let handle;
   try {
-    child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...plan.env },
-      ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
+    handle = startRun({ entry,
+      ctx: buildCtx({ entry, env: process.env, log: slog, sdk: HARNESS_SDK }),
+      request, hooks: { onEntry: (e) => output.add(e) } });
   } catch (err) {
     return cb(err.message, null, null);
   }
-  setChild(child);
-  let killTimer = null;
-  if (!adapter.supportsNativeTimeLimit) {
-    killTimer = setTimeout(() => { try { child.kill("SIGTERM"); } catch {} }, timeLimitSec * 1000);
-  }
-  const output = new InvocationCapture();
-  const records = new JsonlDecoder();
-  const consume = (raw) => {
-    const parsed = parseJsonRecord(raw);
-    const entry = parsed && adapter.normalize(parsed);
-    if (entry) output.add(entry);
-  };
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => { for (const raw of records.push(chunk)) consume(raw); });
-  const stderr = new StderrCapture();
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (c) => stderr.push(c));
-  let spawnError = null;
-  child.on("error", (err) => { spawnError = err; });
-  child.on("close", (code, signal) => {
-    if (killTimer) clearTimeout(killTimer);
+  setChild(handle);
+  handle.done.then((result) => {
     setChild(null);
-    for (const raw of records.finish()) consume(raw);
-    const finished = adapter.finalize();
-    if (finished) output.add(finished);
-    const outcome = spawnError ? "fail" : adapter.outcome(code, signal);
-    if (outcome !== "ok") {
-      return cb(describeFailure({ cmd: plan.cmd, code, signal, outcome, spawnError,
-        streamError: adapter.errorText(), stderr: stderr.text() }), null, adapter);
+    const info = { sessionId: result.sessionId, contextTokens: result.contextTokens };
+    if (result.outcome !== "ok") {
+      return cb(describeFailure({ cmd: result.command, code: result.exitCode,
+        signal: result.signal, outcome: result.outcome, spawnError: result.spawnError,
+        streamError: result.errorText, stderr: result.stderr }), null, info);
     }
     const summary = acceptSummary(output.text());
-    cb(summary ? null : "the session returned no usable summary", summary, adapter);
+    cb(summary ? null : "the session returned no usable summary", summary, info);
   });
 }
 
@@ -463,14 +445,14 @@ function compactPlanner(line, reason, sessionCfg = null) {
   if (!line.context) line.context = newContextStats();
   const current = plannerSettings(line);
   const cfg = sessionCfg ? { ...current, ...sessionCfg } : current;
-  const plan = planPlannerRun(cfg, { prompt: compactionPrompt("planner"), workdir: line.workdir,
-    sessionId: line.sessionId, autoApprove: AUTO_APPROVE,
+  const plan = planHarnessRun(cfg, { phase: "planner", prompt: compactionPrompt("planner"),
+    workdir: line.workdir, sessionId: line.sessionId, autoApprove: AUTO_APPROVE,
     ...systemPromptOptions(cfg.harness, line.rolePrompt, SYSTEM_PROMPT_DIR) });
   const before = contextView(line.context, cfg.maxContext);
   slog("info", "planner.compact.start", { lineId: line.id, reason, tokens: before.tokens,
     estimated: before.estimated });
   broadcastContext(line, "planner", line);
-  runSummaryTurn(plan, cfg.timeLimit, (child) => { line.child = child; }, (error, summary) => {
+  runSummaryTurn(plan, (child) => { line.child = child; }, (error, summary) => {
     line.compacting = false;
     if (line.deleted) return;
     if (error && reason === "harness-switch") {
@@ -525,7 +507,7 @@ function compactWorker(line, worker, reason, then = () => {}, sessionCfg = null)
     model: owner.model || (owner.harness && owner.harness !== resolved.harness
       ? defaultModelFor(owner.harness, phase) : resolved.model),
     effort: owner.effort || resolved.effort };
-  const plan = planWorkerRun({ ...cfg, ...effective }, { phase,
+  const plan = planHarnessRun({ ...cfg, ...effective }, { phase,
     prompt: compactionPrompt("implementor"), workdir: worker.worktreePath,
     sessionId: worker.sessionId, autoApprove: AUTO_APPROVE,
     ...systemPromptOptions(effective.harness, worker.rolePrompt, SYSTEM_PROMPT_DIR) });
@@ -533,7 +515,7 @@ function compactWorker(line, worker, reason, then = () => {}, sessionCfg = null)
   slog("info", "worker.compact.start", { lineId: line.id, workerId: worker.id, reason,
     tokens: before.tokens, estimated: before.estimated });
   broadcastContext(line, worker.id, worker);
-  runSummaryTurn(plan, cfg.timeLimit, (child) => { worker.compactChild = child; }, (error, summary) => {
+  runSummaryTurn(plan, (child) => { worker.compactChild = child; }, (error, summary) => {
     worker.compacting = false;
     if (line.deleted || !line.workers.has(worker.id)) return;
     if (error) {
@@ -3465,7 +3447,7 @@ if (HTTPS_PORT) {
 }
 }
 
-module.exports = { saveLine, loadLines, restoreWorkerTranscript, normalizeWorkerTranscriptEntry, stopPlannerRun, pump, spawnWorker, deliverToInstance, dashboardStateForLine, requestHandler, lines,
+module.exports = { compactPlanner, saveLine, loadLines, restoreWorkerTranscript, normalizeWorkerTranscriptEntry, stopPlannerRun, pump, spawnWorker, deliverToInstance, dashboardStateForLine, requestHandler, lines,
   createServer: () => server,
   setSpawnForTest: (fn) => { spawnProcess = fn; },
   setLifecycleHooksForTest: (hooks) => { lifecycleTestHooks = hooks; },
