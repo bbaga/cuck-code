@@ -442,4 +442,7 @@ function createHarness(id) {
   return new Adapter(id);
 }
 
-module.exports = { HARNESS_IDS, createHarness, trustedSystemChannel, writeSystemPromptFile };
+module.exports = {
+  HARNESS_IDS, createHarness, trustedSystemChannel, writeSystemPromptFile,
+  BaseHarness, VibeHarness, PiHarness, CodexHarness, ClaudeHarness,
+};
