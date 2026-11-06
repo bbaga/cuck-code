@@ -12,6 +12,7 @@ const { execFileSync } = require("node:child_process");
 
 const { validateHarnessPlugin } = require("../harness-interface");
 const { createSdk } = require("../harness-sdk");
+const { cliSessionRun } = require("../harnesses/shared/cli-plugin");
 const { builtinFolder } = require("../harness-builtins");
 const { loadHarnessPluginFolder } = require("../harness-loader");
 const { loadBuiltinPipeline } = require("../line-graph");
@@ -109,7 +110,14 @@ test("argv is the override args plus the claude golden argv for each case", () =
 function feed(parser, sink) {
   for (const obj of records) parser.record(obj, sink);
   parser.end(sink);
-  return { entries: sink.entries, sessions: sink.sessions, outcome: parser.outcome(0, null), errors: sink.errors };
+  // "at" comes from Date.now(), so two runs differ. Check its type, then drop it.
+  for (const entry of sink.entries) assert.equal(typeof entry.at, "number");
+  return {
+    entries: sink.entries.map(({ at, ...rest }) => rest),
+    sessions: sink.sessions,
+    outcome: parser.outcome(0, null),
+    errors: sink.errors,
+  };
 }
 
 test("parser parity with the built-in claude plugin", () => {
@@ -150,6 +158,20 @@ test("a ./ command resolves against pluginDir; a bare command stays", async () =
 
   extend(sdk, { command: "bare" }).startSession(ctx, REQUEST, makeSink());
   assert.equal(specs[2].spec.cmd, "bare");
+});
+
+// No golden claude case has a base env, so a small adapter class supplies one.
+test("override env wins over the base env and keeps other base keys", () => {
+  class EnvAdapter {
+    buildRun() { return { cmd: "base", args: ["a"], env: { KEEP: "1", SHARED: "base" } }; }
+  }
+  const { sdk, specs } = makeSdk();
+  cliSessionRun(sdk, {}, EnvAdapter, "x", REQUEST, makeSink(),
+    { command: "over", args: ["o"], env: { SHARED: "override", NEW: "2" } });
+  const { spec } = specs[0];
+  assert.equal(spec.cmd, "over");
+  assert.deepStrictEqual(spec.args, ["o", "a"]);
+  assert.deepStrictEqual(spec.env, { KEEP: "1", SHARED: "override", NEW: "2" });
 });
 
 test("models option goes through normalizeChoices", async () => {
