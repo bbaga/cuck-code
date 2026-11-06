@@ -23,8 +23,9 @@ const HARNESS_SDK = bootHarnesses({
   runCommand: (argv, options) => runProbe(argv, options && options.timeoutMs),
 });
 const { EFFORT_LEVELS, validateNodeSettingsForNode,
-  probeResultFor, piProviderDetail } = require("./pipeline-config");
-const { discoverHarnesses, probeHarness } = require("./harness-discovery");
+  probeResultFor } = require("./pipeline-config");
+const { discoverHarnesses, probeHarness, providerDetail } = require("./harness-discovery");
+const { ID_RE } = require("./harness-interface");
 const { getHarness } = require("./harness-registry");
 const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
   plannerSettings, workerSettings,
@@ -2047,17 +2048,26 @@ const routeRequest = (req, res) => {
     return;
   }
 
-  // Per-provider pi detail: {id, authMode, auth, loginHint, models}. The
-  // provider is validated against the discovered provider list; the auth
-  // check runs per request (never cached) with an argument array and its
-  // raw output is never returned.
-  if (req.method === "GET" && url.pathname === "/api/harnesses/pi") {
+  // Per-provider detail for any harness with providers: {id, authMode, auth,
+  // loginHint, models}. The provider is validated against the cached provider
+  // list; models and the auth check run per request (never cached). Only
+  // auth and loginHint of the auth check leave, never raw output.
+  const detailMatch = req.method === "GET"
+    && /^\/api\/harnesses\/([^/]+)$/.exec(url.pathname);
+  if (detailMatch) {
+    const harnessId = detailMatch[1];
+    const entry = ID_RE.test(harnessId) ? getHarness(harnessId) : null;
+    if (!entry) return json(res, 404, { error: `unknown harness '${harnessId}'` });
+    if (!(entry.plugin.capabilities && entry.plugin.capabilities.providers)) {
+      return json(res, 400, { error: `harness '${harnessId}' has no providers` });
+    }
     const provider = url.searchParams.get("provider");
     const refresh = url.searchParams.get("refresh") === "1";
     harnessProbe(refresh).then(async (cached) => {
-      const piEntry = probeResultFor(cached.harnesses, "pi");
-      const result = await piProviderDetail(provider, piEntry,
-        (cmd) => runProbe(cmd));
+      const result = await providerDetail({
+        entry, provider, cached: probeResultFor(cached.harnesses, harnessId),
+        sdk: HARNESS_SDK, env: process.env, log: slog,
+      });
       if (result.error) return json(res, 400, { error: result.error });
       return json(res, 200, result.detail);
     }).catch(() => json(res, 500, { error: "harness probe failed" }));
