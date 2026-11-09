@@ -73,6 +73,8 @@ test('attach writes headers and hello; close removes client and heartbeat', asyn
 });
 
 test('commit reaches all clients with only two fields; bursts coalesce', async t => {
+  // Mock only setTimeout, before the registry-live object exists, so the flush follows the mock clock.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const { live, store } = await setup(t);
   const a = client(), b = client();
   live.attach(a.req, a.res, { revision: 0, eventCursor: 0 });
@@ -80,13 +82,15 @@ test('commit reaches all clients with only two fields; bursts coalesce', async t
   await store.createClaim(0, { title: 'one' });
   await store.createClaim(null, { title: 'two' });
   await store.createClaim(null, { title: 'three' });
-  await sleep(300);
+  for (const c of [a, b]) assert.equal(regs(c).length, 0); // the flush waits for the timer, not for real time
+  t.mock.timers.tick(250);
   for (const c of [a, b]) {
     assert.equal(regs(c).length, 1);
     assert.equal(regs(c)[0], 'event: registry\ndata: {"revision":3,"eventCursor":0}\n\n');
   }
   await store.createClaim(null, { title: 'four' });
-  await sleep(300);
+  assert.equal(regs(a).length, 1);
+  t.mock.timers.tick(250);
   assert.equal(regs(a).length, 2);
   assert.match(regs(a)[1], /"revision":4/);
 });
