@@ -16,11 +16,13 @@ function writeFakeClis(binDir, tmpDir) {
   const piLogPath = path.join(tmpDir, "pi-calls.log");
   const failFlag = path.join(tmpDir, "pi-auth-fails");
   const listFailFlag = path.join(tmpDir, "pi-list-fails");
+  const listDelayFlag = path.join(tmpDir, "pi-list-delay");
   const pi = `#!/bin/sh
 printf '%s\\n' "$@" >> "${piLogPath}"
 printf -- '---\\n' >> "${piLogPath}"
 if [ "$1" = "--version" ]; then echo "pi 0.87.1"; exit 0; fi
 if [ "$1" = "--list-models" ]; then
+  if [ -e "${listDelayFlag}" ]; then sleep "$(cat "${listDelayFlag}")"; fi
   if [ -e "${listFailFlag}" ]; then echo "Failed to load catalog"; exit 1; fi
   printf '${PI_CATALOG.replace(/\n/g, "\\n")}\\n'
   exit 0
@@ -38,7 +40,7 @@ exit 1
 `;
   fs.writeFileSync(path.join(binDir, "pi"), pi, { mode: 0o755 });
   fs.writeFileSync(path.join(binDir, "vibe"), vibe, { mode: 0o755 });
-  return { piLogPath, failFlag, listFailFlag };
+  return { piLogPath, failFlag, listFailFlag, listDelayFlag };
 }
 
 module.exports = { writeFakeClis, PI_CATALOG };

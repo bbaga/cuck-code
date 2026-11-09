@@ -24,7 +24,7 @@ const HARNESS_SDK = bootHarnesses({
 });
 const { EFFORT_LEVELS, validateNodeSettingsForNode,
   probeResultFor } = require("./pipeline-config");
-const { discoverHarnesses, probeHarness, providerDetail } = require("./harness-discovery");
+const { discoverHarnesses, probeHarness, providerDetail, DISCOVERY_TIMEOUT_MS } = require("./harness-discovery");
 const { ID_RE } = require("./harness-interface");
 const { getHarness } = require("./harness-registry");
 const { startRun, buildCtx } = require("./harness-runner");
@@ -912,7 +912,15 @@ function handlerFailed(req, res, err) {
 
 // Run a probe command with a timeout. Resolves { code, stdout }, or null
 // when the command cannot start or times out.
-function runProbe(cmd, timeoutMs = 2000) {
+// Time limits of the harness probes. The defaults are the product values.
+// A test router sets both through env, so a slow machine cannot change a result.
+function envMs(name, fallback) {
+  const n = Number(process.env[name]);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+const PROBE_TIMEOUT_MS = envMs("CUCK_PROBE_TIMEOUT_MS", 2000);
+
+function runProbe(cmd, timeoutMs = PROBE_TIMEOUT_MS) {
   return new Promise((resolve) => {
     let child;
     try {
@@ -957,12 +965,14 @@ function harnessPluginProblems() {
 // Base harness probe with the 30-second cache. The cache holds only the
 // base probe; per-provider detail results are computed per request and
 // never cached, so one provider's result cannot become another's.
+const DISCOVERY_TIMEOUT = envMs("CUCK_DISCOVERY_TIMEOUT_MS", DISCOVERY_TIMEOUT_MS);
+
 async function harnessProbe(refresh) {
   if (!refresh && harnessCache
     && Date.now() - Date.parse(harnessCache.atIso) < HARNESS_CACHE_MS) {
     return harnessCache;
   }
-  const harnesses = await discoverHarnesses({ sdk: HARNESS_SDK, env: process.env, log: slog });
+  const harnesses = await discoverHarnesses({ sdk: HARNESS_SDK, env: process.env, log: slog, timeoutMs: DISCOVERY_TIMEOUT });
   harnessCache = { atIso: new Date().toISOString(), harnesses };
   return harnessCache;
 }
@@ -2035,7 +2045,7 @@ const routeRequest = (req, res) => {
     harnessProbe(refresh).then(async (cached) => {
       const result = await providerDetail({
         entry, provider, cached: probeResultFor(cached.harnesses, harnessId),
-        sdk: HARNESS_SDK, env: process.env, log: slog,
+        sdk: HARNESS_SDK, env: process.env, log: slog, timeoutMs: DISCOVERY_TIMEOUT,
       });
       if (result.error) return json(res, 400, { error: result.error });
       return json(res, 200, result.detail);
