@@ -21,7 +21,10 @@ const { registerHarness, unregisterPluginHarnesses } = require("../harness-regis
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "extend-builtin-"));
 process.env.LINES_DIR = root;
 const server = require("../server");
-after(() => fs.rmSync(root, { recursive: true, force: true }));
+after(async () => {
+  await server.registryIdle();
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+});
 afterEach(() => unregisterPluginHarnesses());
 
 const EXAMPLES = path.join(__dirname, "..", "docs", "examples", "harness-plugins");
