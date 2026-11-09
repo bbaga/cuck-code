@@ -907,7 +907,10 @@ function handlerFailed(req, res, err) {
 
 // Run a probe command with a timeout. Resolves { code, stdout }, or null
 // when the command cannot start or times out.
-function runProbe(cmd, timeoutMs = 2000) {
+const PROBE_TIMEOUT_MS = 2000;
+let probeTimeoutMs = PROBE_TIMEOUT_MS;
+
+function runProbe(cmd, timeoutMs = probeTimeoutMs) {
   return new Promise((resolve) => {
     let child;
     try {
@@ -3451,4 +3454,5 @@ module.exports = { saveLine, loadLines, restoreWorkerTranscript, normalizeWorker
   createServer: () => server,
   setSpawnForTest: (fn) => { spawnProcess = fn; },
   setLifecycleHooksForTest: (hooks) => { lifecycleTestHooks = hooks; },
+  setProbeTimeoutForTest: (ms) => { probeTimeoutMs = ms || PROBE_TIMEOUT_MS; },
   setTimerForTest: (clock) => { timerApi = clock || { setTimeout, clearTimeout }; } };
