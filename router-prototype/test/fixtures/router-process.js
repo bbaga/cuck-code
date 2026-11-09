@@ -20,6 +20,27 @@ function dockerBin(script) {
   return bin;
 }
 
+// Routers that are alive now. A router must never outlive its test process.
+const liveChildren = new Set();
+
+function killLiveChildren() {
+  for (const child of liveChildren) {
+    try { child.kill("SIGKILL"); } catch {}
+  }
+}
+
+// "exit" handlers must be synchronous: child.kill is synchronous.
+process.once("exit", killLiveChildren);
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  const onSignal = () => {
+    killLiveChildren();
+    process.removeListener(signal, onSignal);
+    // Send the signal again: the default exit behavior stays.
+    process.kill(process.pid, signal);
+  };
+  process.on(signal, onSignal);
+}
+
 async function freePort() {
   const probe = http.createServer();
   await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
@@ -38,6 +59,8 @@ async function startRouter(root, extraEnv = {}, { docker = NOOP_DOCKER } = {}) {
       PATH: `${bin}:${extraEnv.PATH || process.env.PATH}` },
     stdio: ["ignore", "pipe", "ignore"],
   });
+  liveChildren.add(child);
+  child.once("exit", () => liveChildren.delete(child));
   const router = { child, bin, cuckHome, base: `http://127.0.0.1:${port}` };
   // Read all output so the child never blocks. Resolve `ready` on the registry.ready line.
   let readyLine;
@@ -73,6 +96,9 @@ async function startRouter(root, extraEnv = {}, { docker = NOOP_DOCKER } = {}) {
       ? `router did not log registry.ready within ${READY_LIMIT_MS} ms`
       : "router exited before it logged registry.ready");
   }
+  // A leaked router must not keep the test process alive. The exit handler kills it.
+  child.unref();
+  child.stdout.unref();
   return router;
 }
 
