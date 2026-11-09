@@ -919,7 +919,6 @@ function envMs(name, fallback) {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 const PROBE_TIMEOUT_MS = envMs("CUCK_PROBE_TIMEOUT_MS", 2000);
-const DISCOVERY_TIMEOUT = envMs("CUCK_DISCOVERY_TIMEOUT_MS", DISCOVERY_TIMEOUT_MS);
 
 function runProbe(cmd, timeoutMs = PROBE_TIMEOUT_MS) {
   return new Promise((resolve) => {
@@ -966,6 +965,8 @@ function harnessPluginProblems() {
 // Base harness probe with the 30-second cache. The cache holds only the
 // base probe; per-provider detail results are computed per request and
 // never cached, so one provider's result cannot become another's.
+const DISCOVERY_TIMEOUT = envMs("CUCK_DISCOVERY_TIMEOUT_MS", DISCOVERY_TIMEOUT_MS);
+
 async function harnessProbe(refresh) {
   if (!refresh && harnessCache
     && Date.now() - Date.parse(harnessCache.atIso) < HARNESS_CACHE_MS) {
