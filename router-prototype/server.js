@@ -1941,14 +1941,17 @@ const registryRoutes = createRegistryRoutes({
   resolveRepo: claimRepoIdentity,
 });
 // Not awaited by callers. Safe to call at any time, also after a merge refresh.
+const registryInFlight = new Set();
 function registryDeliver() {
   if (!registryDelivery) return Promise.resolve(null);
-  return registryDelivery.deliver().catch((err) => {
+  const run = registryDelivery.deliver().catch((err) => {
     slog("error", "registry.delivery.failed", { error: String(err && err.message) });
     return null;
-  });
+  }).finally(() => registryInFlight.delete(run));
+  registryInFlight.add(run);
+  return run;
 }
-registryStore.load().then(() => {
+const registryLoaded = registryStore.load().then(() => {
   registryDelivery = createRegistryDelivery({
     store: registryStore,
     getLine: (id) => lines.get(id),
@@ -1959,10 +1962,6 @@ registryStore.load().then(() => {
     now: Date.now,
     log: (event, data) => slog("warn", event, data),
   });
-  registryDeliver();
-  setInterval(registryDeliver, REGISTRY_DELIVERY_MS).unref();
-  setInterval(registrySweepAll, REGISTRY_SWEEP_MS).unref();
-  setTimeout(registrySweepAll, REGISTRY_FIRST_SWEEP_MS).unref();
 }).catch((err) => {
   if (err && err.code === "REGISTRY_CORRUPT") {
     registryUnavailable = { error: "Work registry is corrupt: " + err.message, file: REGISTRY_FILE };
@@ -1973,6 +1972,31 @@ registryStore.load().then(() => {
     console.error(`work registry load failed: ${REGISTRY_FILE}: ${err && err.message}`);
   }
 });
+
+// Background registry work starts only in the main process, never at module
+// load: tests that require this file must not see writes after they clean up.
+let registryTimers = [];
+async function startRegistryLoops() {
+  await registryLoaded;
+  await registryDeliver();
+  // Info lines go to the log file only. The test fixture reads this one on stdout.
+  console.log(JSON.stringify(slog("info", "registry.ready", {})));
+  registryTimers = [
+    setInterval(registryDeliver, REGISTRY_DELIVERY_MS),
+    setInterval(registrySweepAll, REGISTRY_SWEEP_MS),
+    setTimeout(registrySweepAll, REGISTRY_FIRST_SWEEP_MS),
+  ];
+  for (const timer of registryTimers) timer.unref();
+}
+function stopRegistryLoopsForTest() {
+  for (const timer of registryTimers) { clearInterval(timer); clearTimeout(timer); }
+  registryTimers = [];
+}
+// Resolves when the store load and every delivery in progress have settled.
+async function registryIdle() {
+  await registryLoaded;
+  while (registryInFlight.size) await Promise.all([...registryInFlight]);
+}
 
 const routeRequest = (req, res) => {
   const url = new URL(req.url, "http://localhost");
@@ -3398,6 +3422,7 @@ if (!["127.0.0.1", "::1", "localhost"].includes(ROUTER_HOST)) {
     note: "no authentication: any peer that reaches this address can run agents" });
 }
 server.listen(PORT, ROUTER_HOST, () => slog("info", "server.listen", { port: PORT, host: ROUTER_HOST }));
+startRegistryLoops();
 
 if (HTTPS_PORT) {
   if (!TLS_KEY || !TLS_CERT) {
@@ -3414,7 +3439,7 @@ if (HTTPS_PORT) {
 }
 }
 
-module.exports = { compactPlanner, saveLine, loadLines, restoreWorkerTranscript, normalizeWorkerTranscriptEntry, stopPlannerRun, pump, spawnWorker, deliverToInstance, dashboardStateForLine, requestHandler, lines,
+module.exports = { registryIdle, stopRegistryLoopsForTest, compactPlanner, saveLine, loadLines, restoreWorkerTranscript, normalizeWorkerTranscriptEntry, stopPlannerRun, pump, spawnWorker, deliverToInstance, dashboardStateForLine, requestHandler, lines,
   createServer: () => server,
   setSpawnForTest: (fn) => { spawnProcess = fn; },
   setLifecycleHooksForTest: (hooks) => { lifecycleTestHooks = hooks; },

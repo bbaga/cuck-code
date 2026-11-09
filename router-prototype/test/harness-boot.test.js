@@ -18,7 +18,10 @@ const registry = require("../harness-registry");
 const { bootHarnesses } = require("../harness-boot");
 const { validateNodeSettings } = require("../pipeline-config");
 
-after(() => fs.rmSync(root, { recursive: true, force: true }));
+after(async () => {
+  await server.registryIdle();
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+});
 
 function fakePlugin(id) {
   const noop = async () => ({});

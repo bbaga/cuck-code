@@ -14,7 +14,10 @@ const { registerHarness, unregisterPluginHarnesses } = require("../harness-regis
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "compaction-runner-"));
 process.env.LINES_DIR = root;
 const server = require("../server");
-after(() => fs.rmSync(root, { recursive: true, force: true }));
+after(async () => {
+  await server.registryIdle();
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+});
 afterEach(() => unregisterPluginHarnesses());
 
 const SUMMARY = "Goal: add login. Done: API route. Next: UI form. Branch line/x.";
