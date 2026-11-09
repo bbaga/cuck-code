@@ -8,6 +8,16 @@ const { parseAutoThreshold } = require("./compaction");
 
 const PHASES = ["planner", "implementor", "validator", "integration"];
 const HARNESS_IDS = ["vibe", "pi", "codex", "claude"];
+
+// Harness ids come from the registry. The late require avoids a require
+// cycle, and the boot call makes unit tests work without the server.
+function registry() {
+  require("./harness-boot").bootHarnesses();
+  return require("./harness-registry");
+}
+const knownHarness = (id) => registry().isHarness(id);
+const currentHarnessIds = () => registry().harnessIds();
+
 const EFFORT_LEVELS = ["low", "medium", "high"];
 
 const PIPELINE_FIELDS = ["harness", "model", "effort", "timeLimit", "maxContext"];
@@ -53,8 +63,8 @@ function validateNodeSettings(label, settings, opts) {
       continue;
     }
     const v = settings[field];
-    if (field === "harness" && !HARNESS_IDS.includes(v)) {
-      return `${label}.harness must be one of: ${HARNESS_IDS.join(", ")}`;
+    if (field === "harness" && !knownHarness(v)) {
+      return `${label}.harness must be one of: ${currentHarnessIds().join(", ")}`;
     }
     if (field === "model" && (typeof v !== "string" || !v.trim())) {
       return `${label}.model must be a non-empty string`;
@@ -394,6 +404,8 @@ function claudeModelChoices(config) {
   return choices;
 }
 
+// The server no longer calls probeHarnesses: discovery runs through the
+// harness plugins (harness-discovery.js). It stays for its existing tests.
 // run(cmdArray) returns a Promise of { code, stdout }, or null when the
 // command cannot start or times out. Returns one result per harness:
 // { id, installed, auth, loginHint, version } plus, for vibe and claude,

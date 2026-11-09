@@ -14,10 +14,21 @@ process.env.GCM_INTERACTIVE = "Never";
 let spawnProcess = spawn;
 let lifecycleTestHooks = null;
 let timerApi = { setTimeout, clearTimeout };
-const { HARNESS_IDS, EFFORT_LEVELS, validateNodeSettingsForNode,
-  probeResultFor, piProviderDetail,
-  probeHarnesses, HARNESS_PROBES } = require("./pipeline-config");
-const { planPlannerRun, planWorkerRun, phaseForWorker, resolveWorkerOverrides,
+const { bootHarnesses } = require("./harness-boot");
+const { isHarness, harnessIds, registerHarness, unregisterPluginHarnesses } = require("./harness-registry");
+// Built-in harnesses boot first: preset migration validates harness ids.
+// The wrappers read spawnProcess at call time, so setSpawnForTest keeps working.
+const HARNESS_SDK = bootHarnesses({
+  spawn: (...args) => spawnProcess(...args),
+  runCommand: (argv, options) => runProbe(argv, options && options.timeoutMs),
+});
+const { EFFORT_LEVELS, validateNodeSettingsForNode,
+  probeResultFor } = require("./pipeline-config");
+const { discoverHarnesses, probeHarness, providerDetail } = require("./harness-discovery");
+const { ID_RE } = require("./harness-interface");
+const { getHarness } = require("./harness-registry");
+const { startRun, buildCtx } = require("./harness-runner");
+const { planHarnessRun, phaseForWorker, resolveWorkerOverrides,
   plannerSettings, workerSettings,
   validateWorkerSpawnBody, implementorBranchName, lineSummary,
   systemPromptOptions, briefForHarness, usesSystemChannel } = require("./spawn-plan");
@@ -27,8 +38,7 @@ const { loadBuiltinPipeline, migrateLine, normalizeLine, nodeSettingsFields, bui
   implementorNodeFor, validatorNodeFor, integrationNodeFor, isLineDirectory, integrationMerged } = require("./line-graph");
 const { checkCall, checkLineValues, requiredFields, introspect } = require("./call-fields");
 const { renderReports, kindOfNode } = require("./report-interaction");
-const { JsonlDecoder, parseJsonRecord } = require("./jsonl");
-const { StderrCapture, describeFailure } = require("./run-failure");
+const { describeFailure } = require("./run-failure");
 const { messageText, InvocationCapture, appendTranscript, reportForValidation,
   applyCompletion, completionFields, runOutputNote,
   buildUnroutedNotification } = require("./handoff");
@@ -49,8 +59,6 @@ const { loadTranscript } = require("./transcript-history");
 const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require("./evidence");
 const { createDashboardLive } = require("./dashboard-live");
-const { readClaudeConfig } = require("./claude-config");
-const { contextTokensForRun } = require("./context-probe");
 const { migratePresets } = require("./preset-migration");
 const { nameError, textError, validateText, graphPreview, buildListing, readCatalogItem, resolveSafe, readManagedText,
   renameInText, applyNodeSettingsToText, writeManagedPipeline, deleteManagedPipeline, MAX_BODY_BYTES } = require("./pipelines-api");
@@ -396,50 +404,31 @@ function broadcastContext(line, target, owner) {
 // Run one summary turn on an existing session and return its assistant
 // text. The turn uses the session's own harness config. It neither streams
 // to the transcript nor changes router state; callers decide what to do with
-// the summary. setChild receives the child process (null when it ends) so
-// stop and delete can kill it.
-function runSummaryTurn(plan, timeLimitSec, setChild, cb) {
-  const adapter = plan.adapter;
-  let child;
+// the summary. setChild receives the run handle (null when it ends) so stop
+// and delete can kill it. startRun enforces the time limit. The callback gets
+// (error, summary, { sessionId, contextTokens }); the last is null when the
+// run could not start.
+function runSummaryTurn({ entry, request }, setChild, cb) {
+  const output = new InvocationCapture();
+  let handle;
   try {
-    child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...plan.env },
-      ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
+    handle = startRun({ entry,
+      ctx: buildCtx({ entry, env: process.env, log: slog, sdk: HARNESS_SDK }),
+      request, hooks: { onEntry: (e) => output.add(e) } });
   } catch (err) {
     return cb(err.message, null, null);
   }
-  setChild(child);
-  let killTimer = null;
-  if (!adapter.supportsNativeTimeLimit) {
-    killTimer = setTimeout(() => { try { child.kill("SIGTERM"); } catch {} }, timeLimitSec * 1000);
-  }
-  const output = new InvocationCapture();
-  const records = new JsonlDecoder();
-  const consume = (raw) => {
-    const parsed = parseJsonRecord(raw);
-    const entry = parsed && adapter.normalize(parsed);
-    if (entry) output.add(entry);
-  };
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => { for (const raw of records.push(chunk)) consume(raw); });
-  const stderr = new StderrCapture();
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (c) => stderr.push(c));
-  let spawnError = null;
-  child.on("error", (err) => { spawnError = err; });
-  child.on("close", (code, signal) => {
-    if (killTimer) clearTimeout(killTimer);
+  setChild(handle);
+  handle.done.then((result) => {
     setChild(null);
-    for (const raw of records.finish()) consume(raw);
-    const finished = adapter.finalize();
-    if (finished) output.add(finished);
-    const outcome = spawnError ? "fail" : adapter.outcome(code, signal);
-    if (outcome !== "ok") {
-      return cb(describeFailure({ cmd: plan.cmd, code, signal, outcome, spawnError,
-        streamError: adapter.errorText(), stderr: stderr.text() }), null, adapter);
+    const info = { sessionId: result.sessionId, contextTokens: result.contextTokens };
+    if (result.outcome !== "ok") {
+      return cb(describeFailure({ cmd: result.command, code: result.exitCode,
+        signal: result.signal, outcome: result.outcome, spawnError: result.spawnError,
+        streamError: result.errorText, stderr: result.stderr }), null, info);
     }
     const summary = acceptSummary(output.text());
-    cb(summary ? null : "the session returned no usable summary", summary, adapter);
+    cb(summary ? null : "the session returned no usable summary", summary, info);
   });
 }
 
@@ -454,14 +443,14 @@ function compactPlanner(line, reason, sessionCfg = null) {
   if (!line.context) line.context = newContextStats();
   const current = plannerSettings(line);
   const cfg = sessionCfg ? { ...current, ...sessionCfg } : current;
-  const plan = planPlannerRun(cfg, { prompt: compactionPrompt("planner"), workdir: line.workdir,
-    sessionId: line.sessionId, autoApprove: AUTO_APPROVE,
+  const plan = planHarnessRun(cfg, { phase: "planner", prompt: compactionPrompt("planner"),
+    workdir: line.workdir, sessionId: line.sessionId, autoApprove: AUTO_APPROVE,
     ...systemPromptOptions(cfg.harness, line.rolePrompt, SYSTEM_PROMPT_DIR) });
   const before = contextView(line.context, cfg.maxContext);
   slog("info", "planner.compact.start", { lineId: line.id, reason, tokens: before.tokens,
     estimated: before.estimated });
   broadcastContext(line, "planner", line);
-  runSummaryTurn(plan, cfg.timeLimit, (child) => { line.child = child; }, (error, summary) => {
+  runSummaryTurn(plan, (child) => { line.child = child; }, (error, summary) => {
     line.compacting = false;
     if (line.deleted) return;
     if (error && reason === "harness-switch") {
@@ -516,7 +505,7 @@ function compactWorker(line, worker, reason, then = () => {}, sessionCfg = null)
     model: owner.model || (owner.harness && owner.harness !== resolved.harness
       ? defaultModelFor(owner.harness, phase) : resolved.model),
     effort: owner.effort || resolved.effort };
-  const plan = planWorkerRun({ ...cfg, ...effective }, { phase,
+  const plan = planHarnessRun({ ...cfg, ...effective }, { phase,
     prompt: compactionPrompt("implementor"), workdir: worker.worktreePath,
     sessionId: worker.sessionId, autoApprove: AUTO_APPROVE,
     ...systemPromptOptions(effective.harness, worker.rolePrompt, SYSTEM_PROMPT_DIR) });
@@ -524,7 +513,7 @@ function compactWorker(line, worker, reason, then = () => {}, sessionCfg = null)
   slog("info", "worker.compact.start", { lineId: line.id, workerId: worker.id, reason,
     tokens: before.tokens, estimated: before.estimated });
   broadcastContext(line, worker.id, worker);
-  runSummaryTurn(plan, cfg.timeLimit, (child) => { worker.compactChild = child; }, (error, summary) => {
+  runSummaryTurn(plan, (child) => { worker.compactChild = child; }, (error, summary) => {
     worker.compacting = false;
     if (line.deleted || !line.workers.has(worker.id)) return;
     if (error) {
@@ -648,9 +637,25 @@ const MANAGED_PLUGINS_DIR = path.join(LINES_DIR, "plugins");
 const USER_PLUGINS_DIR = process.env.CUCK_HOME || path.join(os.homedir(), ".cuck");
 let CATALOG = null;
 const CATALOG_GRAPHS = new Map();
+const HARNESS_CACHE_MS = 30000;
+let harnessCache = null; // { atIso, harnesses }; declared before the first rebuildCatalog
+// Register errors of the last rebuild: [{ layer, path, errors }].
+let harnessRegisterProblems = [];
 function rebuildCatalog() {
   CATALOG = buildCatalog({ managedDir: MANAGED_PLUGINS_DIR, userDir: USER_PLUGINS_DIR,
-    builtInDir: __dirname, readDir: defaultReadDir, readFile: defaultReadFile });
+    builtInDir: __dirname, harnessSdk: HARNESS_SDK, readDir: defaultReadDir, readFile: defaultReadFile });
+  unregisterPluginHarnesses();
+  harnessRegisterProblems = [];
+  for (const entry of Object.values(CATALOG.harnesses)) {
+    try {
+      registerHarness(entry.plugin, { layer: entry.layer, folder: entry.folder, builtIn: false });
+    } catch (err) {
+      const problem = { layer: entry.layer, path: path.join(entry.folder, "index.js"), errors: [err.message] };
+      harnessRegisterProblems.push(problem);
+      slog("warn", "catalog.problem", problem);
+    }
+  }
+  harnessCache = null;
   CATALOG_GRAPHS.clear();
   return CATALOG;
 }
@@ -933,18 +938,21 @@ function runProbe(cmd, timeoutMs = 2000) {
   });
 }
 
-// Probe a single harness and report whether it is installed. An unknown
-// harness id has no probe entry and counts as not installed.
+// Probe a single harness and report whether it is installed. The probe is
+// fresh on each call (no cache). An unknown harness id counts as not installed.
 async function harnessInstalled(harnessId) {
-  const probe = HARNESS_PROBES.find((h) => h.id === harnessId);
-  if (!probe) return false;
-  const results = await probeHarnesses((cmd) => runProbe(cmd), undefined, readClaudeConfig);
-  const result = probeResultFor(results, harnessId);
-  return !!(result && result.installed);
+  const entry = getHarness(harnessId);
+  if (!entry) return false;
+  const result = await probeHarness(entry,
+    { sdk: HARNESS_SDK, env: process.env, log: slog });
+  return result.installed;
 }
 
-const HARNESS_CACHE_MS = 30000;
-let harnessCache = null; // { atIso, harnesses }
+// Catalog problems under a harnesses folder, plus the register errors.
+function harnessPluginProblems() {
+  const marker = path.sep + "harnesses" + path.sep;
+  return [...CATALOG.problems.filter((p) => p.path.includes(marker)), ...harnessRegisterProblems];
+}
 
 // Base harness probe with the 30-second cache. The cache holds only the
 // base probe; per-provider detail results are computed per request and
@@ -954,7 +962,7 @@ async function harnessProbe(refresh) {
     && Date.now() - Date.parse(harnessCache.atIso) < HARNESS_CACHE_MS) {
     return harnessCache;
   }
-  const harnesses = await probeHarnesses((cmd) => runProbe(cmd), undefined, readClaudeConfig);
+  const harnesses = await discoverHarnesses({ sdk: HARNESS_SDK, env: process.env, log: slog });
   harnessCache = { atIso: new Date().toISOString(), harnesses };
   return harnessCache;
 }
@@ -1076,7 +1084,8 @@ function pump(line) {
     workdir: line.workdir });
   line.lastRun = text;
   const t0 = Date.now();
-  let plan, adapter, runEnv, runCwd, child, prevSessionCfg = line.sessionCfg;
+  let plan, handle, closePlanner, prevSessionCfg = line.sessionCfg;
+  const runOutput = new InvocationCapture();
 try {
   transitionPlannerStatus(line, "running", null, { broadcastState: false });
   saveLine(line);
@@ -1087,15 +1096,35 @@ try {
   prevSessionCfg = line.sessionCfg;
   line.sessionCfg = { harness: cfg.harness, model: cfg.model, effort: cfg.effort,
     timeLimit: cfg.timeLimit };
-  plan = planPlannerRun(cfg, { prompt, workdir: line.workdir,
+  plan = planHarnessRun(cfg, { phase: "planner", prompt, workdir: line.workdir,
     sessionId: line.sessionId, autoApprove: AUTO_APPROVE,
     ...systemPromptOptions(cfg.harness, line.rolePrompt, SYSTEM_PROMPT_DIR) });
-  adapter = plan.adapter;
-  runEnv = { ...process.env, ...plan.env };
-  runCwd = plan.cwd === undefined ? process.cwd() : path.resolve(plan.cwd);
-  child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
-    env: runEnv,
-    ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
+  // The runner enforces the time limit (timers are read now, so tests can
+  // swap the clock). A synchronous throw lands in the catch below.
+  handle = startRun({ entry: plan.entry,
+    ctx: buildCtx({ entry: plan.entry, env: process.env, log: slog, sdk: HARNESS_SDK }),
+    request: plan.request, timers: timerApi,
+    hooks: {
+      // Runs inside the process close event when the run has a child.
+      onDone: (runResult) => closePlanner(runResult),
+      // The first session id ends the fresh-session seeding.
+      onSession: (id) => {
+        if (line.sessionId) return;
+        line.sessionId = id;
+        // The fresh session has received the handoff summary.
+        line.handoff = null;
+        line.initialBrief = null;
+      },
+      onEntry: (entry) => {
+        if (typeof entry.at !== "number") entry.at = Date.now();
+        runOutput.add(entry);
+        if (isPromptEcho(entry)) return;
+        appendTranscript(line.transcript, entry);
+        slog("debug", "planner.entry", { lineId: line.id, type: entry.type,
+          role: entry.role || null, chars: entry.text.length, text: preview(entryText(entry), 200) });
+        broadcast(line, "entry", entry);
+      },
+    } });
   } catch (error) {
     // The run never started: no child exists. Keep the request, show the
     // failure, and do not pump (a retry loop). The next prompt or settings
@@ -1114,57 +1143,18 @@ try {
     return;
   }
   const runId = crypto.randomUUID();
-  const run = { runId, child, intentionalStop: false, stopTimer: null, errorTimer: null };
+  // The raw child (when the run has one) is the stop target and the
+  // stale-run key; a plugin run without a child uses the handle.
+  const runChild = handle.child || handle;
+  const run = { runId, child: runChild, intentionalStop: false, stopTimer: null, errorTimer: null };
   line.activePlannerRun = run;
   line.runId = runId;
-  line.child = child;
+  line.child = runChild;
   broadcast(line, "state", dashboardStateForLine(line));
   broadcast(line, "status", { status: line.status });
 
-  // Harnesses without a native time limit need the server to enforce it.
-  let killTimer = null;
-  if (!adapter.supportsNativeTimeLimit) {
-    killTimer = timerApi.setTimeout(() => { try { child.kill("SIGTERM"); } catch {} },
-      cfg.timeLimit * 1000);
-  }
-
-  const runOutput = new InvocationCapture();
-  const stdoutRecords = new JsonlDecoder();
-  const consumePlannerRecord = (raw) => {
-    const parsed = parseJsonRecord(raw);
-    if (!parsed) return;
-    const entry = adapter.normalize(parsed);
-    if (!entry) return;
-    if (!line.sessionId && entry.sessionId) {
-      line.sessionId = entry.sessionId;
-      // The fresh session has received the handoff summary.
-      line.handoff = null;
-      line.initialBrief = null;
-    }
-    if (typeof entry.at !== "number") entry.at = Date.now();
-    runOutput.add(entry);
-    if (isPromptEcho(entry)) return;
-    appendTranscript(line.transcript, entry);
-    slog("debug", "planner.entry", { lineId: line.id, type: entry.type,
-      role: entry.role || null, chars: raw.length, text: preview(entryText(entry), 200) });
-    broadcast(line, "entry", entry);
-  };
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    for (const raw of stdoutRecords.push(chunk)) consumePlannerRecord(raw);
-  });
-
-  const stderr = new StderrCapture();
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (c) => stderr.push(c));
-  // A CLI that cannot start (e.g. not on PATH) emits "error" before
-  // "close"; without this listener the router process would crash.
-  let spawnError = null;
-  child.on("error", (err) => { spawnError = err; });
-
-  child.on("close", (code, signal) => {
-    if (line.activePlannerRun !== run || line.child !== child) return;
-    if (killTimer) timerApi.clearTimeout(killTimer);
+  closePlanner = (runResult) => {
+    if (line.activePlannerRun !== run || line.child !== runChild) return;
     if (run.clearTimers) run.clearTimers();
     line.child = null;
     line.activePlannerRun = null;
@@ -1173,26 +1163,19 @@ try {
     let caught = null;
   try {
     const intentionalStop = run.intentionalStop;
-    for (const raw of stdoutRecords.finish()) consumePlannerRecord(raw);
-    const finished = adapter.finalize();
-    if (finished) {
-      if (typeof finished.at !== "number") finished.at = Date.now();
-      runOutput.add(finished);
-      appendTranscript(line.transcript, finished);
-      broadcast(line, "entry", finished);
-    }
-    const result = spawnError ? "fail" : adapter.outcome(code, signal);
+    const result = runResult.outcome;
     const failure = result !== "ok"
-      ? describeFailure({ cmd: plan.cmd, code, signal, outcome: result, spawnError,
-        streamError: adapter.errorText(), stderr: stderr.text() })
+      ? describeFailure({ cmd: runResult.command, code: runResult.exitCode,
+        signal: runResult.signal, outcome: result, spawnError: runResult.spawnError,
+        streamError: runResult.errorText, stderr: runResult.stderr })
       : null;
-    slog("info", "planner.run.end", { lineId: line.id, code, result,
+    slog("info", "planner.run.end", { lineId: line.id, code: runResult.exitCode, result,
       ms: Date.now() - t0,
       error: failure ? preview(failure, 500) : undefined });
     if (line.sessionId) {
       recordTurn(line.context, { promptChars: prompt.length,
         outputChars: runOutput.text().length,
-        tokens: contextTokensForRun(adapter, line.sessionId, runEnv, runCwd) });
+        tokens: runResult.contextTokens });
       broadcastContext(line, "planner", line);
     }
     cleanupStage(line, "planner");
@@ -1244,7 +1227,7 @@ try {
       broadcast(line, "status", { status: line.status });
       pump(line);
     }
-  });
+  };
 }
 
 function runningCount(line) {
@@ -1257,7 +1240,8 @@ function spawnWorker(line, worker, prompt, resume) {
   worker.runGeneration = runId;
   worker.activeInvocationId = invocationId;
   saveLine(line);
-  let phase, cfg, effective, plan, adapter, runEnv, runCwd, child;
+  let phase, cfg, effective, plan, handle, closeWorker;
+  const workerRunOutput = new InvocationCapture();
 try {
   phase = phaseForWorker(worker.role, worker.kind);
   cfg = workerSettings(line, worker);
@@ -1279,24 +1263,41 @@ try {
   } else if (!resume && prompt === worker.prompt) {
     prompt = brief;
   }
-  plan = planWorkerRun({ ...cfg, ...effective }, {
+  plan = planHarnessRun({ ...cfg, ...effective }, {
     phase, prompt, workdir: worker.worktreePath,
     sessionId: resume && worker.sessionId ? worker.sessionId : null,
     autoApprove: AUTO_APPROVE,
     ...systemPromptOptions(effective.harness, worker.rolePrompt, SYSTEM_PROMPT_DIR),
   });
-  adapter = plan.adapter;
-  worker.adapter = adapter;
   slog("info", "worker.run.start", { lineId: line.id, workerId: worker.id,
     name: worker.name, role: worker.role, phase, harness: worker.harness,
     model: worker.model, resume: !!(resume && worker.sessionId),
     chars: prompt.length });
-  runEnv = { ...process.env, ...plan.env };
-  runCwd = plan.cwd === undefined ? process.cwd() : path.resolve(plan.cwd);
-  child = spawnProcess(plan.cmd, plan.args, { stdio: ["ignore", "pipe", "pipe"],
-    env: runEnv,
-    ...(plan.cwd !== undefined ? { cwd: plan.cwd } : {}) });
-  worker.child = child;
+  // The runner enforces the time limit with the global timers. A synchronous
+  // throw lands in the catch below.
+  handle = startRun({ entry: plan.entry,
+    ctx: buildCtx({ entry: plan.entry, env: process.env, log: slog, sdk: HARNESS_SDK }),
+    request: plan.request,
+    hooks: {
+      // Runs inside the process close event when the run has a child.
+      onDone: (result) => closeWorker(result),
+      // The first session id ends the fresh-session seeding.
+      onSession: (id) => {
+        if (worker.sessionId) return;
+        worker.sessionId = id;
+        worker.handoff = null;
+      },
+      onEntry: (entry) => {
+        if (typeof entry.at !== "number") entry.at = Date.now();
+        if (!entry.sessionId && worker.sessionId) entry.sessionId = worker.sessionId;
+        workerRunOutput.add(entry);
+        appendTranscript(worker.transcript, entry);
+        slog("debug", "worker.entry", { lineId: line.id, workerId: worker.id,
+          type: entry.type, role: entry.role || null, chars: entry.text.length,
+          text: preview(entryText(entry), 200) });
+        broadcast(line, "worker_entry", { workerId: worker.id, entry });
+      },
+    } });
   } catch (error) {
     // The run never started. Report it as a failed worker run.
     const message = error && error.message ? error.message : String(error);
@@ -1306,79 +1307,32 @@ try {
     workerClosed(line, worker, null, null, new InvocationCapture(), { invocationId, runId, outcome: "fail" });
     return;
   }
+  // The raw child (when the run has one) is the stop target; a plugin run
+  // without a child uses the handle.
+  const runChild = handle.child || handle;
+  worker.child = runChild;
 
-  // Harnesses without a native time limit need the server to enforce it.
-  let killTimer = null;
-  if (!adapter.supportsNativeTimeLimit) {
-    killTimer = setTimeout(() => { try { child.kill("SIGTERM"); } catch {} },
-      cfg.timeLimit * 1000);
-  }
-
-  const workerRunOutput = new InvocationCapture();
-  const stdoutRecords = new JsonlDecoder();
-  const consumeWorkerRecord = (raw) => {
-    const parsed = parseJsonRecord(raw);
-    if (!parsed) return;
-    const entry = adapter.normalize(parsed);
-    if (!entry) return;
-    if (!worker.sessionId && entry.sessionId) {
-      worker.sessionId = entry.sessionId;
-      worker.handoff = null;
-    }
-    if (typeof entry.at !== "number") entry.at = Date.now();
-    if (!entry.sessionId && worker.sessionId) entry.sessionId = worker.sessionId;
-    workerRunOutput.add(entry);
-    appendTranscript(worker.transcript, entry);
-    slog("debug", "worker.entry", { lineId: line.id, workerId: worker.id,
-      type: entry.type, role: entry.role || null, chars: raw.length,
-      text: preview(entryText(entry), 200) });
-    broadcast(line, "worker_entry", { workerId: worker.id, entry });
-  };
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    for (const raw of stdoutRecords.push(chunk)) consumeWorkerRecord(raw);
-  });
-
-  // Drain stderr: an unread pipe can fill up and block the child.
-  const stderr = new StderrCapture();
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (c) => stderr.push(c));
-  // A CLI that cannot start emits "error" before "close"; without this
-  // listener the router process would crash.
-  let spawnError = null;
-  child.on("error", (err) => { spawnError = err; });
-
-  child.on("close", (code, signal) => {
-    if (killTimer) clearTimeout(killTimer);
-    for (const raw of stdoutRecords.finish()) consumeWorkerRecord(raw);
-    const finished = adapter.finalize();
-    if (finished) {
-      if (typeof finished.at !== "number") finished.at = Date.now();
-      workerRunOutput.add(finished);
-      appendTranscript(worker.transcript, finished);
-      broadcast(line, "worker_entry", { workerId: worker.id, entry: finished });
-    }
-    const outcome = spawnError ? "fail" : adapter.outcome(code, signal);
+  closeWorker = (result) => {
     if (worker.sessionId && worker.role === "implementor") {
       recordTurn(worker.context, { promptChars: prompt.length,
         outputChars: workerRunOutput.text().length,
-        tokens: contextTokensForRun(adapter, worker.sessionId, runEnv, runCwd) });
+        tokens: result.contextTokens });
       broadcastContext(line, worker.id, worker);
     }
     // A stop request is not a failure: it needs no error detail.
-    worker.lastError = outcome !== "ok" && !worker.stopRequested
-      ? describeFailure({ cmd: plan.cmd, code, signal, outcome, spawnError,
-        streamError: adapter.errorText(), stderr: stderr.text() })
+    worker.lastError = result.outcome !== "ok" && !worker.stopRequested
+      ? describeFailure({ cmd: result.command, code: result.exitCode,
+        signal: result.signal, outcome: result.outcome, spawnError: result.spawnError,
+        streamError: result.errorText, stderr: result.stderr })
       : null;
-    workerClosed(line, worker, code, signal, workerRunOutput, { invocationId, runId, outcome });
-  });
+    workerClosed(line, worker, result.exitCode, result.signal, workerRunOutput,
+      { invocationId, runId, outcome: result.outcome });
+  };
 }
 
 function workerClosed(line, worker, code, signal, workerRunOutput = new InvocationCapture(), invocation = {}) {
   worker.child = null;
-  const outcome = invocation.outcome || (worker.adapter
-    ? worker.adapter.outcome(code, signal)
-    : (code === 0 ? "ok" : "fail"));
+  const outcome = invocation.outcome || (code === 0 ? "ok" : "fail");
   const report = workerRunOutput.text();
   const statusEvent = applyCompletion(worker, outcome, worker.stopRequested, report);
   if (worker.kind === "integration") {
@@ -2034,22 +1988,31 @@ const routeRequest = (req, res) => {
   if (req.method === "GET" && url.pathname === "/api/harnesses") {
     const refresh = url.searchParams.get("refresh") === "1";
     harnessProbe(refresh).then((cached) => {
-      json(res, 200, { harnesses: cached.harnesses, probedAt: cached.atIso });
+      json(res, 200, { harnesses: cached.harnesses, probedAt: cached.atIso, pluginProblems: harnessPluginProblems() });
     }).catch(() => json(res, 500, { error: "harness probe failed" }));
     return;
   }
 
-  // Per-provider pi detail: {id, authMode, auth, loginHint, models}. The
-  // provider is validated against the discovered provider list; the auth
-  // check runs per request (never cached) with an argument array and its
-  // raw output is never returned.
-  if (req.method === "GET" && url.pathname === "/api/harnesses/pi") {
+  // Per-provider detail for any harness with providers: {id, authMode, auth,
+  // loginHint, models}. The provider is validated against the cached provider
+  // list; models and the auth check run per request (never cached). Only
+  // auth and loginHint of the auth check leave, never raw output.
+  const detailMatch = req.method === "GET"
+    && /^\/api\/harnesses\/([^/]+)$/.exec(url.pathname);
+  if (detailMatch) {
+    const harnessId = detailMatch[1];
+    const entry = ID_RE.test(harnessId) ? getHarness(harnessId) : null;
+    if (!entry) return json(res, 404, { error: `unknown harness '${harnessId}'` });
+    if (!(entry.plugin.capabilities && entry.plugin.capabilities.providers)) {
+      return json(res, 400, { error: `harness '${harnessId}' has no providers` });
+    }
     const provider = url.searchParams.get("provider");
     const refresh = url.searchParams.get("refresh") === "1";
     harnessProbe(refresh).then(async (cached) => {
-      const piEntry = probeResultFor(cached.harnesses, "pi");
-      const result = await piProviderDetail(provider, piEntry,
-        (cmd) => runProbe(cmd));
+      const result = await providerDetail({
+        entry, provider, cached: probeResultFor(cached.harnesses, harnessId),
+        sdk: HARNESS_SDK, env: process.env, log: slog,
+      });
       if (result.error) return json(res, 400, { error: result.error });
       return json(res, 200, result.detail);
     }).catch(() => json(res, 500, { error: "harness probe failed" }));
@@ -2554,8 +2517,8 @@ const routeRequest = (req, res) => {
         return json(res, 400, { error: "expected {name, prompt}" });
       }
       if (body.harness !== undefined && body.harness !== null
-        && (typeof body.harness !== "string" || !HARNESS_IDS.includes(body.harness))) {
-        return json(res, 400, { error: `harness must be one of: ${HARNESS_IDS.join(", ")}` });
+        && (typeof body.harness !== "string" || !isHarness(body.harness))) {
+        return json(res, 400, { error: `harness must be one of: ${harnessIds().join(", ")}` });
       }
       if (body.harness && !await gateHarnesses([body.harness], res)) return;
       if (line.deleted || lines.get(line.id) !== line) return json(res, 404, { error: "no such line" });
@@ -3114,9 +3077,13 @@ const routeRequest = (req, res) => {
     const harness = worker ? worker.harness || cfg.harness
       : line.sessionCfg?.harness || line.plannerHarness || cfg.harness;
     res.setHeader("Cache-Control", "no-store");
+    const entry = getHarness(harness);
+    const options = entry
+      ? { entry, ctx: buildCtx({ entry, env: process.env, log: slog, sdk: HARNESS_SDK }), log: slog }
+      : undefined;
     loadTranscript({ harness, sessionId: target.sessionId,
       workdir: worker ? worker.worktreePath || line.workdir : line.workdir,
-      transcript: target.transcript }).then((history) => {
+      transcript: target.transcript }, options).then((history) => {
       if (!res.destroyed) json(res, 200, history);
     }).catch((error) => {
       slog("error", "transcript.load-failed", { lineId: line.id, workerId: worker?.id, error: String(error.message) });
@@ -3447,7 +3414,7 @@ if (HTTPS_PORT) {
 }
 }
 
-module.exports = { saveLine, loadLines, restoreWorkerTranscript, normalizeWorkerTranscriptEntry, stopPlannerRun, pump, spawnWorker, deliverToInstance, dashboardStateForLine, requestHandler, lines,
+module.exports = { compactPlanner, saveLine, loadLines, restoreWorkerTranscript, normalizeWorkerTranscriptEntry, stopPlannerRun, pump, spawnWorker, deliverToInstance, dashboardStateForLine, requestHandler, lines,
   createServer: () => server,
   setSpawnForTest: (fn) => { spawnProcess = fn; },
   setLifecycleHooksForTest: (hooks) => { lifecycleTestHooks = hooks; },

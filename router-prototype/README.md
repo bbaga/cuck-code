@@ -1193,10 +1193,13 @@ The old per-phase shape `"pipeline": {"implementor": {...}}` answers 400 (see
 above).
 
 `GET /api/harnesses` probes every harness (version and auth commands, 2 s
-timeout each) and returns `{ harnesses: [...], probedAt }`. Results are
-cached for 30 seconds; `?refresh=1` skips the cache. Per harness it reports
-`installed`, `auth` (`ok`, `missing`, or `unknown`), `version`, and
-`loginHint`. The `vibe` entry also carries `models`: a deduplicated
+timeout each) and returns `{ harnesses: [...], probedAt, pluginProblems }`.
+Results are cached for 30 seconds; `?refresh=1` skips the cache. Per harness
+it reports `installed`, `auth` (`ok`, `missing`, or `unknown`), `version`,
+`loginHint`, `displayName`, and `capabilities` (`resume`, `systemPrompt`,
+`nativeTimeLimit`, `providers`). A harness that is not built in also has
+`plugin: { layer, folder }`. `pluginProblems` is
+`[{ layer, path, errors }]`: one item for each plugin that did not load. The `vibe` entry also carries `models`: a deduplicated
 `[{value, label}]` list built from the code defaults, the per-phase
 `<PHASE>_MODEL` env values, `VIBE_ACTIVE_MODEL`, and `VIBE_MODELS`
 (a comma-separated list of extra model ids; empty values are ignored).
@@ -1219,8 +1222,10 @@ base `auth` stays `unknown` because the auth state depends on the
 provider. Creating a line or spawning a worker with a harness that is not
 installed fails with 400.
 
-`GET /api/harnesses/pi?provider=<provider>` returns the pi detail for one
-provider: `{ id: "pi", authMode, auth, loginHint, models }`, where `auth`
+`GET /api/harnesses/:id?provider=<provider>` works for each harness with
+`capabilities.providers`. `/api/harnesses/pi` is the same route. An unknown id
+returns 404. A harness without providers returns 400. For pi it returns the
+detail for one provider: `{ id: "pi", authMode, auth, loginHint, models }`, where `auth`
 is `ok`, `missing`, or `unknown`, and `models` are the provider-qualified
 choices (`provider/model`). The provider is validated against the
 discovered provider list; a missing or unknown provider returns 400 with a
@@ -1273,6 +1278,18 @@ worker failure is stored on the worker as `lastError` (persisted, and
 listed by the workers API), shown in the banner, the worker node tooltip,
 and the worker view, and appended to the planner wake prompt as
 `FAILURE DETAIL`. Runs that cannot start no longer crash the router.
+
+### Harness plugins
+
+A harness plugin adds a coding CLI or a pure JavaScript runner. The four
+built-in harnesses (`vibe`, `pi`, `codex`, `claude`) use the same interface.
+Put `harnesses/<id>/index.js` in the managed or user plugin layer. The file
+exports a factory that returns the plugin object (interface v1). The ids of
+the built-ins are reserved. `GET /api/harnesses` lists each plugin with its
+`plugin: { layer, folder }`, and `pluginProblems` lists each plugin that did
+not load. Two examples are in `docs/examples/harness-plugins/`. The
+[authoring guide](docs/harness-plugins.md) describes the contract, the SDK,
+resume, the time limit, and the system prompt modes.
 
 ## Work registry (cross-line coordination)
 
@@ -1366,6 +1383,9 @@ approval prompts, so every tool call (including `git push`, `gh`, file
 deletion) runs without asking. Set `LINE_AUTO_APPROVE=0` to run lines under
 `--agent accept-edits` instead — side-effecting commands will then be denied,
 not queued.
+
+Harness plugins run inside the router process with its user rights. Install
+only trusted code (see [docs/harness-plugins.md](docs/harness-plugins.md)).
 
 ## Logging
 

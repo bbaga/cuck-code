@@ -1,0 +1,125 @@
+{
+  "claude": {
+    "harness": "claude",
+    "entries": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "text": "Hello from claude",
+        "sessionId": "claude-session-1"
+      },
+      {
+        "type": "message",
+        "role": "assistant",
+        "text": "Part two",
+        "sessionId": "claude-session-1"
+      }
+    ],
+    "sessionId": "claude-session-1",
+    "contextTokens": null,
+    "errorText": null,
+    "outcomes": {
+      "0,null": "ok",
+      "1,null": "fail",
+      "3,null": "fail",
+      "null,SIGTERM": "timeout",
+      "null,SIGKILL": "fail"
+    }
+  },
+  "codex": {
+    "harness": "codex",
+    "entries": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "text": "Hello from codex",
+        "sessionId": "codex-session-1"
+      },
+      {
+        "type": "message",
+        "role": "assistant",
+        "text": "Second line",
+        "sessionId": "codex-session-1"
+      }
+    ],
+    "sessionId": "codex-session-1",
+    "contextTokens": null,
+    "errorText": null,
+    "outcomes": {
+      "0,null": "ok",
+      "1,null": "fail",
+      "3,null": "fail",
+      "null,SIGTERM": "timeout",
+      "null,SIGKILL": "fail"
+    }
+  },
+  "pi": {
+    "harness": "pi",
+    "entries": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "text": "Hello from pi",
+        "sessionId": "pi-session-1"
+      }
+    ],
+    "sessionId": "pi-session-1",
+    "contextTokens": null,
+    "errorText": null,
+    "outcomes": {
+      "0,null": "ok",
+      "1,null": "fail",
+      "3,null": "fail",
+      "null,SIGTERM": "timeout",
+      "null,SIGKILL": "fail"
+    }
+  },
+  "pi-handoff": {
+    "harness": "pi",
+    "entries": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "text": "1. Check the report ✓\n2. Preserve punctuation!",
+        "sessionId": "pi-handoff-session"
+      }
+    ],
+    "sessionId": "pi-handoff-session",
+    "contextTokens": null,
+    "errorText": null,
+    "outcomes": {
+      "0,null": "ok",
+      "1,null": "fail",
+      "3,null": "fail",
+      "null,SIGTERM": "timeout",
+      "null,SIGKILL": "fail"
+    }
+  },
+  "vibe": {
+    "harness": "vibe",
+    "entries": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "text": "Hello from vibe",
+        "sessionId": "vibe-session-1"
+      },
+      {
+        "type": "message",
+        "role": "assistant",
+        "text": "Second part",
+        "sessionId": "vibe-session-1"
+      }
+    ],
+    "sessionId": "vibe-session-1",
+    "contextTokens": null,
+    "errorText": null,
+    "outcomes": {
+      "0,null": "ok",
+      "1,null": "fail",
+      "3,null": "timeout",
+      "null,SIGTERM": "fail",
+      "null,SIGKILL": "fail"
+    }
+  }
+}
