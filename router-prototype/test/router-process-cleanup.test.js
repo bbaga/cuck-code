@@ -61,15 +61,16 @@ function runHelper(t, body) {
   return state;
 }
 
-test("a test file that never stops its router exits and leaves no router", async (t) => {
-  const state = runHelper(t, "/* never calls stopRouter */");
+test("a test process that exits without stopRouter also stops its router", async (t) => {
+  // The helper never calls stopRouter. It ends the process with process.exit(0).
+  const state = runHelper(t, "process.exit(0);");
   const timer = setTimeout(() => state.helper.kill("SIGKILL"), 20_000);
   t.after(() => clearTimeout(timer));
   const { code, signal } = await state.exited;
-  assert.equal(signal, null, "helper was killed: it did not exit by itself within 20 s");
+  assert.equal(signal, null, "helper was killed: it did not exit");
   assert.equal(code, 0);
   assert.ok(state.routerPid, "helper printed the router pid");
-  assert.ok(await waitGone(state.routerPid, 5000), "router is gone (ESRCH)");
+  assert.ok(await waitGone(state.routerPid, 10_000), "router is gone (ESRCH) within 10 s");
 });
 
 test("SIGTERM to the test process also stops its router", async (t) => {

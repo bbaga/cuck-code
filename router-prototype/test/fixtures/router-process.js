@@ -96,9 +96,6 @@ async function startRouter(root, extraEnv = {}, { docker = NOOP_DOCKER } = {}) {
       ? `router did not log registry.ready within ${READY_LIMIT_MS} ms`
       : "router exited before it logged registry.ready");
   }
-  // A leaked router must not keep the test process alive. The exit handler kills it.
-  child.unref();
-  child.stdout.unref();
   return router;
 }
 
