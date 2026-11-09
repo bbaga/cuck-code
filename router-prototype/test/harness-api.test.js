@@ -11,6 +11,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { startRouter, stopRouter } = require("./fixtures/router-process");
+const { writeFakeClis } = require("./fixtures/fake-harness-clis");
 
 let router = null;
 let baseUrl = null;
@@ -18,42 +19,7 @@ let tmpDir = null;
 let piLog = null;
 let failFlag = null;
 let listFailFlag = null;
-
-const PI_CATALOG = [
-  "Provider  Model",
-  "--------------------",
-  "anthropic   claude-sonnet-4",
-  "openai      gpt-5",
-].join("\n");
-
-function writeFakeClis(binDir) {
-  const piLogPath = path.join(tmpDir, "pi-calls.log");
-  const failFlag = path.join(tmpDir, "pi-auth-fails");
-  const listFailFlag = path.join(tmpDir, "pi-list-fails");
-  const pi = `#!/bin/sh
-printf '%s\\n' "$@" >> "${piLogPath}"
-printf -- '---\\n' >> "${piLogPath}"
-if [ "$1" = "--version" ]; then echo "pi 0.87.1"; exit 0; fi
-if [ "$1" = "--list-models" ]; then
-  if [ -e "${listFailFlag}" ]; then echo "Failed to load catalog"; exit 1; fi
-  printf '${PI_CATALOG.replace(/\n/g, "\\n")}\\n'
-  exit 0
-fi
-if [ "$1" = "auth" ] && [ "$2" = "check" ]; then
-  if [ -e "${failFlag}" ]; then echo "not logged in"; exit 1; fi
-  echo '{"loginHint":"run pi /login","apiKey":"sk-secret"}'
-  exit 0
-fi
-exit 1
-`;
-  const vibe = `#!/bin/sh
-if [ "$1" = "--version" ]; then echo "vibe 3.0.2"; exit 0; fi
-exit 1
-`;
-  fs.writeFileSync(path.join(binDir, "pi"), pi, { mode: 0o755 });
-  fs.writeFileSync(path.join(binDir, "vibe"), vibe, { mode: 0o755 });
-  return { piLogPath, failFlag, listFailFlag };
-}
+let listDelayFlag = null;
 
 function piCalls() {
   const raw = fs.readFileSync(piLog, "utf8");
@@ -72,10 +38,22 @@ before(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "harness-api-test-"));
   const binDir = path.join(tmpDir, "bin");
   fs.mkdirSync(binDir);
-  piLog = writeFakeClis(binDir).piLogPath;
+  const fake = writeFakeClis(binDir, tmpDir);
+  piLog = fake.piLogPath;
+  // Discovery probes every built-in. Stubs keep a host `claude` or `codex`
+  // (slow to start under load) out of this test.
+  for (const name of ["claude", "codex"]) {
+    fs.writeFileSync(path.join(binDir, name), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  }
+  listDelayFlag = fake.listDelayFlag;
   failFlag = path.join(tmpDir, "pi-auth-fails");
   listFailFlag = path.join(tmpDir, "pi-list-fails");
-  router = await startRouter(path.join(tmpDir, "lines"), { PATH: `${binDir}:${process.env.PATH}` });
+  // Known limits: a slow machine must not turn a slow fake CLI into an empty catalog.
+  router = await startRouter(path.join(tmpDir, "lines"), {
+    PATH: `${binDir}:${process.env.PATH}`,
+    CUCK_PROBE_TIMEOUT_MS: "60000",
+    CUCK_DISCOVERY_TIMEOUT_MS: "60000",
+  });
   baseUrl = router.base;
 });
 
@@ -197,4 +175,17 @@ test("a failed catalog command yields no providers over HTTP", { timeout: 30_000
   const recovered = await getJson("/api/harnesses?refresh=1");
   const pi = recovered.body.harnesses.find((h) => h.id === "pi");
   assert.strictEqual(pi.authModes.length, 2);
+});
+
+test("a slow catalog command still yields the providers (regression: load flake)", { timeout: 30_000 }, async () => {
+  // 2.5 s is above the old fixed 2 s command limit, which loaded machines reached.
+  fs.writeFileSync(listDelayFlag, "2.5");
+  try {
+    const { body } = await getJson("/api/harnesses?refresh=1");
+    const pi = body.harnesses.find((h) => h.id === "pi");
+    assert.strictEqual(pi.authModes.length, 2);
+    assert.strictEqual(pi.models.length, 2);
+  } finally {
+    fs.rmSync(listDelayFlag, { force: true });
+  }
 });

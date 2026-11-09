@@ -353,9 +353,9 @@
 <script>
 window.addEventListener("DOMContentLoaded", () => {
   const { nodeRowsFromResolved, layoutGraph, nodeRowsFromGraphView, nodeSummaryText, edgeTextLines, buildNodeSettingsPayload, buildCreateBody, pickerPipelines, buildGraphChangeBody, graphSwitchView, remapComplete,
-    pipelineOptionLabel, pipelineErrorsText, EFFORT_LEVELS, parseContextSize, formatTokens, filterInstalled, authBadge, harnessReloadOutcome, previewForIntegration,
+    pipelineOptionLabel, pipelineErrorsText, EFFORT_LEVELS, parseContextSize, formatTokens, filterInstalled, authBadge, harnessOptionLabel, pluginProblemsSummary, harnessReloadOutcome, previewForIntegration,
     previewSelectionKey, previewSelectionExists, isPassingIntegration, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
-    PI_HARNESS_ID, VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, piDetailUrl, piProviderFromModel,
+    VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, harnessHasProviders, providerDetailUrl, providerFromModel, authStatusText,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
     clearHarnessState, clearProviderState, shouldHideValidator,
     shouldShowIntegrationValidator, buildGraphLanes,
@@ -2056,6 +2056,7 @@ window.addEventListener("DOMContentLoaded", () => {
   let installedHarnesses = [];
   let harnessMissingText = "";
   let harnessErrorText = "";
+  let harnessPluginProblems = [];
   let harnessRequest = null;
   const harnessListeners = new Set();
   function reloadHarnesses() {
@@ -2066,13 +2067,16 @@ window.addEventListener("DOMContentLoaded", () => {
         const res = await fetch("/api/harnesses?refresh=1");
         const data = await res.json().catch(() => null);
         outcome = harnessReloadOutcome({ ok: res.ok, status: res.status, data,
-          previous: installedHarnesses, previousMissingText: harnessMissingText });
+          previous: installedHarnesses, previousMissingText: harnessMissingText,
+          previousPluginProblems: harnessPluginProblems });
       } catch (err) {
         outcome = harnessReloadOutcome({ ok: false, status: 0, fetchError: err,
-          previous: installedHarnesses, previousMissingText: harnessMissingText });
+          previous: installedHarnesses, previousMissingText: harnessMissingText,
+          previousPluginProblems: harnessPluginProblems });
       }
       installedHarnesses = outcome.harnesses;
       harnessMissingText = outcome.missingText;
+      harnessPluginProblems = outcome.pluginProblems;
       harnessErrorText = outcome.errorText;
       // A throwing listener must not leave the slot set: every later reload
       // would return the same settled promise and the catalog would never
@@ -2142,6 +2146,8 @@ window.addEventListener("DOMContentLoaded", () => {
     const authSummary = document.createElement("div");
     authSummary.className = "authSummary";
     el.appendChild(authSummary);
+    // Created only when a plugin failed, so no empty element stays.
+    let pluginWarning = null;
 
     function buildRows(specs) {
       for (const old of [...el.querySelectorAll(".phaseRow")]) old.remove();
@@ -2216,14 +2222,16 @@ window.addEventListener("DOMContentLoaded", () => {
       // The pure state resets the value to "" for every non-Pi harness, so a
       // stale selected mode cannot survive a harness change. A saved provider
       // the catalog does not know stays listed, honestly labeled.
-      const piOptions = harness === PI_HARNESS_ID
-        ? [...authModeOptions(installedHarnesses, PI_HARNESS_ID)] : [];
-      if (harness === PI_HARNESS_ID && amSel.value
+      const hasProviders = harnessHasProviders(installedHarnesses, harness);
+      const piOptions = hasProviders
+        ? [...authModeOptions(installedHarnesses, harness)] : [];
+      if (hasProviders && amSel.value
         && !piOptions.some((o) => o.value === amSel.value)) {
         piOptions.push({ value: amSel.value, label: amSel.value + " (not in catalog)" });
       }
       const amState = authModeSelectState({
         harnessId: harness,
+        harnesses: installedHarnesses,
         options: piOptions,
         currentValue: amSel.value,
       });
@@ -2282,6 +2290,7 @@ window.addEventListener("DOMContentLoaded", () => {
     async function loadPiModels(key, savedModel) {
       const state = phaseState[key];
       const provider = authModeSelects[key].value;
+      const harnessId = harnessSelects[key].value;
       // Bind the request to the row instance: a rebuild restarts tokens.
       const gen = rowGen[key];
       // New mode: drop provider-specific state and invalidate older fetches.
@@ -2295,7 +2304,7 @@ window.addEventListener("DOMContentLoaded", () => {
       syncPhaseRow(key);
       const token = phaseState[key].tracker.next();
       const result = await fetchPiDetail({
-        url: piDetailUrl(provider),
+        url: providerDetailUrl(harnessId, provider),
         fetchImpl: fetch,
         isCurrent: (t) => !!phaseState[key] && rowGen[key] === gen
           && phaseState[key].tracker.isCurrent(t),
@@ -2318,6 +2327,7 @@ window.addEventListener("DOMContentLoaded", () => {
         ok: result.ok,
         status: result.status,
         data: result.data,
+        harnessId,
       });
       if (!outcome.apply || !phaseState[key]) return;
       piLoading[key] = false;
@@ -2325,7 +2335,9 @@ window.addEventListener("DOMContentLoaded", () => {
       if (outcome.piDetail) piDetailLoaded[key] = true;
       phaseState[key].piDetail = outcome.piDetail;
       phaseState[key].models = outcome.models;
-      phaseState[key].statusText = outcome.statusText;
+      // The shared apply helper words the state for Pi; name this harness.
+      phaseState[key].statusText = outcome.piDetail
+        ? authStatusText(outcome.piDetail, harnessId) : outcome.statusText;
       syncPhaseRow(key);
       // A hydration re-applies its saved model unless the user edited it.
       if (savedModel && !modelTouched[key]) selectValue(modelSelects[key], savedModel);
@@ -2343,11 +2355,12 @@ window.addEventListener("DOMContentLoaded", () => {
         for (const h of installedHarnesses) {
           const o = document.createElement("option");
           o.value = h.id;
-          o.textContent = h.id + (h.version ? " (" + h.version + ")" : "");
+          o.textContent = harnessOptionLabel(h);
+          if (h.plugin && h.plugin.folder) o.title = h.plugin.folder;
           sel.appendChild(o);
         }
         selectValue(sel, current, "not installed");
-        if (sel.value !== PI_HARNESS_ID) {
+        if (!harnessHasProviders(installedHarnesses, sel.value)) {
           phaseState[key].models = modelOptionsForPhase({
             harnesses: installedHarnesses,
             harnessId: sel.value,
@@ -2359,15 +2372,28 @@ window.addEventListener("DOMContentLoaded", () => {
         // A saved provider without a loaded answer (late catalog) loads
         // now, but only for an untouched row.
         const saved = savedSettings[key];
-        if (!rowTouched[key] && saved && sel.value === PI_HARNESS_ID) {
+        if (!rowTouched[key] && saved && harnessHasProviders(installedHarnesses, sel.value)) {
           const provider = typeof saved.authMode === "string" && saved.authMode
-            ? saved.authMode : piProviderFromModel(saved.model);
-          if (provider && authModeOptions(installedHarnesses, PI_HARNESS_ID).some((o) => o.value === provider)
+            ? saved.authMode : providerFromModel(saved.model);
+          if (provider && authModeOptions(installedHarnesses, sel.value).some((o) => o.value === provider)
             && (authModeSelects[key].value !== provider || (!piDetailLoaded[key] && !piLoading[key]))) {
             selectValue(authModeSelects[key], provider);
             loadPiModels(key, typeof saved.model === "string" ? saved.model : "");
           }
         }
+      }
+      const problems = pluginProblemsSummary(harnessPluginProblems);
+      if (problems && !pluginWarning) {
+        pluginWarning = document.createElement("div");
+        pluginWarning.className = "authSummary pluginProblems";
+        el.insertBefore(pluginWarning, authSummary);
+      }
+      if (problems) {
+        pluginWarning.textContent = problems.text;
+        pluginWarning.title = problems.title;
+      } else if (pluginWarning) {
+        pluginWarning.remove();
+        pluginWarning = null;
       }
       authSummary.textContent = [harnessErrorText, harnessMissingText].filter(Boolean).join(" ");
     }
@@ -2383,9 +2409,9 @@ window.addEventListener("DOMContentLoaded", () => {
       const saved = cfg && typeof cfg === "object" ? { ...cfg } : {};
       const model = typeof saved.model === "string" ? saved.model : "";
       const provider = typeof saved.authMode === "string" && saved.authMode
-        ? saved.authMode : piProviderFromModel(model);
+        ? saved.authMode : providerFromModel(model);
       const sameSaved = JSON.stringify(saved) === hydrateSig[key] && !rowTouched[key]
-        && (harnessSelects[key].value !== PI_HARNESS_ID || !provider
+        && (!harnessHasProviders(installedHarnesses, harnessSelects[key].value) || !provider
           || piDetailLoaded[key] || piLoading[key]);
       hydrateSig[key] = JSON.stringify(saved);
       savedSettings[key] = saved;
@@ -2393,12 +2419,12 @@ window.addEventListener("DOMContentLoaded", () => {
       modelTouched[key] = false;
       selectValue(harnessSelects[key], saved.harness, "not installed");
       if (!sameSaved) onHarnessChange(key);
-      if (harnessSelects[key].value === PI_HARNESS_ID && provider) {
+      if (harnessHasProviders(installedHarnesses, harnessSelects[key].value) && provider) {
         selectValue(authModeSelects[key], provider);
         if (!sameSaved) {
           syncPhaseRow(key);
           // Only a catalog-known provider gets its models fetched.
-          if (authModeOptions(installedHarnesses, PI_HARNESS_ID).some((o) => o.value === provider)) {
+          if (authModeOptions(installedHarnesses, harnessSelects[key].value).some((o) => o.value === provider)) {
             loadPiModels(key, model);
           }
         }

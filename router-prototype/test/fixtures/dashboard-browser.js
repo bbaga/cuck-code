@@ -40,7 +40,7 @@ async function startDashboardFixture({ port = 0 } = {}) {
     });
   } catch (err) {
     setSpawnForTest(null); setTimerForTest(null); lines.clear();
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     throw err;
   }
   const url = `http://127.0.0.1:${http1.address().port}`;
@@ -70,9 +70,10 @@ async function startDashboardFixture({ port = 0 } = {}) {
     if (closed) return closed;
     closed = new Promise((resolve) => {
       for (const res of line.clients) { try { res.end(); } catch {} }
-      http1.close(() => {
+      http1.close(async () => {
         setSpawnForTest(null); setTimerForTest(null); lines.clear();
-        fs.rmSync(dir, { recursive: true, force: true });
+        await server.registryIdle();
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
         resolve();
       });
       for (const socket of sockets) socket.destroy();

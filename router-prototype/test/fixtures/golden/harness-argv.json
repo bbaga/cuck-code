@@ -1,0 +1,951 @@
+{
+  "vibe": {
+    "builds": {
+      "new session": {
+        "cmd": "vibe",
+        "args": [
+          "--workdir",
+          "/tmp/work",
+          "--trust",
+          "--agent",
+          "accept-edits",
+          "--output",
+          "streaming",
+          "--time-limit",
+          "120",
+          "-p",
+          "Do the task"
+        ],
+        "env": {
+          "VIBE_ACTIVE_MODEL": "model-x"
+        },
+        "cwd": null
+      },
+      "resume": {
+        "cmd": "vibe",
+        "args": [
+          "--resume",
+          "s-1",
+          "--workdir",
+          "/tmp/work",
+          "--trust",
+          "--agent",
+          "accept-edits",
+          "--output",
+          "streaming",
+          "--time-limit",
+          "120",
+          "-p",
+          "Do the task"
+        ],
+        "env": {
+          "VIBE_ACTIVE_MODEL": "model-x"
+        },
+        "cwd": null
+      },
+      "model m-1": {
+        "cmd": "vibe",
+        "args": [
+          "--workdir",
+          "/tmp/work",
+          "--trust",
+          "--agent",
+          "accept-edits",
+          "--output",
+          "streaming",
+          "--time-limit",
+          "120",
+          "-p",
+          "Do the task"
+        ],
+        "env": {
+          "VIBE_ACTIVE_MODEL": "m-1"
+        },
+        "cwd": null
+      },
+      "model null": {
+        "cmd": "vibe",
+        "args": [
+          "--workdir",
+          "/tmp/work",
+          "--trust",
+          "--agent",
+          "accept-edits",
+          "--output",
+          "streaming",
+          "--time-limit",
+          "120",
+          "-p",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": null
+      },
+      "effort low": {
+        "cmd": "vibe",
+        "args": [
+          "--workdir",
+          "/tmp/work",
+          "--trust",
+          "--agent",
+          "accept-edits",
+          "--output",
+          "streaming",
+          "--time-limit",
+          "120",
+          "-p",
+          "Do the task"
+        ],
+        "env": {
+          "VIBE_ACTIVE_MODEL": "model-x"
+        },
+        "cwd": null
+      },
+      "effort high": {
+        "cmd": "vibe",
+        "args": [
+          "--workdir",
+          "/tmp/work",
+          "--trust",
+          "--agent",
+          "accept-edits",
+          "--output",
+          "streaming",
+          "--time-limit",
+          "120",
+          "-p",
+          "Do the task"
+        ],
+        "env": {
+          "VIBE_ACTIVE_MODEL": "model-x"
+        },
+        "cwd": null
+      },
+      "effort max": {
+        "cmd": "vibe",
+        "args": [
+          "--workdir",
+          "/tmp/work",
+          "--trust",
+          "--agent",
+          "accept-edits",
+          "--output",
+          "streaming",
+          "--time-limit",
+          "120",
+          "-p",
+          "Do the task"
+        ],
+        "env": {
+          "VIBE_ACTIVE_MODEL": "model-x"
+        },
+        "cwd": null
+      },
+      "autoApprove true": {
+        "cmd": "vibe",
+        "args": [
+          "--workdir",
+          "/tmp/work",
+          "--trust",
+          "--agent",
+          "accept-edits",
+          "--output",
+          "streaming",
+          "--time-limit",
+          "120",
+          "--auto-approve",
+          "-p",
+          "Do the task"
+        ],
+        "env": {
+          "VIBE_ACTIVE_MODEL": "model-x"
+        },
+        "cwd": null
+      },
+      "autoApprove false": {
+        "cmd": "vibe",
+        "args": [
+          "--workdir",
+          "/tmp/work",
+          "--trust",
+          "--agent",
+          "accept-edits",
+          "--output",
+          "streaming",
+          "--time-limit",
+          "120",
+          "-p",
+          "Do the task"
+        ],
+        "env": {
+          "VIBE_ACTIVE_MODEL": "model-x"
+        },
+        "cwd": null
+      },
+      "system prompt none": {
+        "cmd": "vibe",
+        "args": [
+          "--workdir",
+          "/tmp/work",
+          "--trust",
+          "--agent",
+          "accept-edits",
+          "--output",
+          "streaming",
+          "--time-limit",
+          "120",
+          "-p",
+          "Do the task"
+        ],
+        "env": {
+          "VIBE_ACTIVE_MODEL": "model-x"
+        },
+        "cwd": null
+      },
+      "system prompt inline": {
+        "error": "harness \"vibe\" has no verified trusted system channel; refusing the system prompt"
+      },
+      "system prompt file": {
+        "error": "harness \"vibe\" has no verified trusted system channel; refusing the system prompt"
+      },
+      "dash prompt": {
+        "cmd": "vibe",
+        "args": [
+          "--workdir",
+          "/tmp/work",
+          "--trust",
+          "--agent",
+          "accept-edits",
+          "--output",
+          "streaming",
+          "--time-limit",
+          "120",
+          "--prompt=--- PLANNER TURN CONTEXT ---\nDo the task"
+        ],
+        "env": {
+          "VIBE_ACTIVE_MODEL": "model-x"
+        },
+        "cwd": null
+      }
+    },
+    "trustedSystemChannel": null,
+    "supportsNativeTimeLimit": true,
+    "usesSystemChannelRole": false,
+    "systemPromptOptionsLong": {},
+    "systemPromptOptionsShort": {},
+    "brief": "P"
+  },
+  "pi": {
+    "builds": {
+      "new session": {
+        "cmd": "pi",
+        "args": [
+          "--session-dir",
+          "/tmp/work/sessions",
+          "-p",
+          "Do the task",
+          "--mode",
+          "json",
+          "--model",
+          "model-x",
+          "--thinking",
+          "medium"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "resume": {
+        "cmd": "pi",
+        "args": [
+          "--session-id",
+          "s-1",
+          "-p",
+          "Do the task",
+          "--mode",
+          "json",
+          "--model",
+          "model-x",
+          "--thinking",
+          "medium"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "model m-1": {
+        "cmd": "pi",
+        "args": [
+          "--session-dir",
+          "/tmp/work/sessions",
+          "-p",
+          "Do the task",
+          "--mode",
+          "json",
+          "--model",
+          "m-1",
+          "--thinking",
+          "medium"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "model null": {
+        "cmd": "pi",
+        "args": [
+          "--session-dir",
+          "/tmp/work/sessions",
+          "-p",
+          "Do the task",
+          "--mode",
+          "json",
+          "--thinking",
+          "medium"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "effort low": {
+        "cmd": "pi",
+        "args": [
+          "--session-dir",
+          "/tmp/work/sessions",
+          "-p",
+          "Do the task",
+          "--mode",
+          "json",
+          "--model",
+          "model-x",
+          "--thinking",
+          "low"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "effort high": {
+        "cmd": "pi",
+        "args": [
+          "--session-dir",
+          "/tmp/work/sessions",
+          "-p",
+          "Do the task",
+          "--mode",
+          "json",
+          "--model",
+          "model-x",
+          "--thinking",
+          "high"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "effort max": {
+        "cmd": "pi",
+        "args": [
+          "--session-dir",
+          "/tmp/work/sessions",
+          "-p",
+          "Do the task",
+          "--mode",
+          "json",
+          "--model",
+          "model-x",
+          "--thinking",
+          "max"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "autoApprove true": {
+        "cmd": "pi",
+        "args": [
+          "--session-dir",
+          "/tmp/work/sessions",
+          "-p",
+          "Do the task",
+          "--mode",
+          "json",
+          "--model",
+          "model-x",
+          "--thinking",
+          "medium"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "autoApprove false": {
+        "cmd": "pi",
+        "args": [
+          "--session-dir",
+          "/tmp/work/sessions",
+          "-p",
+          "Do the task",
+          "--mode",
+          "json",
+          "--model",
+          "model-x",
+          "--thinking",
+          "medium"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "system prompt none": {
+        "cmd": "pi",
+        "args": [
+          "--session-dir",
+          "/tmp/work/sessions",
+          "-p",
+          "Do the task",
+          "--mode",
+          "json",
+          "--model",
+          "model-x",
+          "--thinking",
+          "medium"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "system prompt inline": {
+        "cmd": "pi",
+        "args": [
+          "--session-dir",
+          "/tmp/work/sessions",
+          "-p",
+          "Do the task",
+          "--mode",
+          "json",
+          "--model",
+          "model-x",
+          "--thinking",
+          "medium",
+          "--append-system-prompt",
+          "Be the role."
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "system prompt file": {
+        "cmd": "pi",
+        "args": [
+          "--session-dir",
+          "/tmp/work/sessions",
+          "-p",
+          "Do the task",
+          "--mode",
+          "json",
+          "--model",
+          "model-x",
+          "--thinking",
+          "medium",
+          "--append-system-prompt",
+          "<SYSTEM_PROMPT_FILE>"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "dash prompt": {
+        "cmd": "pi",
+        "args": [
+          "--session-dir",
+          "/tmp/work/sessions",
+          "-p",
+          "--- PLANNER TURN CONTEXT ---\nDo the task",
+          "--mode",
+          "json",
+          "--model",
+          "model-x",
+          "--thinking",
+          "medium"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      }
+    },
+    "trustedSystemChannel": {
+      "file": "--append-system-prompt",
+      "text": "--append-system-prompt",
+      "textPrefix": ""
+    },
+    "supportsNativeTimeLimit": false,
+    "usesSystemChannelRole": true,
+    "systemPromptOptionsLong": {
+      "systemPromptFile": "<TMP>/system-prompt-802df553d545f05a.md"
+    },
+    "systemPromptOptionsShort": {
+      "systemPrompt": "short"
+    },
+    "brief": "T"
+  },
+  "codex": {
+    "builds": {
+      "new session": {
+        "cmd": "codex",
+        "args": [
+          "exec",
+          "--json",
+          "-C",
+          "/tmp/work",
+          "--model",
+          "model-x",
+          "-c",
+          "model_reasoning_effort=medium",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": null
+      },
+      "resume": {
+        "cmd": "codex",
+        "args": [
+          "exec",
+          "resume",
+          "s-1",
+          "--json",
+          "-C",
+          "/tmp/work",
+          "--model",
+          "model-x",
+          "-c",
+          "model_reasoning_effort=medium",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": null
+      },
+      "model m-1": {
+        "cmd": "codex",
+        "args": [
+          "exec",
+          "--json",
+          "-C",
+          "/tmp/work",
+          "--model",
+          "m-1",
+          "-c",
+          "model_reasoning_effort=medium",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": null
+      },
+      "model null": {
+        "cmd": "codex",
+        "args": [
+          "exec",
+          "--json",
+          "-C",
+          "/tmp/work",
+          "-c",
+          "model_reasoning_effort=medium",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": null
+      },
+      "effort low": {
+        "cmd": "codex",
+        "args": [
+          "exec",
+          "--json",
+          "-C",
+          "/tmp/work",
+          "--model",
+          "model-x",
+          "-c",
+          "model_reasoning_effort=low",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": null
+      },
+      "effort high": {
+        "cmd": "codex",
+        "args": [
+          "exec",
+          "--json",
+          "-C",
+          "/tmp/work",
+          "--model",
+          "model-x",
+          "-c",
+          "model_reasoning_effort=high",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": null
+      },
+      "effort max": {
+        "cmd": "codex",
+        "args": [
+          "exec",
+          "--json",
+          "-C",
+          "/tmp/work",
+          "--model",
+          "model-x",
+          "-c",
+          "model_reasoning_effort=max",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": null
+      },
+      "autoApprove true": {
+        "cmd": "codex",
+        "args": [
+          "exec",
+          "--json",
+          "-C",
+          "/tmp/work",
+          "--model",
+          "model-x",
+          "-c",
+          "model_reasoning_effort=medium",
+          "--full-auto",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": null
+      },
+      "autoApprove false": {
+        "cmd": "codex",
+        "args": [
+          "exec",
+          "--json",
+          "-C",
+          "/tmp/work",
+          "--model",
+          "model-x",
+          "-c",
+          "model_reasoning_effort=medium",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": null
+      },
+      "system prompt none": {
+        "cmd": "codex",
+        "args": [
+          "exec",
+          "--json",
+          "-C",
+          "/tmp/work",
+          "--model",
+          "model-x",
+          "-c",
+          "model_reasoning_effort=medium",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": null
+      },
+      "system prompt inline": {
+        "cmd": "codex",
+        "args": [
+          "exec",
+          "--json",
+          "-C",
+          "/tmp/work",
+          "--model",
+          "model-x",
+          "-c",
+          "model_reasoning_effort=medium",
+          "-c",
+          "developer_instructions=Be the role.",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": null
+      },
+      "system prompt file": {
+        "error": "harness \"codex\" has no verified file channel for the system prompt; refusing systemPromptFile without systemPrompt text"
+      },
+      "dash prompt": {
+        "cmd": "codex",
+        "args": [
+          "exec",
+          "--json",
+          "-C",
+          "/tmp/work",
+          "--model",
+          "model-x",
+          "-c",
+          "model_reasoning_effort=medium",
+          "--- PLANNER TURN CONTEXT ---\nDo the task"
+        ],
+        "env": {},
+        "cwd": null
+      }
+    },
+    "trustedSystemChannel": {
+      "file": null,
+      "text": "-c",
+      "textPrefix": "developer_instructions="
+    },
+    "supportsNativeTimeLimit": false,
+    "usesSystemChannelRole": true,
+    "systemPromptOptionsLong": {
+      "systemPrompt": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    "systemPromptOptionsShort": {
+      "systemPrompt": "short"
+    },
+    "brief": "T"
+  },
+  "claude": {
+    "builds": {
+      "new session": {
+        "cmd": "claude",
+        "args": [
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--model",
+          "model-x",
+          "--dangerously-skip-permissions",
+          "--effort",
+          "medium",
+          "--",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "resume": {
+        "cmd": "claude",
+        "args": [
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--model",
+          "model-x",
+          "--dangerously-skip-permissions",
+          "--effort",
+          "medium",
+          "--resume",
+          "s-1",
+          "--",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "model m-1": {
+        "cmd": "claude",
+        "args": [
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--model",
+          "m-1",
+          "--dangerously-skip-permissions",
+          "--effort",
+          "medium",
+          "--",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "model null": {
+        "cmd": "claude",
+        "args": [
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--dangerously-skip-permissions",
+          "--effort",
+          "medium",
+          "--",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "effort low": {
+        "cmd": "claude",
+        "args": [
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--model",
+          "model-x",
+          "--dangerously-skip-permissions",
+          "--effort",
+          "low",
+          "--",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "effort high": {
+        "cmd": "claude",
+        "args": [
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--model",
+          "model-x",
+          "--dangerously-skip-permissions",
+          "--effort",
+          "high",
+          "--",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "effort max": {
+        "cmd": "claude",
+        "args": [
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--model",
+          "model-x",
+          "--dangerously-skip-permissions",
+          "--effort",
+          "medium",
+          "--",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "autoApprove true": {
+        "cmd": "claude",
+        "args": [
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--model",
+          "model-x",
+          "--dangerously-skip-permissions",
+          "--effort",
+          "medium",
+          "--",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "autoApprove false": {
+        "cmd": "claude",
+        "args": [
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--model",
+          "model-x",
+          "--dangerously-skip-permissions",
+          "--effort",
+          "medium",
+          "--",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "system prompt none": {
+        "cmd": "claude",
+        "args": [
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--model",
+          "model-x",
+          "--dangerously-skip-permissions",
+          "--effort",
+          "medium",
+          "--",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "system prompt inline": {
+        "cmd": "claude",
+        "args": [
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--model",
+          "model-x",
+          "--dangerously-skip-permissions",
+          "--effort",
+          "medium",
+          "--append-system-prompt",
+          "Be the role.",
+          "--",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "system prompt file": {
+        "cmd": "claude",
+        "args": [
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--model",
+          "model-x",
+          "--dangerously-skip-permissions",
+          "--effort",
+          "medium",
+          "--append-system-prompt-file",
+          "<SYSTEM_PROMPT_FILE>",
+          "--",
+          "Do the task"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      },
+      "dash prompt": {
+        "cmd": "claude",
+        "args": [
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--model",
+          "model-x",
+          "--dangerously-skip-permissions",
+          "--effort",
+          "medium",
+          "--",
+          "--- PLANNER TURN CONTEXT ---\nDo the task"
+        ],
+        "env": {},
+        "cwd": "/tmp/work"
+      }
+    },
+    "trustedSystemChannel": {
+      "file": "--append-system-prompt-file",
+      "text": "--append-system-prompt",
+      "textPrefix": ""
+    },
+    "supportsNativeTimeLimit": false,
+    "usesSystemChannelRole": true,
+    "systemPromptOptionsLong": {
+      "systemPromptFile": "<TMP>/system-prompt-802df553d545f05a.md"
+    },
+    "systemPromptOptionsShort": {
+      "systemPrompt": "short"
+    },
+    "brief": "T"
+  }
+}

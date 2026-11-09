@@ -156,49 +156,76 @@
     return normalizeOptions(piDetail && piDetail.models);
   }
 
-  // Model choices for one phase row. Pi shows only the selected provider's
-  // qualified models from its detail response; Vibe and Claude show base
-  // metadata models; other harnesses contribute nothing beyond the default
-  // option.
+  // True when the harness has a provider layer (listProviders/checkAuth).
+  // The authModes fallback keeps this working with a backend that does not
+  // send capabilities yet.
+  function harnessHasProviders(harnesses, harnessId) {
+    const entry = findHarness(harnesses, harnessId);
+    if (!entry) return false;
+    if (entry.capabilities && entry.capabilities.providers === true) return true;
+    return Array.isArray(entry.authModes) && entry.authModes.length > 0;
+  }
+
+  // Model choices for one phase row. A providers harness (Pi today) shows
+  // only the selected provider's qualified models from its detail response;
+  // every other harness shows its base metadata models, which is empty for
+  // harnesses without models.
   function modelOptionsForPhase({ harnesses, harnessId, piDetail }) {
-    if (harnessId === PI_HARNESS_ID) {
+    if (harnessId === PI_HARNESS_ID || harnessHasProviders(harnesses, harnessId)) {
       return piDetail ? piDetailModels(piDetail) : [];
     }
-    if (harnessId === VIBE_HARNESS_ID || harnessId === CLAUDE_HARNESS_ID) {
-      return baseModelOptions(harnesses, harnessId);
-    }
-    return [];
+    return baseModelOptions(harnesses, harnessId);
+  }
+
+  function providerDetailUrl(harnessId, provider) {
+    return (
+      "/api/harnesses/" +
+      encodeURIComponent(harnessId) +
+      "?provider=" +
+      encodeURIComponent(provider)
+    );
   }
 
   function piDetailUrl(provider) {
-    return "/api/harnesses/pi?provider=" + encodeURIComponent(provider);
+    return providerDetailUrl(PI_HARNESS_ID, provider);
   }
 
-  // The provider of a saved Pi model id: Pi model choices are
-  // provider-qualified ("provider/model"), so a saved model carries its
-  // provider. Returns "" when the id has no provider part.
-  function piProviderFromModel(model) {
+  // The provider of a saved provider-qualified model id
+  // ("provider/model"). Returns "" when the id has no provider part.
+  function providerFromModel(model) {
     if (typeof model !== "string") return "";
     const cut = model.indexOf("/");
     return cut > 0 ? model.slice(0, cut).trim() : "";
   }
 
-  // Human-readable auth state and login hint from a Pi detail response.
-  function piAuthStatusText(detail) {
+  const piProviderFromModel = providerFromModel;
+
+  // Human-readable auth state and login hint from a detail response.
+  function authStatusText(detail, harnessId) {
     if (!detail || typeof detail !== "object") return "";
     const hint =
       typeof detail.loginHint === "string" ? detail.loginHint.trim() : "";
     const suffix = hint ? " - " + hint : "";
-    if (detail.auth === "ok") return "pi auth ok" + suffix;
-    if (detail.auth === "missing") return "pi auth missing - run " + (hint || "pi /login");
-    return "pi auth unknown" + suffix;
+    if (detail.auth === "ok") return harnessId + " auth ok" + suffix;
+    if (detail.auth === "missing") {
+      return harnessId + " auth missing - run " + (hint || harnessId + " /login");
+    }
+    return harnessId + " auth unknown" + suffix;
   }
 
-  // Pure decision for one phase row's auth mode select. A non-Pi harness
-  // always resets the select to the empty default, so a stale selected
-  // value cannot survive a harness change.
-  function authModeSelectState({ harnessId, options, currentValue }) {
-    if (harnessId !== PI_HARNESS_ID) {
+  function piAuthStatusText(detail) {
+    return authStatusText(detail, PI_HARNESS_ID);
+  }
+
+  // Pure decision for one phase row's auth mode select. A harness without
+  // providers always resets the select to the empty default, so a stale
+  // selected value cannot survive a harness change. Without `harnesses`,
+  // only Pi has providers (the rule old callers rely on).
+  function authModeSelectState({ harnessId, options, currentValue, harnesses }) {
+    const hasProviders = harnesses
+      ? harnessHasProviders(harnesses, harnessId)
+      : harnessId === PI_HARNESS_ID;
+    if (!hasProviders) {
       return { hidden: true, disabled: true, options: [], value: "" };
     }
     const opts = normalizeOptions(options);
@@ -209,7 +236,8 @@
   // Pure decision for applying a Pi detail response. Call it after every
   // asynchronous boundary (fetch and response.json()) with a fresh
   // isCurrent check, so a stale response never touches newer state.
-  function piDetailApply({ isCurrent, ok, status, data }) {
+  // harnessId names the harness in texts; Pi texts stay as they were.
+  function piDetailApply({ isCurrent, ok, status, data, harnessId = PI_HARNESS_ID }) {
     if (!isCurrent) return { apply: false };
     if (!ok) {
       const error =
@@ -218,7 +246,8 @@
           : null;
       return {
         apply: true,
-        statusText: error || "Pi detail failed (HTTP " + status + ")",
+        statusText: error || (harnessId === PI_HARNESS_ID ? "Pi" : harnessId)
+          + " detail failed (HTTP " + status + ")",
         models: [],
         piDetail: null,
       };
@@ -737,6 +766,24 @@
     return text;
   }
 
+  // Option text for a harness select: the display name (or id), a plugin
+  // marker, and the version. A built-in keeps its "id (version)" text.
+  function harnessOptionLabel(entry) {
+    const name = entry.displayName || entry.id;
+    return name + (entry.plugin ? " (plugin)" : "")
+      + (entry.version ? " (" + entry.version + ")" : "");
+  }
+
+  // Warning for plugins that failed to load, or null when there is none.
+  // The paths go in the title so the line stays short.
+  function pluginProblemsSummary(problems) {
+    if (!Array.isArray(problems) || problems.length === 0) return null;
+    return {
+      text: problems.length + " harness plugin(s) failed to load",
+      title: problems.map((p) => (p && p.path) || "unknown path").join("\n"),
+    };
+  }
+
   function authBadge(entry) {
     if (!entry || entry.installed !== true) return "not installed";
     if (entry.auth === "ok") return "ok";
@@ -750,8 +797,9 @@
   // replaces the list with its installed entries and collects login hints.
   // The catalog stays authoritative: nothing here adds or keeps a harness
   // that the response does not report as installed.
-  function harnessReloadOutcome({ ok, status, data, fetchError, previous, previousMissingText }) {
-    const keep = { harnesses: previous || [], missingText: previousMissingText || "" };
+  function harnessReloadOutcome({ ok, status, data, fetchError, previous, previousMissingText, previousPluginProblems }) {
+    const keep = { harnesses: previous || [], missingText: previousMissingText || "",
+      pluginProblems: previousPluginProblems || [] };
     if (fetchError) {
       return { ...keep, errorText: "Harness catalog load failed: " + String(fetchError) };
     }
@@ -765,6 +813,7 @@
     const missing = harnesses.filter((h) => h.auth === "missing");
     return {
       harnesses,
+      pluginProblems: Array.isArray(data.pluginProblems) ? data.pluginProblems : [],
       errorText: "",
       missingText: missing.length
         ? "Login needed: " + missing.map((h) =>
@@ -1135,6 +1184,10 @@
     baseModelOptions,
     piDetailModels,
     modelOptionsForPhase,
+    harnessHasProviders,
+    providerDetailUrl,
+    providerFromModel,
+    authStatusText,
     piDetailUrl,
     piProviderFromModel,
     piAuthStatusText,
@@ -1162,6 +1215,8 @@
     preselectRemap,
     formatScopePanelData,
     authBadge,
+    harnessOptionLabel,
+    pluginProblemsSummary,
     harnessReloadOutcome,
     previewForIntegration,
     isPassingIntegration,

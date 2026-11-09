@@ -88,10 +88,11 @@ test.before(async () => {
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin);
   for (const agent of ["claude", "vibe", "codex", "pi"]) {
-    fs.writeFileSync(path.join(bin, agent), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${path.join(root, "agent-args.log")}"\nsleep 60\n`);
+    fs.writeFileSync(path.join(bin, agent), `#!/bin/sh\nLOG="${path.join(root, "agent-args.log")}"\n: >> "$LOG"\n[ -n "$AGENT_LOG_DELAY" ] && sleep "$AGENT_LOG_DELAY"\nprintf '%s\\n' "$*" >> "$LOG"\nsleep 60\n`);
     fs.chmodSync(path.join(bin, agent), 0o755);
   }
-  router = await startRouter(linesDir, { ROUTER_ALLOW_LOCAL_REPOS: "1",
+  // The fake agent makes its log, waits 0.3 s, then writes: the C4 test must wait for the text.
+  router = await startRouter(linesDir, { ROUTER_ALLOW_LOCAL_REPOS: "1", AGENT_LOG_DELAY: "0.3",
     PATH: `${bin}:${process.env.PATH}` });
   base = router.base;
 });
@@ -175,9 +176,15 @@ test("C4: feedback through the endpoint runs the implementor again with the rend
   assert.equal(w.status, "running");
   assert.equal(w.runGeneration, 2);
   const logFile = path.join(root, "agent-args.log");
-  for (let i = 0; i < 50 && !fs.existsSync(logFile); i++) await new Promise((r) => setTimeout(r, 100));
-  const log = fs.readFileSync(logFile, "utf8");
-  assert.ok(log.includes("Follow-up instructions from the planner (write them in ASD-STE100):\nFix the header.\n\nWhen done, reply with a report"), log);
+  // The agent creates the log before it writes the text: wait for the text.
+  const wanted = "Follow-up instructions from the planner (write them in ASD-STE100):\nFix the header.\n\nWhen done, reply with a report";
+  let log = "";
+  for (let i = 0; i < 200; i++) {
+    log = fs.existsSync(logFile) ? fs.readFileSync(logFile, "utf8") : "";
+    if (log.includes(wanted)) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.ok(log.includes(wanted), `agent log did not get the follow-up text in 10 s; last content: ${JSON.stringify(log)}`);
   const again = await post(fbLine, "feedback", { instance: "i1", instructions: "More." });
   assert.equal(again.status, 400, "a running instance is refused by the field check");
 });

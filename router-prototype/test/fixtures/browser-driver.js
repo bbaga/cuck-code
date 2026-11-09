@@ -17,6 +17,47 @@ function findBrowser(options) {
   throw err;
 }
 
+const LOCK_DIR = path.join(os.tmpdir(), 'cuck-browser-launch.lock');
+const LOCK_PID_FILE = path.join(LOCK_DIR, 'pid');
+const LOCK_NO_PID_GRACE_MS = 5000;
+const LOCK_WAIT_LIMIT_MS = 180000;
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+
+// Remove a lock whose owner is gone. A lock without a pid file is young: the owner is still writing it.
+function removeStaleLock() {
+  let pid = NaN;
+  try { pid = Number(fs.readFileSync(LOCK_PID_FILE, 'utf8')); } catch {}
+  if (Number.isInteger(pid) && pid > 0) {
+    if (pidAlive(pid)) return;
+  } else {
+    try { if (Date.now() - fs.statSync(LOCK_DIR).mtimeMs < LOCK_NO_PID_GRACE_MS) return; } catch { return; }
+  }
+  fs.rmSync(LOCK_DIR, { recursive: true, force: true });
+}
+
+async function acquireLaunchLock() {
+  const end = Date.now() + LOCK_WAIT_LIMIT_MS;
+  for (;;) {
+    try {
+      fs.mkdirSync(LOCK_DIR);
+      fs.writeFileSync(LOCK_PID_FILE, String(process.pid));
+      return;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+    removeStaleLock();
+    if (Date.now() > end) throw new Error(`timeout waiting for the browser launch lock ${LOCK_DIR} after ${LOCK_WAIT_LIMIT_MS} ms`);
+    await sleep(50);
+  }
+}
+
+function releaseLaunchLock() {
+  fs.rmSync(LOCK_DIR, { recursive: true, force: true });
+}
+
 async function readDevToolsPort(dir, proc) {
   const file = path.join(dir, 'DevToolsActivePort');
   const end = Date.now() + START_TIMEOUT_MS;
@@ -31,18 +72,58 @@ async function readDevToolsPort(dir, proc) {
   throw new Error('timeout waiting for DevToolsActivePort');
 }
 
+function chromeArgs(dir) {
+  const args = ['--headless=new', '--remote-debugging-port=0', '--no-first-run',
+    '--no-default-browser-check', `--user-data-dir=${dir}`];
+  if (process.platform === 'linux') args.push('--disable-dev-shm-usage', '--disable-gpu', '--no-sandbox');
+  return [...args, 'about:blank'];
+}
+
+function killProcessGroup(proc) {
+  try { process.kill(-proc.pid, 'SIGKILL'); } catch { try { proc.kill('SIGKILL'); } catch {} }
+}
+
+// One spawn attempt. The START_TIMEOUT_MS clock starts inside readDevToolsPort, after the lock is held.
+async function launchOnce(exe) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-driver-'));
+  const proc = spawn(exe, chromeArgs(dir), { stdio: 'ignore', detached: true });
+  const exited = new Promise((r) => proc.once('exit', r));
+  try {
+    return { proc, dir, exited, port: await readDevToolsPort(dir, proc) };
+  } catch (err) {
+    killProcessGroup(proc);
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    throw err;
+  }
+}
+
+// Launches Chrome one process at a time per machine. A dead start gets one more launch with a new profile.
+async function launchChrome(exe) {
+  await acquireLaunchLock();
+  try {
+    try {
+      return await launchOnce(exe);
+    } catch (first) {
+      try {
+        return await launchOnce(exe);
+      } catch (second) {
+        throw new Error(`${second.message} (first launch failed: ${first.message})`);
+      }
+    }
+  } finally {
+    releaseLaunchLock();
+  }
+}
+
 const KEYS = { Escape: { code: 'Escape', vk: 27 }, Enter: { code: 'Enter', vk: 13, text: '\r' } };
 
 async function openPage(url, options = {}) {
   const exe = findBrowser(options);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-driver-'));
-  const proc = spawn(exe, ['--headless=new', '--remote-debugging-port=0', '--no-first-run',
-    '--no-default-browser-check', `--user-data-dir=${dir}`, 'about:blank'], { stdio: 'ignore', detached: true });
+  const { proc, dir, exited, port } = await launchChrome(exe);
   let ws = null; let closing = null;
   const pending = new Map(); const seen = []; const blockedIds = new Set(); const urlById = new Map(); let nextId = 1;
-  const exited = new Promise((r) => proc.once('exit', r));
   const commandTimeoutMs = options.commandTimeoutMs || 15000;
-  const killGroup = () => { try { process.kill(-proc.pid, 'SIGKILL'); } catch { try { proc.kill('SIGKILL'); } catch {} } };
+  const killGroup = () => killProcessGroup(proc);
   const onExit = () => { killGroup(); try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
   const signalHandlers = ['SIGTERM', 'SIGINT'].map((sig) => {
     const handler = () => {
@@ -70,7 +151,6 @@ async function openPage(url, options = {}) {
   }
 
   try {
-    const port = await readDevToolsPort(dir, proc);
     const res = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT', signal: AbortSignal.timeout(START_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`cannot open page target: HTTP ${res.status}`);
     const target = await res.json();

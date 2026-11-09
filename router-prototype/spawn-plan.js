@@ -4,7 +4,8 @@
 // concrete child process plans. server.js calls these helpers; the unit
 // tests exercise them without starting the server or a CLI process.
 
-const { createHarness, trustedSystemChannel, writeSystemPromptFile } = require("./harness");
+const { createHarness, writeSystemPromptFile } = require("./harness");
+const { getHarness } = require("./harness-registry");
 const { fallbackPhaseSettings, resolveNodeSettings, defaultModelFor, EFFORT_LEVELS } = require("./pipeline-config");
 const { nodeSettingsFields } = require("./line-graph");
 
@@ -58,9 +59,24 @@ function resolveWorkerOverrides(cfg, worker, phase) {
 // channel; the body then stays off the command line.
 const SYSTEM_PROMPT_FILE_MIN_CHARS = 1000;
 
+// The registry entry of a harness id. The built-ins boot lazily, so a unit
+// test can call the planner without the server. An unknown id throws.
+function entryFor(harnessId) {
+  require("./harness-boot").bootHarnesses();
+  const entry = getHarness(harnessId);
+  if (!entry) throw new Error(`unknown harness id: ${harnessId}`);
+  return entry;
+}
+
+// The trusted role prompt channel of a harness: "file", "text" or "none".
+function systemPromptChannel(harnessId) {
+  return entryFor(harnessId).plugin.capabilities.systemPrompt;
+}
+
 // True when this harness gets the role part through its system channel.
 function usesSystemChannel(harnessId, rolePrompt) {
-  return typeof rolePrompt === "string" && rolePrompt !== "" && trustedSystemChannel(harnessId) !== null;
+  const channel = systemPromptChannel(harnessId);
+  return typeof rolePrompt === "string" && rolePrompt !== "" && channel !== "none";
 }
 
 // The system prompt options of one run: {} (nothing to send), {systemPrompt}
@@ -70,8 +86,7 @@ function usesSystemChannel(harnessId, rolePrompt) {
 // inline text. Pass dir = null to force inline text.
 function systemPromptOptions(harnessId, rolePrompt, dir) {
   if (!usesSystemChannel(harnessId, rolePrompt)) return {};
-  const channel = trustedSystemChannel(harnessId);
-  if (channel.file && dir && rolePrompt.length >= SYSTEM_PROMPT_FILE_MIN_CHARS) {
+  if (systemPromptChannel(harnessId) === "file" && dir && rolePrompt.length >= SYSTEM_PROMPT_FILE_MIN_CHARS) {
     return { systemPromptFile: writeSystemPromptFile(rolePrompt, dir) };
   }
   return { systemPrompt: rolePrompt };
@@ -86,6 +101,25 @@ function briefForHarness(harnessId, stored) {
     return stored.taskPrompt;
   }
   return stored.prompt;
+}
+
+// Plan one run through the harness registry. The request holds exactly the
+// fields of the plugin interface. systemPrompt* stay null when opts has none.
+function planHarnessRun(cfg, opts) {
+  const entry = entryFor(cfg.harness);
+  const request = {
+    phase: opts.phase,
+    prompt: opts.prompt,
+    workdir: opts.workdir,
+    sessionId: opts.sessionId || null,
+    model: cfg.model,
+    effort: cfg.effort,
+    timeLimitSec: cfg.timeLimit,
+    autoApprove: opts.autoApprove,
+    systemPrompt: opts.systemPrompt || null,
+    systemPromptFile: opts.systemPromptFile || null,
+  };
+  return { entry, request };
 }
 
 function planRun(cfg, opts) {
@@ -163,6 +197,7 @@ module.exports = {
   usesSystemChannel,
   systemPromptOptions,
   briefForHarness,
+  planHarnessRun,
   SYSTEM_PROMPT_FILE_MIN_CHARS,
   phaseForWorker,
   plannerSettings,

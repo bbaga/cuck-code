@@ -1,0 +1,2 @@
+#!/bin/sh
+exec ssh "${REMOTE_HOST:?set REMOTE_HOST}" claude "$@"

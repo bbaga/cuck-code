@@ -8,6 +8,7 @@ const { spawn } = require("node:child_process");
 
 const SERVER = path.join(__dirname, "..", "..", "server.js");
 const NOOP_DOCKER = "#!/bin/sh\nexit 0\n";
+const READY_LIMIT_MS = 15_000;
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Test routers never see the host's containers: `docker` is a stub.
@@ -17,6 +18,27 @@ function dockerBin(script) {
   fs.writeFileSync(docker, script);
   fs.chmodSync(docker, 0o755);
   return bin;
+}
+
+// Routers that are alive now. A router must never outlive its test process.
+const liveChildren = new Set();
+
+function killLiveChildren() {
+  for (const child of liveChildren) {
+    try { child.kill("SIGKILL"); } catch {}
+  }
+}
+
+// "exit" handlers must be synchronous: child.kill is synchronous.
+process.once("exit", killLiveChildren);
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  const onSignal = () => {
+    killLiveChildren();
+    process.removeListener(signal, onSignal);
+    // Send the signal again: the default exit behavior stays.
+    process.kill(process.pid, signal);
+  };
+  process.on(signal, onSignal);
 }
 
 async function freePort() {
@@ -35,19 +57,46 @@ async function startRouter(root, extraEnv = {}, { docker = NOOP_DOCKER } = {}) {
   const child = spawn(process.execPath, [SERVER], {
     env: { ...process.env, ...(cuckHome ? { CUCK_HOME: cuckHome } : {}), ...extraEnv, PORT: String(port), LINES_DIR: root,
       PATH: `${bin}:${extraEnv.PATH || process.env.PATH}` },
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "ignore"],
   });
+  liveChildren.add(child);
+  child.once("exit", () => liveChildren.delete(child));
   const router = { child, bin, cuckHome, base: `http://127.0.0.1:${port}` };
+  // Read all output so the child never blocks. Resolve `ready` on the registry.ready line.
+  let readyLine;
+  const ready = new Promise((resolve) => { readyLine = resolve; });
+  let pending = "";
+  child.stdout.on("data", (chunk) => {
+    pending += chunk;
+    const lines = pending.split("\n");
+    pending = lines.pop();
+    if (lines.some((line) => line.includes('"registry.ready"'))) readyLine();
+  });
+  child.once("exit", () => readyLine());
+  let httpUp = false;
   for (let i = 0; i < 200; i++) {
     try {
       const res = await fetch(router.base + "/api/lines", { signal: AbortSignal.timeout(1000) });
       await res.body?.cancel();
-      if (res.ok) return router;
+      if (res.ok) { httpUp = true; break; }
     } catch {}
     await wait(25);
   }
-  await stopRouter(router);
-  throw new Error("router did not start");
+  if (!httpUp) {
+    await stopRouter(router);
+    throw new Error("router did not start");
+  }
+  let timer;
+  const timedOut = new Promise((resolve) => { timer = setTimeout(() => resolve("timeout"), READY_LIMIT_MS); });
+  const outcome = await Promise.race([ready.then(() => "ready"), timedOut]);
+  clearTimeout(timer);
+  if (outcome === "timeout" || child.exitCode !== null || child.signalCode !== null) {
+    await stopRouter(router);
+    throw new Error(outcome === "timeout"
+      ? `router did not log registry.ready within ${READY_LIMIT_MS} ms`
+      : "router exited before it logged registry.ready");
+  }
+  return router;
 }
 
 // SIGTERM, then SIGKILL after the grace period. Resolves after the exit.
