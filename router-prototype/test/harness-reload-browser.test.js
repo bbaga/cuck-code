@@ -129,7 +129,10 @@ const openCreate = async (page) => {
 // recorded, no request is in flight, and the select state is stable across
 // two polls, so a mid-chain wipe or a late apply cannot race the assertion.
 const waitSettled = async (page, minFetches) => {
-  await page.waitFor(`${HARNESS_FETCHES} >= ${minFetches} && window.__harnessInFlight === 0`);
+  // The real probe runs fake CLIs: on a loaded host it can take longer than
+  // the default wait, and the probe limit is lifted, so wait for it.
+  await page.waitFor(`${HARNESS_FETCHES} >= ${minFetches} && window.__harnessInFlight === 0`,
+    { timeoutMs: 30000 });
   let last = null;
   for (let i = 0; i < 100; i++) {
     const now = JSON.stringify(await page.evaluate(HARNESS_STATE));
