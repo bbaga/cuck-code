@@ -461,7 +461,7 @@ test("harness reload: a slow probe command does not drop the harness from the ca
       throw e;
     }
     const claudeBin = writeFakeClis(bin, true);
-    fs.writeFileSync(claudeBin, CLAUDE_SCRIPT.replace("#!/bin/sh\n", "#!/bin/sh\nsleep 3\n"),
+    fs.writeFileSync(claudeBin, CLAUDE_SCRIPT.replace("--version) echo", "--version) sleep 3; echo"),
       { mode: 0o755 });
     await resetForm(page);
     await openCreate(page);
