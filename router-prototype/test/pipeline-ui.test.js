@@ -6,6 +6,10 @@ const path = require("node:path");
 const {
   EFFORT_LEVELS,
   PI_HARNESS_ID,
+  harnessHasProviders,
+  providerDetailUrl,
+  providerFromModel,
+  authStatusText,
   VIBE_HARNESS_ID,
   filterInstalled,
   findHarness,
@@ -26,6 +30,8 @@ const {
   clearHarnessState,
   clearProviderState,
   authBadge,
+  harnessOptionLabel,
+  pluginProblemsSummary,
   isFailedValidator,
   shouldHideValidator,
   shouldShowIntegrationValidator,
@@ -1089,4 +1095,114 @@ test("harness reload: a throwing listener cannot stall later reloads", () => {
   const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
   const reload = html.slice(html.indexOf("function reloadHarnesses"), html.indexOf("function setSelectOptions"));
   assert.match(reload, /try \{[\s\S]*?for \(const listener of harnessListeners\) listener\(\);[\s\S]*?\} finally \{[\s\S]*?harnessRequest = null;/);
+});
+
+test("harnessHasProviders uses capabilities or a non-empty authModes list", () => {
+  const harnesses = [
+    { id: "a", capabilities: { providers: true } },
+    { id: "b", authModes: [{ value: "x", label: "X" }] },
+    { id: "c", authModes: [], capabilities: { providers: false } },
+    { id: "d" },
+  ];
+  assert.strictEqual(harnessHasProviders(harnesses, "a"), true);
+  assert.strictEqual(harnessHasProviders(harnesses, "b"), true);
+  assert.strictEqual(harnessHasProviders(harnesses, "c"), false);
+  assert.strictEqual(harnessHasProviders(harnesses, "d"), false);
+  assert.strictEqual(harnessHasProviders(harnesses, "missing"), false);
+  assert.strictEqual(harnessHasProviders(undefined, "a"), false);
+});
+
+test("providerDetailUrl encodes the harness id and the provider", () => {
+  assert.strictEqual(
+    providerDetailUrl("remote claude", "a/b"),
+    "/api/harnesses/remote%20claude?provider=a%2Fb",
+  );
+  assert.strictEqual(piDetailUrl("x y"), providerDetailUrl("pi", "x y"));
+});
+
+test("providerFromModel matches piProviderFromModel", () => {
+  assert.strictEqual(providerFromModel("openai/gpt-5"), "openai");
+  assert.strictEqual(providerFromModel("gpt-5"), "");
+  assert.strictEqual(providerFromModel(null), "");
+  assert.strictEqual(piProviderFromModel, providerFromModel);
+});
+
+test("authStatusText is generic over the harness id", () => {
+  assert.strictEqual(authStatusText({ auth: "ok" }, "rc"), "rc auth ok");
+  assert.strictEqual(
+    authStatusText({ auth: "missing", loginHint: "rc login" }, "rc"),
+    "rc auth missing - run rc login",
+  );
+  assert.strictEqual(authStatusText({ auth: "x" }, "rc"), "rc auth unknown");
+  assert.strictEqual(authStatusText(null, "rc"), "");
+  assert.strictEqual(piAuthStatusText({ auth: "ok" }), authStatusText({ auth: "ok" }, "pi"));
+});
+
+test("authModeSelectState uses harnesses when given", () => {
+  const harnesses = [{ id: "rc", capabilities: { providers: true } }, { id: "pi" }];
+  const options = [{ value: "p", label: "P" }];
+  assert.strictEqual(
+    authModeSelectState({ harnessId: "rc", options, currentValue: "p", harnesses }).value,
+    "p",
+  );
+  assert.strictEqual(
+    authModeSelectState({ harnessId: "pi", options, currentValue: "p", harnesses }).hidden,
+    true,
+  );
+  assert.strictEqual(
+    authModeSelectState({ harnessId: "pi", options, currentValue: "p" }).hidden,
+    false,
+  );
+});
+
+test("modelOptionsForPhase: providers harness uses detail, others use base models", () => {
+  const harnesses = [
+    { id: "rc", capabilities: { providers: true }, models: [{ value: "m", label: "m" }] },
+    { id: "other", models: [{ value: "m", label: "M" }] },
+    { id: "codex" },
+  ];
+  const piDetail = { models: [{ value: "p/m", label: "p/m" }] };
+  assert.deepStrictEqual(
+    modelOptionsForPhase({ harnesses, harnessId: "rc", piDetail }),
+    [{ value: "p/m", label: "p/m" }],
+  );
+  assert.deepStrictEqual(modelOptionsForPhase({ harnesses, harnessId: "rc" }), []);
+  assert.deepStrictEqual(
+    modelOptionsForPhase({ harnesses, harnessId: "other" }),
+    [{ value: "m", label: "M" }],
+  );
+  assert.deepStrictEqual(modelOptionsForPhase({ harnesses, harnessId: "codex" }), []);
+});
+
+test("harnessOptionLabel keeps built-in labels and marks plugins", () => {
+  assert.strictEqual(harnessOptionLabel({ id: "pi", version: "0.87" }), "pi (0.87)");
+  assert.strictEqual(harnessOptionLabel({ id: "pi" }), "pi");
+  assert.strictEqual(
+    harnessOptionLabel({ id: "acme", displayName: "Acme", version: "1.0", plugin: { folder: "acme" } }),
+    "Acme (plugin) (1.0)");
+  assert.strictEqual(harnessOptionLabel({ id: "acme", plugin: { folder: "acme" } }), "acme (plugin)");
+});
+
+test("pluginProblemsSummary is null without problems and counts them otherwise", () => {
+  assert.strictEqual(pluginProblemsSummary(undefined), null);
+  assert.strictEqual(pluginProblemsSummary([]), null);
+  assert.deepStrictEqual(
+    pluginProblemsSummary([{ layer: "user", path: "/a", errors: [] }, { path: "/b" }]),
+    { text: "2 harness plugin(s) failed to load", title: "/a\n/b" });
+});
+
+test("harnessReloadOutcome carries pluginProblems and keeps them on failure", () => {
+  const problems = [{ layer: "user", path: "/a", errors: ["x"] }];
+  const ok = pipelineUiModule.harnessReloadOutcome({ ok: true, status: 200,
+    data: { harnesses: [], pluginProblems: problems } });
+  assert.deepStrictEqual(ok.pluginProblems, problems);
+  assert.deepStrictEqual(pipelineUiModule.harnessReloadOutcome({ ok: true, status: 200, data: { harnesses: [] } })
+    .pluginProblems, []);
+  assert.deepStrictEqual(pipelineUiModule.harnessReloadOutcome({ ok: false, status: 500, previousPluginProblems: problems })
+    .pluginProblems, problems);
+});
+
+test("piDetailApply names a plugin harness in its failure text", () => {
+  const out = piDetailApply({ isCurrent: true, ok: false, status: 502, data: null, harnessId: "acme" });
+  assert.strictEqual(out.statusText, "acme detail failed (HTTP 502)");
 });
