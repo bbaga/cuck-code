@@ -907,10 +907,15 @@ function handlerFailed(req, res, err) {
 
 // Run a probe command with a timeout. Resolves { code, stdout }, or null
 // when the command cannot start or times out.
-const PROBE_TIMEOUT_MS = 2000;
-let probeTimeoutMs = PROBE_TIMEOUT_MS;
+// Time limits of the harness probes. The defaults are the product values.
+// A test router sets both through env, so a slow machine cannot change a result.
+function envMs(name, fallback) {
+  const n = Number(process.env[name]);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+const PROBE_TIMEOUT_MS = envMs("CUCK_PROBE_TIMEOUT_MS", 2000);
 
-function runProbe(cmd, timeoutMs = probeTimeoutMs) {
+function runProbe(cmd, timeoutMs = PROBE_TIMEOUT_MS) {
   return new Promise((resolve) => {
     let child;
     try {
@@ -3454,5 +3459,4 @@ module.exports = { saveLine, loadLines, restoreWorkerTranscript, normalizeWorker
   createServer: () => server,
   setSpawnForTest: (fn) => { spawnProcess = fn; },
   setLifecycleHooksForTest: (hooks) => { lifecycleTestHooks = hooks; },
-  setProbeTimeoutForTest: (ms) => { probeTimeoutMs = ms || PROBE_TIMEOUT_MS; },
   setTimerForTest: (clock) => { timerApi = clock || { setTimeout, clearTimeout }; } };

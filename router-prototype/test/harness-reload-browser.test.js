@@ -9,7 +9,6 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { startDashboardFixture: startFixture } = require("./fixtures/dashboard-browser");
 const { openPage } = require("./fixtures/browser-driver");
 
 const STUBS = "window.mermaid = { initialize() {}, run() { return Promise.resolve(); } };"
@@ -37,19 +36,9 @@ const STUBS = "window.mermaid = { initialize() {}, run() { return Promise.resolv
 // The server kills a probe command after 2 s and then reports the harness as
 // not installed. Under CPU load a fake CLI shell script can exceed that, and
 // the catalog silently loses claude. The tests control the catalog through
-// fake CLIs, so they lift the limit; the fixture restores it on close.
-const TEST_PROBE_TIMEOUT_MS = 60000;
-async function startDashboardFixture() {
-  const fx = await startFixture();
-  const server = require("../server");
-  server.setProbeTimeoutForTest(TEST_PROBE_TIMEOUT_MS);
-  const close = fx.close;
-  fx.close = async (...args) => {
-    server.setProbeTimeoutForTest(null);
-    return close.apply(fx, args);
-  };
-  return fx;
-}
+// fake CLIs, so they lift the limit. The server reads it when it first loads.
+process.env.CUCK_PROBE_TIMEOUT_MS = "60000";
+const { startDashboardFixture } = require("./fixtures/dashboard-browser");
 
 const ROWS = "document.querySelectorAll('#createPanel .phaseRow').length";
 const HARNESS_SEL = "document.getElementById('cp-harness-planner')";
