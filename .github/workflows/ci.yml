@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -23,14 +24,27 @@ jobs:
         with:
           node-version: 22
       - name: Install ffmpeg
+        timeout-minutes: 4
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          installed=0
+          for attempt in 1 2 3; do
+            echo "ffmpeg install attempt $attempt of 3"
+            if timeout 90 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update \
+              && timeout 120 sudo apt-get install -y --no-install-recommends ffmpeg; then
+              installed=1
+              break
+            fi
+          done
+          if [ "$installed" -ne 1 ]; then
+            echo "ffmpeg install failed after 3 attempts" >&2
+            exit 1
+          fi
           ffmpeg -version
       - name: Install router dependencies
         run: npm ci
         working-directory: router-prototype
       - name: Run unit tests
+        timeout-minutes: 8
         run: node --test --test-timeout=60000 router-prototype/test/*.test.js
       - name: Validate JavaScript and local web assets
         run: node router-prototype/scripts/validate-build.js
