@@ -9,7 +9,6 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { startDashboardFixture } = require("./fixtures/dashboard-browser");
 const { openPage } = require("./fixtures/browser-driver");
 
 const STUBS = "window.mermaid = { initialize() {}, run() { return Promise.resolve(); } };"
@@ -33,6 +32,13 @@ const STUBS = "window.mermaid = { initialize() {}, run() { return Promise.resolv
   + "  return window.__harnessFetchImpl(u, o).finally(() => {"
   + "    setTimeout(() => { window.__harnessInFlight -= 1; }, 0); });"
   + "};";
+
+// The server kills a probe command after 2 s and then reports the harness as
+// not installed. Under CPU load a fake CLI shell script can exceed that, and
+// the catalog silently loses claude. The tests control the catalog through
+// fake CLIs, so they lift the limit. The server reads it when it first loads.
+process.env.CUCK_PROBE_TIMEOUT_MS = "60000";
+const { startDashboardFixture } = require("./fixtures/dashboard-browser");
 
 const ROWS = "document.querySelectorAll('#createPanel .phaseRow').length";
 const HARNESS_SEL = "document.getElementById('cp-harness-planner')";
@@ -112,7 +118,10 @@ const openCreate = async (page) => {
 // recorded, no request is in flight, and the select state is stable across
 // two polls, so a mid-chain wipe or a late apply cannot race the assertion.
 const waitSettled = async (page, minFetches) => {
-  await page.waitFor(`${HARNESS_FETCHES} >= ${minFetches} && window.__harnessInFlight === 0`);
+  // The real probe runs fake CLIs: on a loaded host it can take longer than
+  // the default wait, and the probe limit is lifted, so wait for it.
+  await page.waitFor(`${HARNESS_FETCHES} >= ${minFetches} && window.__harnessInFlight === 0`,
+    { timeoutMs: 30000 });
   let last = null;
   for (let i = 0; i < 100; i++) {
     const now = JSON.stringify(await page.evaluate(HARNESS_STATE));
@@ -422,6 +431,35 @@ test("harness reload: a plugin is labeled and a plugin problem shows one warning
       "document.querySelector('#createPanel .authHint').textContent"), /acme login --now/);
     assert.deepEqual(await page.evaluate("window.__errs"), []);
   } finally {
+    if (page) await page.close();
+    await fx.close();
+  }
+});
+
+// Regression for the load flake: the fake claude answers 3 s late, longer
+// than the product's 2 s probe limit. The catalog must still list it.
+test("harness reload: a slow probe command does not drop the harness from the catalog", async (t) => {
+  const fx = await startDashboardFixture();
+  let page = null;
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "harness-reload-bin-"));
+  const oldPath = restrictPath(bin);
+  try {
+    try { page = await openPage(fx.url, { initScript: STUBS }); }
+    catch (e) {
+      if (e.code === "BROWSER_UNAVAILABLE") return t.skip("Chrome is missing: " + e.message);
+      throw e;
+    }
+    const claudeBin = writeFakeClis(bin, true);
+    fs.writeFileSync(claudeBin, CLAUDE_SCRIPT.replace("--version) echo", "--version) sleep 3; echo"),
+      { mode: 0o755 });
+    await resetForm(page);
+    await openCreate(page);
+    await waitSettled(page, 1);
+    assert.ok((await harnessValues(page)).includes("claude"), "the slow claude is still listed");
+    assert.deepEqual(await page.evaluate("window.__errs"), []);
+  } finally {
+    process.env.PATH = oldPath;
+    fs.rmSync(bin, { recursive: true, force: true });
     if (page) await page.close();
     await fx.close();
   }
