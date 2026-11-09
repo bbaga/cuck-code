@@ -15,24 +15,32 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Step limits: 2 + 2 + 8 + 2 + 8 + 2 = 24 minutes. The job limit adds 1 minute.
+    timeout-minutes: 25
     steps:
       - name: Check out source
+        timeout-minutes: 2
         uses: actions/checkout@v4
       - name: Set up Node.js 22 LTS
+        timeout-minutes: 2
         uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Install ffmpeg
-        timeout-minutes: 4
+        timeout-minutes: 8
         run: |
+          # Worst case: 3 attempts x (60 s update + 90 s install) + 2 sleeps x 5 s = 460 s.
+          # The step limit is 8 minutes (480 s).
           installed=0
           for attempt in 1 2 3; do
             echo "ffmpeg install attempt $attempt of 3"
-            if timeout 90 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update \
-              && timeout 120 sudo apt-get install -y --no-install-recommends ffmpeg; then
+            if timeout 60 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update \
+              && timeout 90 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 install -y --no-install-recommends ffmpeg; then
               installed=1
               break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep 5
             fi
           done
           if [ "$installed" -ne 1 ]; then
@@ -41,10 +49,12 @@ jobs:
           fi
           ffmpeg -version
       - name: Install router dependencies
+        timeout-minutes: 2
         run: npm ci
         working-directory: router-prototype
       - name: Run unit tests
         timeout-minutes: 8
         run: node --test --test-timeout=60000 router-prototype/test/*.test.js
       - name: Validate JavaScript and local web assets
+        timeout-minutes: 2
         run: node router-prototype/scripts/validate-build.js
