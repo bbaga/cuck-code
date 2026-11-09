@@ -101,9 +101,11 @@ test("pipelines page: lists, read-only view, duplicate, edit with error, fix, sa
     assert.match(fs.readFileSync(managedFile, "utf8"), /edited;/);
 
     // reload: the list shows the file in the managed layer
+    // The marker lives only in the old document, so waiting for it to vanish waits for the new one.
+    await page.evaluate("window.__beforeReload = 1");
     await page.evaluate("location.reload()");
-    await page.waitFor("document.querySelector('[data-group=pipelines] button[data-name=my-copy]')");
-    assert.match(await text("[data-group=pipelines] button[data-name=my-copy]"), /managed/);
+    await page.waitFor("!window.__beforeReload && document.readyState === 'complete'");
+    await page.waitFor("(() => { const b = document.querySelector('[data-group=pipelines] button[data-name=my-copy]'); return !!b && /managed/.test(b.textContent); })()");
     await click("[data-group=pipelines] button[data-name=my-copy]");
     await page.waitFor("document.getElementById('editor') && /edited;/.test(document.getElementById('editor').value)");
 
