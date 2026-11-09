@@ -20,6 +20,7 @@ function findBrowser(options) {
 const LOCK_DIR = path.join(os.tmpdir(), 'cuck-browser-launch.lock');
 const LOCK_PID_FILE = path.join(LOCK_DIR, 'pid');
 const LOCK_NO_PID_GRACE_MS = 5000;
+const LOCK_WAIT_LIMIT_MS = 180000;
 
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
@@ -38,6 +39,7 @@ function removeStaleLock() {
 }
 
 async function acquireLaunchLock() {
+  const end = Date.now() + LOCK_WAIT_LIMIT_MS;
   for (;;) {
     try {
       fs.mkdirSync(LOCK_DIR);
@@ -47,6 +49,7 @@ async function acquireLaunchLock() {
       if (e.code !== 'EEXIST') throw e;
     }
     removeStaleLock();
+    if (Date.now() > end) throw new Error(`timeout waiting for the browser launch lock ${LOCK_DIR} after ${LOCK_WAIT_LIMIT_MS} ms`);
     await sleep(50);
   }
 }
