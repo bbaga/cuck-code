@@ -1,9 +1,10 @@
 "use strict";
 
-// Pipeline rules R1-R12. Pure: no file reads. Runs every rule and returns
+// Pipeline rules R1-R13. Pure: no file reads. Runs every rule and returns
 // a list of { rule, message }. An empty list means the pipeline is good.
 
 const { placeholders, TemplateError } = require("./template");
+const { graphRelations } = require("./graph-relations");
 const { checkDeclaration, checkOptionalUse, isRouterVariable } = require("./fields");
 
 function has(obj, key) {
@@ -36,7 +37,7 @@ function buildContext(pipeline, types, interactions) {
   for (const e of createEdges) if (!starters[e.to].includes(e.from)) starters[e.to].push(e.from);
 
   return {
-    types, pipeline, nodes, edges, typeOf, inter, known,
+    types, interactions, pipeline, nodes, edges, typeOf, inter, known,
     withInteractions, createEdges, completeEdges, starters, start: pipeline.start,
   };
 }
@@ -304,7 +305,15 @@ function ruleR12(c) {
   return out;
 }
 
-const RULES = [ruleR1, ruleR2, ruleR3, ruleR4, ruleR5, ruleR6, ruleR7, ruleR8, ruleR9, ruleR10, ruleR11, ruleR12];
+// R13: the ordering relations form no loop.
+function ruleR13(c) {
+  const graph = { start: c.start, nodes: c.nodes, edges: c.pipeline.edges || [], interactions: c.interactions, types: c.types };
+  const { cycle, cycleCauses } = graphRelations(graph);
+  if (!cycle) return [];
+  return [{ rule: "R13", message: `ordering relations form a loop: ${cycle.join(" -> ")} (${cycleCauses.join("; ")})` }];
+}
+
+const RULES = [ruleR1, ruleR2, ruleR3, ruleR4, ruleR5, ruleR6, ruleR7, ruleR8, ruleR9, ruleR10, ruleR11, ruleR12, ruleR13];
 
 function checkPipeline(pipeline, types, interactions) {
   const c = buildContext(pipeline, types || {}, interactions || {});

@@ -102,8 +102,9 @@ test("R3: create edges have no cycle", () => {
   const p = parse(REVIEW_GATE);
   p.edges.push({ from: "planner", to: "planner", interactions: ["start"] });
   const errors = check(p);
-  assert.deepEqual(rules(p), ["R3"]);
-  assert.match(errors[0].message, /planner -> planner/);
+  // A create cycle is also an ordering loop, so R13 reports it too.
+  assert.deepEqual(rules(p), ["R13", "R3"]);
+  assert.match(errors.find((e) => e.rule === "R3").message, /planner -> planner/);
 });
 
 test("R3: the message names every node of a longer cycle", () => {
@@ -339,4 +340,23 @@ test("R12: after needs checks, known ids, a shared target, and no self", () => {
   assert.match(messages(noShare, "R12")[0], /checks no target/);
   const self = pipelineWith(`  ci:\n    type: script-check\n    checks: [impl]\n${SCRIPTS}  val: { type: validator, checks: [impl], after: [val] }\n`);
   assert.match(messages(self, "R12")[0], /the node itself/);
+});
+
+test("R13: a loop through after is an error with the nodes and the declarations", () => {
+  const loop = parse(`
+name: loop
+start: planner
+nodes:
+  planner: { type: planner }
+  impl:    { type: implementor }
+  ci:      { type: validator, checks: [impl], after: [lint] }
+  lint:    { type: validator, checks: [impl], after: [ci] }
+edges:
+  - planner -> [impl, ci, lint]: start
+  - "[impl, ci, lint] -> planner: report"
+`);
+  const found = check(loop).filter((e) => e.rule === "R13");
+  assert.deepEqual(found, [{ rule: "R13",
+    message: "ordering relations form a loop: ci -> lint -> ci (lint: after [ci]; ci: after [lint])" }]);
+  assert.deepEqual(check(parse(DEFAULT)).filter((e) => e.rule === "R13"), []);
 });

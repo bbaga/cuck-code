@@ -270,3 +270,13 @@ test("graphView adds the script fields of a script node as a copy", () => {
   assert.deepEqual(node.scripts, graph.nodes.ci.scripts);
   assert.notEqual(node.scripts, graph.nodes.ci.scripts);
 });
+
+test("graphView adds relations, columns and rows", () => {
+  const view = graphView(resolved);
+  assert.deepEqual(view.columns, { planner: 0, "backend-impl": 1, "frontend-impl": 1, "backend-val": 2,
+    "frontend-val": 2, integration: 3 });
+  assert.equal(view.rows.planner, 0);
+  assert.ok(view.relations.some((r) => r.kind === "checks" && r.from === "backend-impl" && r.to === "backend-val"));
+  assert.ok(view.relations.some((r) => r.kind === "accepted-work" && r.to === "integration"));
+  assert.equal(view.relations.filter((r) => r.kind === "interaction").length, view.edges.length);
+});

@@ -9,6 +9,7 @@ const YAML = require("yaml");
 const { parsePipeline } = require("./pipelines");
 const { resolvePipelineDefinition, PipelineError } = require("./resolve-pipeline");
 const { phaseOfType } = require("./line-graph");
+const { graphRelations } = require("./graph-relations");
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,59}$/;
 const MAX_TEXT_BYTES = 256 * 1024;
@@ -98,9 +99,10 @@ function graphPreview(resolved) {
       kinds[name] = { effect: it ? it.effect || null : null, trigger: it ? it.trigger || null : null };
     }
   }
+  const { relations, columns, rows } = graphRelations(resolved);
   return {
     start: resolved.start,
-    kinds,
+    kinds, relations, columns, rows,
     nodes: Object.entries(resolved.nodes).map(([id, n]) => nodeSummary(resolved, id, n)),
     edges: resolved.edges.map((e) => ({ from: e.from, to: e.to, interactions: [...e.interactions] })),
   };

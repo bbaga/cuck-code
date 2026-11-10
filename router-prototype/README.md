@@ -445,10 +445,45 @@ when the pipelines API saves or validates it. Each error has a `rule` and a
 | R10 | A `complete`-triggered interaction does not have `effect: create`. |
 | R11 | A node whose type has `runner: script` has `scripts` and `checks`, sets no agent key, and its type chain starts at `script-check`. Any other node sets no script key. |
 | R12 | A node with `after` has `checks`. Each listed node is known, checks a shared target and is not the node itself. |
+| R13 | The ordering relations form no loop (see "How pipelines are drawn"). |
 
 Two more error codes can appear: `LOAD` (the text, a node type, an interaction
 or a prompt file does not parse or load) and `NAME` (the name is not allowed,
 differs from the file name, or is a built-in name).
+
+### How pipelines are drawn
+
+The router computes the relations, the column and the row of each node from
+the declarations of the pipeline. The graphs in the UI use only this data
+(`relations`, `columns`, `rows` in the line graph and in the validate answer).
+Node ids, type names, phases and roles carry no meaning: if you rename every
+node and type and keep the relations, the layout stays the same.
+
+| kind | Declared by | Relation | Ordering |
+|---|---|---|---|
+| interaction | an edge `F -> T` with interactions | `F -> T`, label = the names joined with ", " | yes, if one interaction has `effect: create`. Dashed if every interaction has `trigger: complete`. |
+| checks | `checks: [W]` on node C | `W -> C`, label "checks" | yes |
+| after | `after: [X]` on node C | `X -> C`, label "after PASS" | yes |
+| accepted-work | `requires: [accepted-work]` in the type of V | `W -> V` for each node W with `workspace: own-worktree`, label "accepted work" | yes |
+| required | `required: true` on script node C | `C -> V` for each V whose type requires accepted-work, label "required PASS" | yes |
+
+Extra ordering rule: a node V whose type requires accepted-work comes after
+each other node that checks an own-worktree node.
+
+Column rule: the start node is in column 0. Any other node is in the column of
+the longest path to it over the ordering relations. A node that nothing
+orders is in column 0.
+
+Row rule: inside a column, the nodes are numbered from 0 in the order in which
+they first appear as the target of an edge. Nodes that are no edge target
+follow, in the order of the `nodes` mapping.
+
+Without `after` there is no gate, and the order comes from the edges and the
+other declarations.
+
+Rule R13: the ordering relations must not form a loop. A loop is an error that
+names the nodes and the declarations. Example:
+`ordering relations form a loop: ci -> lint -> ci (lint: after [ci]; ci: after [lint])`.
 
 ### Script check nodes
 

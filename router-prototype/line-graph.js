@@ -5,6 +5,7 @@
 
 const path = require("node:path");
 const { resolvePipelineDefinition } = require("./resolve-pipeline");
+const { graphRelations } = require("./graph-relations");
 
 const PHASE_TYPES = {
   planner: "planner",
@@ -90,7 +91,8 @@ function graphView(graph) {
     }
     return { ...JSON.parse(JSON.stringify(edge)), kinds };
   });
-  return { name: graph.name, start: graph.start, nodes, edges, freshNodes };
+  const { relations, columns, rows } = graphRelations(graph);
+  return { name: graph.name, start: graph.start, nodes, edges, freshNodes, relations, columns, rows };
 }
 
 // The node fields of an API response: graph, stored node settings and the
