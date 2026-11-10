@@ -223,7 +223,10 @@ async function openPage(url, options = {}) {
       fs.writeFileSync(file, Buffer.from(r.data, 'base64'));
       return file;
     };
-    return { evaluate, waitFor, press, setViewport, screenshot, requests: () => [...seen],
+    // type: mousePressed | mouseMoved | mouseReleased. Real input, so pointer capture works.
+    const mouse = (type, x, y) => send('Input.dispatchMouseEvent',
+      { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
+    return { evaluate, waitFor, press, mouse, setViewport, screenshot, requests: () => [...seen],
       blocked: () => [...blockedIds].map((id) => urlById.get(id)), close, browser: exe, pid: proc.pid };
   } catch (err) {
     await close();
