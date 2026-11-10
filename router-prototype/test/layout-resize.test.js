@@ -72,3 +72,10 @@ test("pipeline content stays inside a horizontally scrolling panel", () => {
   assert.match(page, /\.pipePane \{[^}]*min-width: 0;[^}]*overflow-x: auto;/s);
   assert.match(page, /\.pipePane \.pipeCfg \{[^}]*min-width: max-content;/s);
 });
+
+test("the plan section has its own resize handle and saved height", () => {
+  assert.ok(page.includes('createResizeHandle("Resize plan height")'));
+  assert.ok(page.includes('"plan-height:"'));
+  assert.ok(page.includes(".card:not(.planSized) .plan"));
+  assert.ok(page.includes(".card.planSized .plan"));
+});

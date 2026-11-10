@@ -115,7 +115,10 @@ async function launchChrome(exe) {
   }
 }
 
-const KEYS = { Escape: { code: 'Escape', vk: 27 }, Enter: { code: 'Enter', vk: 13, text: '\r' } };
+const KEYS = {
+  Escape: { code: 'Escape', vk: 27 }, Enter: { code: 'Enter', vk: 13, text: '\r' },
+  ArrowUp: { code: 'ArrowUp', vk: 38 }, ArrowDown: { code: 'ArrowDown', vk: 40 },
+};
 
 async function openPage(url, options = {}) {
   const exe = findBrowser(options);

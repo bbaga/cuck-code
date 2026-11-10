@@ -123,7 +123,12 @@
   @media (prefers-reduced-motion: reduce) { .scopeLoading[aria-busy="true"]::before { animation: none; } }
   .scopeBody pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: .75rem ui-monospace, monospace; color: #c1cad5; }
   .plan { padding: 12px 16px; border-bottom: 1px solid #262b33;
-    max-height: 260px; overflow-y: auto; font-size: .85rem; }
+    overflow-y: auto; font-size: .85rem; }
+  .card:not(.planSized) .plan { max-height: 260px; }
+  .card.planSized .plan { height: var(--plan-height); max-height: none; flex: none; }
+  .card.planSized .planDetails[open] .planBody { max-height: var(--plan-height); overflow-y: auto; }
+  .card.planSized { overflow-y: auto; }
+  .card.planSized .transcriptWrap { min-height: 80px; }
   .plan .waiting { color: #6c7a8c; font-size: .8rem; }
   .planBody h1, .planBody h2, .planBody h3 { font-size: .95rem; margin: 8px 0 4px; }
   .planBody p { margin: 4px 0; }
@@ -468,6 +473,7 @@ window.addEventListener("DOMContentLoaded", () => {
       st.planDetails.hidden = true;
       st.plan.hidden = st.tab !== "line";
     }
+    placePlanHandle(st);
     if (st.started && st.planContent && !st.approved) {
       st.input.placeholder = "Plan proposed - type feedback here";
     } else if (st.started) {
@@ -531,6 +537,16 @@ window.addEventListener("DOMContentLoaded", () => {
     return h;
   }
 
+  function placePlanHandle(st) {
+    if (st.planBody.parentNode === st.planDetails) {
+      st.planDetails.appendChild(st.planHandle);
+      st.planHandle.hidden = false;
+    } else {
+      st.plan.after(st.planHandle);
+      st.planHandle.hidden = st.plan.hidden;
+    }
+  }
+
   function bindResizeHandle(handle, { getSize, apply, limits, reset }) {
     let drag = null;
     const end = () => {
@@ -563,11 +579,19 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  function setupLayoutResize({ lineId, card, graph, graphDetails, graphHandle, transcriptWrap, chatHandle }) {
+  function setupLayoutResize({ lineId, card, plan, planBody, planDetails, planHandle, graph, graphDetails, graphHandle, transcriptWrap, chatHandle }) {
     const store = (() => { try { return window.localStorage; } catch { return null; } })();
     const openKey = "graph-open:" + lineId;
     const graphKey = "graph-height:" + lineId;
     const chatKey = "chat-height:" + lineId;
+    const planKey = "plan-height:" + lineId;
+    const planLimits = () => ({ min: 80, max: Math.round(window.innerHeight * 0.85) });
+    const setPlan = (h) => {
+      card.classList.toggle("planSized", h !== null);
+      if (h === null) card.style.removeProperty("--plan-height");
+      else card.style.setProperty("--plan-height", h + "px");
+    };
+    const planEl = () => (planBody.parentNode === planDetails ? planBody : plan);
     const graphLimits = () => ({ min: 80, max: Math.round(window.innerHeight * 0.8) });
     const chatLimits = () => ({ min: 120, max: chatMaxHeight(window.innerHeight) });
     const setGraph = (h) => {
@@ -591,6 +615,8 @@ window.addEventListener("DOMContentLoaded", () => {
     });
     const g = readStoredSize(store, graphKey, graphLimits().min, graphLimits().max);
     if (g !== null) setGraph(g);
+    const p = readStoredSize(store, planKey, planLimits().min, planLimits().max);
+    if (p !== null) setPlan(p);
     const c = readStoredSize(store, chatKey, chatLimits().min, chatLimits().max);
     if (c !== null) setChat(c);
     const area = (el, set, key) => ({
@@ -599,6 +625,11 @@ window.addEventListener("DOMContentLoaded", () => {
       reset: () => { set(null); writeStoredSize(store, key, null); },
     });
     bindResizeHandle(graphHandle, { ...area(graph, setGraph, graphKey), limits: graphLimits });
+    bindResizeHandle(planHandle, {
+      ...area(null, setPlan, planKey),
+      getSize: () => planEl().getBoundingClientRect().height,
+      limits: planLimits,
+    });
     bindResizeHandle(chatHandle, { ...area(transcriptWrap, setChat, chatKey), limits: chatLimits });
   }
 
@@ -1102,6 +1133,7 @@ window.addEventListener("DOMContentLoaded", () => {
     approveBtn.textContent = "Approve";
     controls.append(badge, approveBtn);
     plan.append(waiting, planBody, controls);
+    const planHandle = createResizeHandle("Resize plan height");
 
     const graph = document.createElement("div");
     graph.className = "graph";
@@ -1157,15 +1189,15 @@ window.addEventListener("DOMContentLoaded", () => {
     const workPane = document.createElement("div");
     workPane.className = "evPane workPane";
     workPane.hidden = true;
-    card.append(head, planDetails, banner, plan, graphDetails, scopeDetails, previewPanel, transcriptWrap, queuePane, chatHandle, row, composerError, procPane, evPane, workPane, pipePane);
+    card.append(head, planDetails, banner, plan, planHandle, graphDetails, scopeDetails, previewPanel, transcriptWrap, queuePane, chatHandle, row, composerError, procPane, evPane, workPane, pipePane);
     linesEl.appendChild(card);
-    setupLayoutResize({ lineId: line.id, card, graph, graphDetails, graphHandle, transcriptWrap, chatHandle });
+    setupLayoutResize({ lineId: line.id, card, plan, planBody, planDetails, planHandle, graph, graphDetails, graphHandle, transcriptWrap, chatHandle });
 
     const st = { id: line.id, dot, banner, transcript, transcriptWrap, scrollBottomBtn, input, send,
       ctxMeter, compactBtn, plannerCtx: null, queuePane, composerError,
       stamp: null, draft: createDraftOwner(), submitting: false, cancelling: new Set(),
       queueErrors: new Map(), queued: [],
-      waiting, planBody, graph, graphDetails, graphHandle, chatHandle, previewPanel, approveBtn, badge, planDetails, planControls: controls,
+      waiting, planBody, planHandle, graph, graphDetails, graphHandle, chatHandle, previewPanel, approveBtn, badge, planDetails, planControls: controls,
       pipePane, tabPipeBtn, pipeForm, pipeGraphBox, pipeEdgesList,
       pipeGraph: line.graph || null, nodeSettings: line.nodeSettings || null,
       effectiveNodeSettings: line.effectiveNodeSettings || null,
@@ -1825,6 +1857,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const planInDetails = st.planBody.parentNode === st.planDetails;
     st.plan.hidden = tab !== "line" || planInDetails;
     st.planDetails.hidden = tab !== "line" || !planInDetails;
+    placePlanHandle(st);
     st.previewPanel.hidden = true;
     renderScopePanel(st);
     renderQueue(st);
