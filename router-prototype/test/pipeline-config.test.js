@@ -609,3 +609,62 @@ test("maxContext is allowed only on a node with a resumed session", () => {
   line.nodeSettings = { "backend-val": { maxContext: 5000 } };
   assert.strictEqual("maxContext" in resolveNodeSettings(line, "backend-val", {}), false);
 });
+
+// ---- defaultNodeSettingsFor ----
+
+const { defaultNodeSettingsFor } = require("../pipeline-config");
+
+test("defaultNodeSettingsFor: empty env gives the code defaults", () => {
+  const line = lineWithGraph();
+  const out = defaultNodeSettingsFor(line.graph, {});
+  assert.deepStrictEqual(Object.keys(out), Object.keys(line.graph.nodes));
+  const impl = out["backend-impl"];
+  assert.strictEqual(impl.harness, "vibe");
+  assert.strictEqual(impl.effort, "medium");
+  assert.strictEqual(impl.model, resolveNodeSettings(line, "backend-impl", {}).model);
+  assert.ok(impl.model);
+});
+
+test("defaultNodeSettingsFor: env harness claude gives a null model", () => {
+  const out = defaultNodeSettingsFor(lineWithGraph().graph, { IMPLEMENTOR_HARNESS: "claude" });
+  assert.strictEqual(out["backend-impl"].harness, "claude");
+  assert.strictEqual(out["backend-impl"].model, null);
+});
+
+test("defaultNodeSettingsFor: the env model applies only to the env harness", () => {
+  const env = { IMPLEMENTOR_HARNESS: "pi", IMPLEMENTOR_MODEL: "env-m" };
+  const m = defaultNodeSettingsFor(lineWithGraph().graph, env)["backend-impl"].modelByHarness;
+  assert.strictEqual(m.pi, "env-m");
+  assert.notStrictEqual(m.vibe, "env-m");
+  assert.strictEqual(m.claude, null);
+});
+
+test("defaultNodeSettingsFor: a pipeline file model wins over the defaults", () => {
+  const line = lineWithGraph();
+  line.graph.nodes["backend-impl"].settings = { model: "file-m" };
+  const out = defaultNodeSettingsFor(line.graph, {});
+  assert.strictEqual(out["backend-impl"].model, "file-m");
+});
+
+test("defaultNodeSettingsFor: maxContext only for nodes that resume the session", () => {
+  const line = lineWithGraph();
+  const out = defaultNodeSettingsFor(line.graph, {});
+  for (const id of Object.keys(out)) {
+    const expected = "maxContext" in resolveNodeSettings(line, id, {});
+    assert.strictEqual("maxContext" in out[id], expected, id);
+  }
+  assert.ok(Object.values(out).some((s) => "maxContext" in s));
+  assert.ok(Object.values(out).some((s) => !("maxContext" in s)));
+});
+
+test("defaultNodeSettingsFor: modelByHarness has a key for each harness", () => {
+  const out = defaultNodeSettingsFor(lineWithGraph().graph, {});
+  for (const s of Object.values(out)) {
+    assert.deepStrictEqual(Object.keys(s.modelByHarness).sort(), [...HARNESS_IDS].sort());
+  }
+});
+
+test("defaultNodeSettingsFor: line nodeSettings do not change the result", () => {
+  const line = lineWithGraph({ nodeSettings: { "backend-impl": { harness: "codex", model: "x", effort: "high" } } });
+  assert.deepStrictEqual(defaultNodeSettingsFor(line.graph, {}), defaultNodeSettingsFor(lineWithGraph().graph, {}));
+});

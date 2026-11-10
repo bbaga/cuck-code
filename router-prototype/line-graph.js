@@ -84,12 +84,12 @@ function graphView(graph) {
 // The node fields of an API response: graph, stored node settings and the
 // effective settings per node.
 function nodeSettingsFields(line, env) {
-  const { resolveNodeSettings } = require("./pipeline-config");
+  const { resolveNodeSettings, defaultNodeSettingsFor } = require("./pipeline-config");
   if (!line.graph) return {};
   const effective = {};
   for (const id of Object.keys(line.graph.nodes)) effective[id] = resolveNodeSettings(line, id, env);
   return { graph: graphView(line.graph), nodeSettings: line.nodeSettings || {},
-    effectiveNodeSettings: effective };
+    effectiveNodeSettings: effective, defaultNodeSettings: defaultNodeSettingsFor(line.graph, env) };
 }
 
 // Names of the built-in pipeline files.

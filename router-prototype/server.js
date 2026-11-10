@@ -22,7 +22,7 @@ const HARNESS_SDK = bootHarnesses({
   spawn: (...args) => spawnProcess(...args),
   runCommand: (argv, options) => runProbe(argv, options && options.timeoutMs),
 });
-const { EFFORT_LEVELS, validateNodeSettingsForNode,
+const { EFFORT_LEVELS, validateNodeSettingsForNode, defaultNodeSettingsFor,
   probeResultFor } = require("./pipeline-config");
 const { discoverHarnesses, probeHarness, providerDetail, DISCOVERY_TIMEOUT_MS } = require("./harness-discovery");
 const { ID_RE } = require("./harness-interface");
@@ -751,10 +751,11 @@ function pipelinesApi(req, res, parts) {
     if (own(name)) {
       const entry = CATALOG.pipelines[name];
       const { resolved, errors } = resolveSafe(catalogPipeline, name);
-      return json(res, 200, { name, layer: entry.layer, editable: entry.layer === "managed", text, resolved, errors });
+      return json(res, 200, { name, layer: entry.layer, editable: entry.layer === "managed", text, resolved, errors,
+        defaultNodeSettings: resolved ? defaultNodeSettingsFor(resolved, process.env) : null });
     }
     const v = pipelineValidation(text, name);
-    return json(res, 200, { name, layer: "managed", editable: true, text, resolved: null,
+    return json(res, 200, { name, layer: "managed", editable: true, text, resolved: null, defaultNodeSettings: null,
       errors: v.errors.length ? v.errors : [{ rule: "LOAD", message: "the pipeline file is not loaded by the catalog" }] });
   }
 
