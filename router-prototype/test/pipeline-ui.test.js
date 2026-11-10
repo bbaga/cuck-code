@@ -1206,3 +1206,20 @@ test("piDetailApply names a plugin harness in its failure text", () => {
   const out = piDetailApply({ isCurrent: true, ok: false, status: 502, data: null, harnessId: "acme" });
   assert.strictEqual(out.statusText, "acme detail failed (HTTP 502)");
 });
+
+test("defaultOptionLabels names the real defaults", () => {
+  const d = {
+    harness: "vibe", model: "glm-5-3-flash", effort: "medium", maxContext: 200000,
+    modelByHarness: { vibe: "glm-5-3-flash", pi: null, claude: null },
+  };
+  const f = pipelineUiModule.defaultOptionLabels;
+  assert.strictEqual(f(d, "").harness, "default (vibe)");
+  assert.strictEqual(f(d, "").model, "default (glm-5-3-flash)");
+  assert.strictEqual(f(d, "claude").model, "default (claude CLI default)");
+  assert.strictEqual(f(d, "other").model, "default (glm-5-3-flash)");
+  assert.strictEqual(f(d, "").effort, "default (medium)");
+  assert.strictEqual(f(d, "").maxContext, "default 200K");
+  assert.strictEqual(f({ ...d, maxContext: undefined }, "").maxContext, "max ctx");
+  assert.deepEqual(f(null, "vibe"),
+    { harness: "default", model: "default", effort: "default", maxContext: "max ctx" });
+});
