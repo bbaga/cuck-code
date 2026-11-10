@@ -167,6 +167,23 @@ function resolveNodeSettings(line, nodeId, env) {
   return result;
 }
 
+// The settings each node gets when the user leaves a field empty: code
+// defaults, env vars and pipeline file node settings, without line.nodeSettings.
+// modelByHarness[h] is the model the node gets when the user picks harness h
+// and leaves the model empty.
+function defaultNodeSettingsFor(graph, env) {
+  const result = {};
+  for (const id of Object.keys((graph && graph.nodes) || {})) {
+    const base = resolveNodeSettings({ graph, nodeSettings: {} }, id, env);
+    const modelByHarness = {};
+    for (const h of currentHarnessIds()) {
+      modelByHarness[h] = resolveNodeSettings({ graph, nodeSettings: { [id]: { harness: h } } }, id, env).model;
+    }
+    result[id] = { ...base, modelByHarness };
+  }
+  return result;
+}
+
 // Run settings for a worker whose node is not in the graph: the first node of
 // its phase in graph order, or the env and code defaults when there is none.
 function fallbackPhaseSettings(line, phase, env) {
@@ -505,6 +522,7 @@ module.exports = {
   defaultModelFor,
   fallbackPhaseSettings,
   resolveNodeSettings,
+  defaultNodeSettingsFor,
   validateNodeSettingsForNode,
   HARNESS_PROBES,
   probeHarnesses,

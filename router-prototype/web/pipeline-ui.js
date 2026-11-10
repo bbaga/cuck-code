@@ -92,6 +92,25 @@
     return (Math.round(n / 100000) / 10) + "M";
   }
 
+  // Labels of the empty ("use the default") options of a node row. The model
+  // label follows the harness the row selects; a null model means the harness
+  // CLI picks its own.
+  function defaultOptionLabels(defaults, harnessId) {
+    if (!defaults || typeof defaults !== "object") {
+      return { harness: "default", model: "default", effort: "default", maxContext: "max ctx" };
+    }
+    const h = harnessId || defaults.harness;
+    const byHarness = defaults.modelByHarness || {};
+    const model = Object.prototype.hasOwnProperty.call(byHarness, h) ? byHarness[h] : defaults.model;
+    return {
+      harness: "default (" + defaults.harness + ")",
+      model: typeof model === "string" ? "default (" + model + ")" : "default (" + h + " CLI default)",
+      effort: "default (" + defaults.effort + ")",
+      maxContext: Number.isFinite(defaults.maxContext)
+        ? "default " + formatTokens(defaults.maxContext) : "max ctx",
+    };
+  }
+
   const PI_HARNESS_ID = "pi";
   const VIBE_HARNESS_ID = "vibe";
   const CLAUDE_HARNESS_ID = "claude";
@@ -1201,6 +1220,7 @@
     pickerPipelines,
     isFreshSessionNode,
     nodeRowsFromResolved,
+    defaultOptionLabels,
     layoutGraph,
     GRAPH_GEOMETRY,
     nodeRowsFromGraphView,

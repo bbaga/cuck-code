@@ -145,6 +145,7 @@ test("router: GET /api/pipelines/:name", async () => {
     assert.equal(r.body.text, defaultText);
     assert.deepEqual(r.body.errors, []);
     assert.equal(r.body.resolved.start, "planner");
+    assert.deepEqual(Object.keys(r.body.defaultNodeSettings), Object.keys(r.body.resolved.nodes));
     assert.equal((await call("GET", "/api/pipelines/nope")).status, 404);
     assert.equal((await call("GET", "/api/pipelines/..%2Fetc")).status, 404);
     assert.equal((await call("GET", "/api/pipelines/%E0%A4%A")).status, 404);

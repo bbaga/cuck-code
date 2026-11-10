@@ -74,6 +74,7 @@ test("a line with no settings uses the default pipeline and shows graph, node se
   assert.deepEqual(report.kinds.report, { effect: "deliver", trigger: "complete" });
   assert.ok(s.graph.freshNodes.includes("backend-val") && !s.graph.freshNodes.includes("planner"));
   for (const id of Object.keys(s.graph.nodes)) assert.ok(s.effectiveNodeSettings[id].harness, id);
+  for (const id of Object.keys(s.graph.nodes)) assert.ok(s.defaultNodeSettings[id].modelByHarness, id);
   assert.equal("pipelineOverrides" in s, false);
   assert.equal("pipeline" in s, false);
 });

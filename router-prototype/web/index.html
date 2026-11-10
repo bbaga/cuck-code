@@ -352,7 +352,7 @@
 <script src="registry-line.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
-  const { nodeRowsFromResolved, layoutGraph, nodeRowsFromGraphView, nodeSummaryText, edgeTextLines, buildNodeSettingsPayload, buildCreateBody, pickerPipelines, buildGraphChangeBody, graphSwitchView, remapComplete,
+  const { nodeRowsFromResolved, defaultOptionLabels, layoutGraph, nodeRowsFromGraphView, nodeSummaryText, edgeTextLines, buildNodeSettingsPayload, buildCreateBody, pickerPipelines, buildGraphChangeBody, graphSwitchView, remapComplete,
     pipelineOptionLabel, pipelineErrorsText, EFFORT_LEVELS, parseContextSize, formatTokens, filterInstalled, authBadge, harnessOptionLabel, pluginProblemsSummary, harnessReloadOutcome, previewForIntegration,
     previewSelectionKey, previewSelectionExists, isPassingIntegration, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
     VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, harnessHasProviders, providerDetailUrl, providerFromModel, authStatusText,
@@ -1051,6 +1051,7 @@ window.addEventListener("DOMContentLoaded", () => {
       pipeMsg.classList.toggle("ok", !!ok);
     };
     const pipeForm = createPipelineForm("lp-" + line.id, nodeRowsFromGraphView(line.graph));
+    pipeForm.setDefaults(line.defaultNodeSettings || null);
     const pipeBtns = document.createElement("div");
     pipeBtns.className = "pipeBtns";
     const pipeSave = document.createElement("button");
@@ -1169,6 +1170,7 @@ window.addEventListener("DOMContentLoaded", () => {
       pipePane, tabPipeBtn, pipeForm, pipeGraphBox, pipeEdgesList,
       pipeGraph: line.graph || null, nodeSettings: line.nodeSettings || null,
       effectiveNodeSettings: line.effectiveNodeSettings || null,
+      defaultNodeSettings: line.defaultNodeSettings || null,
       tab: "line", tabLineBtn, tabProcBtn, tabEvBtn, tabWorkBtn, workPane, plan, row, procPane, evPane,
       hideFailedValidators: true,
       plannerStatus: line.status, plannerAttention: line.attention === true || line.needsAttention === true,
@@ -1740,7 +1742,9 @@ window.addEventListener("DOMContentLoaded", () => {
     if (data.graph) st.pipeGraph = data.graph;
     st.nodeSettings = data.nodeSettings || null;
     st.effectiveNodeSettings = data.effectiveNodeSettings || null;
+    st.defaultNodeSettings = data.defaultNodeSettings || null;
     renderPipelineGraph(st);
+    st.pipeForm.setDefaults(st.defaultNodeSettings);
     if (st.pipeSwitch) st.pipeSwitch.graphChanged();
   }
 
@@ -2141,6 +2145,8 @@ window.addEventListener("DOMContentLoaded", () => {
     let rowGeneration = 0;
     const rowGen = {};
     let rows = [];
+    // Server default settings per node id; they label the empty options.
+    let rowDefaults = {};
     // Fields the form has no control for (timeLimit) survive a set/read.
     let extraFields = {};
     const authSummary = document.createElement("div");
@@ -2208,11 +2214,31 @@ window.addEventListener("DOMContentLoaded", () => {
         phaseState[key] = clearHarnessState(null);
         rowGen[key] = ++rowGeneration;
         // A user edit marks the row: late answers must not overwrite it.
-        hSel.addEventListener("change", () => { rowTouched[key] = true; onHarnessChange(key); });
+        hSel.addEventListener("change", () => { rowTouched[key] = true; onHarnessChange(key); relabelDefaults(key); });
         amSel.addEventListener("change", () => { rowTouched[key] = true; loadPiModels(key, ""); });
         mSel.addEventListener("change", () => { rowTouched[key] = true; modelTouched[key] = true; });
         eSel.addEventListener("change", () => { rowTouched[key] = true; });
+        relabelDefaults(key);
       }
+    }
+
+    // Show the real default values in the empty options of a row.
+    function relabelDefaults(key) {
+      if (!harnessSelects[key]) return;
+      const labels = defaultOptionLabels(rowDefaults[key], harnessSelects[key].value);
+      const setEmpty = (sel, text) => {
+        const empty = [...sel.options].find((o) => o.value === "");
+        if (empty) empty.textContent = text;
+      };
+      setEmpty(harnessSelects[key], labels.harness);
+      setEmpty(modelSelects[key], labels.model);
+      setEmpty(effortSelects[key], labels.effort);
+      if (maxContextInputs[key]) maxContextInputs[key].placeholder = labels.maxContext;
+    }
+
+    function setDefaults(map) {
+      rowDefaults = map || {};
+      for (const { key } of rows) relabelDefaults(key);
     }
     buildRows(rowSpecs.map((r) => ({ key: r.id, title: r.title, maxContext: r.maxContext })));
     function syncPhaseRow(key) {
@@ -2246,6 +2272,7 @@ window.addEventListener("DOMContentLoaded", () => {
       if (piLoading[key] && prevModel && prevModel === piSavedModel[key]
         && modelSelects[key].value !== prevModel) selectValue(modelSelects[key], prevModel);
       authHints[key].textContent = state.statusText || baseAuthHintText(key);
+      relabelDefaults(key);
     }
 
     function baseAuthHintText(key) {
@@ -2490,7 +2517,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return { nodeSettings: buildNodeSettingsPayload(values) };
     }
 
-    return { el, set, read, setRows, reset: () => set(null),
+    return { el, set, read, setRows, setDefaults, reset: () => set(null),
       open: () => { applyHarnesses(); reloadHarnesses(); },
       dispose: () => harnessListeners.delete(applyHarnesses) };
   }
@@ -2580,6 +2607,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const errors = (data && data.errors) || [];
     pickedResolved = errors.length ? null : data.resolved;
     createForm.setRows(nodeRowsFromResolved(pickedResolved));
+    createForm.setDefaults(errors.length ? null : (data && data.defaultNodeSettings) || null);
     pipeNote.textContent = pickedResolved ? Object.keys(pickedResolved.nodes).length + " nodes" : "";
     if (errors.length) showCreateError("Pipeline '" + name + "' cannot be used: " + pipelineErrorsText(errors));
     else showCreateError(null);
