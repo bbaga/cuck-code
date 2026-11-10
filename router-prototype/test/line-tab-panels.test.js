@@ -19,7 +19,7 @@ function harness(opts = {}) {
   const el = () => ({ hidden: false, setAttribute() {}, classList: { toggle() {} } });
   const planDetails = el(), planBody = { parentNode: opts.approved ? planDetails : null };
   const st = { id: "line-a", tab: "line", planBody, planDetails, plan: el(), graphDetails: el(), previewPanel: el(), transcriptWrap: el(),
-    chatHandle: el(), row: el(), procPane: el(), evPane: el(), pipePane: el(), workPane: el(), scopeDetails: el(), scopeText: {},
+    chatHandle: el(), inputHandle: el(), row: el(), procPane: el(), evPane: el(), pipePane: el(), workPane: el(), scopeDetails: el(), scopeText: {},
     tabLineBtn: el(), tabProcBtn: el(), tabEvBtn: el(), tabPipeBtn: el(), tabWorkBtn: el(), pipeForm: { open() {} },
     selected: "w1", workers: new Map([["w1", { role: "implementor" }]]) };
   return { ui, st, calls };

@@ -579,12 +579,19 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  function setupLayoutResize({ lineId, card, plan, planBody, planDetails, planHandle, graph, graphDetails, graphHandle, transcriptWrap, chatHandle }) {
+  function setupLayoutResize({ lineId, card, plan, planBody, planDetails, planHandle, graph, graphDetails, graphHandle, transcriptWrap, chatHandle, input, inputHandle, setInputHeight, regrowInput }) {
     const store = (() => { try { return window.localStorage; } catch { return null; } })();
     const openKey = "graph-open:" + lineId;
     const graphKey = "graph-height:" + lineId;
     const chatKey = "chat-height:" + lineId;
     const planKey = "plan-height:" + lineId;
+    const inputKey = "input-height:" + lineId;
+    const inputLimits = () => ({ min: 36, max: Math.round(window.innerHeight * 0.5) });
+    const setInput = (h) => {
+      setInputHeight(h);
+      if (h === null) regrowInput();
+      else input.style.height = h + "px";
+    };
     const planLimits = () => ({ min: 80, max: Math.round(window.innerHeight * 0.85) });
     const setPlan = (h) => {
       card.classList.toggle("planSized", h !== null);
@@ -619,6 +626,8 @@ window.addEventListener("DOMContentLoaded", () => {
     if (p !== null) setPlan(p);
     const c = readStoredSize(store, chatKey, chatLimits().min, chatLimits().max);
     if (c !== null) setChat(c);
+    const i = readStoredSize(store, inputKey, inputLimits().min, inputLimits().max);
+    if (i !== null) setInput(i);
     const area = (el, set, key) => ({
       getSize: () => el.getBoundingClientRect().height,
       apply: (h) => { set(h); writeStoredSize(store, key, h); },
@@ -631,6 +640,12 @@ window.addEventListener("DOMContentLoaded", () => {
       limits: planLimits,
     });
     bindResizeHandle(chatHandle, { ...area(transcriptWrap, setChat, chatKey), limits: chatLimits });
+    bindResizeHandle(inputHandle, {
+      getSize: () => input.getBoundingClientRect().height,
+      apply: (h) => { setInput(h); writeStoredSize(store, inputKey, h); },
+      reset: () => { setInput(null); writeStoredSize(store, inputKey, null); },
+      limits: inputLimits,
+    });
   }
 
   function renderGraph(st) {
@@ -1134,6 +1149,9 @@ window.addEventListener("DOMContentLoaded", () => {
     controls.append(badge, approveBtn);
     plan.append(waiting, planBody, controls);
     const planHandle = createResizeHandle("Resize plan height");
+    const inputHandle = createResizeHandle("Resize message input height");
+    let inputHeight = null; // user-set textarea height; null means automatic growth
+    let regrowInput = () => {};
 
     const graph = document.createElement("div");
     graph.className = "graph";
@@ -1189,15 +1207,16 @@ window.addEventListener("DOMContentLoaded", () => {
     const workPane = document.createElement("div");
     workPane.className = "evPane workPane";
     workPane.hidden = true;
-    card.append(head, planDetails, banner, plan, planHandle, graphDetails, scopeDetails, previewPanel, transcriptWrap, queuePane, chatHandle, row, composerError, procPane, evPane, workPane, pipePane);
+    card.append(head, planDetails, banner, plan, planHandle, graphDetails, scopeDetails, previewPanel, transcriptWrap, queuePane, chatHandle, row, inputHandle, composerError, procPane, evPane, workPane, pipePane);
     linesEl.appendChild(card);
-    setupLayoutResize({ lineId: line.id, card, plan, planBody, planDetails, planHandle, graph, graphDetails, graphHandle, transcriptWrap, chatHandle });
+    setupLayoutResize({ lineId: line.id, card, plan, planBody, planDetails, planHandle, graph, graphDetails, graphHandle, transcriptWrap, chatHandle,
+      input, inputHandle, setInputHeight: (h) => { inputHeight = h; }, regrowInput: () => regrowInput() });
 
     const st = { id: line.id, dot, banner, transcript, transcriptWrap, scrollBottomBtn, input, send,
       ctxMeter, compactBtn, plannerCtx: null, queuePane, composerError,
       stamp: null, draft: createDraftOwner(), submitting: false, cancelling: new Set(),
       queueErrors: new Map(), queued: [],
-      waiting, planBody, planHandle, graph, graphDetails, graphHandle, chatHandle, previewPanel, approveBtn, badge, planDetails, planControls: controls,
+      waiting, planBody, planHandle, graph, graphDetails, graphHandle, chatHandle, inputHandle, previewPanel, approveBtn, badge, planDetails, planControls: controls,
       pipePane, tabPipeBtn, pipeForm, pipeGraphBox, pipeEdgesList,
       pipeGraph: line.graph || null, nodeSettings: line.nodeSettings || null,
       effectiveNodeSettings: line.effectiveNodeSettings || null,
@@ -1406,10 +1425,13 @@ window.addEventListener("DOMContentLoaded", () => {
     const growInput = () => {
       input.style.height = "auto";
       const lineHeight = parseFloat(getComputedStyle(input).lineHeight) || 21;
-      const maxHeight = lineHeight * 8 + 16;
-      input.style.height = Math.min(input.scrollHeight, maxHeight) + "px";
+      const autoMax = lineHeight * 8 + 16;
+      const floor = inputHeight || 0;
+      const maxHeight = Math.max(autoMax, floor);
+      input.style.height = Math.max(floor, Math.min(input.scrollHeight, maxHeight)) + "px";
       input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
     };
+    regrowInput = growInput;
     const post = async () => {
       const text = input.value.trim();
       if (!text || st.submitting) return;
@@ -1435,7 +1457,7 @@ window.addEventListener("DOMContentLoaded", () => {
         if (!st.started) setStatus("running");
         if (st.draft.canClear(ticket, input.value)) {
           input.value = "";
-          input.style.height = "";
+          input.style.height = inputHeight ? inputHeight + "px" : "";
           input.style.overflowY = "hidden";
         }
         composerError.hidden = true;
@@ -1849,7 +1871,7 @@ window.addEventListener("DOMContentLoaded", () => {
     st.tabProcBtn.classList.toggle("active", tab === "processes");
     st.tabEvBtn.classList.toggle("active", tab === "evidence");
     st.tabPipeBtn.classList.toggle("active", tab === "pipeline");
-    for (const el of [st.graphDetails, st.transcriptWrap, st.chatHandle, st.row]) {
+    for (const el of [st.graphDetails, st.transcriptWrap, st.chatHandle, st.row, st.inputHandle]) {
       el.hidden = tab !== "line";
     }
     // Conditional panels: restore only what the line state shows. renderGraph
