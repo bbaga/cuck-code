@@ -18,8 +18,15 @@ const { parsePipeline } = require("./pipelines");
 const { loadHarnessPluginFolder } = require("./harness-loader");
 const { BUILTIN_HARNESS_IDS } = require("./harness-interface");
 
+// A symlinked plugin folder or file counts as its target. A broken link is
+// kept as is, so it counts as neither and is skipped.
 function defaultReadDir(dir) {
-  return fs.readdirSync(dir, { withFileTypes: true });
+  return fs.readdirSync(dir, { withFileTypes: true }).map((e) => {
+    if (!e.isSymbolicLink()) return e;
+    let target;
+    try { target = fs.statSync(path.join(dir, e.name)); } catch { return e; }
+    return { name: e.name, isDirectory: () => target.isDirectory(), isFile: () => target.isFile() };
+  });
 }
 function defaultReadFile(file) {
   return fs.readFileSync(file, "utf8");

@@ -101,6 +101,31 @@ test("a user node type may extend a built-in type and be used by a user pipeline
   assert.equal(graph.types["careful-impl"].extends, "implementor");
 });
 
+test("a symlinked plugin counts as its target; a broken link is skipped", () => {
+  const user = tmp(), src = tmp();
+  put(src, "u-type/NODE.md", nodeType("u-type", "extends: implementor\n"));
+  put(src, "u-pipe.yaml", pipelineText("u-pipe"));
+  put(src, "harness/index.js", `module.exports = () => ({ apiVersion: 1, id: "linked",
+    capabilities: { resume: false, systemPrompt: "none", nativeTimeLimit: false, providers: false },
+    probe: async () => ({}), listModels: async () => [], startSession() {}, resumeSession() {} });\n`);
+  const link = (target, rel) => {
+    fs.mkdirSync(path.dirname(path.join(user, rel)), { recursive: true });
+    fs.symlinkSync(target, path.join(user, rel));
+  };
+  link(path.join(src, "u-type"), "node-types/u-type");
+  link(path.join(src, "u-pipe.yaml"), "pipelines/u-pipe.yaml");
+  link(path.join(src, "harness"), "harnesses/linked");
+  link(path.join(src, "missing"), "node-types/gone");
+  link(path.join(src, "missing.yaml"), "pipelines/gone.yaml");
+  const c = buildCatalog({ userDir: user, builtInDir: BUILT_IN, harnessSdk: {}, readDir: defaultReadDir, readFile: defaultReadFile });
+  assert.equal(c.types["u-type"].layer, "user");
+  assert.equal(c.pipelines["u-pipe"].layer, "user");
+  assert.equal(c.harnesses.linked.layer, "user");
+  assert.equal(c.types.gone, undefined);
+  assert.equal(c.pipelines.gone, undefined);
+  assert.deepEqual(c.problems, []);
+});
+
 test("the module reads folders only through the injected readDir", () => {
   const seen = [];
   const c = buildCatalog({ managedDir: "/m", userDir: "/u", builtInDir: "/b",

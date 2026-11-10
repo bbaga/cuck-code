@@ -25,6 +25,8 @@ A plugin is a folder. The folder name is the plugin id.
 - The ids `vibe`, `pi`, `codex`, and `claude` are reserved. A folder with one
   of these names is skipped and listed in `pluginProblems`.
 - The id must match `^[a-z][a-z0-9-]{0,63}$` and must equal the folder name.
+- The folder can be a symlink to a folder elsewhere, for example a checkout.
+  The link name is the plugin id. A broken link is skipped.
 - A plugin that does not load is skipped. The other plugins still work.
 
 ## The contract
