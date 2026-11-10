@@ -26,6 +26,7 @@ function phaseOfType(resolved, typeName) {
     seen.add(name);
     name = types[name].extends;
   }
+  if (name === "script-check") return "validator";
   for (const [phase, root] of Object.entries(PHASE_TYPES)) if (root === name) return phase;
   return null;
 }
@@ -66,8 +67,19 @@ function graphView(graph) {
   const nodes = {};
   const freshNodes = [];
   for (const [id, node] of Object.entries(graph.nodes || {})) {
-    nodes[id] = { type: node.type, phase: phaseOfType(graph, node.type) };
     const type = graph.types && graph.types[node.type];
+    const runner = (type && type.runner) || "agent";
+    nodes[id] = {
+      type: node.type, phase: phaseOfType(graph, node.type), runner,
+      checks: [...(node.checks || [])], after: [...(node.after || [])],
+      workspace: type ? type.workspace : null, requires: [...((type && type.requires) || [])],
+    };
+    if (runner === "script") {
+      nodes[id].scripts = JSON.parse(JSON.stringify(node.scripts || []));
+      nodes[id].failFast = node.failFast !== false;
+      nodes[id].required = node.required === true;
+      nodes[id].checkout = node.checkout || "worktree";
+    }
     if (type && type.session === "fresh") freshNodes.push(id);
   }
   const edges = (graph.edges || []).map((edge) => {

@@ -275,3 +275,68 @@ test("all rules run: errors from several rules come together", () => {
   p.nodes.B.prompt = "{{undeclared}}";
   assert.deepEqual(rules(p), ["R1", "R7", "R8"]);
 });
+
+// ---- R11 and R12 ----
+
+types["script-check"] = mk("fresh", "source", "verdict", { runner: "script", chain: ["script-check"] });
+types["my-ci"] = mk("fresh", "source", "verdict", { runner: "script", chain: ["validator", "my-ci"] });
+for (const t of Object.values(types)) if (t.runner === undefined) t.runner = "agent";
+
+const SCRIPTS = "    scripts:\n      - { name: unit, run: npm test }\n";
+const pipelineWith = (nodes) => parse(`name: x
+start: planner
+nodes:
+  planner: { type: planner }
+  impl: { type: backend-implementor }
+  other: { type: backend-implementor }
+${nodes}edges:
+  - planner -> [impl, other]: start
+  - planner -> ci: start
+  - "[ci] -> planner: report"
+`);
+const messages = (p, rule) => check(p).filter((e) => e.rule === rule).map((e) => e.message);
+
+test("R11: a good script node passes", () => {
+  assert.deepEqual(messages(pipelineWith(`  ci:\n    type: script-check\n    checks: [impl]\n    timeLimit: 60\n${SCRIPTS}`), "R11"), []);
+});
+
+test("R11: a script node needs scripts and checks", () => {
+  const out = messages(pipelineWith("  ci: { type: script-check }\n"), "R11");
+  assert.equal(out.length, 2);
+  assert.match(out.join("\n"), /needs scripts/);
+  assert.match(out.join("\n"), /non-empty checks/);
+});
+
+test("R11: a script node sets no agent key", () => {
+  for (const key of ["harness: vibe", "model: m", "effort: low", "maxContext: 2000", "prompt: hi",
+    "fields: { a: { description: d, type: string } }"]) {
+    const out = messages(pipelineWith(`  ci:\n    type: script-check\n    checks: [impl]\n    ${key}\n${SCRIPTS}`), "R11");
+    assert.equal(out.length, 1, key);
+    assert.match(out[0], /cannot set/);
+  }
+});
+
+test("R11: the root of the type chain must be script-check", () => {
+  const out = messages(pipelineWith(`  ci:\n    type: my-ci\n    checks: [impl]\n${SCRIPTS}`), "R11");
+  assert.equal(out.length, 1);
+  assert.match(out[0], /must be script-check/);
+});
+
+test("R11: an agent node sets no script key", () => {
+  const out = messages(pipelineWith(`  ci:\n    type: validator\n    checks: [impl]\n    failFast: false\n    required: true\n    checkout: clean\n${SCRIPTS}`), "R11");
+  assert.equal(out.length, 4);
+  assert.match(out.join("\n"), /scripts needs a node type with runner: script/);
+});
+
+test("R12: after needs checks, known ids, a shared target, and no self", () => {
+  const ci = (extra) => pipelineWith(`  ci:\n    type: script-check\n    checks: [impl]\n${SCRIPTS}${extra}  val: { type: validator, checks: [impl], after: [ci] }\n`);
+  assert.deepEqual(messages(ci(""), "R12"), []);
+  const noChecks = pipelineWith(`  ci:\n    type: script-check\n    checks: [impl]\n${SCRIPTS}  val: { type: validator, after: [ci] }\n`);
+  assert.match(messages(noChecks, "R12")[0], /after needs a non-empty checks/);
+  const unknown = pipelineWith(`  ci:\n    type: script-check\n    checks: [impl]\n${SCRIPTS}  val: { type: validator, checks: [impl], after: [ghost] }\n`);
+  assert.match(messages(unknown, "R12")[0], /unknown node 'ghost'/);
+  const noShare = pipelineWith(`  ci:\n    type: script-check\n    checks: [other]\n${SCRIPTS}  val: { type: validator, checks: [impl], after: [ci] }\n`);
+  assert.match(messages(noShare, "R12")[0], /checks no target/);
+  const self = pipelineWith(`  ci:\n    type: script-check\n    checks: [impl]\n${SCRIPTS}  val: { type: validator, checks: [impl], after: [val] }\n`);
+  assert.match(messages(self, "R12")[0], /the node itself/);
+});
