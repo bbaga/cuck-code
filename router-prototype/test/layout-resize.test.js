@@ -75,6 +75,8 @@ test("pipeline content stays inside a horizontally scrolling panel", () => {
 
 test("the plan section has its own resize handle and saved height", () => {
   assert.ok(page.includes('createResizeHandle("Resize plan height")'));
+  assert.ok(page.includes('Resize message input height'));
+  assert.ok(page.includes('"input-height:"'));
   assert.ok(page.includes('"plan-height:"'));
   assert.ok(page.includes(".card:not(.planSized) .plan"));
   assert.ok(page.includes(".card.planSized .plan"));
