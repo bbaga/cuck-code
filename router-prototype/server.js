@@ -1513,6 +1513,9 @@ function startInstance(line, targetId, body, overrides = {}) {
   const graph = line.graph;
   const node = graph.nodes[targetId];
   const type = graph.types[node.type];
+  if (type.runner === "script") {
+    return { ok: false, status: 409, code: "SCRIPT_RUNNER_UNAVAILABLE", error: "script check nodes run in a later change" };
+  }
   // Fields the node declares itself (pipeline `fields`) reach the prompt templates.
   const extra = {};
   for (const key of Object.keys(node.fields || {})) if (body[key] !== undefined) extra[key] = body[key];

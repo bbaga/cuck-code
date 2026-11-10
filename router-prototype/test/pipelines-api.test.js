@@ -71,7 +71,8 @@ test("graphPreview, listing, rename and the managed writer", () => {
   const cat = catalog(managedDir);
   const resolved = resolvePipelineDefinition("default", cat);
   const g = api.graphPreview(resolved);
-  assert.deepEqual(g.nodes[0], { id: "planner", type: "planner", phase: "planner" });
+  assert.deepEqual(g.nodes[0], { id: "planner", type: "planner", phase: "planner", runner: "agent", checks: [], after: [],
+    workspace: "coordinator", requires: [] });
   assert.ok(g.nodes.find((n) => n.id === "backend-impl" && n.phase === "implementor"));
   assert.deepEqual(g.edges.find((e) => e.from === "integration"), { from: "integration", to: "planner", interactions: ["report"] });
   assert.equal(api.graphPreview(null), null);
