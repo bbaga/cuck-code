@@ -863,19 +863,17 @@ test("D4 create body and picker helpers", () => {
 const { graphView: viewOf } = require("../line-graph");
 const layoutOf = (name) => pipelineUiModule.layoutGraph(viewOf(resolvedBuiltIn(name)));
 const REVIEW_VIEW = (() => {
-  const create = { start: { effect: "create", trigger: "request" } };
-  const rep = { report: { effect: "deliver", trigger: "complete" } };
-  const edge = (from, to, interactions, kinds) => ({ from, to, interactions, kinds });
+  const rel = (from, to, label, dashed) => ({ from, to, kind: "interaction", label, ordering: !dashed, dashed });
   return {
     name: "review-gate", start: "planner",
     nodes: { planner: { type: "planner" }, A: { type: "implementor" }, B: { type: "validator" } },
-    edges: [edge("planner", "A", ["start"], create), edge("A", "B", ["start"], create),
-      edge("planner", "B", ["start"], create), edge("B", "planner", ["report"], rep),
-      edge("A", "planner", ["report"], rep)],
+    relations: [rel("planner", "A", "start"), rel("A", "B", "start"), rel("planner", "B", "start"),
+      rel("B", "planner", "report", true), rel("A", "planner", "report", true)],
+    columns: { planner: 0, A: 1, B: 2 }, rows: { planner: 0, A: 0, B: 0 },
   };
 })();
 
-test("D5 layout: default has two columns, one row per node in file order, one edge each", () => {
+test("D5 layout: default places nodes by the server columns and rows, one path per relation", () => {
   const view = viewOf(resolvedBuiltIn("default"));
   const g = pipelineUiModule.layoutGraph(view);
   const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
@@ -883,15 +881,16 @@ test("D5 layout: default has two columns, one row per node in file order, one ed
   assert.equal(by.planner.column, 0);
   assert.equal(by.planner.row, 0);
   assert.deepEqual(["backend-impl", "frontend-impl", "backend-val", "frontend-val", "integration"]
-    .map((id) => [by[id].column, by[id].row]), [[1, 0], [1, 1], [1, 2], [1, 3], [1, 4]]);
+    .map((id) => [by[id].column, by[id].row]), [[1, 0], [1, 1], [2, 0], [2, 1], [3, 0]]);
+  for (const n of g.nodes) assert.deepEqual([n.column, n.row], [view.columns[n.id], view.rows[n.id]], n.id);
   assert.equal(by["backend-impl"].type, "backend-implementor");
   assert.equal(by["backend-impl"].phase, "implementor");
-  assert.equal(g.edges.length, view.edges.length);
+  assert.equal(g.edges.length, view.relations.length);
   for (const n of g.nodes) assert.ok(n.x >= 0 && n.y >= 0 && n.x + n.width <= g.width && n.y + n.height <= g.height, n.id);
   const dashed = g.edges.filter((e) => e.dashed);
   assert.equal(dashed.length, 5);
   assert.ok(dashed.every((e) => e.to === "planner" && e.label === "report"));
-  const first = g.edges.find((e) => e.from === "planner" && e.to === "backend-impl");
+  const first = g.edges.find((e) => e.from === "planner" && e.to === "backend-impl" && e.kind === "interaction");
   assert.equal(first.label, "start, feedback, accept");
   assert.equal(first.dashed, false);
   for (const e of g.edges) assert.ok(typeof e.path === "string" && e.path.startsWith("M") && Array.isArray(e.points), e.label);
@@ -900,12 +899,12 @@ test("D5 layout: default has two columns, one row per node in file order, one ed
 test("D5 layout: minimal", () => {
   const g = layoutOf("minimal");
   assert.deepEqual(g.nodes.map((n) => [n.id, n.column, n.row]),
-    [["planner", 0, 0], ["impl", 1, 0], ["val", 1, 1], ["integration", 1, 2]]);
-  assert.equal(g.edges.length, 6);
+    [["planner", 0, 0], ["impl", 1, 0], ["val", 2, 0], ["integration", 3, 0]]);
+  assert.equal(g.edges.length, 8);
   assert.deepEqual(g.edges.filter((e) => e.dashed).map((e) => e.from), ["impl", "val", "integration"]);
 });
 
-test("D5 layout: review-gate chain puts B in the third column (longest create path)", () => {
+test("D5 layout: review-gate chain puts B in the third column (the server column)", () => {
   const g = pipelineUiModule.layoutGraph(REVIEW_VIEW);
   assert.deepEqual(g.nodes.map((n) => [n.id, n.column, n.row]), [["planner", 0, 0], ["A", 1, 0], ["B", 2, 0]]);
   const skip = g.edges.find((e) => e.from === "planner" && e.to === "B");
@@ -930,23 +929,17 @@ test("D5 helpers: rows from the graph view, node summary text, edge text", () =>
   assert.equal(pipelineUiModule.nodeSummaryText({ harness: "vibe", model: "x".repeat(60) }, 12).length, 12);
   assert.equal(pipelineUiModule.nodeSummaryText(null), "default model");
   assert.equal(pipelineUiModule.edgeTextLines(view)[0], "planner -> backend-impl: start, feedback, accept");
-  assert.equal(pipelineUiModule.edgeTextLines(view).length, view.edges.length);
+  assert.equal(pipelineUiModule.edgeTextLines(view).length, view.relations.length);
 });
 
-test("D5 layout: pure, tolerant of missing data and create cycles", () => {
+test("D5 layout: pure, tolerant of missing data", () => {
   const before = JSON.stringify(REVIEW_VIEW);
   pipelineUiModule.layoutGraph(REVIEW_VIEW);
   assert.equal(JSON.stringify(REVIEW_VIEW), before);
   assert.deepEqual(pipelineUiModule.layoutGraph(null), { nodes: [], edges: [], width: 0, height: 0 });
-  const cyc = { start: "a", nodes: { a: { type: "t" }, b: { type: "t" } }, edges: [
-    { from: "a", to: "b", interactions: ["start"], kinds: { start: { effect: "create", trigger: "request" } } },
-    { from: "b", to: "a", interactions: ["start"], kinds: { start: { effect: "create", trigger: "request" } } }] };
-  const g = pipelineUiModule.layoutGraph(cyc);
-  assert.deepEqual(g.nodes.map((n) => n.column), [0, 1]);
-  // no kinds: a view from an older server still lays out, with "start" taken as create
-  const old = { start: "a", nodes: { a: { type: "t" }, b: { type: "t" } }, edges: [
-    { from: "a", to: "b", interactions: ["start"] }] };
-  assert.deepEqual(pipelineUiModule.layoutGraph(old).nodes.map((n) => n.column), [0, 1]);
+  // no columns: a view from an older server puts every node in column 0, in node order
+  const old = { nodes: { a: { type: "t" }, b: { type: "t" } }, relations: [{ from: "a", to: "b", kind: "interaction", label: "start" }] };
+  assert.deepEqual(pipelineUiModule.layoutGraph(old).nodes.map((n) => [n.column, n.row]), [[0, 0], [0, 1]]);
 });
 
 test("graph switch: request body", () => {
@@ -1222,4 +1215,67 @@ test("defaultOptionLabels names the real defaults", () => {
   assert.strictEqual(f({ ...d, maxContext: undefined }, "").maxContext, "max ctx");
   assert.deepEqual(f(null, "vibe"),
     { harness: "default", model: "default", effort: "default", maxContext: "max ctx" });
+});
+
+// E1: the layout comes from the server data only.
+const stripped = (view) => JSON.parse(JSON.stringify(view, (k, v) => (k === "phase" ? undefined : v)));
+const geometry = (g) => ({ w: g.width, h: g.height, nodes: g.nodes.map((n) => [n.x, n.y]),
+  edges: g.edges.map((e) => [e.path, e.labelX, e.labelY, e.dashed]) });
+
+test("E1 layout: nodes sit at their column and row, each relation has a path", () => {
+  const view = viewOf(resolvedBuiltIn("default"));
+  const g = pipelineUiModule.layoutGraph(view);
+  const G = pipelineUiModule.GRAPH_GEOMETRY;
+  assert.equal(g.edges.length, view.relations.length);
+  for (const n of g.nodes) {
+    assert.equal(n.x, G.margin + view.columns[n.id] * (G.nodeWidth + G.columnGap), n.id);
+    assert.ok(n.y >= G.margin + view.rows[n.id] * (G.nodeHeight + G.rowGap), n.id);
+  }
+  g.edges.forEach((e, i) => {
+    assert.ok(e.path.startsWith("M"), e.label);
+    assert.deepEqual([e.from, e.to, e.kind, e.label], [view.relations[i].from, view.relations[i].to,
+      view.relations[i].kind, view.relations[i].label]);
+  });
+});
+
+test("E1 layout: a graph without phase fields gives the same layout", () => {
+  const view = viewOf(resolvedBuiltIn("default"));
+  assert.deepEqual(geometry(pipelineUiModule.layoutGraph(stripped(view))), geometry(pipelineUiModule.layoutGraph(view)));
+});
+
+test("E1 layout: renaming every node id and type keeps the geometry", () => {
+  const view = viewOf(resolvedBuiltIn("default"));
+  const rename = (id) => "n-" + Object.keys(view.nodes).indexOf(id);
+  const copy = {
+    nodes: Object.fromEntries(Object.entries(view.nodes).map(([id, n]) => [rename(id), { ...n, type: "type-" + rename(id) }])),
+    relations: view.relations.map((r) => ({ ...r, from: rename(r.from), to: rename(r.to) })),
+    columns: Object.fromEntries(Object.entries(view.columns).map(([id, c]) => [rename(id), c])),
+    rows: Object.fromEntries(Object.entries(view.rows).map(([id, c]) => [rename(id), c])),
+  };
+  assert.deepEqual(geometry(pipelineUiModule.layoutGraph(copy)), geometry(pipelineUiModule.layoutGraph(view)));
+});
+
+test("E1 script row: read-only, no harness controls, only timeLimit is sent", () => {
+  const u = pipelineUiModule;
+  const view = { nodes: { ci: { type: "script-check", runner: "script", required: true, checkout: "clean",
+    scripts: [{ name: "unit", run: "npm test", cwd: "." }] }, impl: { type: "impl", runner: "agent" } }, freshNodes: ["ci"] };
+  const [ci, impl] = u.nodeRowsFromGraphView(view);
+  assert.deepEqual([ci.runner, ci.required, ci.checkout, ci.maxContext, ci.scripts.length], ["script", true, "clean", false, 1]);
+  assert.equal(impl.runner, undefined);
+  assert.equal(u.scriptCwdText("."), "<run root>");
+  assert.equal(u.scriptCwdText(undefined), "<run root>");
+  assert.equal(u.scriptCwdText("router-prototype"), "<run root>/router-prototype");
+  assert.equal(u.scriptNodeLine({ type: "script-check", scripts: [{}, {}, {}] }), "script-check · 3 scripts");
+  assert.deepEqual(u.buildNodeSettingsPayload({ ci: { timeLimit: 900 } }), { ci: { timeLimit: 900 } });
+  assert.equal(u.buildNodeSettingsPayload({ ci: { timeLimit: "" } }), null);
+});
+
+test("E1 kinds: all on by default, the stored choice is read back", () => {
+  const u = pipelineUiModule;
+  const store = (value) => ({ getItem: () => value });
+  assert.ok(Object.values(u.loadGraphKinds(store(null))).every((v) => v === true));
+  assert.equal(u.loadGraphKinds(store("not json")).after, true);
+  const kinds = u.loadGraphKinds(store(JSON.stringify({ checks: false })));
+  assert.deepEqual([kinds.checks, kinds.after], [false, true]);
+  assert.deepEqual(u.GRAPH_KINDS.map((k) => k.kind), ["interaction", "checks", "after", "accepted-work", "required"]);
 });

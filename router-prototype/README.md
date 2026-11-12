@@ -443,10 +443,115 @@ when the pipelines API saves or validates it. Each error has a `rule` and a
 | R8 | No unknown node type, unknown node (in an edge or in `checks`), unknown interaction or duplicate edge. |
 | R9 | A node with `checks` has a type with `workspace: source`, and each node it checks has a type with `workspace: own-worktree`. |
 | R10 | A `complete`-triggered interaction does not have `effect: create`. |
+| R11 | A node whose type has `runner: script` has `scripts` and `checks`, sets no agent key, and its type chain starts at `script-check`. Any other node sets no script key. |
+| R12 | A node with `after` has `checks`. Each listed node is known, checks a shared target and is not the node itself. |
+| R13 | The ordering relations form no loop (see "How pipelines are drawn"). |
 
 Two more error codes can appear: `LOAD` (the text, a node type, an interaction
 or a prompt file does not parse or load) and `NAME` (the name is not allowed,
 differs from the file name, or is a built-in name).
+
+### How pipelines are drawn
+
+The router computes the relations, the column and the row of each node from
+the declarations of the pipeline. The graphs in the UI use only this data
+(`relations`, `columns`, `rows` in the line graph and in the validate answer).
+Node ids, type names, phases and roles carry no meaning: if you rename every
+node and type and keep the relations, the layout stays the same.
+
+| kind | Declared by | Relation | Ordering |
+|---|---|---|---|
+| interaction | an edge `F -> T` with interactions | `F -> T`, label = the names joined with ", " | yes, if one interaction has `effect: create`. Dashed if every interaction has `trigger: complete`. |
+| checks | `checks: [W]` on node C | `W -> C`, label "checks" | yes |
+| after | `after: [X]` on node C | `X -> C`, label "after PASS" | yes |
+| accepted-work | `requires: [accepted-work]` in the type of V | `W -> V` for each node W with `workspace: own-worktree`, label "accepted work" | yes |
+| required | `required: true` on script node C | `C -> V` for each V whose type requires accepted-work, label "required PASS" | yes |
+
+Extra ordering rule: a node V whose type requires accepted-work comes after
+each other node that checks an own-worktree node.
+
+Column rule: the start node is in column 0. Any other node is in the column of
+the longest path to it over the ordering relations. A node that nothing
+orders is in column 0.
+
+Row rule: inside a column, the nodes are numbered from 0 in the order in which
+they first appear as the target of an edge. Nodes that are no edge target
+follow, in the order of the `nodes` mapping.
+
+Without `after` there is no gate, and the order comes from the edges and the
+other declarations.
+
+Rule R13: the ordering relations must not form a loop. A loop is an error that
+names the nodes and the declarations. Example:
+`ordering relations form a loop: ci -> lint -> ci (lint: after [ci]; ci: after [lint])`.
+
+### Script check nodes
+
+A **script check node** runs a list of shell scripts, CI style, in the
+worktree of the implementor instance that it checks. No LLM agent runs. The
+verdict is PASS only when every script exits 0. Its node type has
+`runner: script` (the built-in type `script-check`). A script type needs
+`session: fresh`, `workspace: source`, `outcome: verdict` and
+`coordinator: false`. The default runner is `agent`.
+This change adds the schema, the loading and the validation. Starting a script
+node answers `409 SCRIPT_RUNNER_UNAVAILABLE` until the runner is added.
+
+```yaml
+name: cuck-ci
+start: planner
+nodes:
+  planner:       { type: planner }
+  backend-impl:  { type: backend-implementor }
+  backend-val:   { type: backend-validator, checks: [backend-impl], after: [ci] }
+  ci:
+    type: script-check
+    checks: [backend-impl]
+    required: true
+    failFast: true
+    checkout: worktree
+    timeLimit: 1800
+    scripts:
+      - name: format
+        run: npx prettier --check .
+        cwd: router-prototype
+        timeout: 300
+      - name: unit
+        run: node --test router-prototype/test/*.test.js
+        env: { NODE_ENV: test }
+      - name: py-lint
+        run: ruff check .
+        repos: [ml-service]
+  integration:   { type: integration-validator }
+edges:
+  - planner -> backend-impl: start, feedback, accept
+  - backend-impl -> planner: report
+  - planner -> [backend-val, ci]: start
+  - "[backend-val, ci] -> planner: report"
+  - planner -> integration: start
+  - integration -> planner: report
+```
+
+Field rules:
+
+- `scripts`: 1 to 50 mappings. A script node needs it, and needs a non-empty `checks`.
+  A script node sets no `harness`, `model`, `effort`, `maxContext`, `prompt` or `fields`.
+  Only `timeLimit` (default 1800 seconds) can be set for it in the line settings.
+- Script `name`: required, `^[a-z0-9][a-z0-9._-]{0,63}$`, unique in the node.
+- Script `run`: required, a non-empty string, at most 4000 characters.
+- Script `cwd`: optional, relative to the run root. No empty string, absolute path,
+  backslash or `..` segment. `./a/` becomes `a`.
+- Script `timeout`: optional integer, 1 to 7200 seconds. Default 600.
+- Script `env`: optional mapping. Keys match `^[A-Z_][A-Z0-9_]*$`. Values are strings.
+- Script `repos`: optional, a non-empty list of non-empty strings.
+- `failFast`: boolean, default `true`. `required`: boolean, default `false`.
+- `checkout`: `worktree` (default) or `clean`.
+- `after`: a non-empty list of node ids. Any node type can set it. The node needs
+  `checks`, and each listed node must check a target that this node checks (rule R12).
+
+Security note: scripts are shell commands from pipeline files (built-in,
+`~/.cuck/`, or the managed layer that the UI writes). They run with the
+environment of the router user, as the agents do. The router binds to
+localhost (`http-guard.js`). No new trust boundary is created.
 
 ### Prompt extensions
 

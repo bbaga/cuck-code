@@ -270,6 +270,21 @@
   .pipeGraph .pgNodeCfg { fill: #6c7a8c; font-size: 11px; }
   .pipeGraph .pgEdge { fill: none; stroke: #8fa3bd; stroke-width: 1.4; }
   .pipeGraph .pgEdge.dashed { stroke-dasharray: 6 4; stroke: #6c7a8c; }
+  .pipeGraph .pgEdge.checks { stroke-width: 1; stroke: #5f9ea0; }
+  .pipeGraph .pgEdge.after { stroke-width: 2.6; stroke: #d9a441; }
+  .pipeGraph .pgEdge.accepted-work { stroke-dasharray: 2 4; stroke: #8fa3bd; }
+  .pipeGraph .pgEdge.required { stroke-dasharray: 2 4; stroke-width: 2.6; stroke: #e07a5f; }
+  .pipeGraph .pgNode.script rect { fill: #1a2220; stroke: #5f9ea0; stroke-dasharray: 5 3; }
+  .pipeGraph .pgNodeBadge { fill: #e07a5f; font-size: 11px; font-weight: 600; }
+  .pgLegend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 6px; padding: 4px 8px; border: 1px solid #262b33; border-radius: 6px; font-size: .75rem; color: #d8dee6; }
+  .pgLegend legend { padding: 0 4px; color: #8fa3bd; }
+  .pgKind { display: inline-flex; align-items: center; gap: 4px; }
+  .pgSwatch { display: inline-block; width: 26px; border-top: 1.4px solid #8fa3bd; }
+  .pgKind.interaction .pgSwatch { border-top-style: solid; }
+  .pgKind.checks .pgSwatch { border-top: 1px solid #5f9ea0; }
+  .pgKind.after .pgSwatch { border-top: 3px solid #d9a441; }
+  .pgKind.accepted-work .pgSwatch { border-top: 2px dotted #8fa3bd; }
+  .pgKind.required .pgSwatch { border-top: 3px dotted #e07a5f; }
   .pipeGraph .pgArrowHead { fill: #8fa3bd; }
   .pipeGraph .pgEdgeLabel { fill: #d8dee6; font-size: 11px; paint-order: stroke; stroke: #0d1014;
     stroke-width: 4px; stroke-linejoin: round; }
@@ -302,6 +317,14 @@
   .nodeRow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 88px 72px; }
   .nodeRow .phaseName { grid-column: 1 / -1; color: #8fa3bd; overflow-wrap: anywhere; }
   .nodeRow .authHint { grid-column: 1 / -1; }
+  .scriptRow { grid-template-columns: minmax(0, 1fr) 120px; border-left: 3px solid #5f9ea0; padding-left: 6px; }
+  .scriptRow .scriptHead, .scriptRow .scriptList { grid-column: 1; }
+  .scriptRow input { grid-column: 2; grid-row: 1; }
+  .scriptHead { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .scriptBadge { font-size: .68rem; padding: 1px 6px; border: 1px solid #5f9ea0; border-radius: 9px; color: #d8dee6; }
+  .scriptList { margin: 2px 0 0; padding-left: 16px; font-size: .72rem; color: #d8dee6; overflow-wrap: anywhere; }
+  .scriptList code { color: #8fa3bd; }
+  .scriptMeta { color: #8fa3bd; }
   .saveRow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; margin-top: 10px; }
   #createPanel button:disabled { opacity: .5; cursor: not-allowed; }
   .presetBar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
@@ -357,7 +380,7 @@
 <script src="registry-line.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
-  const { nodeRowsFromResolved, defaultOptionLabels, layoutGraph, nodeRowsFromGraphView, nodeSummaryText, edgeTextLines, buildNodeSettingsPayload, buildCreateBody, pickerPipelines, buildGraphChangeBody, graphSwitchView, remapComplete,
+  const { nodeRowsFromResolved, defaultOptionLabels, layoutGraph, nodeRowsFromGraphView, nodeSummaryText, scriptNodeLine, scriptCwdText, loadGraphKinds, buildKindLegend, edgeTextLines, buildNodeSettingsPayload, buildCreateBody, pickerPipelines, buildGraphChangeBody, graphSwitchView, remapComplete,
     pipelineOptionLabel, pipelineErrorsText, EFFORT_LEVELS, parseContextSize, formatTokens, filterInstalled, authBadge, harnessOptionLabel, pluginProblemsSummary, harnessReloadOutcome, previewForIntegration,
     previewSelectionKey, previewSelectionExists, isPassingIntegration, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
     VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, harnessHasProviders, providerDetailUrl, providerFromModel, authStatusText,
@@ -1796,7 +1819,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     const rows = nodeRowsFromGraphView(graph);
-    const rowKey = JSON.stringify(rows.map((r) => [r.id, r.maxContext]));
+    const rowKey = JSON.stringify(rows.map((r) => [r.id, r.maxContext, r.runner, r.scripts]));
     if (st.pipeRowKey !== rowKey) {
       if (st.pipeRowKey !== undefined) { st.pipeForm.setRows(rows); st.pipeForm.set(st.nodeSettings); }
       st.pipeRowKey = rowKey;
@@ -1807,10 +1830,18 @@ window.addEventListener("DOMContentLoaded", () => {
       if (text !== undefined) node.textContent = text;
       return node;
     };
+    // Hiding a kind only hides its edges and labels: the layout always holds all relations.
+    st.pipeKinds = st.pipeKinds || loadGraphKinds(localStorage);
+    const showKinds = (kinds) => {
+      for (const item of box.querySelectorAll("[data-kind]")) {
+        if (item.tagName !== "INPUT") item.style.display = kinds[item.dataset.kind] === false ? "none" : "";
+      }
+    };
+    box.appendChild(buildKindLegend(document, st.pipeKinds, localStorage, showKinds));
     const svg = el("svg", { class: "pipeGraph", role: "img", width: layout.width, height: layout.height,
       viewBox: "0 0 " + layout.width + " " + layout.height,
       "aria-label": "Pipeline graph " + (graph.name || "") + ": " + layout.nodes.length + " nodes, "
-        + layout.edges.length + " edges. The edges follow as a text list." });
+        + layout.edges.length + " relations. The relations follow as a text list." });
     svg.appendChild(el("title", {}, "Pipeline graph " + (graph.name || "")));
     const defs = el("defs");
     const marker = el("marker", { id: "pgArrow-" + st.id, viewBox: "0 0 10 10", refX: 9, refY: 5,
@@ -1822,24 +1853,30 @@ window.addEventListener("DOMContentLoaded", () => {
     const labelLayer = el("g", { class: "pgLabels" });
     for (const edge of layout.edges) {
       if (!edge) continue;
-      edgeLayer.appendChild(el("path", { d: edge.path, class: "pgEdge" + (edge.dashed ? " dashed" : ""),
-        "marker-end": "url(#pgArrow-" + st.id + ")" }));
+      edgeLayer.appendChild(el("path", { d: edge.path, class: "pgEdge " + edge.kind + (edge.dashed ? " dashed" : ""),
+        "data-kind": edge.kind, "marker-end": "url(#pgArrow-" + st.id + ")" }));
       labelLayer.appendChild(el("text", { x: edge.labelX, y: edge.labelY, class: "pgEdgeLabel",
-        "text-anchor": "middle", "dominant-baseline": "central" }, edge.label));
+        "data-kind": edge.kind, "text-anchor": "middle", "dominant-baseline": "central" }, edge.label));
     }
     svg.append(edgeLayer);
     const eff = st.effectiveNodeSettings || {};
     for (const n of layout.nodes) {
-      const g = el("g", { class: "pgNode" + (n.id === graph.start ? " start" : ""), "data-node": n.id });
+      const script = n.runner === "script";
+      const g = el("g", { class: "pgNode" + (script ? " script" : "") + (n.id === graph.start ? " start" : ""), "data-node": n.id });
       g.appendChild(el("rect", { x: n.x, y: n.y, width: n.width, height: n.height, rx: 6 }));
-      g.appendChild(el("text", { x: n.x + 10, y: n.y + 21, class: "pgNodeId" }, n.id));
-      g.appendChild(el("text", { x: n.x + 10, y: n.y + 38, class: "pgNodeType" }, n.type || ""));
-      g.appendChild(el("text", { x: n.x + 10, y: n.y + 55, class: "pgNodeCfg" }, nodeSummaryText(eff[n.id])));
+      g.appendChild(el("text", { x: n.x + 10, y: n.y + 21, class: "pgNodeId" }, (script ? "⚙ " : "") + n.id));
+      g.appendChild(el("text", { x: n.x + 10, y: n.y + 38, class: "pgNodeType" }, script ? scriptNodeLine(n) : n.type || ""));
+      if (script) {
+        if (n.required) g.appendChild(el("text", { x: n.x + 10, y: n.y + 55, class: "pgNodeBadge" }, "required"));
+      } else {
+        g.appendChild(el("text", { x: n.x + 10, y: n.y + 55, class: "pgNodeCfg" }, nodeSummaryText(eff[n.id])));
+      }
       svg.appendChild(g);
     }
     // Labels last, so no box or arrow hides them.
     svg.appendChild(labelLayer);
     box.appendChild(svg);
+    showKinds(st.pipeKinds);
     for (const line of edgeTextLines(graph)) {
       const li = document.createElement("li");
       li.textContent = line;
@@ -2177,7 +2214,10 @@ window.addEventListener("DOMContentLoaded", () => {
       piLoading = {}, hydrateSig = {}, piSavedModel = {};
     let rowGeneration = 0;
     const rowGen = {};
+    // `rows` holds the agent rows (the harness controls). Script rows have only a time limit.
     let rows = [];
+    let scriptRows = [];
+    const timeLimitInputs = {};
     // Server default settings per node id; they label the empty options.
     let rowDefaults = {};
     // Fields the form has no control for (timeLimit) survive a set/read.
@@ -2192,11 +2232,14 @@ window.addEventListener("DOMContentLoaded", () => {
       for (const old of [...el.querySelectorAll(".phaseRow")]) old.remove();
       for (const m of [harnessSelects, authModeSelects, modelSelects, effortSelects, authHints,
         maxContextInputs, phaseState, savedSettings, rowTouched, modelTouched, piDetailLoaded,
-        piLoading, hydrateSig, piSavedModel]) {
+        piLoading, hydrateSig, piSavedModel, timeLimitInputs]) {
         for (const k of Object.keys(m)) delete m[k];
       }
-      rows = specs;
-      for (const { key, title, maxContext } of specs) {
+      scriptRows = specs.filter((spec) => spec.runner === "script");
+      rows = specs.filter((spec) => spec.runner !== "script");
+      for (const spec of specs) {
+        const { key, title, maxContext } = spec;
+        if (spec.runner === "script") { el.insertBefore(buildScriptRow(spec), authSummary); continue; }
         const row = document.createElement("div");
         row.className = "phaseRow nodeRow";
         const phaseName = document.createElement("span");
@@ -2255,6 +2298,49 @@ window.addEventListener("DOMContentLoaded", () => {
       }
     }
 
+    // The read-only row of a script node: badges, checkout, the scripts and a time limit.
+    function buildScriptRow(spec) {
+      const { key, scripts } = spec;
+      const row = document.createElement("div");
+      row.className = "phaseRow nodeRow scriptRow";
+      row.dataset.node = key;
+      const name = document.createElement("span");
+      name.className = "phaseName";
+      name.textContent = key;
+      const badge = (text) => {
+        const b = document.createElement("span");
+        b.className = "scriptBadge";
+        b.textContent = text;
+        return b;
+      };
+      const head = document.createElement("div");
+      head.className = "scriptHead";
+      head.append(name, badge("scripts"));
+      if (spec.required) head.append(badge("required"));
+      head.append(badge("checkout: " + spec.checkout));
+      const list = document.createElement("ul");
+      list.className = "scriptList";
+      for (const script of scripts) {
+        const li = document.createElement("li");
+        const parts = ["cwd " + scriptCwdText(script.cwd), "timeout " + (script.timeout || 600) + " s"];
+        if (Array.isArray(script.repos) && script.repos.length) parts.push("repos " + script.repos.join(", "));
+        const code = document.createElement("code");
+        code.textContent = script.run;
+        li.append(Object.assign(document.createElement("strong"), { textContent: script.name }), " ", code,
+          Object.assign(document.createElement("span"), { className: "scriptMeta", textContent: " (" + parts.join("; ") + ")" }));
+        list.appendChild(li);
+      }
+      const limit = document.createElement("input");
+      limit.id = idPrefix + "-timelimit-" + key;
+      limit.type = "number";
+      limit.min = "1";
+      limit.placeholder = "time limit (s)";
+      limit.setAttribute("aria-label", key + " time limit in seconds");
+      timeLimitInputs[key] = limit;
+      row.append(head, list, limit);
+      return row;
+    }
+
     // Show the real default values in the empty options of a row.
     function relabelDefaults(key) {
       if (!harnessSelects[key]) return;
@@ -2273,7 +2359,9 @@ window.addEventListener("DOMContentLoaded", () => {
       rowDefaults = map || {};
       for (const { key } of rows) relabelDefaults(key);
     }
-    buildRows(rowSpecs.map((r) => ({ key: r.id, title: r.title, maxContext: r.maxContext })));
+    const rowSpec = (r) => ({ key: r.id, title: r.title, maxContext: r.maxContext, runner: r.runner,
+      required: r.required, checkout: r.checkout, scripts: r.scripts });
+    buildRows(rowSpecs.map(rowSpec));
     function syncPhaseRow(key) {
       const state = phaseState[key];
       const harness = harnessSelects[key].value;
@@ -2502,6 +2590,7 @@ window.addEventListener("DOMContentLoaded", () => {
     function set(pipeline) {
       const p = pipeline && typeof pipeline === "object" ? pipeline : {};
       extraFields = {};
+      for (const { key } of scriptRows) timeLimitInputs[key].value = p[key] && p[key].timeLimit ? String(p[key].timeLimit) : "";
       for (const { key } of rows) {
         hydrateRow(key, p[key] && typeof p[key] === "object" ? p[key] : {});
       }
@@ -2510,6 +2599,7 @@ window.addEventListener("DOMContentLoaded", () => {
     // The typed values per row key, as read() would send them (no validation).
     function snapshot() {
       const out = {};
+      for (const { key } of scriptRows) out[key] = { timeLimit: timeLimitInputs[key].value };
       for (const { key } of rows) {
         out[key] = { harness: harnessSelects[key].value, model: modelSelects[key].value,
           effort: effortSelects[key].value,
@@ -2522,8 +2612,9 @@ window.addEventListener("DOMContentLoaded", () => {
     // Replace the rows; kept node ids keep their typed values via hydrateRow.
     function setRows(specs) {
       const old = snapshot();
-      buildRows(specs.map((r) => ({ key: r.id, title: r.title, maxContext: r.maxContext })));
+      buildRows(specs.map(rowSpec));
       extraFields = {};
+      for (const { key } of scriptRows) timeLimitInputs[key].value = old[key] ? old[key].timeLimit || "" : "";
       for (const { key } of rows) {
         hydrateRow(key, old[key] || {});
       }
@@ -2532,6 +2623,11 @@ window.addEventListener("DOMContentLoaded", () => {
 
     function read() {
       const values = {};
+      for (const { key } of scriptRows) {
+        const text = timeLimitInputs[key].value.trim();
+        if (text && !/^[1-9][0-9]*$/.test(text)) return { error: key + " time limit must be a whole number of seconds" };
+        values[key] = { timeLimit: text ? Number(text) : "" };
+      }
       for (const { key } of rows) {
         values[key] = {
           ...(extraFields[key] || {}),

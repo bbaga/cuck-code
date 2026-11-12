@@ -42,14 +42,14 @@ test("pipeline tab: graph of the default pipeline, settings rows, save, 375 px",
     await page.evaluate("[...document.querySelectorAll('button.tabBtn')].find((b) => b.textContent === 'Pipeline').click()");
     await page.waitFor(`${PANE} && !${PANE}.hidden && ${PANE}.querySelector('svg.pipeGraph')`);
 
-    // graph: one box per node, one arrow per edge, report edges dashed
+    // graph: one box per node, one arrow per relation, report edges dashed
     const svg = `${PANE}.querySelector('svg.pipeGraph')`;
     assert.equal(await page.evaluate(`${svg}.getAttribute('role')`), 'img');
     assert.match(await page.evaluate(`${svg}.querySelector('title').textContent`), /default/);
     assert.deepEqual(await page.evaluate(`[...${svg}.querySelectorAll('.pgNode')].map((g) => g.dataset.node)`), NODE_IDS);
     assert.equal(await page.evaluate(`${svg}.querySelectorAll('.pgNode rect').length`), 6);
-    assert.equal(await page.evaluate(`${svg}.querySelectorAll('path.pgEdge').length`), 10);
-    assert.equal(await page.evaluate(`${svg}.querySelectorAll('path.pgEdge[marker-end]').length`), 10);
+    assert.equal(await page.evaluate(`${svg}.querySelectorAll('path.pgEdge').length`), 14);
+    assert.equal(await page.evaluate(`${svg}.querySelectorAll('path.pgEdge[marker-end]').length`), 14);
     assert.equal(await page.evaluate(`${svg}.querySelectorAll('path.pgEdge.dashed').length`), 5);
     const labels = await page.evaluate(`[...${svg}.querySelectorAll('.pgEdgeLabel')].map((l) => l.textContent)`);
     assert.equal(labels.filter((l) => l === 'report').length, 5);
@@ -57,7 +57,7 @@ test("pipeline tab: graph of the default pipeline, settings rows, save, 375 px",
     assert.match(await page.evaluate(`${svg}.querySelector('[data-node=planner]').textContent`), /planner.*\/ /);
     // text list of the edges and the structure note
     const edgeLines = await page.evaluate(`[...${PANE}.querySelectorAll('.pipeEdgesText li')].map((l) => l.textContent)`);
-    assert.equal(edgeLines.length, 10);
+    assert.equal(edgeLines.length, 14);
     assert.equal(edgeLines[0], 'planner -> backend-impl: start, feedback, accept');
     assert.match(await page.evaluate(`${PANE}.innerText`), /Choose another pipeline to change the graph\./);
     // the old summary and the preset bar are gone

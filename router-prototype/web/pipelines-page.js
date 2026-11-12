@@ -62,18 +62,13 @@
   }
 
   // The validate answer's graph in the shape layoutGraph takes (see pipeline-ui.js):
-  // nodes by id, and the { effect, trigger } of every interaction on its edges.
+  // nodes by id with their runner fields, and the relations, columns and rows as sent.
   function layoutInput(graph) {
     if (!graph || !Array.isArray(graph.nodes)) return null;
     const nodes = {};
-    for (const n of graph.nodes) nodes[n.id] = { type: n.type, phase: n.phase };
-    const kinds = graph.kinds || {};
-    const edges = (graph.edges || []).map((e) => {
-      const k = {};
-      for (const name of e.interactions || []) if (kinds[name]) k[name] = kinds[name];
-      return { ...e, kinds: k };
-    });
-    return { start: graph.start || (graph.nodes[0] && graph.nodes[0].id), nodes, edges };
+    for (const n of graph.nodes) nodes[n.id] = { ...n };
+    return { start: graph.start || (graph.nodes[0] && graph.nodes[0].id), nodes,
+      relations: graph.relations || [], columns: graph.columns, rows: graph.rows };
   }
 
   const api = { VALIDATE_DELAY_MS, createDebouncer, saveState, errorLines, nameProblem, groupItems, toolbarState, layoutInput };
@@ -345,6 +340,7 @@
     const box = $("graphBox");
     if (!box) return;
     box.textContent = "";
+    const kinds = pipelineUI.loadGraphKinds(localStorage);
     const list = $("edgesList");
     if (list) list.textContent = "";
     const layout = input ? pipelineUI.layoutGraph(input) : { nodes: [], edges: [] };
@@ -357,7 +353,7 @@
     };
     const svg = el("svg", { class: "pipeGraph", role: "img", width: layout.width, height: layout.height,
       viewBox: "0 0 " + layout.width + " " + layout.height,
-      "aria-label": "Pipeline graph: " + layout.nodes.length + " nodes, " + layout.edges.length + " edges. The edges follow as a text list." });
+      "aria-label": "Pipeline graph: " + layout.nodes.length + " nodes, " + layout.edges.length + " relations. The relations follow as a text list." });
     svg.append(el("title", {}, "Pipeline graph"));
     const defs = el("defs");
     const marker = el("marker", { id: "pgArrow", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" });
@@ -367,19 +363,26 @@
     const labelLayer = el("g", { class: "pgLabels" });
     for (const edge of layout.edges) {
       if (!edge) continue;
-      edgeLayer.append(el("path", { d: edge.path, class: "pgEdge" + (edge.dashed ? " dashed" : ""), "marker-end": "url(#pgArrow)" }));
-      labelLayer.append(el("text", { x: edge.labelX, y: edge.labelY, class: "pgEdgeLabel", "text-anchor": "middle", "dominant-baseline": "central" }, edge.label));
+      edgeLayer.append(el("path", { d: edge.path, class: "pgEdge " + edge.kind + (edge.dashed ? " dashed" : ""), "data-kind": edge.kind, "marker-end": "url(#pgArrow)" }));
+      labelLayer.append(el("text", { x: edge.labelX, y: edge.labelY, class: "pgEdgeLabel", "data-kind": edge.kind, "text-anchor": "middle", "dominant-baseline": "central" }, edge.label));
     }
     svg.append(edgeLayer);
     for (const n of layout.nodes) {
-      const g = el("g", { class: "pgNode" + (n.id === input.start ? " start" : ""), "data-node": n.id });
+      const script = n.runner === "script";
+      const g = el("g", { class: "pgNode" + (script ? " script" : "") + (n.id === input.start ? " start" : ""), "data-node": n.id });
       g.append(el("rect", { x: n.x, y: n.y, width: n.width, height: n.height, rx: 6 }),
-        el("text", { x: n.x + 10, y: n.y + 28, class: "pgNodeId" }, n.id),
-        el("text", { x: n.x + 10, y: n.y + 48, class: "pgNodeType" }, n.type || ""));
+        el("text", { x: n.x + 10, y: n.y + 21, class: "pgNodeId" }, (script ? "⚙ " : "") + n.id),
+        el("text", { x: n.x + 10, y: n.y + 38, class: "pgNodeType" }, script ? pipelineUI.scriptNodeLine(n) : n.type || ""),
+        el("text", { x: n.x + 10, y: n.y + 55, class: script ? "pgNodeBadge" : "pgNodeCfg" },
+          script ? (n.required ? "required" : "") : "runner: " + (n.runner || "agent")));
       svg.append(g);
     }
     svg.append(labelLayer);
-    box.append(svg);
+    const showKinds = () => {
+      for (const item of svg.querySelectorAll("[data-kind]")) item.style.display = kinds[item.dataset.kind] === false ? "none" : "";
+    };
+    box.append(pipelineUI.buildKindLegend(document, kinds, localStorage, showKinds), svg);
+    showKinds();
     if (list) for (const line of pipelineUI.edgeTextLines(input)) list.append(h("li", { text: line }));
   }
 
