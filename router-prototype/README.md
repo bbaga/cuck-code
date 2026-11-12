@@ -551,6 +551,30 @@ Field rules:
 - `after`: a non-empty list of node ids. Any node type can set it. The node needs
   `checks`, and each listed node must check a target that this node checks (rule R12).
 
+Gates:
+
+- `required: true` on a script node C: integration is refused until a run of C has
+  PASS on the latest run of every implementor instance that C checks. An `accept`
+  or an LLM validator PASS does not bypass it. The integration start answers 409
+  with a blocker for each such instance. Its `reason` is `required-check-missing`
+  (no run of C on the latest run), `required-check-running` (C still runs) or
+  `required-check-fail` (the run is not a completed PASS). The text names the node,
+  for example `has no PASS from required check 'ci' on its latest run`.
+- The `accept` interaction still succeeds when a required check has no PASS. The
+  response then has a `warning` field that names those nodes.
+- `after: [X]` on a checker node V: `start` of V on an instance needs a PASS of
+  each node in X on the latest run of that instance. An older run counts as missing.
+  Otherwise the router answers 409:
+  `{ "error": "the nodes in 'after' have no PASS on the latest run of '<source name>'",
+  "code": "AFTER_NOT_PASSED", "pending": [{ "node": "ci", "state": "missing" }] }`.
+  `state` is `missing`, `running` or `fail`. The new worker stores the ids of the
+  PASS workers in `afterChecks` (an empty list when the node has no `after`). It is
+  in the dashboard state, in the `worker_spawned` event and in `line.json`.
+- A coordinator prompt gets a "Gates" section only when such nodes exist. It has
+  "Before integration, node '<id>' must PASS on the latest run of every instance of: <checks>."
+  for each required node, and "Start '<id>' on an instance only after <after list>
+  passed on its latest run." for each node with `after`.
+
 Runner behaviour: `script-runner.js` runs the scripts in order with `/bin/sh -c`
 in their own process group. Each script writes a log file outside the run root.
 A script that times out gets SIGTERM, then SIGKILL. With `checkout: worktree`

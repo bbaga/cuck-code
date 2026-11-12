@@ -16,7 +16,7 @@ const { startRouter, stopRouter, wait } = require("./fixtures/router-process");
 const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", ...args],
   { encoding: "utf8" }).trim();
 
-function graphWith(scripts, checkout) {
+function graphWith(scripts, checkout, gated = false) {
   const catalog = buildCatalog({ builtInDir: path.join(__dirname, "..") });
   const list = scripts.map(([name, run]) => `      - { name: ${name}, run: "${run}" }`).join("\n");
   catalog.pipelines["cuck-ci"] = { layer: "managed", text: `name: cuck-ci
@@ -24,17 +24,17 @@ start: planner
 nodes:
   planner: { type: planner }
   backend-impl: { type: backend-implementor }
-  ci:
+${gated ? "  backend-val: { type: backend-validator, checks: [backend-impl], after: [ci] }\n  integration: { type: integration-validator }\n" : ""}  ci:
     type: script-check
     checks: [backend-impl]
-    checkout: ${checkout}
+${gated ? "    required: true\n" : ""}    checkout: ${checkout}
     scripts:
 ${list}
 edges:
   - planner -> backend-impl: start, feedback, accept
   - backend-impl -> planner: report
   - planner -> ci: start
-  - ci -> planner: report
+${gated ? "  - planner -> backend-val: start\n  - backend-val -> planner: report\n  - planner -> integration: start\n  - integration -> planner: report\n" : ""}  - ci -> planner: report
 ` };
   return resolvePipelineDefinition("cuck-ci", catalog);
 }
@@ -51,7 +51,7 @@ const call = async (method, pathname, body) => {
 };
 
 // Seeds a line with one completed implementor "impl" (id i1). Returns its paths.
-function seedLine(scripts, checkout, { workers = [] } = {}) {
+function seedLine(scripts, checkout, { workers = [], gated = false } = {}) {
   const id = `ck-${++seq}`;
   const lineDir = path.join(linesDir, id);
   const clone = path.join(lineDir, "repos", "api");
@@ -65,7 +65,7 @@ function seedLine(scripts, checkout, { workers = [] } = {}) {
     status: "completed", repo: "api", branch: "b/impl", runGeneration: 1, lastCompletedInvocationId: "inv-1",
     lastRunText: "report of impl", baseCommit, worktreePath: worktree };
   fs.writeFileSync(path.join(lineDir, "line.json"), JSON.stringify({ id, name: id, layout: 2,
-    started: true, planApproved: true, graph: graphWith(scripts, checkout),
+    started: true, planApproved: true, graph: graphWith(scripts, checkout, gated),
     repos: [{ name: "api", url: src, path: clone }], workers: [impl, ...workers] }));
   return { id, lineDir, clone, worktree };
 }
@@ -119,6 +119,7 @@ test.before(async () => {
   lines.pass = seedLine([["pwd", "pwd"], ["ok", "exit 0"]], "worktree");
   lines.fail = seedLine([["bad", "echo broken; exit 1"]], "worktree");
   lines.changeset = seedLine([["ok", "exit 0"]], "worktree");
+  lines.gated = seedLine([["ok", "exit 0"]], "worktree", { gated: true });
   lines.stop = seedLine([["slow", "sleep 5"]], "worktree");
   lines.clean = seedLine([["pwd", "pwd"], ["head", "git rev-parse HEAD"]], "clean");
   lines.cleanStop = seedLine([["slow", "sleep 5"]], "clean");
@@ -150,7 +151,7 @@ test("start creates check-<name>; a pass reaches the planner and feeds the integ
   assert.equal(fs.realpathSync(log.text.trim()), fs.realpathSync(line.worktree));
   // A PASS on the current run puts the implementor in the integration selection:
   // a second start only gets the accepted-work check, not a blocker for 'impl'.
-  const integration = await call("POST", `/api/protocol/lines/${line.id}/interactions/start`, { to: "integration" });
+  const integration = await call("POST", `/api/protocol/lines/${line.id}/interactions/start`, { to: "integration", instructions: "merge" });
   assert.doesNotMatch(JSON.stringify(integration.body), /awaiting-criteria|verdict-/);
   // feedback to the check worker is refused.
   const feedback = await call("POST", `/api/protocol/lines/${line.id}/interactions/feedback`,
@@ -244,4 +245,37 @@ test("the boot sweep marks a running script worker as stopped", { timeout: 30_00
   const worker = states.map((e) => e.data).find((d) => d.id === seeded.id).workers.find((w) => w.id === "c1");
   assert.equal(worker.status, "stopped");
   assert.equal(worker.runner, "script");
+});
+
+test("required and after gates: accept warns, start of backend-val waits for ci, integration waits for ci", { timeout: 30_000 }, async () => {
+  const line = lines.gated;
+  const interact = (name, body) => call("POST", `/api/protocol/lines/${line.id}/interactions/${name}`, body);
+  const startVal = () => interact("start", { to: "backend-val", source: "i1", criteria: "1. It works." });
+  // Before ci passes: the start is refused, the accept warns and the integration is blocked.
+  const refused = await startVal();
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "AFTER_NOT_PASSED");
+  assert.deepEqual(refused.body.pending, [{ node: "ci", state: "missing" }]);
+  assert.match(refused.body.error, /the nodes in 'after' have no PASS on the latest run of 'impl'/);
+  const accepted = await interact("accept", { instance: "i1", reason: "ok" });
+  assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
+  assert.match(accepted.body.warning, /'ci'/);
+  const blocked = await interact("start", { to: "integration", instructions: "merge" });
+  assert.equal(blocked.status, 409, JSON.stringify(blocked.body));
+  assert.equal(blocked.body.blockers[0].reason, "required-check-missing");
+  assert.match(blocked.body.error, /required check 'ci'/);
+  // After ci passes: the start works and keeps the id of the ci worker.
+  assert.equal((await start(line)).status, 201);
+  const ci = await settled(line);
+  assert.equal(ci.verdict, "pass");
+  const ok = await startVal();
+  assert.equal(ok.status, 201, JSON.stringify(ok.body));
+  const meta = JSON.parse(fs.readFileSync(path.join(line.lineDir, "line.json"), "utf8"));
+  const val = meta.workers.find((w) => w.node === "backend-val");
+  assert.deepEqual(val.afterChecks, [ci.id]);
+  assert.deepEqual(ci.afterChecks, []);
+  const after = await interact("accept", { instance: "i1", reason: "ok" });
+  assert.equal(after.body.warning, undefined);
+  const integration = await interact("start", { to: "integration", instructions: "merge" });
+  assert.doesNotMatch(JSON.stringify(integration.body), /required-check/);
 });
