@@ -25,6 +25,7 @@ let root, router, base, src;
 const intLine = "dep-integration";
 const wrkLine = "dep-workers";
 const bareLine = "dep-bare";
+const scriptLine = "dep-script";
 const post = (pathname, body) => call(base, "POST", pathname, body);
 
 function seedLine(linesDir, id, { graph } = {}) {
@@ -61,6 +62,14 @@ test.before(async () => {
   seedLine(linesDir, intLine);
   seedLine(linesDir, wrkLine);
   seedLine(linesDir, bareLine, { graph });
+  // A graph with a script node that checks the implementor.
+  const scriptGraph = JSON.parse(JSON.stringify(loadBuiltinPipeline("default", fs, path.join(__dirname, ".."))));
+  scriptGraph.types["script-check"] = { name: "script-check", runner: "script", session: "fresh",
+    workspace: "source", outcome: "verdict", coordinator: false, requires: [], fields: {}, body: "", chain: ["script-check"] };
+  scriptGraph.nodes.ci = { type: "script-check", settings: {}, fields: {}, checks: ["backend-impl"],
+    scripts: [{ name: "unit", run: "true", timeout: 600 }], failFast: true, required: false, checkout: "worktree" };
+  scriptGraph.edges.push({ from: scriptGraph.start, to: "ci", interactions: ["start"] });
+  seedLine(linesDir, scriptLine, { graph: scriptGraph });
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin);
   for (const agent of ["claude", "vibe", "codex", "pi"]) {
@@ -178,4 +187,12 @@ test("/continue resumes the implementor through the feedback message", async () 
   assert.deepEqual(Object.keys(out.body).sort(), ["compacting", "queued"]);
   assert.ok(out.headers.get("link").includes(`/api/protocol/lines/`));
   assert.equal(out.headers.get("deprecation"), "true");
+});
+
+test("start of a script node answers 409 SCRIPT_RUNNER_UNAVAILABLE", async () => {
+  const out = await post(`/api/protocol/lines/${scriptLine}/interactions/start`,
+    { to: "ci", source: `${scriptLine}-i1` });
+  assert.equal(out.status, 409, JSON.stringify(out.body));
+  assert.equal(out.body.code, "SCRIPT_RUNNER_UNAVAILABLE");
+  assert.match(out.body.error, /later change/);
 });

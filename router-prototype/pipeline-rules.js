@@ -1,9 +1,10 @@
 "use strict";
 
-// Pipeline rules R1-R10. Pure: no file reads. Runs every rule and returns
+// Pipeline rules R1-R13. Pure: no file reads. Runs every rule and returns
 // a list of { rule, message }. An empty list means the pipeline is good.
 
 const { placeholders, TemplateError } = require("./template");
+const { graphRelations } = require("./graph-relations");
 const { checkDeclaration, checkOptionalUse, isRouterVariable } = require("./fields");
 
 function has(obj, key) {
@@ -36,7 +37,7 @@ function buildContext(pipeline, types, interactions) {
   for (const e of createEdges) if (!starters[e.to].includes(e.from)) starters[e.to].push(e.from);
 
   return {
-    types, pipeline, nodes, edges, typeOf, inter, known,
+    types, interactions, pipeline, nodes, edges, typeOf, inter, known,
     withInteractions, createEdges, completeEdges, starters, start: pipeline.start,
   };
 }
@@ -255,7 +256,64 @@ function ruleR10(c) {
   return out;
 }
 
-const RULES = [ruleR1, ruleR2, ruleR3, ruleR4, ruleR5, ruleR6, ruleR7, ruleR8, ruleR9, ruleR10];
+// R11: a node of a type with runner script runs scripts and no agent; any
+// other node sets no script keys.
+function ruleR11(c) {
+  const out = [];
+  const add = (message) => out.push({ rule: "R11", message });
+  for (const [id, node] of Object.entries(c.nodes)) {
+    const type = c.typeOf(id);
+    if (!type) continue;
+    if (type.runner === "script") {
+      if (!Array.isArray(node.scripts) || node.scripts.length === 0) {
+        add(`node '${id}': type '${node.type}' runs scripts, so the node needs scripts (at least 1)`);
+      }
+      if (!Array.isArray(node.checks) || node.checks.length === 0) {
+        add(`node '${id}': a script node needs a non-empty checks list`);
+      }
+      for (const key of ["harness", "model", "effort", "maxContext", "prompt", "fields"]) {
+        if (key in node) add(`node '${id}': a script node cannot set ${key}: no agent runs`);
+      }
+      const root = type.chain && type.chain[0];
+      if (root !== "script-check") {
+        add(`node '${id}': the root of type '${node.type}' must be script-check (is ${root})`);
+      }
+    } else {
+      for (const key of ["scripts", "failFast", "required", "checkout"]) {
+        if (key in node) add(`node '${id}': ${key} needs a node type with runner: script (type '${node.type}' runs an agent)`);
+      }
+    }
+  }
+  return out;
+}
+
+// R12: after lists nodes that check the same target as this node.
+function ruleR12(c) {
+  const out = [];
+  const add = (message) => out.push({ rule: "R12", message });
+  for (const [id, node] of Object.entries(c.nodes)) {
+    if (!Array.isArray(node.after)) continue;
+    const checks = node.checks || [];
+    if (checks.length === 0) add(`node '${id}': after needs a non-empty checks list`);
+    for (const other of node.after) {
+      if (other === id) { add(`node '${id}': after lists the node itself`); continue; }
+      if (!c.known(other)) { add(`node '${id}': after lists unknown node '${other}'`); continue; }
+      const shared = (c.nodes[other].checks || []).some((t) => checks.includes(t));
+      if (!shared) add(`node '${id}': after lists '${other}', which checks no target that '${id}' checks`);
+    }
+  }
+  return out;
+}
+
+// R13: the ordering relations form no loop.
+function ruleR13(c) {
+  const graph = { start: c.start, nodes: c.nodes, edges: c.pipeline.edges || [], interactions: c.interactions, types: c.types };
+  const { cycle, cycleCauses } = graphRelations(graph);
+  if (!cycle) return [];
+  return [{ rule: "R13", message: `ordering relations form a loop: ${cycle.join(" -> ")} (${cycleCauses.join("; ")})` }];
+}
+
+const RULES = [ruleR1, ruleR2, ruleR3, ruleR4, ruleR5, ruleR6, ruleR7, ruleR8, ruleR9, ruleR10, ruleR11, ruleR12, ruleR13];
 
 function checkPipeline(pipeline, types, interactions) {
   const c = buildContext(pipeline, types || {}, interactions || {});

@@ -196,3 +196,14 @@ test("checkLineValues: blank, optional and other fields are left alone", () => {
   assert.deepEqual(checkLineValues(lineState(), req, { task: "x" }), []);
   assert.deepEqual(checkLineValues(lineState(), req, { repo: "", task: "x" }), []);
 });
+
+test("start of a script node requires only source; name is optional", () => {
+  const r = resolved();
+  r.types["script-check"] = { name: "script-check", workspace: "source", runner: "script", fields: {}, body: "This node runs the scripts of its pipeline node. No agent runs." };
+  r.nodes.ci = { type: "script-check", fields: {}, checks: ["A"] };
+  const req = requiredFields(r, "start", "ci");
+  assert.ok("source" in req);
+  assert.equal(req.name.decl.optional, true);
+  assert.ok(!("criteria" in req));
+  assert.equal(checkCall(r, "start", "ci", { source: "i1" }).ok, true);
+});
