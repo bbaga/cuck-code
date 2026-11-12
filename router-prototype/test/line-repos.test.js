@@ -8,7 +8,7 @@ const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const {
   repoNameFromUrl, uniqueRepoName, repoIdentity, adoptLegacyWorkdir,
-  integrationSelection, defaultBranchFrom, prepareIntegrationWorkspace,
+  integrationSelection, afterGate, defaultBranchFrom, prepareIntegrationWorkspace,
 } = require("../line-repos");
 
 test("repoNameFromUrl derives a safe name from common URL forms", () => {
@@ -237,4 +237,60 @@ test("prepareIntegrationWorkspace refuses an unregistered repo", () => {
     root: "/nowhere", branch: "integration/q", run: () => ({ status: 0, stdout: "" }), path });
   assert.equal(out.ok, false);
   assert.match(out.error, /repo 'ghost' is not registered/);
+});
+
+// ---- required checks and the after gate ----
+const gateGraph = { types: { impl: { workspace: "own-worktree" }, chk: { runner: "script" }, val: {} },
+  nodes: { api: { type: "impl" }, ci: { type: "chk", checks: ["api"], required: true },
+    lint: { type: "chk", checks: ["api"] }, rev: { type: "val", checks: ["api"], after: ["ci", "lint"] },
+    plain: { type: "val", checks: ["api"] } } };
+const api = (extra = {}) => impl("a", { node: "api", ...extra });
+const chk = (i, node, extra = {}) => val(i, { id: `${node}-${extra.n || 1}`, node, ...extra });
+
+test("required check: missing, running, fail block; pass includes; accept does not bypass", () => {
+  const a = api();
+  const reasonOf = (...workers) => integrationSelection([a, ...workers], gateGraph).blockers.map((b) => b.reason);
+  assert.deepEqual(reasonOf(), ["awaiting-criteria"]);
+  // An LLM validator PASS or an accept does not replace the check.
+  assert.deepEqual(reasonOf(val(a)), ["required-check-missing"]);
+  const accepted = api({ acceptedRuns: [{ runId: 2, invocationId: "inv-a", by: "planner" }] });
+  const out = integrationSelection([accepted], gateGraph);
+  assert.deepEqual(out.blockers.map((b) => b.reason), ["required-check-missing"]);
+  assert.match(out.blockers[0].text, /has no PASS from required check 'ci' on its latest run/);
+  // The newest run is a PASS of another validator, so the failed check is the blocker.
+  assert.deepEqual(reasonOf(chk(a, "ci", { verdict: "fail" }), val(a)), ["required-check-fail"]);
+  assert.deepEqual(reasonOf(chk(a, "ci", { status: "failed", verdict: null }), val(a)), ["required-check-fail"]);
+  const pass = integrationSelection([a, chk(a, "ci")], gateGraph);
+  assert.deepEqual(pass.included.map((w) => w.id), ["a"]);
+  const acceptedPass = integrationSelection([accepted, chk(accepted, "ci")], gateGraph);
+  assert.deepEqual(acceptedPass.included.map((w) => w.id), ["a"]);
+  // A PASS on an older run counts as missing.
+  const old = chk(a, "ci", { validationSource: { workerId: "a", runId: 1, invocationId: "inv-old" } });
+  assert.deepEqual(reasonOf(val(a), old), ["required-check-missing"]);
+});
+
+test("required check: a running check blocks; a node without required does not block", () => {
+  const a = api();
+  const running = integrationSelection([a, chk(a, "ci", { status: "running", verdict: null })], gateGraph);
+  assert.equal(running.included.length, 0);
+  assert.equal(running.blockers.length, 1);
+  // 'lint' is not required: only the LLM-style PASS counts.
+  const noRequired = { ...gateGraph, nodes: { ...gateGraph.nodes, ci: { type: "chk", checks: ["api"] } } };
+  assert.deepEqual(integrationSelection([a, val(a)], noRequired).included.map((w) => w.id), ["a"]);
+});
+
+test("afterGate reports missing, running, fail and pass for each node in after", () => {
+  const a = api();
+  const gate = (...workers) => afterGate(workers, gateGraph, "rev", a);
+  assert.deepEqual(gate(), { ok: false, passed: [],
+    pending: [{ node: "ci", state: "missing" }, { node: "lint", state: "missing" }] });
+  const mixed = gate(chk(a, "ci", { status: "running", verdict: null }), chk(a, "lint", { verdict: "fail" }));
+  assert.deepEqual(mixed.pending, [{ node: "ci", state: "running" }, { node: "lint", state: "fail" }]);
+  const old = chk(a, "ci", { validationSource: { workerId: "a", runId: 1, invocationId: "inv-old" } });
+  assert.deepEqual(gate(old, chk(a, "lint")).pending, [{ node: "ci", state: "missing" }]);
+  const ok = gate(chk(a, "ci"), chk(a, "lint"));
+  assert.deepEqual(ok, { ok: true, pending: [], passed: ["ci-1", "lint-1"] });
+  // The latest run of a node wins.
+  assert.equal(gate(chk(a, "ci", { n: 1 }), chk(a, "ci", { n: 2, verdict: "fail" }), chk(a, "lint")).ok, false);
+  assert.deepEqual(afterGate([], gateGraph, "plain", a), { ok: true, pending: [], passed: [] });
 });
