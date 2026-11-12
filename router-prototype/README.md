@@ -548,6 +548,13 @@ Field rules:
 - `after`: a non-empty list of node ids. Any node type can set it. The node needs
   `checks`, and each listed node must check a target that this node checks (rule R12).
 
+Runner behaviour: `script-runner.js` runs the scripts in order with `/bin/sh -c`
+in their own process group. Each script writes a log file outside the run root.
+A script that times out gets SIGTERM, then SIGKILL. With `checkout: worktree`
+the runner compares `git status` before and after, and a change fails the
+check as `worktree-clean`. The report ends with `VERDICT: PASS` or
+`VERDICT: FAIL`. The verdict is FAIL when no script applies to the repo.
+
 Security note: scripts are shell commands from pipeline files (built-in,
 `~/.cuck/`, or the managed layer that the UI writes). They run with the
 environment of the router user, as the agents do. The router binds to
