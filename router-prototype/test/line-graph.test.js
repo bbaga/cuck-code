@@ -110,7 +110,8 @@ test("a new line stores the graph, and an old line.json gains it on the next sav
 test("graphView edges carry kinds taken from the resolved interactions", () => {
   const view = graphView(resolved);
   assert.equal(view.start, "planner");
-  assert.deepEqual(view.nodes.planner, { type: "planner", phase: "planner" });
+  assert.deepEqual(view.nodes.planner, { type: "planner", phase: "planner", runner: "agent", checks: [], after: [],
+    workspace: "coordinator", requires: [] });
   for (const edge of view.edges) {
     assert.deepEqual(Object.keys(edge.kinds), edge.interactions);
   }
@@ -240,4 +241,42 @@ test("planGraphChange does not change its input", () => {
   const before = JSON.stringify(line);
   planGraphChange({ line, newGraph: minimal, remap: FULL_REMAP });
   assert.equal(JSON.stringify(line), before);
+});
+
+// ---- script check nodes ----
+
+test("a script-check type is in the validator phase", () => {
+  const graph = { types: { "script-check": { name: "script-check" }, "my-ci": { name: "my-ci", extends: "script-check" } } };
+  assert.equal(phaseOfType(graph, "script-check"), "validator");
+  assert.equal(phaseOfType(graph, "my-ci"), "validator");
+});
+
+test("graphView shows runner, checks, after, workspace and requires", () => {
+  const view = graphView(resolved);
+  assert.deepEqual(view.nodes["backend-impl"], { type: "backend-implementor", phase: "implementor", runner: "agent",
+    checks: [], after: [], workspace: "own-worktree", requires: [] });
+  assert.deepEqual(view.nodes["backend-val"].checks, ["backend-impl"]);
+  assert.deepEqual(view.nodes.integration.requires, ["accepted-work"]);
+  assert.ok(!("scripts" in view.nodes["backend-val"]));
+});
+
+test("graphView adds the script fields of a script node as a copy", () => {
+  const graph = JSON.parse(JSON.stringify(resolved));
+  graph.types["script-check"] = { name: "script-check", runner: "script", workspace: "source", requires: [] };
+  graph.nodes.ci = { type: "script-check", checks: ["backend-impl"], after: [], scripts: [{ name: "u", run: "x", timeout: 600 }] };
+  const node = graphView(graph).nodes.ci;
+  assert.equal(node.runner, "script");
+  assert.deepEqual([node.failFast, node.required, node.checkout], [true, false, "worktree"]);
+  assert.deepEqual(node.scripts, graph.nodes.ci.scripts);
+  assert.notEqual(node.scripts, graph.nodes.ci.scripts);
+});
+
+test("graphView adds relations, columns and rows", () => {
+  const view = graphView(resolved);
+  assert.deepEqual(view.columns, { planner: 0, "backend-impl": 1, "frontend-impl": 1, "backend-val": 2,
+    "frontend-val": 2, integration: 3 });
+  assert.equal(view.rows.planner, 0);
+  assert.ok(view.relations.some((r) => r.kind === "checks" && r.from === "backend-impl" && r.to === "backend-val"));
+  assert.ok(view.relations.some((r) => r.kind === "accepted-work" && r.to === "integration"));
+  assert.equal(view.relations.filter((r) => r.kind === "interaction").length, view.edges.length);
 });

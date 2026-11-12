@@ -25,6 +25,7 @@ let root, router, base, src;
 const intLine = "dep-integration";
 const wrkLine = "dep-workers";
 const bareLine = "dep-bare";
+const scriptLine = "dep-script";
 const post = (pathname, body) => call(base, "POST", pathname, body);
 
 function seedLine(linesDir, id, { graph } = {}) {
@@ -61,6 +62,14 @@ test.before(async () => {
   seedLine(linesDir, intLine);
   seedLine(linesDir, wrkLine);
   seedLine(linesDir, bareLine, { graph });
+  // A graph with a script node that checks the implementor.
+  const scriptGraph = JSON.parse(JSON.stringify(loadBuiltinPipeline("default", fs, path.join(__dirname, ".."))));
+  scriptGraph.types["script-check"] = { name: "script-check", runner: "script", session: "fresh",
+    workspace: "source", outcome: "verdict", coordinator: false, requires: [], fields: {}, body: "", chain: ["script-check"] };
+  scriptGraph.nodes.ci = { type: "script-check", settings: {}, fields: {}, checks: ["backend-impl"],
+    scripts: [{ name: "unit", run: "true", timeout: 600 }], failFast: true, required: false, checkout: "worktree" };
+  scriptGraph.edges.push({ from: scriptGraph.start, to: "ci", interactions: ["start"] });
+  seedLine(linesDir, scriptLine, { graph: scriptGraph });
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin);
   for (const agent of ["claude", "vibe", "codex", "pi"]) {

@@ -9,6 +9,7 @@ const YAML = require("yaml");
 const { parsePipeline } = require("./pipelines");
 const { resolvePipelineDefinition, PipelineError } = require("./resolve-pipeline");
 const { phaseOfType } = require("./line-graph");
+const { graphRelations } = require("./graph-relations");
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,59}$/;
 const MAX_TEXT_BYTES = 256 * 1024;
@@ -98,12 +99,29 @@ function graphPreview(resolved) {
       kinds[name] = { effect: it ? it.effect || null : null, trigger: it ? it.trigger || null : null };
     }
   }
+  const { relations, columns, rows } = graphRelations(resolved);
   return {
     start: resolved.start,
-    kinds,
-    nodes: Object.entries(resolved.nodes).map(([id, n]) => ({ id, type: n.type, phase: phaseOfType(resolved, n.type) })),
+    kinds, relations, columns, rows,
+    nodes: Object.entries(resolved.nodes).map(([id, n]) => nodeSummary(resolved, id, n)),
     edges: resolved.edges.map((e) => ({ from: e.from, to: e.to, interactions: [...e.interactions] })),
   };
+}
+
+function nodeSummary(resolved, id, n) {
+  const type = (resolved.types && resolved.types[n.type]) || {};
+  const out = {
+    id, type: n.type, phase: phaseOfType(resolved, n.type), runner: type.runner || "agent",
+    checks: [...(n.checks || [])], after: [...(n.after || [])],
+    workspace: type.workspace || null, requires: [...(type.requires || [])],
+  };
+  if (out.runner === "script") {
+    out.scripts = JSON.parse(JSON.stringify(n.scripts || []));
+    out.failFast = n.failFast !== false;
+    out.required = n.required === true;
+    out.checkout = n.checkout || "worktree";
+  }
+  return out;
 }
 
 // The file text of a node type or interaction of the catalog: { name, layer, text },

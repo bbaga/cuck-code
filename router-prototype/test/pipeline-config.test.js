@@ -668,3 +668,55 @@ test("defaultNodeSettingsFor: line nodeSettings do not change the result", () =>
   const line = lineWithGraph({ nodeSettings: { "backend-impl": { harness: "codex", model: "x", effort: "high" } } });
   assert.deepStrictEqual(defaultNodeSettingsFor(line.graph, {}), defaultNodeSettingsFor(lineWithGraph().graph, {}));
 });
+
+// ---- script nodes ----
+
+const scriptGraph = (nodeSettings = {}) => ({
+  start: "planner",
+  nodes: {
+    planner: { type: "planner", settings: {} },
+    impl: { type: "implementor", settings: {} },
+    old: { type: "validator", settings: {} },
+    ci: { type: "script-check", settings: nodeSettings, scripts: [] },
+  },
+  types: {
+    planner: { name: "planner", session: "resume" },
+    implementor: { name: "implementor", session: "resume" },
+    validator: { name: "validator", session: "fresh" }, // an old stored type: no runner key
+    "script-check": { name: "script-check", session: "fresh", runner: "script" },
+  },
+  edges: [],
+});
+
+test("a script node allows only timeLimit", () => {
+  const g = scriptGraph();
+  assert.equal(validateNodeSettingsForNode(g, "ci", { timeLimit: 60 }), null);
+  assert.equal(validateNodeSettingsForNode(g, "ci", { model: "m" }),
+    "nodeSettings.ci: node 'ci' runs scripts: only timeLimit can be set");
+  assert.match(validateNodeSettingsForNode(g, "ci", { timeLimit: -1 }), /timeLimit must be a positive number/);
+});
+
+test("script node settings: line, then pipeline node, then 1800; no VALIDATOR env", () => {
+  const env = { VALIDATOR_HARNESS: "claude", VALIDATOR_MODEL: "x", WORKER_TIME_LIMIT: "99" };
+  assert.deepEqual(resolveNodeSettings({ graph: scriptGraph(), nodeSettings: {} }, "ci", env),
+    { runner: "script", timeLimit: 1800 });
+  assert.deepEqual(resolveNodeSettings({ graph: scriptGraph({ timeLimit: 120 }), nodeSettings: {} }, "ci", env),
+    { runner: "script", timeLimit: 120 });
+  assert.deepEqual(resolveNodeSettings({ graph: scriptGraph({ timeLimit: 120 }), nodeSettings: { ci: { timeLimit: 30 } } }, "ci", env),
+    { runner: "script", timeLimit: 30 });
+});
+
+test("a graph stored without the new keys reads as an agent graph", () => {
+  const out = resolveNodeSettings({ graph: scriptGraph(), nodeSettings: {} }, "old", {});
+  assert.equal(out.runner, undefined);
+  assert.equal(out.harness, "vibe");
+  assert.equal(validateNodeSettingsForNode(scriptGraph(), "old", { model: "m" }), null);
+});
+
+test("the fallback settings of a phase skip script nodes", () => {
+  const g = scriptGraph();
+  g.nodes = { ci: g.nodes.ci, old: g.nodes.old };
+  const out = fallbackPhaseSettings({ graph: g, nodeSettings: {} }, "validator", {});
+  assert.equal(out.harness, "vibe");
+  assert.equal(out.runner, undefined);
+});
