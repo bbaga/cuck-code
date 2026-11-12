@@ -10,6 +10,7 @@ const { migratePresets, safeFileName, validatePipelineConfig, presetError, resto
 const { loadBuiltinPipeline } = require("../line-graph");
 const { buildCatalog } = require("../plugin-catalog");
 const { resolvePipelineDefinition } = require("../resolve-pipeline");
+const { graphRelations } = require("../graph-relations");
 const { startRouter, stopRouter } = require("./fixtures/router-process");
 
 const ROOT = path.join(__dirname, "..");
@@ -243,4 +244,16 @@ test("router: migrates at boot, serves the pipeline, the preset routes are gone 
   } finally {
     await stopRouter(router);
   }
+});
+
+test("a migrated preset text resolves and has the columns and rows of default", () => {
+  const ctx = setup([{ name: "Fast", pipeline: FAST }]);
+  const { result } = run(ctx);
+  assert.deepStrictEqual(result.migrated, [{ from: "Fast", to: "fast" }]);
+  const migrated = resolvePipelineDefinition("fast", catalogOf(ctx));
+  const base = graphRelations(defaultGraph);
+  const got = graphRelations(migrated);
+  assert.equal(got.cycle, null);
+  assert.deepStrictEqual(got.columns, base.columns);
+  assert.deepStrictEqual(got.rows, base.rows);
 });

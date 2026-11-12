@@ -55,6 +55,34 @@ edges:
   - B -> planner: report            # B passes or rejects; the planner decides
 ```
 
+The `default` pipeline (`pipelines/default.yaml`) lists the edges in the order of
+the flow: the implementors, then their checkers, then the integration node.
+
+```yaml
+nodes:
+  planner:       { type: planner }
+  backend-impl:  { type: backend-implementor }
+  frontend-impl: { type: frontend-implementor }
+  backend-val:   { type: backend-validator, checks: [backend-impl] }
+  frontend-val:  { type: frontend-validator, checks: [frontend-impl] }
+  integration:   { type: integration-validator }
+```
+
+These node keys are optional. A missing key has its default:
+
+| Key | Meaning | Default |
+|---|---|---|
+| `checks` | The nodes whose work this node checks. | `[]` |
+| `after` | The checkers that must PASS before this node runs. Needs `checks`. | `[]` |
+| `scripts` | The scripts of a script check node. | none (an agent node has none) |
+| `failFast` | A script check node stops at the first failed script. | `true` |
+| `required` | A script check node must PASS before the work is accepted. | `false` |
+| `checkout` | The tree a script check node runs in. | `worktree` |
+
+Built-in pipelines use none of `after`, `scripts`, `failFast`, `required` and
+`checkout`. Scripts depend on the repository, so no built-in pipeline has a
+script node.
+
 The syntax of an edge is `<from> -> <to>: <interaction>[, <interaction>...]`.
 Either side can be a list, `[a, b]`, and the edge then applies to every pair.
 An edge that starts with `[` must be quoted, because YAML would read it as a list.
@@ -294,6 +322,7 @@ choose from that set but cannot add behaviour:
 | `workspace` | `coordinator`: the line workdir. `own-worktree`: a new worktree on one repo and branch. `source`: the worktree of the instance it checks. `integration`: one worktree per repo, built from the accepted commits. |
 | `outcome` | `none`, or `verdict`: the router parses `VERDICT: PASS/FAIL`. |
 | `coordinator` | `true`: gets the protocol section for its outgoing edges, plus registry access. |
+| `runner` | `agent` (default): the node runs a harness agent. `script`: the node runs the scripts of its `scripts` key. A type with `runner: script` extends `script-check`. |
 | `requires` | `accepted-work`: the router creates the node only if every own-worktree instance's latest run has a PASS from a checker or an `accept`. This is today's integration rule. |
 
 ### Templates
@@ -395,6 +424,43 @@ and the offending node, edge or field.
    `complete` templates using only router variables.
 8. Unknown node types, unknown interactions, unknown nodes and duplicate
    edges are errors.
+9. A `checks` node has a `source` type. The nodes it checks have an
+   `own-worktree` type (R9).
+10. A `complete`-triggered interaction has no `effect: create` (R10).
+11. R11: a node of a type with `runner: script` has `scripts` and `checks`,
+    sets no agent key, and its type chain starts at `script-check`. Any other
+    node sets no script key.
+12. R12: a node with `after` has `checks`. Each listed node is known, checks a
+    shared target and is not the node itself.
+13. R13: the ordering relations form no loop.
+
+## How pipelines are drawn
+
+The router computes `relations`, `columns` and `rows` from the declared
+relations only. Node ids, type names, phases and roles carry no meaning.
+The relation kinds are `interaction` (an edge), `checks`, `after`,
+`accepted-work` (a type with `requires: accepted-work`) and `required`
+(`required: true`). The README section "How pipelines are drawn" has the full
+table.
+
+## Order when after is not defined
+
+A pipeline without `after` has no gate. The order comes from these sources:
+
+1. The columns come from the `create` edges, the `checks` lists, the
+   `requires: accepted-work` of a type and the `required` nodes. The start
+   node is in column 0. Any other node is in the column of the longest path
+   to it.
+2. The rows come from the order of the `edges` list. Inside a column, a node
+   gets its row from the first edge that has it as a target.
+
+For `default` this gives: planner in column 0, the implementors in column 1,
+the validators in column 2 and the integration node in column 3. The
+implementors and the validators have the rows 0 and 1 in the order of the
+edges. The `minimal` pipeline has one node in each column.
+
+An existing stored graph or managed pipeline needs no change. A missing key
+has its default (see "Pipeline file").
 
 ## How a node's prompt is built
 
