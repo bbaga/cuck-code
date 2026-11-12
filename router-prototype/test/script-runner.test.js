@@ -66,6 +66,8 @@ test("failure with failFast true skips the rest, false runs them", async (t) => 
   const steps = [step("a", "echo boom; exit 3"), step("b", "exit 0")];
   const fast = await run(box, steps);
   assert.deepEqual(statuses(fast), ["fail", "skipped"]);
+  assert.equal(fast.stepCalls.at(-1)[1].skipKind, "fail-fast");
+  assert.equal(fast.stepCalls.at(-1)[0].skipKind, undefined);
   assert.match(fast.report, /2\. b: SKIPPED \(an earlier script failed\)/);
   assert.match(fast.report, /1\. a: FAIL \(exit 3, /);
   assert.match(fast.report, /   Command: echo boom; exit 3/);
@@ -81,6 +83,7 @@ test("failure with failFast true skips the rest, false runs them", async (t) => 
 test("repo filter and no applicable script", async (t) => {
   const box = sandbox(t);
   const mixed = await run(box, [step("a", "exit 0"), step("py", "exit 1", { repos: ["other"] })]);
+  assert.equal(mixed.stepCalls.at(-1)[1].skipKind, "repo");
   assert.match(mixed.report, /2\. py: SKIPPED \(not for repo 'cuck-code'\)/);
   assert.equal(explicitVerdict(mixed.report), "pass");
   const none = await run(box, [step("py", "exit 0", { repos: ["other"] })]);
@@ -212,4 +215,13 @@ test("formatReport lists the result lines in the documented format", () => {
     "worktree-clean: FAIL (scripts changed: a.txt, b/c.js)",
     "VERDICT: FAIL",
   ].join("\n"));
+});
+
+test("the verdict reads skipKind, not the reason text", () => {
+  const meta = { nodeId: "ci", runRoot: "/r", checkout: "clean", branch: "b", commit: "c", repoName: "x" };
+  const pass = { index: 1, name: "a", status: "pass", exitCode: 0, durationMs: 1 };
+  const reworded = { index: 2, name: "py", status: "skipped", skipKind: "repo", reason: "other words" };
+  assert.equal(explicitVerdict(formatReport([pass, reworded], meta)), "pass");
+  const stopped = { ...reworded, skipKind: "stopped", reason: "not for repo 'x'" };
+  assert.equal(explicitVerdict(formatReport([pass, stopped], meta)), "fail");
 });

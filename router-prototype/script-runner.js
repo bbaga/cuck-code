@@ -12,7 +12,6 @@ const path = require("node:path");
 const TAIL_LINES = 60;
 const TAIL_CHARS = 8000;
 const MAX_REPORTED_PATHS = 20;
-const FILTER_REASON = /^not for repo /;
 
 function defaultGitStatus(dir) {
   return childProcess.execFileSync(
@@ -28,7 +27,7 @@ function seconds(ms) {
 
 // A script skipped by the repo filter does not count as a failure.
 function isFilterSkip(result) {
-  return result.status === "skipped" && FILTER_REASON.test(result.reason || "");
+  return result.status === "skipped" && result.skipKind === "repo";
 }
 
 function describeResult(result) {
@@ -241,11 +240,18 @@ function startScriptRun(options) {
       const result = { index, name: step.name, status: "skipped", exitCode: null, signal: null,
         durationMs: 0, reason: null, logFile: null };
       let skip = null;
-      if (step.repos && !step.repos.includes(repoName)) skip = `not for repo '${repoName}'`;
-      else if (stopReason()) skip = stopReason();
-      else if (anyFailed && failFast) skip = "an earlier script failed";
+      if (step.repos && !step.repos.includes(repoName)) {
+        skip = { kind: "repo", reason: `not for repo '${repoName}'` };
+      } else if (stopSignal) {
+        skip = { kind: "stopped", reason: "run stopped" };
+      } else if (limitHit) {
+        skip = { kind: "time-limit", reason: "run time limit reached" };
+      } else if (anyFailed && failFast) {
+        skip = { kind: "fail-fast", reason: "an earlier script failed" };
+      }
       if (skip) {
-        result.reason = skip;
+        result.skipKind = skip.kind;
+        result.reason = skip.reason;
         results.push(result);
         if (hooks.onStep) hooks.onStep(results.map((r) => ({ ...r })));
         continue;
