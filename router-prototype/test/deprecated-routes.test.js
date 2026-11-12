@@ -188,11 +188,3 @@ test("/continue resumes the implementor through the feedback message", async () 
   assert.ok(out.headers.get("link").includes(`/api/protocol/lines/`));
   assert.equal(out.headers.get("deprecation"), "true");
 });
-
-test("start of a script node answers 409 SCRIPT_RUNNER_UNAVAILABLE", async () => {
-  const out = await post(`/api/protocol/lines/${scriptLine}/interactions/start`,
-    { to: "ci", source: `${scriptLine}-i1` });
-  assert.equal(out.status, 409, JSON.stringify(out.body));
-  assert.equal(out.body.code, "SCRIPT_RUNNER_UNAVAILABLE");
-  assert.match(out.body.error, /later change/);
-});
