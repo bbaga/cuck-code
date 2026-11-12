@@ -375,49 +375,28 @@
     return !!type && type.session === "fresh";
   }
 
-  // Graph layout (pure). `graph` is the API graph view: { start, nodes: {id: {type,
-  // phase}}, edges: [{from, to, interactions, kinds?}] }.
-  // Column = longest path from the start node over create-effect edges (start = 0;
-  // a node no create edge reaches stays in column 0). Row = the node's order in the
-  // graph inside its column. Forward edges run between the boxes, an edge that skips
-  // columns goes over the top, a back edge (to the same or an earlier column) goes
-  // out to the right of its box, under all boxes and up into the bottom of the target.
-  // An edge whose interactions are all complete-triggered is dashed.
+  // Graph layout (pure). `graph` is the API graph view: { nodes: {id: {type, runner, ...}},
+  // relations: [{from, to, kind, label, dashed?}], columns: {id: n}, rows: {id: n} }.
+  // The router decides the column and the row of each node and the relations to draw.
+  // This function reads no phase, type name or node id. Without `columns` (an old
+  // server answer) every node is in column 0, in the order of graph.nodes.
+  // Forward edges run between the boxes, a relation that skips columns goes over the
+  // top, a back edge (to the same or an earlier column) goes out to the right of its
+  // box, under all boxes and up into the bottom of the target.
   const GRAPH_GEOMETRY = { nodeWidth: 190, nodeHeight: 68, columnGap: 190, rowGap: 26, margin: 20, lane: 17 };
 
   function layoutGraph(graph) {
     const ids = graph && graph.nodes ? Object.keys(graph.nodes) : [];
     if (!ids.length) return { nodes: [], edges: [], width: 0, height: 0 };
     const G = GRAPH_GEOMETRY;
-    const edges = Array.isArray(graph.edges) ? graph.edges : [];
-    const kindOf = (edge, name) => {
-      const k = edge.kinds && edge.kinds[name];
-      return k || { effect: name === "start" ? "create" : null, trigger: null };
-    };
-    const isCreate = (edge) => (edge.interactions || []).some((n) => kindOf(edge, n).effect === "create");
-    const isComplete = (edge) => (edge.interactions || []).length > 0
-      && edge.interactions.every((n) => kindOf(edge, n).trigger === "complete");
-
-    // Longest path over create edges, relaxed at most ids.length times so a cycle ends.
-    const col = {};
-    const start = graph.start && graph.nodes[graph.start] ? graph.start : ids[0];
-    col[start] = 0;
-    for (let pass = 0; pass < ids.length; pass++) {
-      let changed = false;
-      for (const edge of edges) {
-        if (!isCreate(edge) || col[edge.from] === undefined || !graph.nodes[edge.to]) continue;
-        const next = col[edge.from] + 1;
-        if (edge.to === start || next > ids.length - 1) continue;
-        if (col[edge.to] === undefined || col[edge.to] < next) { col[edge.to] = next; changed = true; }
-      }
-      if (!changed) break;
-    }
-    const rowsInColumn = {};
+    const edges = Array.isArray(graph.relations) ? graph.relations : [];
+    const columns = graph.columns || {}, rowsOf = graph.rows || {};
+    const nextRow = {};
     const nodes = ids.map((id) => {
-      const column = col[id] === undefined ? 0 : col[id];
-      const row = rowsInColumn[column] = (rowsInColumn[column] === undefined ? 0 : rowsInColumn[column] + 1);
-      const info = graph.nodes[id] || {};
-      return { id, type: info.type, phase: info.phase, column, row, width: G.nodeWidth, height: G.nodeHeight };
+      const column = Number.isInteger(columns[id]) ? columns[id] : 0;
+      const row = Number.isInteger(rowsOf[id]) ? rowsOf[id] : (nextRow[column] || 0);
+      nextRow[column] = Math.max(nextRow[column] || 0, row + 1);
+      return { ...graph.nodes[id], id, column, row, width: G.nodeWidth, height: G.nodeHeight };
     });
     const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
 
@@ -439,8 +418,8 @@
     let maxX = Math.max(...nodes.map((n) => n.x + n.width));
     const finish = (item, points, path, labelX, labelY) => {
       for (const [x] of points) maxX = Math.max(maxX, x);
-      out[item.index] = { from: item.edge.from, to: item.edge.to, label: (item.edge.interactions || []).join(", "),
-        dashed: isComplete(item.edge), path, points, labelX, labelY };
+      out[item.index] = { from: item.edge.from, to: item.edge.to, kind: item.edge.kind, label: item.edge.label || "",
+        dashed: item.edge.dashed === true, path, points, labelX, labelY };
     };
     const pathOf = (pts) => "M" + pts.map(([x, y]) => x + " " + y).join(" L");
 
@@ -494,12 +473,23 @@
   // in file order: { id, type, title, maxContext }. Empty for a pipeline that did not resolve.
   function nodeRowsFromResolved(resolved) {
     if (!resolved || typeof resolved.nodes !== "object" || resolved.nodes === null) return [];
-    return Object.entries(resolved.nodes).map(([id, node]) => ({
-      id,
-      type: node.type,
-      title: id + " (" + node.type + ")",
-      maxContext: !isFreshSessionNode(resolved, id),
-    }));
+    return Object.entries(resolved.nodes).map(([id, node]) => {
+      const type = resolved.types && resolved.types[node.type];
+      const row = { id, type: node.type, title: id + " (" + node.type + ")", maxContext: !isFreshSessionNode(resolved, id) };
+      return type && type.runner === "script" ? scriptRow(row, node) : row;
+    });
+  }
+
+  // A script node has one read-only row: no harness, model or effort, no max
+  // context. Only its time limit can be set. `node` carries scripts, required, checkout.
+  function scriptRow(row, node) {
+    return { ...row, maxContext: false, runner: "script", required: node.required === true,
+      checkout: node.checkout || "worktree", scripts: Array.isArray(node.scripts) ? node.scripts : [] };
+  }
+
+  // The working directory of a script as shown: "<run root>/<cwd>", or "<run root>".
+  function scriptCwdText(cwd) {
+    return !cwd || cwd === "." ? "<run root>" : "<run root>/" + cwd;
   }
 
   // Form rows for a line, from the graph view the API sends (nodes and freshNodes):
@@ -507,9 +497,60 @@
   function nodeRowsFromGraphView(graph) {
     if (!graph || typeof graph.nodes !== "object" || graph.nodes === null) return [];
     const fresh = new Set(Array.isArray(graph.freshNodes) ? graph.freshNodes : []);
-    return Object.entries(graph.nodes).map(([id, node]) => ({
-      id, type: node.type, title: id + " (" + node.type + ")", maxContext: !fresh.has(id),
-    }));
+    return Object.entries(graph.nodes).map(([id, node]) => {
+      const row = { id, type: node.type, title: id + " (" + node.type + ")", maxContext: !fresh.has(id) };
+      return node.runner === "script" ? scriptRow(row, node) : row;
+    });
+  }
+
+  // Relation kinds the graph draws, in legend order. A hidden kind removes only its
+  // edges and labels from the picture; no node moves.
+  const GRAPH_KINDS = [
+    { kind: "interaction", text: "Interaction" }, { kind: "checks", text: "Checks" },
+    { kind: "after", text: "After" }, { kind: "accepted-work", text: "Accepted work" },
+    { kind: "required", text: "Required" },
+  ];
+  const GRAPH_KINDS_KEY = "pipe-graph-kinds";
+
+  // The visible kinds from storage: { kind: boolean }, all on by default.
+  function loadGraphKinds(storage) {
+    let saved = {};
+    try { saved = JSON.parse(storage.getItem(GRAPH_KINDS_KEY)) || {}; } catch (e) { saved = {}; }
+    return Object.fromEntries(GRAPH_KINDS.map((k) => [k.kind, saved[k.kind] !== false]));
+  }
+
+  // The legend with one checkbox per kind. `onChange(kinds)` runs after each change.
+  function buildKindLegend(doc, kinds, storage, onChange) {
+    const box = doc.createElement("fieldset");
+    box.className = "pgLegend";
+    const title = doc.createElement("legend");
+    title.textContent = "Show relations";
+    box.appendChild(title);
+    for (const { kind, text } of GRAPH_KINDS) {
+      const label = doc.createElement("label");
+      label.className = "pgKind " + kind;
+      const input = doc.createElement("input");
+      input.type = "checkbox";
+      input.dataset.kind = kind;
+      input.checked = kinds[kind] !== false;
+      input.addEventListener("change", () => {
+        kinds[kind] = input.checked;
+        try { storage.setItem(GRAPH_KINDS_KEY, JSON.stringify(kinds)); } catch (e) { /* storage is optional */ }
+        onChange(kinds);
+      });
+      const swatch = doc.createElement("span");
+      swatch.className = "pgSwatch";
+      swatch.setAttribute("aria-hidden", "true");
+      label.append(input, swatch, " " + text);
+      box.appendChild(label);
+    }
+    return box;
+  }
+
+  // The second line of a script node box: "<type> · <n> scripts".
+  function scriptNodeLine(node) {
+    const n = Array.isArray(node.scripts) ? node.scripts.length : 0;
+    return (node.type || "") + " · " + n + (n === 1 ? " script" : " scripts");
   }
 
   // One-line settings summary of a node box: harness and model, from the effective settings.
@@ -519,9 +560,9 @@
     return text.length > max ? text.slice(0, max - 1) + "…" : text;
   }
 
-  // The same edges as plain text, one line each: "planner -> backend-impl: start, feedback".
+  // The same relations as plain text, one line each: "planner -> backend-impl: start, feedback".
   function edgeTextLines(graph) {
-    return ((graph && graph.edges) || []).map((e) => e.from + " -> " + e.to + ": " + (e.interactions || []).join(", "));
+    return ((graph && graph.relations) || []).map((e) => e.from + " -> " + e.to + ": " + (e.label || e.kind));
   }
 
   // The `nodeSettings` request body from form values { <nodeId>: {harness, model,
@@ -1222,6 +1263,7 @@
     nodeRowsFromResolved,
     defaultOptionLabels,
     layoutGraph,
+    scriptCwdText, GRAPH_KINDS, GRAPH_KINDS_KEY, loadGraphKinds, buildKindLegend, scriptNodeLine,
     GRAPH_GEOMETRY,
     nodeRowsFromGraphView,
     nodeSummaryText,
