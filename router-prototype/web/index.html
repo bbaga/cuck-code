@@ -114,6 +114,15 @@
   .planDetails[open] summary { color: #8fa3bd; }
   .planDetails .planBody { padding: 4px 16px 12px; }
   .scopeDetails { border-bottom: 1px solid #262b33; }
+  .checkCard { padding: 6px 16px; font-size: .75rem; color: #c3ccd8; }
+  .checkCard dl { margin: 0 0 8px; display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; }
+  .checkCard dt { color: #8fa3bd; }
+  .checkCard dd { margin: 0; overflow-wrap: anywhere; }
+  .checkCard table { border-collapse: collapse; width: 100%; }
+  .checkCard th, .checkCard td { text-align: left; padding: 2px 8px; border-bottom: 1px solid #262b33; }
+  .checkCard th { color: #8fa3bd; font-weight: 600; }
+  .checkCard .st-pass { color: #5fd6b4; } .checkCard .st-fail { color: #ff8a94; } .checkCard .st-skipped { color: #b8c2d0; }
+  .checkCard a { color: #7db0ff; }
   .scopeDetails summary { cursor: pointer; padding: 6px 16px; color: #6c7a8c; font-size: .75rem; }
   .scopeBody { padding: 4px 16px 12px; max-height: 260px; overflow: auto; }
   .scopeLoading[aria-busy="true"]::before { content: ""; display: inline-block; width: 10px; height: 10px;
@@ -179,6 +188,9 @@
   .gnode.w-stopped { border-color: #6c7a8c; }
   .gnode.w-validator { border-color: #a78bfa; }
   .gnode.w-validator .dot { background: #a78bfa; }
+  .gnode.w-script { border-style: dashed; background: #0f1a1a; }
+  .gnode .scriptSummary { color: #5fd6b4; font-size: .65rem; font-variant-numeric: tabular-nums; }
+  .gnode.w-script.w-issue .scriptSummary { color: #e5a04b; }
   .gnode.w-issue { border-color: #e5a04b; }
   .gnode.w-issue .dot { background: #e5a04b; }
   .persona-chip { flex-shrink: 0; margin-right: 6px; padding: 1px 6px;
@@ -358,7 +370,7 @@ window.addEventListener("DOMContentLoaded", () => {
     VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, harnessHasProviders, providerDetailUrl, providerFromModel, authStatusText,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
     clearHarnessState, clearProviderState, shouldHideValidator,
-    shouldShowIntegrationValidator, buildGraphLanes,
+    shouldShowIntegrationValidator, buildGraphLanes, scriptSummary,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
     evidencePollIsCurrent, promptKeyAction, acceptStateStamp, queueRowLabel, createDraftOwner, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
     formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator, markerState, lineMarkerState } = window.pipelineUI;
@@ -484,14 +496,21 @@ window.addEventListener("DOMContentLoaded", () => {
     n.style.left = x + "px";
     n.style.top = y + "px";
     n.style.width = width + "px";
+    const script = w.runner === "script";
+    if (script) n.classList.add("w-script");
     const nm = document.createElement("span");
-    nm.textContent = w.name;
+    nm.textContent = script ? "\u2699 " + w.name : w.name;
     nm.className = "nodeName";
     const tag = document.createElement("span");
     tag.className = "persona-chip p-" + (w.persona || "backend");
     tag.textContent = validator ? "val" : (w.persona || "backend");
-    n.append(tag, nm);
-    const cfg = [w.harness, w.model, w.effort].filter(Boolean).join(" · ");
+    if (script) {
+      const summary = document.createElement("span");
+      summary.className = "scriptSummary";
+      summary.textContent = scriptSummary(w);
+      n.append(nm, summary);
+    } else n.append(tag, nm);
+    const cfg = script ? "" : [w.harness, w.model, w.effort].filter(Boolean).join(" · ");
     if (cfg) {
       const cfgEl = document.createElement("span");
       cfgEl.className = "wcfg";
@@ -617,13 +636,14 @@ window.addEventListener("DOMContentLoaded", () => {
   // Everything renderGraphContents draws or reads; equal signature means an identical graph.
   function graphSignature(st) {
     const fields = ["id", "name", "role", "kind", "status", "state", "verdict", "validates", "persona", "harness",
-      "model", "effort", "attention", "needsAttention", "humanIntervention", "error", "hasError", "lastError", "merged"];
+      "model", "effort", "attention", "needsAttention", "humanIntervention", "error", "hasError", "lastError", "merged",
+      "node", "runner", "afterChecks", "checkResults"];
     const workers = [...st.workers.values()];
     return JSON.stringify([
       workers.map((w) => fields.map((f) => w[f])),
       workers.map((w) => !!mapPreviewPayload(st.previewPayload, w)),
       st.plannerStatus, st.plannerAttention, st.plannerHumanIntervention, st.plannerError,
-      st.selected, !!st.hideFailedValidators, st.graph.clientWidth, st.tab,
+      st.pipeGraph && st.pipeGraph.columns, st.selected, !!st.hideFailedValidators, st.graph.clientWidth, st.tab,
       !!(st.previewPanel && st.previewPanel.hidden),
     ]);
   }
@@ -636,11 +656,8 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderGraphContents(st) {
-    const layout = pipelineUI.buildGraphLanes([...st.workers.values()], !!st.hideFailedValidators);
-    const lanes = layout.lanes;
-    const impls = lanes.map((lane) => lane.worker);
-    const vals = [...lanes.flatMap((lane) => lane.validators), ...layout.orphans];
-    const ints = layout.integrations;
+    const layout = pipelineUI.buildGraphLanes([...st.workers.values()], !!st.hideFailedValidators, st.pipeGraph);
+    const entries = [...layout.placed, ...layout.unplaced];
     const rows = Math.max(layout.totalRows, 1);
     const h = Math.max(140, 14 + (rows - 1) * 46 + 36 + 14);
     const graph = st.graph;
@@ -655,13 +672,16 @@ window.addEventListener("DOMContentLoaded", () => {
     const plannerW = 92, plannerX = 12;
     const measure = graphTextMeasurer();
     const widthOf = (w) => nodeWidth(w, measure);
-    const implW = columnWidth(impls.map(widthOf));
-    const valW = columnWidth(vals.map(widthOf));
-    const intW = columnWidth(ints.map(widthOf));
-    const implX = plannerX + plannerW + 46;
-    const valX = implX + implW + 46;
-    const intX = valX + valW + 46;
-    const innerW = Math.max(W, intX + intW + 12);
+    // One x position per column that has a worker; the unplaced section (column null) comes last.
+    const columnKeys = layout.unplaced.length ? [...layout.columns, null] : layout.columns;
+    const columnX = new Map(), columnW = new Map();
+    let nextX = plannerX + plannerW + 46;
+    for (const key of columnKeys) {
+      const width = columnWidth(entries.filter((e) => e.column === key).map((e) => widthOf(e.worker)));
+      columnX.set(key, nextX); columnW.set(key, width);
+      nextX += width + 46;
+    }
+    const innerW = Math.max(W, nextX - 46 + 12 + (entries.some((e) => mapPreviewPayload(st.previewPayload, e.worker)) ? 46 + 110 : 0));
     const inner = document.createElement("div");
     inner.style.position = "relative";
     inner.style.height = h + "px";
@@ -672,11 +692,8 @@ window.addEventListener("DOMContentLoaded", () => {
     inner.appendChild(svg);
     graph.appendChild(inner);
     const plannerY = Math.round(h / 2 - 18);
-    const implY = (i) => 14 + lanes[i].startRow * 46;
-    const validatorY = new Map();
-    lanes.forEach((lane) => lane.validators.forEach((v, i) => validatorY.set(v.id, 14 + (lane.startRow + i) * 46)));
-    layout.orphans.forEach((v, i) => validatorY.set(v.id, 14 + (layout.orphanStartRow + i) * 46));
-    const integrationY = (i) => 14 + layout.integrationRows[i] * 46;
+    const place = new Map(entries.map((e) => [e.worker.id,
+      { x: columnX.get(e.column), y: 14 + e.row * 46, w: columnW.get(e.column) }]));
 
     const pn = document.createElement("div");
     pn.className = "gnode planner" + (st.selected === null ? " sel" : "");
@@ -704,46 +721,45 @@ window.addEventListener("DOMContentLoaded", () => {
       svg.appendChild(path);
     };
 
-    impls.forEach((w, i) => {
-      edge(plannerX + plannerW, plannerY + 18, implX, implY(i) + 18);
-      inner.appendChild(workerNode(st, w, implX, implY(i), implW));
-    });
+    const gutterEdge = (from, to) => {
+      const path = document.createElementNS(SVGNS, "path");
+      const gutterX = from.x + from.w + 22;
+      path.setAttribute("d", `M ${from.x + from.w} ${from.y + 18} H ${gutterX} V ${to.y + 18} H ${to.x}`);
+      path.setAttribute("class", "edge");
+      path.setAttribute("fill", "none");
+      svg.appendChild(path);
+    };
+    // The incoming edges of an instance: from its on-screen "after" checks, else from
+    // its source (validates), else from the planner.
+    const sourcesOf = (w) => {
+      const afters = (Array.isArray(w.afterChecks) ? w.afterChecks : []).map((id) => place.get(id)).filter(Boolean);
+      if (afters.length) return afters;
+      const source = place.get(w.validates);
+      return source ? [source] : [];
+    };
 
-    vals.forEach((v) => {
-      const y = validatorY.get(v.id);
-      const sourceIndex = lanes.findIndex((lane) => lane.worker.id === v.validates);
-      const source = sourceIndex >= 0 ? lanes[sourceIndex] : null;
-      if (source && source.validators[0] === v) {
-        edge(implX + implW, y + 18, valX, y + 18);
-      } else if (source) {
-        const startY = implY(sourceIndex) + 18;
-        const gutterX = implX + implW + 22;
-        const path = document.createElementNS(SVGNS, "path");
-        path.setAttribute("d", `M ${implX + implW} ${startY} H ${gutterX} V ${y + 18} H ${valX}`);
-        path.setAttribute("class", "edge");
-        path.setAttribute("fill", "none");
-        svg.appendChild(path);
-      } else {
-        edge(plannerX + plannerW, plannerY + 18, valX, y + 18);
+    entries.forEach((e) => {
+      const w = e.worker, to = place.get(w.id);
+      const sources = sourcesOf(w);
+      if (!sources.length) edge(plannerX + plannerW, plannerY + 18, to.x, to.y + 18);
+      for (const from of sources) {
+        if (from.y === to.y) edge(from.x + from.w, from.y + 18, to.x, to.y + 18);
+        else gutterEdge(from, to);
       }
-      inner.appendChild(workerNode(st, v, valX, y, valW));
-    });
-
-    ints.forEach((iv, j) => {
-      const y = integrationY(j);
-      edge(plannerX + plannerW, plannerY + 18, intX, y + 18);
-      inner.appendChild(workerNode(st, iv, intX, y, intW));
-      const data = mapPreviewPayload(st.previewPayload, iv);
-      if (st.selected === previewSelectionKey(iv.id) && data && st.previewPanel.hidden) renderPreviewPanel(st, iv, data);
+      const node = workerNode(st, w, to.x, to.y, to.w);
+      if (e.column === null) node.title = "This worker has no node in the pipeline graph.";
+      inner.appendChild(node);
+      const data = mapPreviewPayload(st.previewPayload, w);
+      if (st.selected === previewSelectionKey(w.id) && data && st.previewPanel.hidden) renderPreviewPanel(st, w, data);
       if (data) {
-        const px = intX + intW + 46, py = y;
-        edge(intX + intW, py + 18, px, py + 18);
-        const node = document.createElement("button");
-        node.className = "gnode" + (st.selected === previewSelectionKey(iv.id) ? " sel" : "");
-        node.textContent = "Preview";
-        node.style.left = px + "px"; node.style.top = py + "px"; node.style.width = "110px";
-        node.addEventListener("click", () => selectPreview(st, iv, data));
-        inner.appendChild(node);
+        const px = to.x + to.w + 46, py = to.y;
+        edge(to.x + to.w, py + 18, px, py + 18);
+        const preview = document.createElement("button");
+        preview.className = "gnode" + (st.selected === previewSelectionKey(w.id) ? " sel" : "");
+        preview.textContent = "Preview";
+        preview.style.left = px + "px"; preview.style.top = py + "px"; preview.style.width = "110px";
+        preview.addEventListener("click", () => selectPreview(st, w, data));
+        inner.appendChild(preview);
       }
     });
   }
@@ -836,6 +852,71 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     st.scopeText.textContent = scope.state === "loaded"
       ? formatScopePanelData({ ...worker, ...scope.data }) || "No scope data available." : "";
+    if (worker.runner === "script" || st.checkCard) renderCheckCard(st, worker);
+  }
+
+  // The card of a script check worker: the run mode, the run root, the checked
+  // commit and one table row per script. It sits in the scope panel.
+  function renderCheckCard(st, worker) {
+    if (!st.checkCard) {
+      st.checkCard = document.createElement("div");
+      st.checkCard.className = "checkCard";
+      st.checkCard.setAttribute("aria-label", "Script check");
+      st.scopeText.after(st.checkCard);
+    }
+    const card = st.checkCard;
+    card.hidden = worker.runner !== "script";
+    card.textContent = "";
+    if (card.hidden) return;
+    const spec = worker.scriptSpec || {};
+    const checkout = spec.checkout || "worktree";
+    const source = st.workers.get(worker.validates);
+    const root = checkout === "clean" ? "clean checkout at " + (worker.checkedCommit || "unknown")
+      : "worktree of " + (source ? source.name : worker.validates || "unknown") + ": " + (worker.worktreePath || "unknown");
+    const list = document.createElement("dl");
+    for (const [label, value] of [["Runner", "scripts"], ["Checkout", checkout], ["Run root", root],
+      ["Checked commit", worker.checkedCommit || "unknown"]]) {
+      const dt = document.createElement("dt"); dt.textContent = label;
+      const dd = document.createElement("dd"); dd.textContent = value;
+      list.append(dt, dd);
+    }
+    card.appendChild(list);
+    const results = Array.isArray(worker.checkResults) ? worker.checkResults : [];
+    if (!results.length) {
+      const none = document.createElement("p");
+      none.textContent = worker.status === "running" ? "No script has finished yet." : "No script results.";
+      card.appendChild(none);
+      return;
+    }
+    const table = document.createElement("table");
+    const head = table.createTHead().insertRow();
+    for (const name of ["#", "Name", "Status", "Exit", "Duration", "Log"]) {
+      const th = document.createElement("th"); th.scope = "col"; th.textContent = name; head.appendChild(th);
+    }
+    const body = table.createTBody();
+    results.forEach((r, position) => {
+      const row = body.insertRow();
+      const cells = [r.index, r.name, String(r.status || "").toUpperCase(),
+        r.exitCode === null || r.exitCode === undefined ? (r.signal || "") : r.exitCode,
+        typeof r.durationMs === "number" ? (r.durationMs / 1000).toFixed(1) + " s" : ""];
+      cells.forEach((value, i) => {
+        const td = row.insertCell(); td.textContent = value === undefined ? "" : value;
+        if (i === 2) td.className = "st-" + r.status;
+      });
+      if (r.reason && (r.status === "fail" || r.status === "skipped")) {
+        row.cells[2].textContent += ": " + r.reason;
+      }
+      const logCell = row.insertCell();
+      if (r.logFile) {
+        const link = document.createElement("a");
+        link.textContent = "log";
+        link.href = "/api/protocol/workers/" + encodeURIComponent(worker.id) + "/check-log?step=" + position;
+        link.target = "_blank"; link.rel = "noopener";
+        link.setAttribute("aria-label", "log of " + r.name);
+        logCell.appendChild(link);
+      }
+    });
+    card.appendChild(table);
   }
 
   // Context meter and Compact button for the selected session: the planner
@@ -1345,6 +1426,13 @@ window.addEventListener("DOMContentLoaded", () => {
         }
         renderGraph(st); updateListEntry(st); refreshPreview(); renderContextControls(st);
       },
+      worker_check({ workerId, checkResults }) {
+        const w = st.workers.get(workerId);
+        if (!w) return;
+        w.checkResults = Array.isArray(checkResults) ? checkResults : [];
+        renderGraph(st);
+        if (st.selected === workerId) renderScopePanel(st);
+      },
       worker_removed({ workerIds }) {
         for (const id of workerIds || []) {
           st.workers.delete(id);
@@ -1744,6 +1832,7 @@ window.addEventListener("DOMContentLoaded", () => {
     st.effectiveNodeSettings = data.effectiveNodeSettings || null;
     st.defaultNodeSettings = data.defaultNodeSettings || null;
     renderPipelineGraph(st);
+    renderGraph(st);
     st.pipeForm.setDefaults(st.defaultNodeSettings);
     if (st.pipeSwitch) st.pipeSwitch.graphChanged();
   }
