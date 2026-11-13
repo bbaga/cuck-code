@@ -23,7 +23,7 @@ function harness() {
 test("renderGraph restores both offsets after clearing graph content", () => { const {ui,graph}=harness(); const st={graph,workers:new Map(),selected:null}; ui.renderGraph(st); assert.equal(graph.scrollTop,47); assert.equal(graph.scrollLeft,63); });
 test("renderGraph preserves zero initial offsets", () => { const {ui,graph}=harness(); graph.scrollTop=graph.scrollLeft=0; ui.renderGraph({graph,workers:new Map(),selected:null}); assert.equal(graph.scrollTop,0); assert.equal(graph.scrollLeft,0); });
 test("renderGraph restores offsets and rethrows a rendering failure", () => { const {ui,graph}=harness(); const st={graph,workers:{values(){throw Error("boom")}},selected:null}; assert.throws(()=>ui.renderGraph(st),/boom/); assert.equal(graph.scrollTop,47); assert.equal(graph.scrollLeft,63); });
-function state(h, workers) { return { graph:h.graph, workers:new Map(workers.map(w=>[w.id,w])), selected:null, hideFailedValidators:false, plannerStatus:"idle", previewPanel:{hidden:true,replaceChildren(...x){this.children=x;}}, id:"line", tabEvBtn:{}, followTranscript:true }; }
+function state(h, workers) { return { graph:h.graph, workers:new Map(workers.map(w=>[w.id,w])), selected:null, hideFailedValidators:false, plannerStatus:"idle", previewPanel:{hidden:true,replaceChildren(...x){this.children=x;}}, pipeGraph:{nodes:{impl:{},val:{}},columns:{planner:0,impl:1,val:2}}, id:"line", tabEvBtn:{}, followTranscript:true }; }
 function integration(){return {id:"i",kind:"integration",role:"validator",status:"completed",verdict:"pass",validates:"impl"};}
 test("worker and planner clicks select nodes and preserve graph offsets", () => {
   const h=harness(), w={id:"impl",name:"worker",status:"running"}, st=state(h,[w]); h.ui.renderGraph(st);
@@ -45,9 +45,9 @@ test("repeated selection and render cycles do not drift graph offsets", () => {
   for(let i=0;i<5;i++){h.ui.renderGraph(st);const node=h.find(h.graph,n=>(n.className||"").includes("worker")&&(n.className||"").includes("gnode"));h.click(node);h.ui.selectNode(st,null);assert.equal(h.graph.scrollTop,47);assert.equal(h.graph.scrollLeft,63);}
 });
 test("validator SVG paths originate at implementor center and route later rows through gutter", () => {
-  const h=harness(), impl={id:"impl",name:"impl",status:"completed"};
-  const v1={id:"v1",name:"v1",role:"validator",validates:"impl",status:"completed"};
-  const v2={id:"v2",name:"v2",role:"validator",validates:"impl",status:"completed"};
+  const h=harness(), impl={id:"impl",node:"impl",name:"impl",status:"completed"};
+  const v1={id:"v1",node:"val",name:"v1",role:"validator",validates:"impl",status:"completed"};
+  const v2={id:"v2",node:"val",name:"v2",role:"validator",validates:"impl",status:"completed"};
   h.ui.renderGraph(state(h,[impl,v1,v2]));
   const paths=[];function visit(n){if(n.attrs&&n.attrs.class==="edge")paths.push(n.attrs.d);for(const c of n.children||[])visit(c);}visit(h.graph);
   const edges=[];function collect(n){if(n.attrs&&n.attrs.class==="edge")edges.push(n);for(const c of n.children||[])collect(c);}collect(h.graph);

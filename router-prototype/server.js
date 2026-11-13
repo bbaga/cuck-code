@@ -601,8 +601,16 @@ function dashboardStateForLine(line) {
       error: w.error === true, ...compactionFields(w, line),
       ...scopeSummary(w, line.workers),
       ...(w.kind === "integration" ? { merged: integrationMerged(w) } : {}),
+      ...scriptCheckFields(w),
       transcript: serializeWorkerTranscript(w, 50),
     })) };
+}
+
+// What the card of a script check shows: the node, the run mode and the checked commit.
+function scriptCheckFields(w) {
+  if (w.runner !== "script") return {};
+  return { node: w.node || null, scriptSpec: w.scriptSpec || null,
+    checkedCommit: w.checkedCommit || null, worktreePath: w.worktreePath || null };
 }
 
 function broadcast(line, event, data) {
@@ -1725,7 +1733,7 @@ function createOwnWorktree(line, nodeId, fields) {
   slog("info", "worker.spawned", { lineId: line.id, workerId: id,
     name: fields.name, persona, branch, repo: repo.name, repoUrl: repo.url || undefined });
   spawnWorker(line, worker, worker.prompt);
-  broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona, repo: repo.name, ...scopeSummary(worker, line.workers) } });
+  broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, node: worker.node || null, validates: null, persona, repo: repo.name, ...scopeSummary(worker, line.workers) } });
   return { ok: true, worker, response: { workerId: id, branch, worktree: worktreePath, repo: repo.name,
     baseCommit, ...baseFields(worker) } };
 }
@@ -1797,7 +1805,7 @@ function createIntegration(line, nodeId, fields) {
   slog("info", "integration.spawned", { lineId: line.id, validatorId: id,
     commits: manifest.flatMap((r) => r.branches.map((b) => `${r.name}:${b.branch}@${b.sha.slice(0, 12)}`)) });
   broadcast(line, "worker_spawned", { worker: { id, name, branch, status: worker.status,
-    role: worker.role, validates: null, persona: worker.persona, kind: "integration",
+    role: worker.role, node: worker.node || null, validates: null, persona: worker.persona, kind: "integration",
     merged: integrationMerged(worker), ...scopeSummary(worker, line.workers) } });
   spawnWorker(line, worker, worker.prompt);
   return { ok: true, worker, response: { validatorId: id, branch, worktree: root,
@@ -1828,7 +1836,8 @@ function createScriptChecker(line, { id, name, nodeId, implWorker, source, repoN
   slog("info", "script-check.spawned", { lineId: line.id, workerId: id, implementorId: implWorker.id });
   broadcast(line, "worker_spawned", { worker: { id, name, branch: worker.branch,
     status: worker.status, role: worker.role, validates: worker.validates, persona: worker.persona,
-    runner: "script", checkResults: [], afterChecks, ...scopeSummary(worker, line.workers) } });
+    runner: "script", checkResults: [], afterChecks, ...scriptCheckFields(worker),
+    ...scopeSummary(worker, line.workers) } });
   spawnWorker(line, worker, "");
   return { ok: true, worker, response: { validatorId: id, branch: worker.branch } };
 }
@@ -1907,7 +1916,7 @@ function createSourceChecker(line, nodeId, sourceInstance, fields) {
   slog("info", "validator.spawned", { lineId: line.id, validatorId: id,
     implementorId: implWorker.id, persona: worker.persona });
   broadcast(line, "worker_spawned", { worker: { id, name, branch: worker.branch,
-    status: worker.status, role: worker.role, validates: worker.validates, afterChecks,
+    status: worker.status, role: worker.role, node: worker.node || null, validates: worker.validates, afterChecks,
     persona: worker.persona, ...scopeSummary(worker, line.workers) } });
   spawnWorker(line, worker, worker.prompt);
   return { ok: true, worker, response: { validatorId: id, branch: worker.branch } };
