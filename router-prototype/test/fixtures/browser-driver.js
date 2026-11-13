@@ -6,6 +6,7 @@ const { spawn } = require('node:child_process');
 
 const MAC_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const START_TIMEOUT_MS = 15000;
+const START_COMMAND_TIMEOUT_MS = 45000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function findBrowser(options) {
@@ -98,6 +99,8 @@ async function launchOnce(exe) {
 }
 
 // Launches Chrome one process at a time per machine. A dead start gets one more launch with a new profile.
+// The lock stays held on success: the caller releases it after the first CDP commands succeed,
+// so a second Chrome does not start while this one is still loading under CPU load.
 async function launchChrome(exe) {
   await acquireLaunchLock();
   try {
@@ -110,8 +113,9 @@ async function launchChrome(exe) {
         throw new Error(`${second.message} (first launch failed: ${first.message})`);
       }
     }
-  } finally {
+  } catch (err) {
     releaseLaunchLock();
+    throw err;
   }
 }
 
@@ -123,6 +127,8 @@ const KEYS = {
 async function openPage(url, options = {}) {
   const exe = findBrowser(options);
   const { proc, dir, exited, port } = await launchChrome(exe);
+  let lockHeld = true;
+  const unlock = () => { if (lockHeld) { lockHeld = false; releaseLaunchLock(); } };
   let ws = null; let closing = null;
   const pending = new Map(); const seen = []; const blockedIds = new Set(); const urlById = new Map(); let nextId = 1;
   const commandTimeoutMs = options.commandTimeoutMs || 15000;
@@ -142,6 +148,7 @@ async function openPage(url, options = {}) {
   function close() {
     if (closing) return closing;
     closing = (async () => {
+      unlock();
       for (const [sig, handler] of signalHandlers) process.off(sig, handler);
       process.off('exit', onExit);
       try { if (ws) ws.close(); } catch {}
@@ -182,13 +189,15 @@ async function openPage(url, options = {}) {
         reject: (e) => { clearTimeout(timer); reject(e); } });
       try { ws.send(JSON.stringify({ id, method, params })); } catch (e) { pending.get(id).reject(e); pending.delete(id); }
     });
-    for (const domain of ['Page', 'Runtime', 'Network']) await send(`${domain}.enable`);
+    // A cold Chrome can answer the first commands slowly. The start phase has its own longer limit.
+    for (const domain of ['Page', 'Runtime', 'Network']) await send(`${domain}.enable`, {}, START_COMMAND_TIMEOUT_MS);
     const loaded = new Promise((resolve, reject) => {
-      onLoad = resolve; setTimeout(() => reject(new Error('page load timeout')), START_TIMEOUT_MS).unref();
+      onLoad = resolve; setTimeout(() => reject(new Error('page load timeout')), START_COMMAND_TIMEOUT_MS).unref();
     });
     if (options.initScript) await send('Page.addScriptToEvaluateOnNewDocument', { source: options.initScript });
     await send('Page.navigate', { url });
     await loaded;
+    unlock();
 
     async function evaluate(expression, timeoutMs) {
       const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, timeoutMs);
