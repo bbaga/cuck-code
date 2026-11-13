@@ -151,13 +151,16 @@ test("done resolves with fail when the parser throws", async () => {
   assert.match(result.spawnError.message, /parser bug/);
 });
 
+// A slow machine can need seconds to start a node process: a completed command needs a generous limit.
+const COMPLETE_TIMEOUT_MS = 30_000;
+
 test("runCommand returns code and stdout on success", async () => {
-  const r = await sdk.runCommand([process.execPath, "-e", "console.log('hi')"]);
+  const r = await sdk.runCommand([process.execPath, "-e", "console.log('hi')"], { timeoutMs: COMPLETE_TIMEOUT_MS });
   assert.deepEqual(r, { code: 0, stdout: "hi\n" });
 });
 
 test("runCommand returns a nonzero exit code", async () => {
-  const r = await sdk.runCommand([process.execPath, "-e", "process.exit(3)"]);
+  const r = await sdk.runCommand([process.execPath, "-e", "process.exit(3)"], { timeoutMs: COMPLETE_TIMEOUT_MS });
   assert.equal(r.code, 3);
 });
 

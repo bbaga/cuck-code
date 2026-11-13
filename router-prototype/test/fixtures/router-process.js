@@ -49,13 +49,16 @@ async function freePort() {
   return port;
 }
 
+// A loaded machine must not turn a slow fake CLI into a failed probe. A test or the caller env can override these.
+const SLOW_MACHINE_LIMITS = { CUCK_PROBE_TIMEOUT_MS: "60000" };
+
 async function startRouter(root, extraEnv = {}, { docker = NOOP_DOCKER } = {}) {
   const port = await freePort();
   const bin = dockerBin(docker);
   // Tests never read the host's plugin folder: CUCK_HOME is a fresh empty folder unless a test sets it.
   const cuckHome = extraEnv.CUCK_HOME ? null : fs.mkdtempSync(path.join(os.tmpdir(), "router-test-cuck-"));
   const child = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, ...(cuckHome ? { CUCK_HOME: cuckHome } : {}), ...extraEnv, PORT: String(port), LINES_DIR: root,
+    env: { ...SLOW_MACHINE_LIMITS, ...process.env, ...(cuckHome ? { CUCK_HOME: cuckHome } : {}), ...extraEnv, PORT: String(port), LINES_DIR: root,
       PATH: `${bin}:${extraEnv.PATH || process.env.PATH}` },
     stdio: ["ignore", "pipe", "ignore"],
   });
