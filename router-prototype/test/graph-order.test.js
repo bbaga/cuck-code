@@ -115,3 +115,27 @@ test("real line shape: 5 implementors then validators and integrations give orde
   });
   assert.equal(integrations[0].lane, 4);
 });
+
+
+test("dashboard state and workers list: an integration carries merged, others do not", async () => {
+  const { startDashboardFixture } = require("./fixtures/dashboard-browser");
+  const fx = await startDashboardFixture();
+  try {
+    const line = require("../server").lines.get(fx.lineId);
+    const base = { role: "validator", status: "completed", transcript: [] };
+    line.workers.set("i1", { id: "i1", name: "api", role: "implementor", status: "completed", transcript: [] });
+    line.workers.set("i2", { id: "i2", name: "ui", role: "implementor", status: "completed", transcript: [] });
+    line.workers.set("g1", { ...base, id: "g1", name: "integration-validator", kind: "integration",
+      integration: { repos: [{ name: "r", branches: [{ workerId: "i1" }, { workerId: "i2" }, { workerId: "i1" }] }] } });
+    line.workers.set("g0", { ...base, id: "g0", name: "old-integration", kind: "integration" });
+    const byId = (list) => Object.fromEntries(list.map((w) => [w.id, w]));
+    const state = byId(fx.controls.state().workers);
+    assert.deepEqual(state.g1.merged, ["i1", "i2"]);
+    assert.deepEqual(state.g0.merged, []);
+    assert.equal("merged" in state.i1, false);
+    assert.equal("integration" in state.g1, false);
+    const res = await fetch(fx.url + "/api/protocol/lines/" + fx.lineId + "/workers");
+    const listed = byId((await res.json()).workers);
+    assert.deepEqual(listed.g1.merged, ["i1", "i2"]);
+  } finally { await fx.close(); }
+});
