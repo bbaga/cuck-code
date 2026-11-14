@@ -63,7 +63,8 @@ test("a line with no settings uses the default pipeline and shows graph, node se
   const s = await summary(c.body.id);
   assert.equal(s.graph.name, "default");
   assert.equal(s.graph.start, "planner");
-  assert.deepEqual(s.graph.nodes.planner, { type: "planner", phase: "planner" });
+  assert.deepEqual(s.graph.nodes.planner, { type: "planner", phase: "planner", runner: "agent", checks: [], after: [],
+    workspace: "coordinator", requires: [] });
   assert.equal(s.graph.nodes["backend-impl"].phase, "implementor");
   assert.ok(Array.isArray(s.graph.edges) && s.graph.edges.length > 0);
   assert.deepEqual(s.nodeSettings, {});

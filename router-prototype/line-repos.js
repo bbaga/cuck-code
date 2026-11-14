@@ -70,6 +70,54 @@ const BLOCKER_TEXT = {
   "verdict-fail": "has VERDICT: FAIL for its latest run",
   "verdict-missing": "has a validation without a VERDICT line for its latest run",
 };
+const requiredCheckText = (reason, node) => ({
+  "required-check-missing": `has no PASS from required check '${node}' on its latest run`,
+  "required-check-running": `has required check '${node}' still running on its latest run`,
+  "required-check-fail": `has required check '${node}' without a PASS on its latest run`,
+})[reason];
+for (const reason of ["required-check-missing", "required-check-running", "required-check-fail"]) {
+  BLOCKER_TEXT[reason] = requiredCheckText(reason, "<node>");
+}
+
+// The latest worker of a checker node for an implementor run, or null.
+function latestCheckRun(workers, nodeId, source) {
+  const current = (src) => src && src.runId === source.runGeneration
+    && src.invocationId === source.lastCompletedInvocationId;
+  return workers.filter((v) => v.node === nodeId && v.validates === source.id
+    && current(v.validationSource)).pop() || null;
+}
+
+// State of a check run: "missing", "running", "fail" or "pass".
+function checkState(run) {
+  if (!run) return "missing";
+  if (run.status === "running") return "running";
+  return run.status === "completed" && run.verdict === "pass" ? "pass" : "fail";
+}
+
+// The script nodes with required true that check the node of an implementor.
+function requiredChecksOf(graph, impl) {
+  if (!graph || !graph.nodes || typeof impl.node !== "string") return [];
+  return Object.entries(graph.nodes)
+    .filter(([id, n]) => graph.types && graph.types[n.type] && graph.types[n.type].runner === "script"
+      && n.required === true && (n.checks || []).includes(impl.node))
+    .map(([id]) => id);
+}
+
+// Gate for starting a checker: each node in 'after' needs a PASS on the latest run of the source.
+// Returns { ok, pending: [{ node, state }], passed: [worker id] }.
+function afterGate(workers, graph, targetNodeId, sourceWorker) {
+  const all = [...workers];
+  const node = graph && graph.nodes ? graph.nodes[targetNodeId] : null;
+  const pending = [];
+  const passed = [];
+  for (const nodeId of (node && node.after) || []) {
+    const run = latestCheckRun(all, nodeId, sourceWorker);
+    const state = checkState(run);
+    if (state === "pass") passed.push(run.id);
+    else pending.push({ node: nodeId, state });
+  }
+  return { ok: pending.length === 0, pending, passed };
+}
 
 // Decide which implementors enter an integration. The planner's call to
 // start an integration is its acceptance of the validated work. Every
@@ -93,8 +141,18 @@ function integrationSelection(workers, graph = null) {
   const implementors = all.filter(needsAcceptance);
   const included = [];
   const blockers = [];
-  const block = (w, reason) => blockers.push({ workerId: w.id, name: w.name, reason,
-    text: `implementor '${w.name}' (${w.id}) ${BLOCKER_TEXT[reason]}` });
+  const block = (w, reason, checkNode = null) => blockers.push({ workerId: w.id, name: w.name, reason,
+    ...(checkNode ? { checkNode } : {}),
+    text: `implementor '${w.name}' (${w.id}) ${checkNode ? requiredCheckText(reason, checkNode) : BLOCKER_TEXT[reason]}` });
+  // A required script check needs a PASS on the latest run. Accept and other validators do not bypass it.
+  // Returns true when the implementor is included.
+  const include = (impl) => {
+    for (const nodeId of requiredChecksOf(graph, impl)) {
+      const state = checkState(latestCheckRun(all, nodeId, impl));
+      if (state !== "pass") { block(impl, `required-check-${state}`, nodeId); return; }
+    }
+    included.push(impl);
+  };
   for (const impl of implementors) {
     if (impl.status === "running" || impl.child) { block(impl, "running"); continue; }
     if (impl.status !== "completed") { block(impl, "not-completed"); continue; }
@@ -102,10 +160,10 @@ function integrationSelection(workers, graph = null) {
     if (validators.some((v) => v.status === "running")) { block(impl, "validation-running"); continue; }
     const current = (src) => src && src.runId === impl.runGeneration
       && src.invocationId === impl.lastCompletedInvocationId;
-    if ((impl.acceptedRuns || []).some(current)) { included.push(impl); continue; }
+    if ((impl.acceptedRuns || []).some(current)) { include(impl); continue; }
     const latest = validators.filter((v) => current(v.validationSource)).pop();
     if (!latest) { block(impl, "awaiting-criteria"); continue; }
-    if (latest.status === "completed" && latest.verdict === "pass") { included.push(impl); continue; }
+    if (latest.status === "completed" && latest.verdict === "pass") { include(impl); continue; }
     block(impl, latest.status === "completed" && latest.verdict === "fail" ? "verdict-fail" : "verdict-missing");
   }
   return { included, blockers };
@@ -181,7 +239,7 @@ module.exports = {
   uniqueRepoName,
   repoIdentity,
   adoptLegacyWorkdir,
-  integrationSelection,
+  integrationSelection, afterGate, requiredChecksOf, latestCheckRun, checkState,
   defaultBranchFrom,
   prepareIntegrationWorkspace,
 };

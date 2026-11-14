@@ -122,3 +122,30 @@ test("the role part of the planner holds the rules and the task part the request
   assert.ok(p.task.startsWith("Build X."));
   assert.ok(p.task.includes("## Calls"));
 });
+
+test("the protocol has gate lines only for required and after nodes", () => {
+  const { resolvePipelineDefinition } = require("../resolve-pipeline");
+  const { buildCatalog } = require("../plugin-catalog");
+  const text = `name: cuck-ci
+start: planner
+nodes:
+  planner: { type: planner }
+  backend-impl: { type: backend-implementor }
+  backend-val: { type: backend-validator, checks: [backend-impl], after: [ci] }
+  ci: { type: script-check, checks: [backend-impl], required: true, scripts: [{ name: unit, run: "true" }] }
+edges:
+  - planner -> backend-impl: start, feedback, accept
+  - backend-impl -> planner: report
+  - planner -> [backend-val, ci]: start
+  - "[backend-val, ci] -> planner: report"
+`;
+  const catalog = buildCatalog({ builtInDir: root });
+  catalog.pipelines["cuck-ci"] = { layer: "managed", text };
+  const ci = resolvePipelineDefinition("cuck-ci", catalog);
+  const withGates = protocolSection(ci, "planner", "http://r", "l1");
+  assert.ok(withGates.includes("Before integration, node 'ci' must PASS on the latest run of every instance of: backend-impl."));
+  assert.ok(withGates.includes("Start 'backend-val' on an instance only after ci passed on its latest run."));
+  const plain = protocolSection(graph, graph.start, "http://r", "l1");
+  assert.ok(!plain.includes("## Gates"));
+  assert.ok(!plain.includes("Before integration, node"));
+});

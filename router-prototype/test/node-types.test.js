@@ -202,3 +202,49 @@ test("a child that changes a parent field is an error", () => {
     kid: doc("kid", `extends: root\n${F("a")}`, "x"),
   }));
 });
+
+// ---- runner ----
+
+const SCRIPT_TYPE = (extra = "") => `---
+name: script-check
+runner: script
+session: fresh
+workspace: source
+outcome: verdict
+coordinator: false
+${extra}---
+Runs scripts.
+`;
+
+test("runner defaults to agent and a child inherits it", () => {
+  const root = load("/t/base", GOOD.replace("name: reviewer", "name: base"));
+  const child = load("/t/child", "---\nname: child\nextends: base\n---\nMore.\n");
+  const out = resolveTypes({ base: root, child });
+  assert.equal(out.base.runner, "agent");
+  assert.equal(out.child.runner, "agent");
+});
+
+test("runner script is inherited by a child", () => {
+  const root = load("/t/script-check", SCRIPT_TYPE());
+  const child = load("/t/my-ci", "---\nname: my-ci\nextends: script-check\n---\nMore.\n");
+  const out = resolveTypes({ "script-check": root, "my-ci": child });
+  assert.equal(out["script-check"].runner, "script");
+  assert.equal(out["my-ci"].runner, "script");
+});
+
+test("an unknown runner is refused", () => {
+  assert.throws(() => load("/t/script-check", SCRIPT_TYPE().replace("runner: script", "runner: docker")),
+    /runner must be one of: agent, script/);
+});
+
+for (const [wrong, replacement, message] of [
+  ["session: fresh", "session: resume", /session: fresh/],
+  ["workspace: source", "workspace: own-worktree", /workspace: source/],
+  ["outcome: verdict", "outcome: none", /outcome: verdict/],
+  ["coordinator: false", "coordinator: true", /coordinator: false/],
+]) {
+  test(`runner script with ${replacement} is refused`, () => {
+    const type = load("/t/script-check", SCRIPT_TYPE().replace(wrong, replacement));
+    assert.throws(() => resolveTypes({ "script-check": type }), (e) => message.test(e.message) && /script-check/.test(e.message));
+  });
+}

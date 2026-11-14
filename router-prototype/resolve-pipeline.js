@@ -138,6 +138,10 @@ function resolvePipelineDefinition(name, catalog) {
     for (const key of SETTING_KEYS) if (key in node) settings[key] = node[key];
     const out = { type: node.type, settings, fields: node.fields || {}, checks: node.checks || [] };
     if (node.prompt !== undefined) out.prompt = node.prompt;
+    if (node.after !== undefined) out.after = node.after;
+    if (node.scripts !== undefined) {
+      for (const key of ["scripts", "failFast", "required", "checkout"]) out[key] = node[key];
+    }
     nodes[id] = out;
   }
   const typeOut = {};

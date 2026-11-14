@@ -189,7 +189,26 @@ function protocolSection(resolved, nodeId, routerUrl, lineId) {
       out.push(lines.join("\n"));
     }
   }
+  const gates = gateLines(resolved);
+  if (gates.length) out.push(["## Gates", ...gates].join("\n"));
   return out.join("\n\n");
+}
+
+// The gate rules of 'required' script nodes and of nodes with 'after'. Empty when no node has one.
+function gateLines(resolved) {
+  const lines = [];
+  for (const [id, node] of Object.entries(resolved.nodes)) {
+    const type = has(resolved.types, node.type) ? resolved.types[node.type] : undefined;
+    if (type && type.runner === "script" && node.required === true) {
+      lines.push(`Before integration, node '${id}' must PASS on the latest run of every instance of: ${(node.checks || []).join(", ")}.`);
+    }
+  }
+  for (const [id, node] of Object.entries(resolved.nodes)) {
+    if (Array.isArray(node.after) && node.after.length) {
+      lines.push(`Start '${id}' on an instance only after ${node.after.join(", ")} passed on its latest run.`);
+    }
+  }
+  return lines;
 }
 
 function plannerRouterValues({ line, nodeId, port, workerCap, graph }) {

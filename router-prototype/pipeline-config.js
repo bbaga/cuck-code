@@ -137,10 +137,27 @@ function nodeResumes(graph, nodeId) {
   return !!type && type.session === "resume";
 }
 
+// Does the node run scripts instead of an agent (runner: script)? Old stored
+// graphs have no runner key: they read as "agent".
+function nodeRunner(graph, nodeId) {
+  const node = graphType(graph, nodeId);
+  const type = node && graph.types && graph.types[node.type];
+  return (type && type.runner) || "agent";
+}
+
+const SCRIPT_NODE_TIME_LIMIT = 1800;
+
 // Check settings for one node of a resolved graph: maxContext is allowed only
 // on a node whose type has session: resume. Returns an error string or null.
 function validateNodeSettingsForNode(graph, nodeId, settings) {
   if (!graphType(graph, nodeId)) return `no such node '${nodeId}'`;
+  if (nodeRunner(graph, nodeId) === "script") {
+    const other = Object.keys(settings || {}).find((k) => k !== "timeLimit");
+    if (other !== undefined) {
+      return `nodeSettings.${nodeId}: node '${nodeId}' runs scripts: only timeLimit can be set`;
+    }
+    return validateNodeSettings(`nodeSettings.${nodeId}`, settings || {}, { strict: true, maxContext: false });
+  }
   return validateNodeSettings(`nodeSettings.${nodeId}`, settings || {}, {
     strict: true,
     maxContext: nodeResumes(graph, nodeId),
@@ -157,6 +174,11 @@ function resolveNodeSettings(line, nodeId, env) {
   const graph = line && line.graph;
   const node = graphType(graph, nodeId);
   if (!node) throw new Error(`no such node '${nodeId}'`);
+  if (nodeRunner(graph, nodeId) === "script") {
+    const own = line.nodeSettings && line.nodeSettings[nodeId] ? line.nodeSettings[nodeId] : {};
+    const fromNode = node.settings || {};
+    return { runner: "script", timeLimit: own.timeLimit || fromNode.timeLimit || SCRIPT_NODE_TIME_LIMIT };
+  }
   const phase = phaseOfType(graph, node.type);
   if (!phase) throw new Error(`node '${nodeId}' has a type without a phase`);
   const own = line.nodeSettings && line.nodeSettings[nodeId] ? line.nodeSettings[nodeId] : {};
@@ -190,7 +212,8 @@ function fallbackPhaseSettings(line, phase, env) {
   const e = env || process.env;
   const graph = line && line.graph;
   const nodeId = graph && graph.nodes
-    ? Object.keys(graph.nodes).find((id) => phaseOfType(graph, graph.nodes[id].type) === phase)
+    ? Object.keys(graph.nodes).find((id) => nodeRunner(graph, id) !== "script"
+      && phaseOfType(graph, graph.nodes[id].type) === phase)
     : null;
   if (nodeId) {
     const result = resolveNodeSettings(line, nodeId, e);

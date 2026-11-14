@@ -10,9 +10,18 @@ const { checkDeclaration } = require("./fields");
 const { validateNodeSettings } = require("./pipeline-config");
 
 const TOP_KEYS = ["name", "description", "start", "defaults", "nodes", "edges"];
-const NODE_KEYS = ["type", "harness", "model", "effort", "timeLimit", "maxContext", "prompt", "fields", "checks"];
+const NODE_KEYS = ["type", "harness", "model", "effort", "timeLimit", "maxContext", "prompt", "fields", "checks",
+  "scripts", "failFast", "required", "checkout", "after"];
 const SETTING_KEYS = ["harness", "model", "effort", "timeLimit", "maxContext"];
 const ID_RE = /^[A-Za-z][A-Za-z0-9-]{0,63}$/;
+const SCRIPT_KEYS = ["name", "run", "cwd", "timeout", "env", "repos"];
+const SCRIPT_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
+const MAX_SCRIPTS = 50;
+const MAX_RUN_LENGTH = 4000;
+const MAX_SCRIPT_TIMEOUT = 7200;
+const DEFAULT_SCRIPT_TIMEOUT = 600;
+const CHECKOUTS = ["worktree", "clean"];
 
 function isMapping(v) {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -94,7 +103,92 @@ function parseNode(fileName, id, raw, readFile) {
     }
     node.checks = raw.checks.slice();
   }
+  if ("after" in raw) {
+    if (!Array.isArray(raw.after) || raw.after.length === 0) {
+      fail(fileName, `${where}: after must be a non-empty list of node ids`);
+    }
+    for (const a of raw.after) {
+      if (typeof a !== "string" || !ID_RE.test(a)) {
+        fail(fileName, `${where}: after entry ${JSON.stringify(a)} is not a node id`);
+      }
+    }
+    node.after = raw.after.slice();
+  }
+  if ("scripts" in raw) parseScriptSettings(fileName, where, raw, node);
+  for (const key of ["failFast", "required"]) {
+    if (key in raw && typeof raw[key] !== "boolean") fail(fileName, `${where}: ${key} must be true or false`);
+  }
+  if ("checkout" in raw && !CHECKOUTS.includes(raw.checkout)) {
+    fail(fileName, `${where}: checkout must be one of: ${CHECKOUTS.join(", ")}`);
+  }
+  // Keys set on a node without scripts stay as written: rule R11 rejects them.
+  for (const key of ["failFast", "required", "checkout"]) if (key in raw) node[key] = raw[key];
+  if ("scripts" in raw) {
+    if (node.failFast === undefined) node.failFast = true;
+    if (node.required === undefined) node.required = false;
+    if (node.checkout === undefined) node.checkout = "worktree";
+  }
   return node;
+}
+
+// A relative path inside the run root, normalized: "./a/" -> "a".
+function normalizeCwd(fileName, where, cwd) {
+  if (typeof cwd !== "string" || cwd === "") fail(fileName, `${where}: cwd must be a non-empty string`);
+  if (cwd.includes("\\")) fail(fileName, `${where}: cwd must not contain a backslash`);
+  if (cwd.startsWith("/")) fail(fileName, `${where}: cwd must be a relative path`);
+  const parts = cwd.split("/");
+  if (parts.includes("..")) fail(fileName, `${where}: cwd must not contain a '..' segment`);
+  const kept = parts.filter((p) => p !== "" && p !== ".");
+  return kept.length ? kept.join("/") : ".";
+}
+
+function parseScript(fileName, where, raw, names) {
+  if (!isMapping(raw)) fail(fileName, `${where} must be a mapping`);
+  for (const key of Object.keys(raw)) {
+    if (!SCRIPT_KEYS.includes(key)) {
+      fail(fileName, `${where}: unknown key '${key}' (allowed: ${SCRIPT_KEYS.join(", ")})`);
+    }
+  }
+  if (typeof raw.name !== "string" || !SCRIPT_NAME_RE.test(raw.name)) {
+    fail(fileName, `${where}: name is required and must match ${SCRIPT_NAME_RE}`);
+  }
+  if (names.has(raw.name)) fail(fileName, `${where}: name '${raw.name}' is used twice`);
+  names.add(raw.name);
+  where = `${where} '${raw.name}'`;
+  if (typeof raw.run !== "string" || raw.run.trim() === "") fail(fileName, `${where}: run is required: a non-empty string`);
+  if (raw.run.length > MAX_RUN_LENGTH) fail(fileName, `${where}: run is longer than ${MAX_RUN_LENGTH} characters`);
+  const script = { name: raw.name, run: raw.run, timeout: DEFAULT_SCRIPT_TIMEOUT };
+  if ("cwd" in raw) script.cwd = normalizeCwd(fileName, where, raw.cwd);
+  if ("timeout" in raw) {
+    if (!Number.isInteger(raw.timeout) || raw.timeout < 1 || raw.timeout > MAX_SCRIPT_TIMEOUT) {
+      fail(fileName, `${where}: timeout must be an integer number of seconds from 1 to ${MAX_SCRIPT_TIMEOUT}`);
+    }
+    script.timeout = raw.timeout;
+  }
+  if ("env" in raw) {
+    if (!isMapping(raw.env)) fail(fileName, `${where}: env must be a mapping`);
+    for (const [key, value] of Object.entries(raw.env)) {
+      if (!ENV_KEY_RE.test(key)) fail(fileName, `${where}: env key '${key}' must match ${ENV_KEY_RE}`);
+      if (typeof value !== "string") fail(fileName, `${where}: env '${key}' must be a string`);
+    }
+    script.env = { ...raw.env };
+  }
+  if ("repos" in raw) {
+    if (!Array.isArray(raw.repos) || raw.repos.length === 0
+      || !raw.repos.every((r) => typeof r === "string" && r !== "")) {
+      fail(fileName, `${where}: repos must be a non-empty list of non-empty strings`);
+    }
+    script.repos = raw.repos.slice();
+  }
+  return script;
+}
+
+function parseScriptSettings(fileName, where, raw, node) {
+  if (!Array.isArray(raw.scripts) || raw.scripts.length < 1 || raw.scripts.length > MAX_SCRIPTS) {
+    fail(fileName, `${where}: scripts must be a list of 1 to ${MAX_SCRIPTS} mappings`);
+  }
+  const names = new Set();
+  node.scripts = raw.scripts.map((s, i) => parseScript(fileName, `${where}: scripts[${i}]`, s, names));
 }
 
 // "a" or "[a, b]" -> { ids } or { error }.
