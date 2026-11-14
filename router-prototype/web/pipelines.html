@@ -66,6 +66,21 @@
   .pipeGraph .pgNodeType { fill: var(--muted); font-size: 11px; }
   .pipeGraph .pgEdge { fill: none; stroke: var(--muted); stroke-width: 1.4; }
   .pipeGraph .pgEdge.dashed { stroke-dasharray: 6 4; stroke: var(--dim); }
+  .pipeGraph .pgEdge.checks { stroke-width: 1; stroke: #5f9ea0; }
+  .pipeGraph .pgEdge.after { stroke-width: 2.6; stroke: #d9a441; }
+  .pipeGraph .pgEdge.accepted-work { stroke-dasharray: 2 4; stroke: var(--muted); }
+  .pipeGraph .pgEdge.required { stroke-dasharray: 2 4; stroke-width: 2.6; stroke: #e07a5f; }
+  .pipeGraph .pgNode.script rect { stroke: #5f9ea0; stroke-dasharray: 5 3; }
+  .pipeGraph .pgNodeCfg { fill: var(--dim); font-size: 11px; }
+  .pipeGraph .pgNodeBadge { fill: #e07a5f; font-size: 11px; font-weight: 600; }
+  .pgLegend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 6px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: .75rem; color: var(--text); }
+  .pgLegend legend { padding: 0 4px; color: var(--muted); }
+  .pgKind { display: inline-flex; align-items: center; gap: 4px; }
+  .pgSwatch { display: inline-block; width: 26px; border-top: 1.4px solid var(--muted); }
+  .pgKind.checks .pgSwatch { border-top: 1px solid #5f9ea0; }
+  .pgKind.after .pgSwatch { border-top: 3px solid #d9a441; }
+  .pgKind.accepted-work .pgSwatch { border-top: 2px dotted var(--muted); }
+  .pgKind.required .pgSwatch { border-top: 3px dotted #e07a5f; }
   .pipeGraph .pgArrowHead { fill: var(--muted); }
   .pipeGraph .pgEdgeLabel { fill: var(--text); font-size: 11px; paint-order: stroke; stroke: var(--deep); stroke-width: 4px; stroke-linejoin: round; }
   .edgesText { font-size: .72rem; color: var(--muted); }
