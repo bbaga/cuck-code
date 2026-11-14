@@ -162,6 +162,15 @@ created (`POST /api/lines {pipelineName}`, default `default`; an unknown name is
 line. A line saved before this feature gets the `default` graph when it loads
 (see "Old data on load" below).
 
+### What changed for existing pipelines
+
+Nothing to do. The keys `after`, `scripts`, `failFast`, `required` and
+`checkout` and the type key `runner` are optional. A missing key has its
+default: `runner: agent`, `after: []`, `required: false`, `checkout: worktree`.
+The built-in pipelines `default` and `minimal` keep their behaviour and use none
+of these keys. Managed pipelines and the graphs stored in `line.json` load as
+they are, and the layout rules in "How pipelines are drawn" draw them.
+
 ### Pipeline file
 
 A pipeline is a YAML file `<name>.yaml` in a `pipelines/` folder. This is the
