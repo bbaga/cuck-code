@@ -25,7 +25,7 @@ function runChild(cwd, linesDir) {
     ["--test", "--test-reporter=tap", "--test-force-exit", TARGET],
     { cwd, env, encoding: "utf8", timeout: 180000 });
   const count = (name) => Number((new RegExp(`^# ${name} (\\d+)`, "m").exec(r.stdout) || [])[1]);
-  return { status: r.status, out: r.stdout, tests: count("tests"), pass: count("pass"),
+  return { status: r.status, out: r.stdout, err: r.stderr, signal: r.signal, spawnError: r.error, tests: count("tests"), pass: count("pass"),
     fail: count("fail"), skipped: count("skipped") };
 }
 
@@ -45,7 +45,8 @@ function snapshot(dir) {
 }
 
 const assertExercised = (child, label) => {
-  const detail = `${label}:\n${child.out.slice(-1500)}`;
+  const detail = `${label}: signal=${child.signal} spawnError=${child.spawnError}\n`
+    + `stdout tail:\n${child.out.slice(-1500)}\nstderr tail:\n${(child.err || "").slice(-1500)}`;
   assert.equal(child.status, 0, `the child exits with code 0, ${detail}`);
   assert.equal(child.fail, 0, `no child test fails, ${detail}`);
   assert.equal(child.skipped, 0, `no child test is skipped, so the headless browser ran, ${detail}`);

@@ -6,6 +6,8 @@ const { spawn } = require('node:child_process');
 
 const MAC_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const START_TIMEOUT_MS = 15000;
+// Limit for one start attempt (target, socket, first CDP commands). A hung Chrome is killed and started again once.
+const START_COMMAND_TIMEOUT_MS = 20000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function findBrowser(options) {
@@ -98,6 +100,8 @@ async function launchOnce(exe) {
 }
 
 // Launches Chrome one process at a time per machine. A dead start gets one more launch with a new profile.
+// The lock stays held on success: the caller releases it after the first CDP commands succeed,
+// so a second Chrome does not start while this one is still loading under CPU load.
 async function launchChrome(exe) {
   await acquireLaunchLock();
   try {
@@ -110,8 +114,9 @@ async function launchChrome(exe) {
         throw new Error(`${second.message} (first launch failed: ${first.message})`);
       }
     }
-  } finally {
+  } catch (err) {
     releaseLaunchLock();
+    throw err;
   }
 }
 
@@ -120,9 +125,11 @@ const KEYS = {
   ArrowUp: { code: 'ArrowUp', vk: 38 }, ArrowDown: { code: 'ArrowDown', vk: 40 },
 };
 
-async function openPage(url, options = {}) {
+async function openPageOnce(url, options) {
   const exe = findBrowser(options);
   const { proc, dir, exited, port } = await launchChrome(exe);
+  let lockHeld = true;
+  const unlock = () => { if (lockHeld) { lockHeld = false; releaseLaunchLock(); } };
   let ws = null; let closing = null;
   const pending = new Map(); const seen = []; const blockedIds = new Set(); const urlById = new Map(); let nextId = 1;
   const commandTimeoutMs = options.commandTimeoutMs || 15000;
@@ -142,6 +149,7 @@ async function openPage(url, options = {}) {
   function close() {
     if (closing) return closing;
     closing = (async () => {
+      unlock();
       for (const [sig, handler] of signalHandlers) process.off(sig, handler);
       process.off('exit', onExit);
       try { if (ws) ws.close(); } catch {}
@@ -153,6 +161,7 @@ async function openPage(url, options = {}) {
     return closing;
   }
 
+  let starting = true;
   try {
     const res = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT', signal: AbortSignal.timeout(START_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`cannot open page target: HTTP ${res.status}`);
@@ -182,9 +191,12 @@ async function openPage(url, options = {}) {
         reject: (e) => { clearTimeout(timer); reject(e); } });
       try { ws.send(JSON.stringify({ id, method, params })); } catch (e) { pending.get(id).reject(e); pending.delete(id); }
     });
-    for (const domain of ['Page', 'Runtime', 'Network']) await send(`${domain}.enable`);
+    // Each start attempt has its own limit. A hung Chrome is replaced by openPage.
+    for (const domain of ['Page', 'Runtime', 'Network']) await send(`${domain}.enable`, {}, START_COMMAND_TIMEOUT_MS);
+    // The lock covers the first CDP round trips only. The page load needs no lock.
+    unlock(); starting = false;
     const loaded = new Promise((resolve, reject) => {
-      onLoad = resolve; setTimeout(() => reject(new Error('page load timeout')), START_TIMEOUT_MS).unref();
+      onLoad = resolve; setTimeout(() => reject(new Error('page load timeout')), START_COMMAND_TIMEOUT_MS).unref();
     });
     if (options.initScript) await send('Page.addScriptToEvaluateOnNewDocument', { source: options.initScript });
     await send('Page.navigate', { url });
@@ -230,7 +242,22 @@ async function openPage(url, options = {}) {
       blocked: () => [...blockedIds].map((id) => urlById.get(id)), close, browser: exe, pid: proc.pid };
   } catch (err) {
     await close();
+    if (starting) err.startPhase = true;
     throw err;
+  }
+}
+
+// A start under load can hang in the first CDP commands. One new Chrome replaces the hung one.
+async function openPage(url, options = {}) {
+  try {
+    return await openPageOnce(url, options);
+  } catch (first) {
+    if (!first.startPhase) throw first;
+    try {
+      return await openPageOnce(url, options);
+    } catch (second) {
+      throw new Error(`${second.message} (first start failed: ${first.message})`);
+    }
   }
 }
 
