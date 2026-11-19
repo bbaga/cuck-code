@@ -375,49 +375,28 @@
     return !!type && type.session === "fresh";
   }
 
-  // Graph layout (pure). `graph` is the API graph view: { start, nodes: {id: {type,
-  // phase}}, edges: [{from, to, interactions, kinds?}] }.
-  // Column = longest path from the start node over create-effect edges (start = 0;
-  // a node no create edge reaches stays in column 0). Row = the node's order in the
-  // graph inside its column. Forward edges run between the boxes, an edge that skips
-  // columns goes over the top, a back edge (to the same or an earlier column) goes
-  // out to the right of its box, under all boxes and up into the bottom of the target.
-  // An edge whose interactions are all complete-triggered is dashed.
+  // Graph layout (pure). `graph` is the API graph view: { nodes: {id: {type, runner, ...}},
+  // relations: [{from, to, kind, label, dashed?}], columns: {id: n}, rows: {id: n} }.
+  // The router decides the column and the row of each node and the relations to draw.
+  // This function reads no phase, type name or node id. Without `columns` (an old
+  // server answer) every node is in column 0, in the order of graph.nodes.
+  // Forward edges run between the boxes, a relation that skips columns goes over the
+  // top, a back edge (to the same or an earlier column) goes out to the right of its
+  // box, under all boxes and up into the bottom of the target.
   const GRAPH_GEOMETRY = { nodeWidth: 190, nodeHeight: 68, columnGap: 190, rowGap: 26, margin: 20, lane: 17 };
 
   function layoutGraph(graph) {
     const ids = graph && graph.nodes ? Object.keys(graph.nodes) : [];
     if (!ids.length) return { nodes: [], edges: [], width: 0, height: 0 };
     const G = GRAPH_GEOMETRY;
-    const edges = Array.isArray(graph.edges) ? graph.edges : [];
-    const kindOf = (edge, name) => {
-      const k = edge.kinds && edge.kinds[name];
-      return k || { effect: name === "start" ? "create" : null, trigger: null };
-    };
-    const isCreate = (edge) => (edge.interactions || []).some((n) => kindOf(edge, n).effect === "create");
-    const isComplete = (edge) => (edge.interactions || []).length > 0
-      && edge.interactions.every((n) => kindOf(edge, n).trigger === "complete");
-
-    // Longest path over create edges, relaxed at most ids.length times so a cycle ends.
-    const col = {};
-    const start = graph.start && graph.nodes[graph.start] ? graph.start : ids[0];
-    col[start] = 0;
-    for (let pass = 0; pass < ids.length; pass++) {
-      let changed = false;
-      for (const edge of edges) {
-        if (!isCreate(edge) || col[edge.from] === undefined || !graph.nodes[edge.to]) continue;
-        const next = col[edge.from] + 1;
-        if (edge.to === start || next > ids.length - 1) continue;
-        if (col[edge.to] === undefined || col[edge.to] < next) { col[edge.to] = next; changed = true; }
-      }
-      if (!changed) break;
-    }
-    const rowsInColumn = {};
+    const edges = Array.isArray(graph.relations) ? graph.relations : [];
+    const columns = graph.columns || {}, rowsOf = graph.rows || {};
+    const nextRow = {};
     const nodes = ids.map((id) => {
-      const column = col[id] === undefined ? 0 : col[id];
-      const row = rowsInColumn[column] = (rowsInColumn[column] === undefined ? 0 : rowsInColumn[column] + 1);
-      const info = graph.nodes[id] || {};
-      return { id, type: info.type, phase: info.phase, column, row, width: G.nodeWidth, height: G.nodeHeight };
+      const column = Number.isInteger(columns[id]) ? columns[id] : 0;
+      const row = Number.isInteger(rowsOf[id]) ? rowsOf[id] : (nextRow[column] || 0);
+      nextRow[column] = Math.max(nextRow[column] || 0, row + 1);
+      return { ...graph.nodes[id], id, column, row, width: G.nodeWidth, height: G.nodeHeight };
     });
     const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
 
@@ -439,8 +418,8 @@
     let maxX = Math.max(...nodes.map((n) => n.x + n.width));
     const finish = (item, points, path, labelX, labelY) => {
       for (const [x] of points) maxX = Math.max(maxX, x);
-      out[item.index] = { from: item.edge.from, to: item.edge.to, label: (item.edge.interactions || []).join(", "),
-        dashed: isComplete(item.edge), path, points, labelX, labelY };
+      out[item.index] = { from: item.edge.from, to: item.edge.to, kind: item.edge.kind, label: item.edge.label || "",
+        dashed: item.edge.dashed === true, path, points, labelX, labelY };
     };
     const pathOf = (pts) => "M" + pts.map(([x, y]) => x + " " + y).join(" L");
 
@@ -494,12 +473,23 @@
   // in file order: { id, type, title, maxContext }. Empty for a pipeline that did not resolve.
   function nodeRowsFromResolved(resolved) {
     if (!resolved || typeof resolved.nodes !== "object" || resolved.nodes === null) return [];
-    return Object.entries(resolved.nodes).map(([id, node]) => ({
-      id,
-      type: node.type,
-      title: id + " (" + node.type + ")",
-      maxContext: !isFreshSessionNode(resolved, id),
-    }));
+    return Object.entries(resolved.nodes).map(([id, node]) => {
+      const type = resolved.types && resolved.types[node.type];
+      const row = { id, type: node.type, title: id + " (" + node.type + ")", maxContext: !isFreshSessionNode(resolved, id) };
+      return type && type.runner === "script" ? scriptRow(row, node) : row;
+    });
+  }
+
+  // A script node has one read-only row: no harness, model or effort, no max
+  // context. Only its time limit can be set. `node` carries scripts, required, checkout.
+  function scriptRow(row, node) {
+    return { ...row, maxContext: false, runner: "script", required: node.required === true,
+      checkout: node.checkout || "worktree", scripts: Array.isArray(node.scripts) ? node.scripts : [] };
+  }
+
+  // The working directory of a script as shown: "<run root>/<cwd>", or "<run root>".
+  function scriptCwdText(cwd) {
+    return !cwd || cwd === "." ? "<run root>" : "<run root>/" + cwd;
   }
 
   // Form rows for a line, from the graph view the API sends (nodes and freshNodes):
@@ -507,9 +497,60 @@
   function nodeRowsFromGraphView(graph) {
     if (!graph || typeof graph.nodes !== "object" || graph.nodes === null) return [];
     const fresh = new Set(Array.isArray(graph.freshNodes) ? graph.freshNodes : []);
-    return Object.entries(graph.nodes).map(([id, node]) => ({
-      id, type: node.type, title: id + " (" + node.type + ")", maxContext: !fresh.has(id),
-    }));
+    return Object.entries(graph.nodes).map(([id, node]) => {
+      const row = { id, type: node.type, title: id + " (" + node.type + ")", maxContext: !fresh.has(id) };
+      return node.runner === "script" ? scriptRow(row, node) : row;
+    });
+  }
+
+  // Relation kinds the graph draws, in legend order. A hidden kind removes only its
+  // edges and labels from the picture; no node moves.
+  const GRAPH_KINDS = [
+    { kind: "interaction", text: "Interaction" }, { kind: "checks", text: "Checks" },
+    { kind: "after", text: "After" }, { kind: "accepted-work", text: "Accepted work" },
+    { kind: "required", text: "Required" },
+  ];
+  const GRAPH_KINDS_KEY = "pipe-graph-kinds";
+
+  // The visible kinds from storage: { kind: boolean }, all on by default.
+  function loadGraphKinds(storage) {
+    let saved = {};
+    try { saved = JSON.parse(storage.getItem(GRAPH_KINDS_KEY)) || {}; } catch (e) { saved = {}; }
+    return Object.fromEntries(GRAPH_KINDS.map((k) => [k.kind, saved[k.kind] !== false]));
+  }
+
+  // The legend with one checkbox per kind. `onChange(kinds)` runs after each change.
+  function buildKindLegend(doc, kinds, storage, onChange) {
+    const box = doc.createElement("fieldset");
+    box.className = "pgLegend";
+    const title = doc.createElement("legend");
+    title.textContent = "Show relations";
+    box.appendChild(title);
+    for (const { kind, text } of GRAPH_KINDS) {
+      const label = doc.createElement("label");
+      label.className = "pgKind " + kind;
+      const input = doc.createElement("input");
+      input.type = "checkbox";
+      input.dataset.kind = kind;
+      input.checked = kinds[kind] !== false;
+      input.addEventListener("change", () => {
+        kinds[kind] = input.checked;
+        try { storage.setItem(GRAPH_KINDS_KEY, JSON.stringify(kinds)); } catch (e) { /* storage is optional */ }
+        onChange(kinds);
+      });
+      const swatch = doc.createElement("span");
+      swatch.className = "pgSwatch";
+      swatch.setAttribute("aria-hidden", "true");
+      label.append(input, swatch, " " + text);
+      box.appendChild(label);
+    }
+    return box;
+  }
+
+  // The second line of a script node box: "<type> · <n> scripts".
+  function scriptNodeLine(node) {
+    const n = Array.isArray(node.scripts) ? node.scripts.length : 0;
+    return (node.type || "") + " · " + n + (n === 1 ? " script" : " scripts");
   }
 
   // One-line settings summary of a node box: harness and model, from the effective settings.
@@ -519,9 +560,9 @@
     return text.length > max ? text.slice(0, max - 1) + "…" : text;
   }
 
-  // The same edges as plain text, one line each: "planner -> backend-impl: start, feedback".
+  // The same relations as plain text, one line each: "planner -> backend-impl: start, feedback".
   function edgeTextLines(graph) {
-    return ((graph && graph.edges) || []).map((e) => e.from + " -> " + e.to + ": " + (e.interactions || []).join(", "));
+    return ((graph && graph.relations) || []).map((e) => e.from + " -> " + e.to + ": " + (e.label || e.kind));
   }
 
   // The `nodeSettings` request body from form values { <nodeId>: {harness, model,
@@ -601,6 +642,12 @@
     const chipText = validator ? "val" : (worker.persona || "backend");
     const chip = measureText(chipText.toUpperCase(), NODE_FONTS.chip)
       + chipText.length * 0.4 + 12 + 6;
+    if (worker.runner === "script") {
+      const script = [measureText("\u2699 " + String(worker.name || ""), NODE_FONTS.name),
+        measureText(scriptSummary(worker), NODE_FONTS.chip), 10];
+      if (worker.status === "running") script.push(measureText("Stop", NODE_FONTS.stop) + 16 + 4);
+      return Math.ceil(script.reduce((sum, w) => sum + w, 0) + gap * (script.length - 1) + 20 + 2 + safety);
+    }
     const parts = [chip, measureText(String(worker.name || ""), NODE_FONTS.name)];
     const cfg = [worker.harness, worker.model, worker.effort].filter(Boolean).join(" · ");
     if (cfg) parts.push(measureText(cfg, NODE_FONTS.cfg));
@@ -635,56 +682,104 @@
     return result;
   }
 
-  function buildGraphLanes(workers, hideFailed) {
-    const list = Array.isArray(workers) ? workers : [];
+  // The column of a worker comes from the declared relations (graph.columns),
+  // never from its role. Without them (an old server answer) every worker is
+  // in column 1. A node that the graph does not know has no column.
+  function graphColumnOf(worker, graph) {
+    const columns = graph && graph.columns && typeof graph.columns === "object" ? graph.columns : null;
+    if (!columns) return 1;
+    return Number.isInteger(columns[worker.node]) ? columns[worker.node] : null;
+  }
+
+  // Lanes come from instance relations only: a worker with a source (validates)
+  // joins the lane of its source; an instance that merged others goes in a block
+  // after the last lane it merged; every other worker starts a lane (creation order).
+  // Result: { lanes: [{ startRow, rowCount, entries }], placed, columns, unplaced, totalRows }.
+  // Each entry is { worker, column, row, lane }.
+  function buildGraphLanes(workers, hideFailed, graph) {
+    const list = (Array.isArray(workers) ? workers : []).filter(Boolean);
     const mergedIds = integrationMergedIds(list);
-    const implementors = list.filter((w) => w && (w.role || "implementor") !== "validator");
-    const validators = list.filter((w) => w && (w.role || "implementor") === "validator"
-      && w.kind !== "integration" && !shouldHideValidator(w, hideFailed));
-    const allIntegrations = list.filter((w) => shouldShowIntegrationValidator(w, hideFailed));
-    const assigned = new Set(implementors.map((w) => w.id));
-    const lanes = implementors.map((worker) => {
-      const grouped = validators.filter((v) => v.validates === worker.id);
-      grouped.forEach((v) => assigned.add(v.id));
-      return { worker, validators: grouped, rowCount: Math.max(1, grouped.length) };
-    });
-    const orphans = validators.filter((v) => !assigned.has(v.id));
-    // An integration follows the last lane of the implementors it merged.
-    const laneOf = new Map(lanes.map((lane, i) => [lane.worker.id, i]));
-    const placed = lanes.map(() => []);
     const unplaced = [];
-    for (const g of allIntegrations) {
-      let anchor = -1;
-      for (const id of mergedIds.get(g.id) || []) {
-        if (laneOf.has(id)) anchor = Math.max(anchor, laneOf.get(id));
-      }
-      if (anchor >= 0) placed[anchor].push(g); else unplaced.push(g);
+    const lanable = [];
+    const mergers = [];
+    for (const worker of list) {
+      if (shouldHideValidator(worker, hideFailed)) continue;
+      const column = graphColumnOf(worker, graph);
+      const entry = { worker, column, row: 0, lane: null };
+      if (column === null) unplaced.push(entry);
+      else if (mergedIds.has(worker.id)) mergers.push(entry);
+      else lanable.push(entry);
     }
-    const integrations = [];
-    const integrationRows = [];
-    const integrationAnchors = [];
+    const byId = new Map(lanable.map((e) => [e.worker.id, e]));
+    const rootOf = (entry) => {
+      let current = entry;
+      for (let hops = 0; hops <= lanable.length; hops++) {
+        const next = byId.get(current.worker.validates);
+        if (!next || next === current) return current;
+        current = next;
+      }
+      return current;
+    };
+    const lanes = [];
+    const laneOfRoot = new Map();
+    const laneOfWorker = new Map();
+    for (const entry of lanable) {
+      const root = rootOf(entry);
+      if (!laneOfRoot.has(root)) { laneOfRoot.set(root, lanes.length); lanes.push({ entries: [], block: [] }); }
+      entry.lane = laneOfRoot.get(root);
+      lanes[entry.lane].entries.push(entry);
+      laneOfWorker.set(entry.worker.id, entry.lane);
+    }
+    const tail = [];
+    for (const entry of mergers) {
+      let anchor = -1;
+      for (const id of mergedIds.get(entry.worker.id) || []) {
+        if (laneOfWorker.has(id)) anchor = Math.max(anchor, laneOfWorker.get(id));
+      }
+      entry.lane = anchor >= 0 ? anchor : null;
+      (anchor >= 0 ? lanes[anchor].block : tail).push(entry);
+    }
+    // Entries of one column stack in rows, oldest first. Blocks have one empty row between them.
     let row = 0;
     let first = true;
-    const block = (size) => { if (!first) row++; first = false; const start = row; row += size; return start; };
-    lanes.forEach((lane, index) => {
-      lane.startRow = block(lane.rowCount);
-      // Integrations after one lane stack directly under each other.
-      if (placed[index].length) {
-        const start = block(placed[index].length);
-        placed[index].forEach((g, i) => {
-          integrations.push(g); integrationAnchors.push(index); integrationRows.push(start + i);
-        });
+    const place = (entries) => {
+      if (!first) row++;
+      first = false;
+      const start = row;
+      const counts = new Map();
+      for (const entry of entries) {
+        const n = counts.get(entry.column) || 0;
+        entry.row = start + n;
+        counts.set(entry.column, n + 1);
       }
-    });
-    const orphanStartRow = orphans.length ? row + (lanes.length ? 1 : 0) : null;
-    if (orphans.length) row = orphanStartRow + orphans.length;
-    const integrationStartRow = unplaced.length ? row + (row ? 1 : 0) : null;
-    unplaced.forEach((g, i) => {
-      integrations.push(g); integrationAnchors.push(null); integrationRows.push(integrationStartRow + i);
-    });
-    if (unplaced.length) row = integrationStartRow + unplaced.length;
-    return { lanes, orphans, orphanStartRow, integrations, integrationStartRow, integrationRows,
-      integrationAnchors, totalRows: row };
+      const size = Math.max(0, ...counts.values());
+      row += size;
+      return { start, size };
+    };
+    for (const lane of lanes) {
+      const own = place(lane.entries);
+      lane.startRow = own.start;
+      lane.rowCount = own.size;
+      if (lane.block.length) place(lane.block);
+    }
+    if (tail.length) place(tail);
+    if (unplaced.length) place(unplaced);
+    const placed = [...lanable, ...mergers];
+    const columns = [...new Set(placed.map((e) => e.column))].sort((a, b) => a - b);
+    return { lanes, placed, columns, unplaced, totalRows: row };
+  }
+
+  // The step summary of a script check: "3/3 ✓", "2/3 ✗" or "1/3 …".
+  // The count is the number of passed steps over the number of steps.
+  function scriptSummary(worker) {
+    const results = Array.isArray(worker && worker.checkResults) ? worker.checkResults : [];
+    const steps = worker && worker.scriptSpec && Array.isArray(worker.scriptSpec.steps)
+      ? worker.scriptSpec.steps.length : 0;
+    const total = Math.max(steps, results.length);
+    const passed = results.filter((r) => r && r.status === "pass").length;
+    const failed = worker && worker.verdict === "fail" || results.some((r) => r && r.status === "fail");
+    const mark = failed ? "\u2717" : worker && worker.status === "running" ? "\u2026" : "\u2713";
+    return passed + "/" + total + " " + mark;
   }
 
   function previewSelectionKey(workerId) {
@@ -1222,6 +1317,7 @@
     nodeRowsFromResolved,
     defaultOptionLabels,
     layoutGraph,
+    scriptCwdText, GRAPH_KINDS, GRAPH_KINDS_KEY, loadGraphKinds, buildKindLegend, scriptNodeLine,
     GRAPH_GEOMETRY,
     nodeRowsFromGraphView,
     nodeSummaryText,
@@ -1253,6 +1349,8 @@
     shouldHideValidator,
     shouldShowIntegrationValidator,
     buildGraphLanes,
+    scriptSummary,
+    graphColumnOf,
     attentionIndicator,
     markerState,
     lineMarkerState,

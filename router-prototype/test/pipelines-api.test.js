@@ -71,10 +71,15 @@ test("graphPreview, listing, rename and the managed writer", () => {
   const cat = catalog(managedDir);
   const resolved = resolvePipelineDefinition("default", cat);
   const g = api.graphPreview(resolved);
-  assert.deepEqual(g.nodes[0], { id: "planner", type: "planner", phase: "planner" });
+  assert.deepEqual(g.nodes[0], { id: "planner", type: "planner", phase: "planner", runner: "agent", checks: [], after: [],
+    workspace: "coordinator", requires: [] });
   assert.ok(g.nodes.find((n) => n.id === "backend-impl" && n.phase === "implementor"));
   assert.deepEqual(g.edges.find((e) => e.from === "integration"), { from: "integration", to: "planner", interactions: ["report"] });
   assert.equal(api.graphPreview(null), null);
+  assert.deepEqual(g.columns, { planner: 0, "backend-impl": 1, "frontend-impl": 1, "backend-val": 2,
+    "frontend-val": 2, integration: 3 });
+  assert.equal(g.rows.planner, 0);
+  assert.ok(g.relations.some((r) => r.kind === "checks" && r.label === "checks"));
   assert.deepEqual(g.kinds.start, { effect: "create", trigger: "request" });
   assert.equal(g.kinds.report.trigger, "complete");
   assert.ok(g.edges.every((e) => e.interactions.every((n) => g.kinds[n])));
@@ -387,4 +392,36 @@ test("router: GET node type and interaction text", async () => {
     // a pipeline can still be called node-types
     assert.equal((await call("GET", "/api/pipelines/node-types")).status, 404);
   });
+});
+
+const LOOP = (name) => mine(name).replace("backend-val:   { type: backend-validator, checks: [backend-impl] }",
+  "backend-val:   { type: backend-validator, checks: [backend-impl], after: [frontend-val] }")
+  .replace("frontend-val:  { type: frontend-validator, checks: [frontend-impl] }",
+    "frontend-val:  { type: frontend-validator, checks: [frontend-impl], after: [backend-val] }");
+
+test("router: a pipeline with a loop is refused by validate", async () => {
+  await withRouter(async ({ call }) => {
+    const r = await call("POST", "/api/pipelines/validate", { text: LOOP("looped") });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.graph, null);
+    assert.ok(r.body.errors.some((e) => e.rule === "R13" && /^ordering relations form a loop: /.test(e.message)),
+      JSON.stringify(r.body.errors));
+  });
+});
+
+test("router: POST /api/lines refuses a pipeline with a loop", async () => {
+  const lines = tmp();
+  const dir = path.join(lines, "plugins", "pipelines");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "looped.yaml"), LOOP("looped"));
+  const router = await startRouter(lines);
+  try {
+    const res = await fetch(router.base + "/api/lines", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "x", pipelineName: "looped" }) });
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.rules.some((e) => e.rule === "R13"), JSON.stringify(body));
+  } finally {
+    await stopRouter(router);
+  }
 });

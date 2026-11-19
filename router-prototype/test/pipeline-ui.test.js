@@ -721,71 +721,78 @@ test("index.html binds every pipelineUI helper its script uses", () => {
   assert.deepEqual(unbound, []);
 });
 
-test("implementor without validators still receives one graph row", () => {
-  const result=pipelineUiModule.buildGraphLanes([{id:"solo"}]);
-  assert.deepEqual(result.lanes.map(l=>({id:l.worker.id,startRow:l.startRow,rowCount:l.rowCount})),[{id:"solo",startRow:0,rowCount:1}]);
-  assert.equal(result.totalRows,1);
+// ---- Line graph: placement from declared relations ----
+
+const CI_GRAPH = { nodes: { "backend-impl": {}, ci: {}, "backend-val": {}, integration: {} },
+  columns: { planner: 0, "backend-impl": 1, ci: 2, "backend-val": 3, integration: 4 } };
+const ciWorkers = () => [
+  { id: "i1", node: "backend-impl" },
+  { id: "c1", node: "ci", role: "validator", runner: "script", validates: "i1", verdict: "pass" },
+  { id: "v1", node: "backend-val", role: "validator", validates: "i1", afterChecks: ["c1"] },
+  { id: "g1", node: "integration", role: "validator", kind: "integration", merged: ["i1"] },
+];
+const placement = (r) => r.placed.map((e) => [e.worker.id, e.column, e.row]);
+
+test("cuck-ci: implementor, check, validator and integration share one lane in columns 1 to 4", () => {
+  const r = pipelineUiModule.buildGraphLanes(ciWorkers(), false, CI_GRAPH);
+  assert.deepEqual(r.columns, [1, 2, 3, 4]);
+  assert.deepEqual(placement(r), [["i1", 1, 0], ["c1", 2, 0], ["v1", 3, 0], ["g1", 4, 2]]);
+  assert.equal(r.lanes.length, 1);
 });
 
-test("multiple integration validators preserve insertion order in final section", () => {
-  const result=pipelineUiModule.buildGraphLanes([
-    {id:"impl"}, {id:"int-a",role:"validator",kind:"integration"},
-    {id:"int-b",role:"validator",kind:"integration"},
-  ]);
-  assert.deepEqual(result.integrations.map(v=>v.id),["int-a","int-b"]);
-  assert.equal(result.integrationStartRow,2);
+test("a column without a worker collapses out of the result", () => {
+  const r = pipelineUiModule.buildGraphLanes(ciWorkers().filter((w) => w.id !== "c1"), false, CI_GRAPH);
+  assert.deepEqual(r.columns, [1, 3, 4]);
 });
 
-test("failed standard validators are filtered before row allocation and section offsets", () => {
-  // The integrations come first in the list: with no earlier validator they cannot be placed and stay at the bottom.
-  const records=[{id:"int-a",role:"validator",kind:"integration"},{id:"int-b",role:"validator",kind:"integration"},
-    {id:"a"},{id:"bad",role:"validator",validates:"a",status:"completed",verdict:"fail"},
-    {id:"bad-2",role:"validator",validates:"a",status:"completed",verdict:"fail"},{id:"b"},{id:"b-validator",role:"validator",validates:"b"},
-    {id:"orphan",role:"validator",validates:"absent"}];
-  const hidden=pipelineUiModule.buildGraphLanes(records,true);
-  assert.deepEqual(hidden.lanes.map(l=>({id:l.worker.id,startRow:l.startRow,rowCount:l.rowCount})),[
-    {id:"a",startRow:0,rowCount:1},{id:"b",startRow:2,rowCount:1}]);
-  assert.deepEqual(hidden.lanes[0].validators.map(v=>v.id),[]);
-  assert.deepEqual(hidden.orphans.map(v=>v.id),["orphan"]);
-  assert.equal(hidden.orphanStartRow,4); assert.equal(hidden.integrationStartRow,6); assert.equal(hidden.totalRows,8);
-  const visible=pipelineUiModule.buildGraphLanes(records,false);
-  assert.deepEqual(visible.lanes.map(l=>({id:l.worker.id,startRow:l.startRow,rowCount:l.rowCount})),[
-    {id:"a",startRow:0,rowCount:2},{id:"b",startRow:3,rowCount:1}]);
-  assert.deepEqual(visible.lanes[0].validators.map(v=>v.id),["bad","bad-2"]);
-  assert.equal(visible.orphanStartRow,5); assert.equal(visible.integrationStartRow,7); assert.equal(visible.totalRows,9);
+test("renaming every node id keeps the placement", () => {
+  const rename = (id) => "x-" + id.toUpperCase();
+  const graph = { nodes: Object.fromEntries(Object.keys(CI_GRAPH.nodes).map((k) => [rename(k), {}])),
+    columns: Object.fromEntries(Object.entries(CI_GRAPH.columns).map(([k, c]) => [rename(k), c])) };
+  const workers = ciWorkers().map((w) => ({ ...w, node: rename(w.node) }));
+  const renamed = pipelineUiModule.buildGraphLanes(workers, false, graph);
+  assert.deepEqual(placement(renamed), placement(pipelineUiModule.buildGraphLanes(ciWorkers(), false, CI_GRAPH)));
 });
 
-test("buildGraphLanes groups in implementor order and allocates validator rows", () => {
-  assert.deepEqual(pipelineUiModule.buildGraphLanes([]).totalRows, 0);
-  const records = [
-    {id:"v2",role:"validator",validates:"a"}, {id:"b"}, {id:"vB",role:"validator",validates:"b"},
-    {id:"a"}, {id:"v1",role:"validator",validates:"a"}, {id:"orphan",role:"validator",validates:"missing"},
-  ];
-  const before = JSON.stringify(records);
-  const lanes = pipelineUiModule.buildGraphLanes(records);
-  assert.deepEqual(lanes.lanes.map(x=>x.worker.id), ["b","a"]);
-  assert.deepEqual(lanes.lanes.map(x=>x.validators.map(v=>v.id)), [["vB"],["v2","v1"]]);
-  assert.deepEqual(lanes.lanes.map(x=>x.rowCount), [1,2]);
-  assert.deepEqual(lanes.lanes.map(x=>x.startRow), [0,2]);
-  assert.deepEqual(lanes.orphans.map(v=>v.id), ["orphan"]);
-  assert.equal(lanes.totalRows, 6);
-  assert.equal(JSON.stringify(records), before);
+test("a worker of an unknown node goes to unplaced", () => {
+  const workers = [...ciWorkers(), { id: "old", node: "gone" }, { id: "older" }];
+  const r = pipelineUiModule.buildGraphLanes(workers, false, CI_GRAPH);
+  assert.deepEqual(r.unplaced.map((e) => [e.worker.id, e.column]), [["old", null], ["older", null]]);
+  assert.deepEqual(r.unplaced.map((e) => e.row), [4, 5]);
+  assert.equal(r.placed.some((e) => e.worker.id === "old"), false);
 });
 
-test("buildGraphLanes keeps unvalidated and integration workers separate and filters failures before rows", () => {
-  const records = [
-    {id:"impl"}, {id:"bad",role:"validator",validates:"impl",status:"failed"},
-    {id:"unknown",role:"validator",validates:"absent"},
-    {id:"int",role:"validator",kind:"integration",status:"running"},
-  ];
-  const hidden = pipelineUiModule.buildGraphLanes(records, true);
-  assert.deepEqual(hidden.lanes.map(l=>[l.startRow,l.rowCount]), [[0,1]]);
-  assert.deepEqual(hidden.orphans.map(v=>v.id), ["unknown"]);
-  assert.deepEqual(hidden.integrations.map(v=>v.id), ["int"]);
-  assert.equal(hidden.totalRows, 5);
-  const shown = pipelineUiModule.buildGraphLanes(records, false);
-  assert.deepEqual(shown.lanes[0].validators.map(v=>v.id), ["bad"]);
-  assert.equal(shown.lanes[0].rowCount, 1);
+test("without graph.columns every worker is in column 1", () => {
+  const r = pipelineUiModule.buildGraphLanes(ciWorkers(), false, { nodes: {} });
+  assert.deepEqual(r.columns, [1]);
+  assert.deepEqual(pipelineUiModule.buildGraphLanes([{ id: "a" }]).placed.map((e) => e.column), [1]);
+});
+
+test("instances of one node in one lane stack in rows, oldest first", () => {
+  const workers = ciWorkers().slice(0, 2);
+  workers.push({ ...workers[1], id: "c2" });
+  const r = pipelineUiModule.buildGraphLanes(workers, false, CI_GRAPH);
+  assert.deepEqual(placement(r), [["i1", 1, 0], ["c1", 2, 0], ["c2", 2, 1]]);
+  assert.equal(r.lanes[0].rowCount, 2);
+});
+
+test("the failed filter hides a failed script check", () => {
+  const workers = ciWorkers();
+  workers[1].verdict = "fail";
+  const shown = pipelineUiModule.buildGraphLanes(workers, false, CI_GRAPH);
+  assert.ok(shown.placed.some((e) => e.worker.id === "c1"));
+  const hidden = pipelineUiModule.buildGraphLanes(workers, true, CI_GRAPH);
+  assert.equal(hidden.placed.some((e) => e.worker.id === "c1"), false);
+});
+
+test("scriptSummary shows passed over total with a mark for pass, fail and running", () => {
+  const steps = [{}, {}, {}];
+  const results = (...statuses) => statuses.map((status, i) => ({ index: i + 1, status }));
+  const summary = (w) => pipelineUiModule.scriptSummary({ scriptSpec: { steps }, ...w });
+  assert.equal(summary({ status: "completed", verdict: "pass", checkResults: results("pass", "pass", "pass") }), "3/3 \u2713");
+  assert.equal(summary({ status: "completed", verdict: "fail", checkResults: results("pass", "pass", "fail") }), "2/3 \u2717");
+  assert.equal(summary({ status: "running", checkResults: results("pass") }), "1/3 \u2026");
+  assert.equal(summary({ status: "running" }), "0/3 \u2026");
 });
 
 // ---- D4: create panel helpers ----
@@ -863,19 +870,17 @@ test("D4 create body and picker helpers", () => {
 const { graphView: viewOf } = require("../line-graph");
 const layoutOf = (name) => pipelineUiModule.layoutGraph(viewOf(resolvedBuiltIn(name)));
 const REVIEW_VIEW = (() => {
-  const create = { start: { effect: "create", trigger: "request" } };
-  const rep = { report: { effect: "deliver", trigger: "complete" } };
-  const edge = (from, to, interactions, kinds) => ({ from, to, interactions, kinds });
+  const rel = (from, to, label, dashed) => ({ from, to, kind: "interaction", label, ordering: !dashed, dashed });
   return {
     name: "review-gate", start: "planner",
     nodes: { planner: { type: "planner" }, A: { type: "implementor" }, B: { type: "validator" } },
-    edges: [edge("planner", "A", ["start"], create), edge("A", "B", ["start"], create),
-      edge("planner", "B", ["start"], create), edge("B", "planner", ["report"], rep),
-      edge("A", "planner", ["report"], rep)],
+    relations: [rel("planner", "A", "start"), rel("A", "B", "start"), rel("planner", "B", "start"),
+      rel("B", "planner", "report", true), rel("A", "planner", "report", true)],
+    columns: { planner: 0, A: 1, B: 2 }, rows: { planner: 0, A: 0, B: 0 },
   };
 })();
 
-test("D5 layout: default has two columns, one row per node in file order, one edge each", () => {
+test("D5 layout: default places nodes by the server columns and rows, one path per relation", () => {
   const view = viewOf(resolvedBuiltIn("default"));
   const g = pipelineUiModule.layoutGraph(view);
   const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
@@ -883,15 +888,16 @@ test("D5 layout: default has two columns, one row per node in file order, one ed
   assert.equal(by.planner.column, 0);
   assert.equal(by.planner.row, 0);
   assert.deepEqual(["backend-impl", "frontend-impl", "backend-val", "frontend-val", "integration"]
-    .map((id) => [by[id].column, by[id].row]), [[1, 0], [1, 1], [1, 2], [1, 3], [1, 4]]);
+    .map((id) => [by[id].column, by[id].row]), [[1, 0], [1, 1], [2, 0], [2, 1], [3, 0]]);
+  for (const n of g.nodes) assert.deepEqual([n.column, n.row], [view.columns[n.id], view.rows[n.id]], n.id);
   assert.equal(by["backend-impl"].type, "backend-implementor");
   assert.equal(by["backend-impl"].phase, "implementor");
-  assert.equal(g.edges.length, view.edges.length);
+  assert.equal(g.edges.length, view.relations.length);
   for (const n of g.nodes) assert.ok(n.x >= 0 && n.y >= 0 && n.x + n.width <= g.width && n.y + n.height <= g.height, n.id);
   const dashed = g.edges.filter((e) => e.dashed);
   assert.equal(dashed.length, 5);
   assert.ok(dashed.every((e) => e.to === "planner" && e.label === "report"));
-  const first = g.edges.find((e) => e.from === "planner" && e.to === "backend-impl");
+  const first = g.edges.find((e) => e.from === "planner" && e.to === "backend-impl" && e.kind === "interaction");
   assert.equal(first.label, "start, feedback, accept");
   assert.equal(first.dashed, false);
   for (const e of g.edges) assert.ok(typeof e.path === "string" && e.path.startsWith("M") && Array.isArray(e.points), e.label);
@@ -900,12 +906,12 @@ test("D5 layout: default has two columns, one row per node in file order, one ed
 test("D5 layout: minimal", () => {
   const g = layoutOf("minimal");
   assert.deepEqual(g.nodes.map((n) => [n.id, n.column, n.row]),
-    [["planner", 0, 0], ["impl", 1, 0], ["val", 1, 1], ["integration", 1, 2]]);
-  assert.equal(g.edges.length, 6);
+    [["planner", 0, 0], ["impl", 1, 0], ["val", 2, 0], ["integration", 3, 0]]);
+  assert.equal(g.edges.length, 8);
   assert.deepEqual(g.edges.filter((e) => e.dashed).map((e) => e.from), ["impl", "val", "integration"]);
 });
 
-test("D5 layout: review-gate chain puts B in the third column (longest create path)", () => {
+test("D5 layout: review-gate chain puts B in the third column (the server column)", () => {
   const g = pipelineUiModule.layoutGraph(REVIEW_VIEW);
   assert.deepEqual(g.nodes.map((n) => [n.id, n.column, n.row]), [["planner", 0, 0], ["A", 1, 0], ["B", 2, 0]]);
   const skip = g.edges.find((e) => e.from === "planner" && e.to === "B");
@@ -930,23 +936,17 @@ test("D5 helpers: rows from the graph view, node summary text, edge text", () =>
   assert.equal(pipelineUiModule.nodeSummaryText({ harness: "vibe", model: "x".repeat(60) }, 12).length, 12);
   assert.equal(pipelineUiModule.nodeSummaryText(null), "default model");
   assert.equal(pipelineUiModule.edgeTextLines(view)[0], "planner -> backend-impl: start, feedback, accept");
-  assert.equal(pipelineUiModule.edgeTextLines(view).length, view.edges.length);
+  assert.equal(pipelineUiModule.edgeTextLines(view).length, view.relations.length);
 });
 
-test("D5 layout: pure, tolerant of missing data and create cycles", () => {
+test("D5 layout: pure, tolerant of missing data", () => {
   const before = JSON.stringify(REVIEW_VIEW);
   pipelineUiModule.layoutGraph(REVIEW_VIEW);
   assert.equal(JSON.stringify(REVIEW_VIEW), before);
   assert.deepEqual(pipelineUiModule.layoutGraph(null), { nodes: [], edges: [], width: 0, height: 0 });
-  const cyc = { start: "a", nodes: { a: { type: "t" }, b: { type: "t" } }, edges: [
-    { from: "a", to: "b", interactions: ["start"], kinds: { start: { effect: "create", trigger: "request" } } },
-    { from: "b", to: "a", interactions: ["start"], kinds: { start: { effect: "create", trigger: "request" } } }] };
-  const g = pipelineUiModule.layoutGraph(cyc);
-  assert.deepEqual(g.nodes.map((n) => n.column), [0, 1]);
-  // no kinds: a view from an older server still lays out, with "start" taken as create
-  const old = { start: "a", nodes: { a: { type: "t" }, b: { type: "t" } }, edges: [
-    { from: "a", to: "b", interactions: ["start"] }] };
-  assert.deepEqual(pipelineUiModule.layoutGraph(old).nodes.map((n) => n.column), [0, 1]);
+  // no columns: a view from an older server puts every node in column 0, in node order
+  const old = { nodes: { a: { type: "t" }, b: { type: "t" } }, relations: [{ from: "a", to: "b", kind: "interaction", label: "start" }] };
+  assert.deepEqual(pipelineUiModule.layoutGraph(old).nodes.map((n) => [n.column, n.row]), [[0, 0], [0, 1]]);
 });
 
 test("graph switch: request body", () => {
@@ -1222,4 +1222,67 @@ test("defaultOptionLabels names the real defaults", () => {
   assert.strictEqual(f({ ...d, maxContext: undefined }, "").maxContext, "max ctx");
   assert.deepEqual(f(null, "vibe"),
     { harness: "default", model: "default", effort: "default", maxContext: "max ctx" });
+});
+
+// E1: the layout comes from the server data only.
+const stripped = (view) => JSON.parse(JSON.stringify(view, (k, v) => (k === "phase" ? undefined : v)));
+const geometry = (g) => ({ w: g.width, h: g.height, nodes: g.nodes.map((n) => [n.x, n.y]),
+  edges: g.edges.map((e) => [e.path, e.labelX, e.labelY, e.dashed]) });
+
+test("E1 layout: nodes sit at their column and row, each relation has a path", () => {
+  const view = viewOf(resolvedBuiltIn("default"));
+  const g = pipelineUiModule.layoutGraph(view);
+  const G = pipelineUiModule.GRAPH_GEOMETRY;
+  assert.equal(g.edges.length, view.relations.length);
+  for (const n of g.nodes) {
+    assert.equal(n.x, G.margin + view.columns[n.id] * (G.nodeWidth + G.columnGap), n.id);
+    assert.ok(n.y >= G.margin + view.rows[n.id] * (G.nodeHeight + G.rowGap), n.id);
+  }
+  g.edges.forEach((e, i) => {
+    assert.ok(e.path.startsWith("M"), e.label);
+    assert.deepEqual([e.from, e.to, e.kind, e.label], [view.relations[i].from, view.relations[i].to,
+      view.relations[i].kind, view.relations[i].label]);
+  });
+});
+
+test("E1 layout: a graph without phase fields gives the same layout", () => {
+  const view = viewOf(resolvedBuiltIn("default"));
+  assert.deepEqual(geometry(pipelineUiModule.layoutGraph(stripped(view))), geometry(pipelineUiModule.layoutGraph(view)));
+});
+
+test("E1 layout: renaming every node id and type keeps the geometry", () => {
+  const view = viewOf(resolvedBuiltIn("default"));
+  const rename = (id) => "n-" + Object.keys(view.nodes).indexOf(id);
+  const copy = {
+    nodes: Object.fromEntries(Object.entries(view.nodes).map(([id, n]) => [rename(id), { ...n, type: "type-" + rename(id) }])),
+    relations: view.relations.map((r) => ({ ...r, from: rename(r.from), to: rename(r.to) })),
+    columns: Object.fromEntries(Object.entries(view.columns).map(([id, c]) => [rename(id), c])),
+    rows: Object.fromEntries(Object.entries(view.rows).map(([id, c]) => [rename(id), c])),
+  };
+  assert.deepEqual(geometry(pipelineUiModule.layoutGraph(copy)), geometry(pipelineUiModule.layoutGraph(view)));
+});
+
+test("E1 script row: read-only, no harness controls, only timeLimit is sent", () => {
+  const u = pipelineUiModule;
+  const view = { nodes: { ci: { type: "script-check", runner: "script", required: true, checkout: "clean",
+    scripts: [{ name: "unit", run: "npm test", cwd: "." }] }, impl: { type: "impl", runner: "agent" } }, freshNodes: ["ci"] };
+  const [ci, impl] = u.nodeRowsFromGraphView(view);
+  assert.deepEqual([ci.runner, ci.required, ci.checkout, ci.maxContext, ci.scripts.length], ["script", true, "clean", false, 1]);
+  assert.equal(impl.runner, undefined);
+  assert.equal(u.scriptCwdText("."), "<run root>");
+  assert.equal(u.scriptCwdText(undefined), "<run root>");
+  assert.equal(u.scriptCwdText("router-prototype"), "<run root>/router-prototype");
+  assert.equal(u.scriptNodeLine({ type: "script-check", scripts: [{}, {}, {}] }), "script-check · 3 scripts");
+  assert.deepEqual(u.buildNodeSettingsPayload({ ci: { timeLimit: 900 } }), { ci: { timeLimit: 900 } });
+  assert.equal(u.buildNodeSettingsPayload({ ci: { timeLimit: "" } }), null);
+});
+
+test("E1 kinds: all on by default, the stored choice is read back", () => {
+  const u = pipelineUiModule;
+  const store = (value) => ({ getItem: () => value });
+  assert.ok(Object.values(u.loadGraphKinds(store(null))).every((v) => v === true));
+  assert.equal(u.loadGraphKinds(store("not json")).after, true);
+  const kinds = u.loadGraphKinds(store(JSON.stringify({ checks: false })));
+  assert.deepEqual([kinds.checks, kinds.after], [false, true]);
+  assert.deepEqual(u.GRAPH_KINDS.map((k) => k.kind), ["interaction", "checks", "after", "accepted-work", "required"]);
 });

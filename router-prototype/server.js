@@ -23,7 +23,8 @@ const HARNESS_SDK = bootHarnesses({
   runCommand: (argv, options) => runProbe(argv, options && options.timeoutMs),
 });
 const { EFFORT_LEVELS, validateNodeSettingsForNode, defaultNodeSettingsFor,
-  probeResultFor } = require("./pipeline-config");
+  probeResultFor, resolveNodeSettings } = require("./pipeline-config");
+const { spawnScriptWorker, checkDir, removeTree } = require("./script-worker");
 const { discoverHarnesses, probeHarness, providerDetail, DISCOVERY_TIMEOUT_MS } = require("./harness-discovery");
 const { ID_RE } = require("./harness-interface");
 const { getHarness } = require("./harness-registry");
@@ -54,7 +55,7 @@ const { recordedPlannerRequest, sourceIdentity, plannerRequest, interactionRepor
 const { scopeFields, scopeSummary } = require("./scope-fields");
 const { render: renderTemplate } = require("./template");
 const { REPO_NAME, sanitizeRepoName, repoNameFromUrl, repoIdentity, adoptLegacyWorkdir,
-  integrationSelection, prepareIntegrationWorkspace } = require("./line-repos");
+  integrationSelection, afterGate, requiredChecksOf, latestCheckRun, checkState, prepareIntegrationWorkspace } = require("./line-repos");
 const { loadTranscript } = require("./transcript-history");
 const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require("./evidence");
@@ -593,14 +594,23 @@ function dashboardStateForLine(line) {
       id: w.id, name: w.name, ...completionFields(w), branch: w.branch, role: w.role,
       node: w.node || null,
       validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
+      runner: w.runner || "agent", checkResults: w.checkResults || [], afterChecks: w.afterChecks || [],
       ...changesetFields(w), lastError: w.lastError || null,
       attention: w.attention === true, needsAttention: w.needsAttention === true,
       humanIntervention: w.humanIntervention === true,
       error: w.error === true, ...compactionFields(w, line),
       ...scopeSummary(w, line.workers),
       ...(w.kind === "integration" ? { merged: integrationMerged(w) } : {}),
+      ...scriptCheckFields(w),
       transcript: serializeWorkerTranscript(w, 50),
     })) };
+}
+
+// What the card of a script check shows: the node, the run mode and the checked commit.
+function scriptCheckFields(w) {
+  if (w.runner !== "script") return {};
+  return { node: w.node || null, scriptSpec: w.scriptSpec || null,
+    checkedCommit: w.checkedCommit || null, worktreePath: w.worktreePath || null };
 }
 
 function broadcast(line, event, data) {
@@ -836,6 +846,30 @@ function overridesOf(w) {
   return { harness: pick(o.harness), model: pick(o.model), effort: pick(o.effort) };
 }
 
+const CHECK_LOG_TAIL_BYTES = 1024 * 1024;
+
+// Removes what a script worker left on disk: a clean tree that is still
+// registered, then its check folder. A failure is logged and does not stop the removal.
+function removeCheckFiles(line, worker) {
+  const source = line.workers.get(worker.validates);
+  const dir = checkDir(line.workdir, worker.id);
+  if (source && fs.existsSync(dir)) {
+    for (const entry of safeReaddir(dir)) {
+      if (!entry.startsWith("run-")) continue;
+      const problem = removeTree(source.worktreePath, path.join(dir, entry, "tree"));
+      if (problem) slog("warn", "worker.remove.check-tree", { lineId: line.id, workerId: worker.id,
+        error: preview(problem, 200) });
+    }
+  }
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch (err) {
+    slog("warn", "worker.remove.check-dir", { lineId: line.id, workerId: worker.id, error: String(err && err.message) });
+  }
+}
+
+function safeReaddir(dir) {
+  try { return fs.readdirSync(dir); } catch { return []; }
+}
+
 function saveLine(line) {
   if (lifecycleTestHooks && lifecycleTestHooks.save) lifecycleTestHooks.save(line);
   if (line.deleted) return false;
@@ -889,7 +923,10 @@ function saveLine(line) {
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
           overrides: overridesOf(w),
           lastError: w.lastError || null,
-          kind: w.kind || "standard", validatedCommit: w.validatedCommit || null })) }));
+          kind: w.kind || "standard", validatedCommit: w.validatedCommit || null,
+          runner: w.runner || null, scriptSpec: w.scriptSpec || null,
+          checkedCommit: w.checkedCommit || null, checkResults: w.checkResults || null,
+          afterChecks: w.afterChecks || [] })) }));
     return true;
   } catch (err) {
     console.error(`saveLine failed for line ${line.id}: ${err && err.message}`);
@@ -1246,6 +1283,10 @@ function runningCount(line) {
 }
 
 function spawnWorker(line, worker, prompt, resume) {
+  if (worker.runner === "script") {
+    return spawnScriptWorker(line, worker, { saveLine, broadcast, workerClosed, appendTranscript,
+      resolveNodeSettings, slog, lineDir: (l) => l.workdir });
+  }
   const invocationId = crypto.randomUUID();
   const runId = worker.runGeneration || 1;
   worker.runGeneration = runId;
@@ -1532,8 +1573,13 @@ function startInstance(line, targetId, body, overrides = {}) {
     if (!impl) return { ok: false, status: 404, error: `no such instance: '${body.source}'` };
     const source = sourceIdentity({ workerId: impl.id, invocationId: impl.lastCompletedInvocationId,
       runId: impl.runGeneration, report: impl.lastRunText });
+    const gate = afterGate(line.workers.values(), graph, targetId, impl);
+    if (!gate.ok) {
+      return { ok: false, status: 409, code: "AFTER_NOT_PASSED", pending: gate.pending,
+        error: `the nodes in 'after' have no PASS on the latest run of '${impl.name}'` };
+    }
     return createSourceChecker(line, targetId, impl, { source, criteria: body.criteria,
-      report: reportForValidation(null, impl.lastRunText), extra });
+      report: reportForValidation(null, impl.lastRunText), extra, afterChecks: gate.passed });
   }
   if (type.workspace === "integration") {
     return createIntegration(line, targetId, { instructions: body.instructions, extra });
@@ -1687,7 +1733,7 @@ function createOwnWorktree(line, nodeId, fields) {
   slog("info", "worker.spawned", { lineId: line.id, workerId: id,
     name: fields.name, persona, branch, repo: repo.name, repoUrl: repo.url || undefined });
   spawnWorker(line, worker, worker.prompt);
-  broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, validates: null, persona, repo: repo.name, ...scopeSummary(worker, line.workers) } });
+  broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, node: worker.node || null, validates: null, persona, repo: repo.name, ...scopeSummary(worker, line.workers) } });
   return { ok: true, worker, response: { workerId: id, branch, worktree: worktreePath, repo: repo.name,
     baseCommit, ...baseFields(worker) } };
 }
@@ -1759,12 +1805,41 @@ function createIntegration(line, nodeId, fields) {
   slog("info", "integration.spawned", { lineId: line.id, validatorId: id,
     commits: manifest.flatMap((r) => r.branches.map((b) => `${r.name}:${b.branch}@${b.sha.slice(0, 12)}`)) });
   broadcast(line, "worker_spawned", { worker: { id, name, branch, status: worker.status,
-    role: worker.role, validates: null, persona: worker.persona, kind: "integration",
+    role: worker.role, node: worker.node || null, validates: null, persona: worker.persona, kind: "integration",
     merged: integrationMerged(worker), ...scopeSummary(worker, line.workers) } });
   spawnWorker(line, worker, worker.prompt);
   return { ok: true, worker, response: { validatorId: id, branch, worktree: root,
     branches: manifest.flatMap((r) => r.branches.map((b) => ({ repo: r.name, branch: b.branch, commit: b.sha }))),
     repos: manifest.map((r) => ({ name: r.name, worktree: r.worktreePath, baseBranch: r.baseBranch, baseCommit: r.baseSha })) } };
+}
+
+// Creates a script check worker. It has no prompt and no model. The script
+// list is copied now: a later graph change does not change a running check.
+function createScriptChecker(line, { id, name, nodeId, implWorker, source, repoName, afterChecks }) {
+  const head = spawnSync("git", ["-C", implWorker.worktreePath, "rev-parse", "HEAD"],
+    { encoding: "utf8", timeout: 10000 });
+  const checkedCommit = head.status === 0 ? head.stdout.trim() : "";
+  if (!/^[a-f0-9]{40}$/i.test(checkedCommit)) {
+    return { ok: false, status: 500, error: `could not read the commit of '${implWorker.name}': ${head.error ? head.error.message : head.stderr}` };
+  }
+  const node = line.graph.nodes[nodeId];
+  const worker = { id, lineId: line.id, name, node: nodeId, runner: "script", harness: "script",
+    model: null, prompt: "", role: "validator", kind: "standard", validates: implWorker.id,
+    validationSource: source, persona: implWorker.persona || "backend", repo: repoName,
+    scriptSpec: { steps: JSON.parse(JSON.stringify(node.scripts || [])),
+      failFast: node.failFast !== false, checkout: node.checkout || "worktree" },
+    checkedCommit, checkResults: [], afterChecks, sessionId: null, worktreePath: implWorker.worktreePath,
+    branch: implWorker.branch, status: "running", stopRequested: false, runGeneration: 1,
+    child: null, transcript: [] };
+  line.workers.set(id, worker);
+  saveLine(line);
+  slog("info", "script-check.spawned", { lineId: line.id, workerId: id, implementorId: implWorker.id });
+  broadcast(line, "worker_spawned", { worker: { id, name, branch: worker.branch,
+    status: worker.status, role: worker.role, validates: worker.validates, persona: worker.persona,
+    runner: "script", checkResults: [], afterChecks, ...scriptCheckFields(worker),
+    ...scopeSummary(worker, line.workers) } });
+  spawnWorker(line, worker, "");
+  return { ok: true, worker, response: { validatorId: id, branch: worker.branch } };
 }
 
 // Creates a validator that checks the work of an implementor in the same
@@ -1774,7 +1849,7 @@ function createIntegration(line, nodeId, fields) {
 function createSourceChecker(line, nodeId, sourceInstance, fields) {
   const fail = (status, error, extra) => ({ ok: false, status, error, ...extra });
   const implWorker = sourceInstance;
-  const { source, criteria, report } = fields;
+  const { source, criteria, report, afterChecks = [] } = fields;
   // The cap counts running workers and validators together. A validator never waits in a queue:
   // the planner gets 409 and calls start again when a slot frees.
   if (runningCount(line) >= WORKER_CAP) {
@@ -1802,16 +1877,19 @@ function createSourceChecker(line, nodeId, sourceInstance, fields) {
         workerId: implWorker.id, total: cs.total, limit: cs.limit });
     }
   }
-  let name = `validator-${implWorker.name}`;
+  const isScript = line.graph.types[line.graph.nodes[nodeId].type].runner === "script";
+  const prefix = isScript ? "check" : "validator";
+  let name = `${prefix}-${implWorker.name}`;
   let n = 2;
   while ([...line.workers.values()].some((w) => w.name === name)) {
-    name = `validator-${implWorker.name}-${n++}`;
+    name = `${prefix}-${implWorker.name}-${n++}`;
   }
   const valNode = nodeId;
   const id = crypto.randomUUID();
   const repo = resolveRepo(line, implWorker.repo);
   const repoName = repo ? repo.name : implWorker.repo || null;
   const repoUrl = repo ? repo.url : null;
+  if (isScript) return createScriptChecker(line, { id, name, nodeId, implWorker, source, repoName, afterChecks });
   let prompt;
   let split = null;
   try {
@@ -1828,7 +1906,7 @@ function createSourceChecker(line, nodeId, sourceInstance, fields) {
   const worker = { id, lineId: line.id, name,
     node: valNode,
     role: "validator", validates: implWorker.id, persona: implWorker.persona || "backend",
-    validationSource: source, validationCriteria: criteria,
+    validationSource: source, validationCriteria: criteria, afterChecks,
     kind: "standard", repo: repoName,
     prompt, ...splitFields(split),
     sessionId: null, worktreePath: implWorker.worktreePath, branch: implWorker.branch,
@@ -1838,7 +1916,7 @@ function createSourceChecker(line, nodeId, sourceInstance, fields) {
   slog("info", "validator.spawned", { lineId: line.id, validatorId: id,
     implementorId: implWorker.id, persona: worker.persona });
   broadcast(line, "worker_spawned", { worker: { id, name, branch: worker.branch,
-    status: worker.status, role: worker.role, validates: worker.validates,
+    status: worker.status, role: worker.role, node: worker.node || null, validates: worker.validates, afterChecks,
     persona: worker.persona, ...scopeSummary(worker, line.workers) } });
   spawnWorker(line, worker, worker.prompt);
   return { ok: true, worker, response: { validatorId: id, branch: worker.branch } };
@@ -2583,6 +2661,33 @@ const routeRequest = (req, res) => {
     return;
   }
 
+  // The last 1 MB of the log of one script of the latest run. The path comes
+  // only from the stored result, never from the request.
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "workers"
+    && parts[4] === "check-log" && parts.length === 5) {
+    const worker = findWorker(parts[3]);
+    const stepText = url.searchParams.get("step");
+    if (stepText === null || !/^\d+$/.test(stepText)) return json(res, 400, { error: "step must be a non-negative integer" });
+    const result = worker && worker.runner === "script" && Array.isArray(worker.checkResults)
+      ? worker.checkResults[Number(stepText)] : null;
+    if (!result || !result.logFile) return json(res, 404, { error: "no log for this step" });
+    let text;
+    try {
+      const size = fs.statSync(result.logFile).size;
+      const length = Math.min(size, CHECK_LOG_TAIL_BYTES);
+      const fd = fs.openSync(result.logFile, "r");
+      try {
+        const buffer = Buffer.alloc(length);
+        fs.readSync(fd, buffer, 0, length, size - length);
+        text = buffer.toString("utf8");
+      } finally { fs.closeSync(fd); }
+    } catch {
+      return json(res, 404, { error: "no log for this step" });
+    }
+    res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+    return res.end(text);
+  }
+
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "protocol" && parts[2] === "workers"
     && parts[4] === "stop") {
     let line = null, worker = null;
@@ -2631,10 +2736,12 @@ const routeRequest = (req, res) => {
           && w.status !== "running" && !w.child) {
           line.workers.delete(w.id);
           removed.push(w.id);
+          if (w.runner === "script") removeCheckFiles(line, w);
         }
       }
     }
     line.workers.delete(worker.id);
+    if (worker.runner === "script") removeCheckFiles(line, worker);
     // Discard the local work of a removed implementor or integration
     // validator: drop its worktree and branch so the name and branch can
     // be reused. Standard validators share the implementor's worktree -
@@ -2830,7 +2937,11 @@ const routeRequest = (req, res) => {
         target.acceptedRuns.push({ runId, invocationId: target.lastCompletedInvocationId || null,
           by: "planner", reason: body.reason, at: new Date().toISOString() });
         saveLine(line);
-        return json(res, 200, { accepted: true, instance: target.id, runId });
+        const unpassed = requiredChecksOf(line.graph, target).filter((nodeId) =>
+          checkState(latestCheckRun([...line.workers.values()], nodeId, target)) !== "pass");
+        const warning = unpassed.length
+          ? `required checks without a PASS on the latest run: ${unpassed.map((n) => `'${n}'`).join(", ")}; integration stays blocked` : undefined;
+        return json(res, 200, { accepted: true, instance: target.id, runId, ...(warning ? { warning } : {}) });
       }
       if (interaction.effect !== "create") {
         return json(res, 501, { error: "not implemented", code: "NOT_IMPLEMENTED" });
@@ -3320,6 +3431,10 @@ function loadLines() {
           taskPrompt: w.kind === "integration" && typeof w.taskPrompt === "string" && w.taskPrompt ? w.taskPrompt : null, kind: w.kind || "standard", verdict: w.verdict || null,
           validationSource: w.validationSource || null, validationCriteria: w.validationCriteria || null,
           validatedCommit: w.validatedCommit || null,
+          ...(w.runner === "script" ? { runner: "script", scriptSpec: w.scriptSpec || null,
+            checkedCommit: w.checkedCommit || null,
+            checkResults: Array.isArray(w.checkResults) ? w.checkResults : [] } : {}),
+          afterChecks: Array.isArray(w.afterChecks) ? w.afterChecks : [],
           persona: PERSONAS.includes(w.persona) ? w.persona : "backend",
           repo: impl ? impl.repo : workerRepo(w),
           integration: w.integration || null,

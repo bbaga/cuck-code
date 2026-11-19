@@ -1,3 +1,6 @@
+# The order of the nodes comes from the edges, the checks and the requires of the
+# integration type. The keys after and the script check nodes are optional.
+# See the README section "Script check nodes".
 name: minimal
 description: One planner, one implementor, one validator and an integration validator.
 start: planner

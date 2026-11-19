@@ -7,6 +7,7 @@ const path = require("node:path");
 const { resolvePipelineDefinition } = require("../resolve-pipeline");
 const { requiredFields, checkCall } = require("../call-fields");
 const { render, placeholders } = require("../template");
+const { graphRelations } = require("../graph-relations");
 
 const ROOT = path.join(__dirname, "..");
 const readFile = (p) => fs.readFileSync(p, "utf8");
@@ -142,3 +143,32 @@ test("every node a built-in pipeline can start takes the field of its work", () 
     assert.ok(checked >= 3, `${name}: the planner can start at least an implementor, a validator and the integration node`);
   }
 });
+
+// The layout of the built-in pipelines under the declared-relation rules.
+const LAYOUT = {
+  default: {
+    columns: { planner: 0, "backend-impl": 1, "frontend-impl": 1, "backend-val": 2, "frontend-val": 2, integration: 3 },
+    rows: { planner: 0, "backend-impl": 0, "frontend-impl": 1, "backend-val": 0, "frontend-val": 1, integration: 0 },
+  },
+  minimal: {
+    columns: { planner: 0, impl: 1, val: 2, integration: 3 },
+    rows: { planner: 0, impl: 0, val: 0, integration: 0 },
+  },
+};
+
+for (const name of Object.keys(LAYOUT)) {
+  test(`${name} has the documented columns and rows and no new keys`, () => {
+    const r = resolvePipelineDefinition(name, catalog());
+    const g = graphRelations(r);
+    assert.deepEqual(g.columns, LAYOUT[name].columns);
+    assert.deepEqual(g.rows, LAYOUT[name].rows);
+    assert.equal(g.cycle, null);
+    for (const [id, node] of Object.entries(r.nodes)) {
+      for (const key of ["after", "required", "scripts"]) {
+        assert.equal(Object.prototype.hasOwnProperty.call(node, key), false, `${name}.${id} has ${key}`);
+      }
+    }
+    const kinds = [...new Set(g.relations.map((x) => x.kind))].sort();
+    assert.deepEqual(kinds, ["accepted-work", "checks", "interaction"]);
+  });
+}

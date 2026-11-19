@@ -82,13 +82,13 @@ test("c: cancel of a started id keeps the row and shows a local error", async (t
 test("d: typing during an in-flight submission keeps the new text", async (t) => {
   await withPage(t, async (fx, page) => {
     await page.evaluate(`const f = window.fetch; window.fetch = (u, o) => (o && o.method === 'POST' && /prompts$/.test(u))
-      ? new Promise((r) => { window.__p = () => f(u, o).then(r); }) : f(u, o); 0`);
+      ? new Promise((r) => { window.__p = () => f(u, o).then((x) => { window.__answered = true; r(x); }); }) : f(u, o); 0`);
     await page.evaluate(`const i = ${INPUT}; i.value = 'one';
       i.dispatchEvent(new Event('input')); ${SEND}.click();
       i.value = 'one two'; i.dispatchEvent(new Event('input')); 0`);
     await page.evaluate("window.__p()");
-    await page.waitFor(`${SEND}.disabled === false`);
-    await new Promise((r) => setTimeout(r, 200));
+    // The page handler re-enables the button last, after it decided to keep or clear the text.
+    await page.waitFor(`window.__answered === true && ${SEND}.disabled === false`);
     assert.equal(await page.evaluate(`${INPUT}.value`), "one two");
   });
 });

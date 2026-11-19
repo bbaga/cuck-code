@@ -6,12 +6,13 @@ const { splitFrontmatter, FormatError } = require("./frontmatter");
 const { parseTemplate, placeholders, TemplateError } = require("./template");
 const { checkDeclaration, checkOptionalUse, isRouterVariable } = require("./fields");
 
-const KEYS = ["name", "description", "extends", "session", "workspace", "outcome", "coordinator", "requires", "fields"];
+const KEYS = ["name", "description", "extends", "session", "workspace", "outcome", "coordinator", "requires", "fields", "runner"];
 const NAME_RE = /^[a-z][a-z0-9-]{0,63}$/;
 const ENUMS = {
   session: ["resume", "fresh"],
   workspace: ["coordinator", "own-worktree", "source", "integration"],
   outcome: ["none", "verdict"],
+  runner: ["agent", "script"],
 };
 const REQUIRES = ["accepted-work"];
 
@@ -86,7 +87,7 @@ function loadNodeType(dirName, readFile) {
   }
 
   const type = { name: header.name, fields, body, bodyLine, file, dir: dirName };
-  for (const key of ["description", "extends", "session", "workspace", "outcome", "coordinator", "requires"]) {
+  for (const key of ["description", "extends", "session", "workspace", "outcome", "coordinator", "requires", "runner"]) {
     if (header[key] !== undefined) type[key] = header[key];
   }
   return type;
@@ -139,7 +140,7 @@ function resolveTypes(types) {
     if (own.extends !== undefined) out.extends = own.extends;
     let body = null;
     for (const t of list) {
-      for (const key of ["session", "workspace", "outcome", "coordinator", "requires"]) {
+      for (const key of ["session", "workspace", "outcome", "coordinator", "requires", "runner"]) {
         if (t[key] !== undefined) out[key] = t[key];
       }
       for (const [fname, decl] of Object.entries(t.fields)) {
@@ -153,6 +154,17 @@ function resolveTypes(types) {
     out.body = body;
     if (out.coordinator === undefined) out.coordinator = false;
     if (out.requires === undefined) out.requires = [];
+    if (out.runner === undefined) out.runner = "agent";
+    if (out.runner === "script") {
+      const wrong = [];
+      if (out.session !== "fresh") wrong.push("session: fresh");
+      if (out.workspace !== "source") wrong.push("workspace: source");
+      if (out.outcome !== "verdict") wrong.push("outcome: verdict");
+      if (out.coordinator !== false) wrong.push("coordinator: false");
+      if (wrong.length) {
+        throw new NodeTypeError(own.file, 2, `runner: script needs ${wrong.join(", ")}`);
+      }
+    }
     out.chain = list.map((t) => t.name);
 
     // Check each body of the chain against the merged fields.

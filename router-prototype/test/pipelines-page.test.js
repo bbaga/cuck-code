@@ -77,18 +77,20 @@ test("toolbar state", () => {
   assert.deepEqual(page.toolbarState(null), { editor: false, duplicate: false, save: false, delete: false });
 });
 
-test("graph for the layout: nodes by id, kinds on every edge", () => {
+test("graph for the layout: nodes by id with runner fields, relations, columns and rows", () => {
+  const rel = { from: "a", to: "b", kind: "interaction", label: "start" };
   const g = page.layoutInput({
-    start: "a", kinds: { start: { effect: "create", trigger: "request" } },
-    nodes: [{ id: "a", type: "t", phase: "planner" }, { id: "b", type: "t", phase: null }],
-    edges: [{ from: "a", to: "b", interactions: ["start", "other"] }],
+    start: "a", relations: [rel], columns: { a: 0, b: 1 }, rows: { a: 0, b: 0 },
+    nodes: [{ id: "a", type: "t", runner: "agent" }, { id: "b", type: "s", runner: "script", scripts: [{}] }],
   });
   assert.deepEqual(Object.keys(g.nodes), ["a", "b"]);
   assert.equal(g.start, "a");
-  assert.deepEqual(g.edges[0].kinds.start, { effect: "create", trigger: "request" });
-  assert.equal(g.edges[0].kinds.other, undefined);
-  const noKinds = page.layoutInput({ nodes: [{ id: "x", type: "t" }], edges: [] });
-  assert.equal(noKinds.start, "x");
+  assert.equal(g.nodes.b.runner, "script");
+  assert.deepEqual(g.relations, [rel]);
+  assert.deepEqual([g.columns, g.rows], [{ a: 0, b: 1 }, { a: 0, b: 0 }]);
+  const bare = page.layoutInput({ nodes: [{ id: "x", type: "t" }] });
+  assert.equal(bare.start, "x");
+  assert.deepEqual(bare.relations, []);
   assert.equal(page.layoutInput(null), null);
 });
 

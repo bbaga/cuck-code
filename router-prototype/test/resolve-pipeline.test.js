@@ -227,3 +227,58 @@ test("load failures are reported", () => {
   assert.throws(() => resolvePipelineDefinition("nope", catalog(GOOD)), /unknown pipeline 'nope'/);
   assert.throws(() => resolvePipelineDefinition("p", catalog("name: [")), PipelineError);
 });
+
+// ---- script check nodes ----
+
+const CI_PIPELINE = `
+name: cuck-ci
+start: planner
+nodes:
+  planner:       { type: planner }
+  backend-impl:  { type: backend-implementor }
+  backend-val:   { type: backend-validator, checks: [backend-impl], after: [ci] }
+  ci:
+    type: script-check
+    checks: [backend-impl]
+    required: true
+    failFast: true
+    checkout: worktree
+    timeLimit: 1800
+    scripts:
+      - name: format
+        run: npx prettier --check .
+        cwd: router-prototype
+        timeout: 300
+      - name: unit
+        run: node --test router-prototype/test/*.test.js
+        env: { NODE_ENV: test }
+      - name: py-lint
+        run: ruff check .
+        repos: [ml-service]
+  integration:   { type: integration-validator }
+edges:
+  - planner -> backend-impl: start, feedback
+  - backend-impl -> planner: report
+  - planner -> [backend-val, ci]: start
+  - "[backend-val, ci] -> planner: report"
+  - planner -> integration: start
+  - integration -> planner: report
+`;
+
+test("the script check example resolves with the script fields and after", () => {
+  const types = builtInTypes("planner", "backend-implementor", "implementor", "validator", "backend-validator",
+    "integration-validator", "script-check");
+  const out = resolvePipelineDefinition("p", catalog(CI_PIPELINE, { types }));
+  assert.equal(out.types["script-check"].runner, "script");
+  const ci = out.nodes.ci;
+  assert.equal(ci.scripts.length, 3);
+  assert.equal(ci.scripts[0].cwd, "router-prototype");
+  assert.equal(ci.scripts[1].timeout, 600);
+  assert.deepEqual(ci.scripts[1].env, { NODE_ENV: "test" });
+  assert.deepEqual([ci.failFast, ci.required, ci.checkout], [true, true, "worktree"]);
+  assert.equal(ci.settings.timeLimit, 1800);
+  assert.deepEqual(out.nodes["backend-val"].after, ["ci"]);
+  for (const key of ["scripts", "failFast", "required", "checkout", "after"]) {
+    assert.ok(!(key in out.nodes["backend-impl"]), key);
+  }
+});
