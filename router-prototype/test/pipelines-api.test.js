@@ -134,6 +134,10 @@ test("router: GET /api/pipelines lists pipelines, node types and interactions", 
     const def = r.body.pipelines.find((p) => p.name === "default");
     assert.deepEqual(def, { name: "default", description: def.description, layer: "built-in", editable: false, problems: [] });
     assert.ok(r.body.pipelines.some((p) => p.name === "minimal"));
+    const example = r.body.pipelines.find((p) => p.name === "example-choreographed");
+    assert.equal(example.layer, "built-in");
+    assert.match(example.description, /^Example: backend work goes to a validator and a script check in parallel/);
+    assert.deepEqual(example.problems, []);
     assert.ok(r.body.nodeTypes.some((t) => t.name === "planner" && t.layer === "built-in"));
     assert.ok(r.body.interactions.some((i) => i.name === "report"));
     assert.equal((await call("POST", "/api/pipelines", {})).status, 405);
