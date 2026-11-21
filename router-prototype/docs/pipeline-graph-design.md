@@ -235,8 +235,9 @@ supplies one of them is rejected.
 
 `pipeline.has.implementor`, `.checker` and `.integration` are booleans from
 `pipelineCapabilities(graph)`: a node has a type with workspace `own-worktree`,
-`source` or `integration`. `pipeline.has.wait` and `pipeline.has.chains` are
-always false until later parts add them. The planner prompt and the report
+`source` or `integration`. `pipeline.has.chains` is true when the pipeline has a
+complete-create, rework or arrive edge. `pipeline.has.wait` is false until the
+wait node runtime is added in a later part. The planner prompt and the report
 texts use them in sections. The built-in pipelines `planner-only` (one node)
 and `implement-only` (planner and implementor) have no checker and no
 integration node.
@@ -479,7 +480,9 @@ and the offending node, edge or field.
     `fallback: true` interaction to the start node as a path. The new node type
     `wait` (`runner: wait`, `workspace: none`, field type `instances`) and the
     node key `maxRounds` (1 to 20, default 3 applied by the runtime) belong to
-    the same feature.
+    the same feature. `maxRounds` is the number of automatic reworks. With
+    `maxRounds: 3` the router sends 3 reworks. The 4th FAIL gives REWORK LIMIT
+    REACHED to the planner.
 14. R17: the type chain of the start node starts at `planner`, and no other
     node has a type whose root is `planner`. Only the planner is mandatory:
     implementors, checkers and the integration node are optional.

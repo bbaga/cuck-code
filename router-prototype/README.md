@@ -520,8 +520,9 @@ runtime of the wait node (`arrive`) is added in a later part.
   the line settings set `timeLimit`. It sets no `maxRounds`. The loader needs root
   type `wait`, `session: fresh`, `workspace: none`, `outcome: verdict` and
   `coordinator: false` for every type with `runner: wait`.
-- Node key `maxRounds` (an integer from 1 to 20): the most rework rounds of a
-  checker. It is stored on the node. When it is absent, the runtime uses 3 (the
+- Node key `maxRounds` (an integer from 1 to 20): the number of automatic
+  reworks. With `maxRounds: 3` the router sends 3 reworks. The 4th FAIL gives
+  REWORK LIMIT REACHED to the planner. It is stored on the node. When it is absent, the runtime uses 3 (the
   default is not written into the node).
 - The pipeline files `default` and `minimal` do not change.
 
