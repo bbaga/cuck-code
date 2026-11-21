@@ -389,6 +389,17 @@ function maxContextFor(line, owner) {
   return (owner === line ? plannerSettings(line) : workerSettings(line, owner)).maxContext;
 }
 
+function newRunActivity() {
+  const now = Date.now();
+  return { startedAt: now, lastAt: now, toolCalls: 0 };
+}
+
+function recordRunActivity(owner, entry) {
+  if (!owner.activity) owner.activity = newRunActivity();
+  owner.activity.lastAt = entry.at;
+  if (entry.type === "tool") owner.activity.toolCalls += 1;
+}
+
 function compactionFields(owner, line = owner) {
   const compactable = owner.role === undefined || owner.role === "implementor";
   if (!compactable) return {};
@@ -550,6 +561,7 @@ function normalizeWorkerTranscriptEntry(entry) {
   if (typeof entry.type === "string") normalized.type = entry.type;
   if (typeof entry.role === "string") normalized.role = entry.role;
   if (typeof entry.text === "string") normalized.text = entry.text;
+  if (typeof entry.detail === "string") normalized.detail = entry.detail;
   else if (typeof entry.content === "string" || Array.isArray(entry.content)) normalized.content = entry.content;
   if (typeof entry.at === "number") normalized.at = entry.at;
   // History merge matches on entryId, or on role, text and sessionId.
@@ -588,6 +600,7 @@ function dashboardStateForLine(line) {
     transcript: line.transcript.slice(-50),
     queuedUserPrompts: queuedUserPromptProjection(line.queue),
     activePlannerRunId: line.runId || null,
+    activity: line.activity || null,
     planApproved: line.planApproved,
     ...compactionFields(line),
     workers: [...line.workers.values()].map((w) => ({
@@ -603,6 +616,7 @@ function dashboardStateForLine(line) {
       ...(w.kind === "integration" ? { merged: integrationMerged(w) } : {}),
       ...scriptCheckFields(w),
       transcript: serializeWorkerTranscript(w, 50),
+      activity: w.activity || null,
     })) };
 }
 
@@ -1136,6 +1150,7 @@ function pump(line) {
   const runOutput = new InvocationCapture();
 try {
   transitionPlannerStatus(line, "running", null, { broadcastState: false });
+  line.activity = newRunActivity();
   saveLine(line);
   slog("info", "planner.run.start", { lineId: line.id, resume: !!line.sessionId, reseed,
     chars: text.length, prompt: preview(text, 400) });
@@ -1167,6 +1182,7 @@ try {
         if (typeof entry.at !== "number") entry.at = Date.now();
         runOutput.add(entry);
         if (isPromptEcho(entry)) return;
+        recordRunActivity(line, entry);
         appendTranscript(line.transcript, entry);
         slog("debug", "planner.entry", { lineId: line.id, type: entry.type,
           role: entry.role || null, chars: entry.text.length, text: preview(entryText(entry), 200) });
@@ -1294,6 +1310,7 @@ function spawnWorker(line, worker, prompt, resume) {
   saveLine(line);
   let phase, cfg, effective, plan, handle, closeWorker;
   const workerRunOutput = new InvocationCapture();
+  worker.activity = newRunActivity();
 try {
   phase = phaseForWorker(worker.role, worker.kind);
   cfg = workerSettings(line, worker);
@@ -1343,6 +1360,7 @@ try {
         if (typeof entry.at !== "number") entry.at = Date.now();
         if (!entry.sessionId && worker.sessionId) entry.sessionId = worker.sessionId;
         workerRunOutput.add(entry);
+        recordRunActivity(worker, entry);
         appendTranscript(worker.transcript, entry);
         slog("debug", "worker.entry", { lineId: line.id, workerId: worker.id,
           type: entry.type, role: entry.role || null, chars: entry.text.length,

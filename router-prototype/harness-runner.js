@@ -7,6 +7,8 @@
 const { ON_SETTLE } = require("./harness-sdk");
 
 const MAX_ERRORS = 5;
+const ENTRY_TYPES = new Set(["message", "tool", "reasoning"]);
+const MAX_DETAIL_CHARS = 20_000;
 
 function createRunState(hooks) {
   const state = { sessionId: null, contextTokens: null, errors: [] };
@@ -17,15 +19,18 @@ function createRunState(hooks) {
       state.sessionId = id;
       if (hooks.onSession) hooks.onSession(id);
     },
-    entry({ role, text } = {}) {
+    entry({ type, role, text, detail } = {}) {
       if (typeof text !== "string" || !text) return;
       const entry = {
-        type: "message",
+        type: ENTRY_TYPES.has(type) ? type : "message",
         role: role ?? null,
         text,
         sessionId: state.sessionId,
         at: Date.now(),
       };
+      if (entry.type === "tool" && typeof detail === "string" && detail) {
+        entry.detail = detail.length > MAX_DETAIL_CHARS ? detail.slice(0, MAX_DETAIL_CHARS) + "…" : detail;
+      }
       if (hooks.onEntry) hooks.onEntry(entry);
     },
     contextTokens(n) {

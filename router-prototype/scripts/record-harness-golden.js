@@ -125,10 +125,11 @@ function computeStream() {
   for (const { fixture, id } of STREAMS) {
     const harness = createHarness(id);
     const entries = [];
-    const collect = (entry) => {
-      if (!entry) return;
-      const { at, ...rest } = entry; // `at` is a clock value
-      entries.push(rest);
+    const collect = (out) => {
+      for (const entry of Array.isArray(out) ? out : out ? [out] : []) {
+        const { at, ...rest } = entry; // `at` is a clock value
+        entries.push(rest);
+      }
     };
     for (const record of readRecords(fixture)) collect(harness.normalize(record));
     collect(harness.finalize());
