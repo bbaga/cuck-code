@@ -731,5 +731,9 @@ test("a wait node gets only timeLimit settings", () => {
   assert.equal(validateNodeSettingsForNode(graph, "batch", { timeLimit: 60 }), null);
   const settings = resolveNodeSettings({ graph, nodeSettings: { batch: { timeLimit: 60 } } }, "batch", {});
   assert.deepEqual(settings, { runner: "wait", timeLimit: 60 });
+  // No default time limit for a wait node, and a set limit is kept.
+  assert.equal(resolveNodeSettings({ graph, nodeSettings: {} }, "batch", {}).timeLimit, null);
+  assert.equal(resolveNodeSettings({ graph, nodeSettings: { batch: { timeLimit: 14400 } } }, "batch", {}).timeLimit, 14400);
+  assert.equal(resolveNodeSettings({ graph, nodeSettings: {} }, "impl", {}).runner, undefined);
   assert.equal(defaultNodeSettingsFor(graph, {}).batch.runner, "wait");
 });

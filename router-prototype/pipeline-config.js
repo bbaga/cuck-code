@@ -180,7 +180,10 @@ function resolveNodeSettings(line, nodeId, env) {
   if (runner === "script" || runner === "wait") {
     const own = line.nodeSettings && line.nodeSettings[nodeId] ? line.nodeSettings[nodeId] : {};
     const fromNode = node.settings || {};
-    return { runner, timeLimit: own.timeLimit || fromNode.timeLimit || SCRIPT_NODE_TIME_LIMIT };
+    const limit = own.timeLimit || fromNode.timeLimit;
+    // A wait node can wait for many hours: it has no default time limit.
+    if (runner === "wait") return { runner, timeLimit: limit || null };
+    return { runner, timeLimit: limit || SCRIPT_NODE_TIME_LIMIT };
   }
   const phase = phaseOfType(graph, node.type);
   if (!phase) throw new Error(`node '${nodeId}' has a type without a phase`);

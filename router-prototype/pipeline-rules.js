@@ -424,7 +424,7 @@ function ruleR15(c) {
 }
 
 const WAIT_FORBIDDEN_KEYS = ["checks", "after", "scripts", "failFast", "required", "checkout", "harness", "model",
-  "effort", "maxContext", "prompt", "fields"];
+  "effort", "maxContext", "prompt", "fields", "maxRounds"];
 
 // R16: the shape of arrive edges and wait nodes.
 function ruleR16(c) {

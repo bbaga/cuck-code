@@ -479,6 +479,11 @@ test("R16: a wait node sets no agent keys and starts only integration nodes", ()
   assert.ok(choreo.rulesOf(toChecker).includes("R16"));
 });
 
+test("R16: a wait node with maxRounds gives an R16 error", () => {
+  const bad = swap(choreo.CHAIN, "batch:       { type: wait }", "batch:       { type: wait, maxRounds: 3 }");
+  assert.ok(choreo.rulesOf(bad).includes("R16"));
+});
+
 test("R18: stage members have the same next targets", () => {
   const bad = swap(choreo.STAGE, '"[val, lint] -> batch: arrive"', "val -> batch: arrive");
   assert.ok(choreo.rulesOf(bad).includes("R18"));

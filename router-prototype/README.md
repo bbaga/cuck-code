@@ -515,7 +515,9 @@ runtime is added in a later part.
 
 - Node type `wait` (`runner: wait`, `workspace: none`, field `members` of type
   `instances`): it waits until each member task arrived with a PASS. A wait node
-  takes only `timeLimit` settings, as a script node does. The loader needs root
+  takes only `timeLimit` settings, as a script node does. It has no default time limit: a
+  batch can wait for many hours. It has a limit only when the pipeline node or
+  the line settings set `timeLimit`. It sets no `maxRounds`. The loader needs root
   type `wait`, `session: fresh`, `workspace: none`, `outcome: verdict` and
   `coordinator: false` for every type with `runner: wait`.
 - Node key `maxRounds` (an integer from 1 to 20): the most rework rounds of a
