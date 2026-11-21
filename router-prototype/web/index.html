@@ -193,6 +193,11 @@
     background: #1d222a; border-top: 1px solid #262b33; border-bottom: 1px solid #262b33; }
   .resizeHandle:hover, .resizeHandle:focus-visible, .resizeHandle.dragging { background: #2f5d9e; outline: none; }
   body.resizing { user-select: none; cursor: row-resize; }
+  .resizeHandleX { width: 8px; height: auto; cursor: col-resize;
+    border-top: 0; border-bottom: 0; border-left: 1px solid #262b33; border-right: 1px solid #262b33; }
+  body.resizingX { user-select: none; cursor: col-resize; }
+  .card > .pipeRow { display: flex; align-items: stretch; min-width: 0; min-height: 0; flex: 1 1 auto; }
+  .pipePane.pipeSized { max-width: none; width: var(--pipe-width); flex: none; }
   .graph svg { display: block; }
   .graph svg .edge { stroke: #333c48; stroke-width: 1.5; fill: none; }
   .gnode { position: absolute; display: flex; align-items: center; gap: 8px;
@@ -628,11 +633,12 @@ window.addEventListener("DOMContentLoaded", () => {
 
   const RESIZE_STEP = 16;
 
-  function createResizeHandle(label) {
+  function createResizeHandle(label, orientation = "horizontal") {
+    const vertical = orientation === "vertical";
     const h = document.createElement("div");
-    h.className = "resizeHandle";
+    h.className = vertical ? "resizeHandle resizeHandleX" : "resizeHandle";
     h.setAttribute("role", "separator");
-    h.setAttribute("aria-orientation", "horizontal");
+    h.setAttribute("aria-orientation", orientation);
     h.setAttribute("aria-label", label);
     h.tabIndex = 0;
     return h;
@@ -648,35 +654,38 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function bindResizeHandle(handle, { getSize, apply, limits, reset }) {
+  function bindResizeHandle(handle, { getSize, apply, limits, reset, axis = "y" }) {
+    const x = axis === "x";
+    const bodyClass = x ? "resizingX" : "resizing";
+    const [lessKey, moreKey] = x ? ["ArrowLeft", "ArrowRight"] : ["ArrowUp", "ArrowDown"];
     let drag = null;
     const end = () => {
       if (!drag) return;
       drag = null;
       handle.classList.remove("dragging");
-      document.body.classList.remove("resizing");
+      document.body.classList.remove(bodyClass);
     };
     handle.addEventListener("pointerdown", (e) => {
       if (e.button) return;
       e.preventDefault();
-      drag = { y: e.clientY, size: getSize() };
+      drag = { pos: x ? e.clientX : e.clientY, size: getSize() };
       handle.setPointerCapture(e.pointerId);
       handle.classList.add("dragging");
-      document.body.classList.add("resizing");
+      document.body.classList.add(bodyClass);
     });
     handle.addEventListener("pointermove", (e) => {
       if (!drag) return;
       const { min, max } = limits();
-      apply(clampSize(drag.size + e.clientY - drag.y, min, max));
+      apply(clampSize(drag.size + (x ? e.clientX : e.clientY) - drag.pos, min, max));
     });
     handle.addEventListener("pointerup", end);
     handle.addEventListener("pointercancel", end);
     handle.addEventListener("dblclick", reset);
     handle.addEventListener("keydown", (e) => {
-      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      if (e.key !== lessKey && e.key !== moreKey) return;
       e.preventDefault();
       const { min, max } = limits();
-      apply(stepSize(getSize(), e.key === "ArrowDown" ? RESIZE_STEP : -RESIZE_STEP, min, max));
+      apply(stepSize(getSize(), e.key === moreKey ? RESIZE_STEP : -RESIZE_STEP, min, max));
     });
   }
 
@@ -732,6 +741,36 @@ window.addEventListener("DOMContentLoaded", () => {
       limits: planLimits,
     });
     bindResizeHandle(chatHandle, { ...area(transcriptWrap, setChat, chatKey), limits: chatLimits });
+  }
+
+  // The width of the Pipeline pane. A stored width wider than the card is clamped on screen only.
+  function setupPipeWidthResize({ lineId, card, pipePane, pipeHandle }) {
+    const store = (() => { try { return window.localStorage; } catch { return null; } })();
+    const key = "cuck.pipeWidth." + lineId;
+    const limits = () => ({ min: 360, max: card.clientWidth });
+    let wanted = null;
+    const show = () => {
+      const { min, max } = limits();
+      pipePane.classList.add("pipeSized");
+      pipePane.style.setProperty("--pipe-width", clampSize(wanted, min, max) + "px");
+    };
+    const stored = readStoredSize(store, key, limits().min, Infinity);
+    if (stored !== null) { wanted = stored; show(); }
+    bindResizeHandle(pipeHandle, {
+      axis: "x",
+      getSize: () => pipePane.getBoundingClientRect().width,
+      limits,
+      apply: (w) => { wanted = w; show(); writeStoredSize(store, key, w); },
+      reset: () => {
+        wanted = null;
+        pipePane.style.removeProperty("--pipe-width");
+        pipePane.classList.remove("pipeSized");
+        writeStoredSize(store, key, null);
+      },
+    });
+    window.addEventListener("resize", () => {
+      if (wanted !== null && card.isConnected) show();
+    });
   }
 
   // Cards of the chain state: a wait worker and a head with a rework count or a stage.
@@ -1303,6 +1342,11 @@ window.addEventListener("DOMContentLoaded", () => {
     const pipePane = document.createElement("div");
     pipePane.className = "pipePane";
     pipePane.hidden = true;
+    const pipeRow = document.createElement("div");
+    pipeRow.className = "pipeRow";
+    pipeRow.hidden = true;
+    const pipeHandle = createResizeHandle("Resize pipeline pane", "vertical");
+    pipeRow.append(pipePane, pipeHandle);
     const pipeGraphTitle = document.createElement("h3");
     pipeGraphTitle.textContent = "Pipeline graph";
     const pipeGraphBox = document.createElement("div");
@@ -1445,8 +1489,9 @@ window.addEventListener("DOMContentLoaded", () => {
     const workPane = document.createElement("div");
     workPane.className = "evPane workPane";
     workPane.hidden = true;
-    card.append(head, planDetails, banner, plan, planHandle, graphDetails, scopeDetails, previewPanel, transcriptWrap, queuePane, chatHandle, row, composerError, procPane, evPane, workPane, pipePane);
+    card.append(head, planDetails, banner, plan, planHandle, graphDetails, scopeDetails, previewPanel, transcriptWrap, queuePane, chatHandle, row, composerError, procPane, evPane, workPane, pipeRow);
     linesEl.appendChild(card);
+    setupPipeWidthResize({ lineId: line.id, card, pipePane, pipeHandle });
     setupLayoutResize({ lineId: line.id, card, plan, planBody, planDetails, planHandle, graph, graphDetails, graphHandle, transcriptWrap, chatHandle });
 
     const st = { id: line.id, dot, banner, transcript, transcriptWrap, scrollBottomBtn, input, send,
@@ -1455,7 +1500,7 @@ window.addEventListener("DOMContentLoaded", () => {
       stamp: null, draft: createDraftOwner(), submitting: false, cancelling: new Set(),
       queueErrors: new Map(), queued: [],
       waiting, planBody, planHandle, graph, chainPanel, graphDetails, graphHandle, chatHandle, previewPanel, approveBtn, badge, planDetails, planControls: controls,
-      pipePane, tabPipeBtn, pipeForm, pipeGraphBox, pipeEdgesList,
+      pipePane, pipeRow, tabPipeBtn, pipeForm, pipeGraphBox, pipeEdgesList,
       pipeGraph: line.graph || null, nodeSettings: line.nodeSettings || null,
       effectiveNodeSettings: line.effectiveNodeSettings || null,
       defaultNodeSettings: line.defaultNodeSettings || null,
@@ -2172,6 +2217,7 @@ window.addEventListener("DOMContentLoaded", () => {
     st.procPane.hidden = tab !== "processes";
     st.evPane.hidden = tab !== "evidence";
     st.pipePane.hidden = tab !== "pipeline";
+    st.pipeRow.hidden = st.pipePane.hidden;
     st.workPane.hidden = tab !== "work";
     st.tabWorkBtn.classList.toggle("active", tab === "work");
     if (tab === "work") {
