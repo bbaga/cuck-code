@@ -330,8 +330,8 @@ The built-in interactions:
 | `rework` | deliver | complete | source | none. `when: [reject, missing]`. Sends the checker report back to the implementor. |
 | `arrive` | arrive | complete | waiter | none. `when: [done, pass]`. Records that the task chain reached the wait node. |
 
-The runtime for `handoff`, `rework` and `arrive` is added in a later part. Now
-only the file formats and the pipeline rules exist.
+The router runs `handoff` and `rework` (see "Choreographed pipelines" below). The
+runtime for `arrive` (the wait node) is added in a later part.
 | `report` | deliver | complete | starter | none; the router fills `report` and `outcome` |
 
 A `complete`-triggered interaction has no caller. It declares no `fields` and
@@ -507,11 +507,11 @@ Two more error codes can appear: `LOAD` (the text, a node type, an interaction
 or a prompt file does not parse or load) and `NAME` (the name is not allowed,
 differs from the file name, or is a built-in name).
 
-### Choreographed pipelines (formats only)
+### Choreographed pipelines
 
 A choreographed pipeline lets a task move from left to right through a task
-chain without the planner. This part adds only the formats and the rules. The
-runtime is added in a later part.
+chain without the planner. The router runs handoff, rework and stages. The
+runtime of the wait node (`arrive`) is added in a later part.
 
 - Node type `wait` (`runner: wait`, `workspace: none`, field `members` of type
   `instances`): it waits until each member task arrived with a PASS. A wait node
@@ -520,12 +520,13 @@ runtime is added in a later part.
   the line settings set `timeLimit`. It sets no `maxRounds`. The loader needs root
   type `wait`, `session: fresh`, `workspace: none`, `outcome: verdict` and
   `coordinator: false` for every type with `runner: wait`.
-- Node key `maxRounds` (an integer from 1 to 20): the most rework rounds of a
-  checker. It is stored on the node. When it is absent, the runtime uses 3 (the
+- Node key `maxRounds` (an integer from 1 to 20): the number of automatic
+  reworks. With `maxRounds: 3` the router sends 3 reworks. The 4th FAIL gives
+  REWORK LIMIT REACHED to the planner. It is stored on the node. When it is absent, the runtime uses 3 (the
   default is not written into the node).
 - The pipeline files `default` and `minimal` do not change.
 
-Routing and prompt text (pure code; the runtime is added in a later part):
+Routing and prompt text (pure code in `choreography.js`):
 
 - Chain fields: a call that creates node T also requires the caller fields of
   each node that T reaches through complete-create edges (`handoff`). The walk
@@ -542,6 +543,39 @@ Routing and prompt text (pure code; the runtime is added in a later part):
   combined rework while rounds are below the smallest `maxRounds`, else a
   report with `exhausted`. If all pass, the stage takes its common handoff or
   arrive, else it reports.
+Runtime (`chain-runtime.js`, called from `workerClosed` in `server.js`):
+
+- A chain head is an own-worktree instance that the planner started. It keeps
+  `chainFields` (the start-call values of the downstream nodes, such as
+  `criteria`), `reworkRounds` (`{ <stage sender node>: n }`) and `stage`
+  (`{ sender, headRun, members: { <node>: { status, checkerId, outcome } } }` or
+  `null`). `line.json` stores them. A line saved before they existed loads with
+  `{}`, `{}` and `null`.
+- When a head run ends with `done`, the router starts the checkers of the stage
+  (`stageOf`) with `validates` set to the head, the criteria from `chainFields`
+  and the last run text as the report. The planner gets no wake.
+- When a checker of a stage ends, the router records its outcome. The result of
+  a stage of an older head run (or of a stage that feedback reset) is ignored.
+  After the last member ended, `resolveStage` gives one decision:
+  rework (the combined rework text goes to the head, `reworkRounds` grows by
+  one; a blocked delivery sends `REWORK BLOCKED` and the report to the planner),
+  handoff (the next stage starts), or report. For `arrive` the planner gets the
+  report until the wait runtime exists. A report after the rework limit starts
+  with a `REWORK LIMIT REACHED` line.
+- The planner gets a message only when the chain ends: a report, the rework
+  limit, a failed, timed out or stopped checker, a blocked change set, or a
+  handoff error (`HANDOFF FAILED - <node> could not start for '<head>': <error>`).
+  A change set that is over the size target only adds the oversize warning.
+- `line.pendingHandoffs` (`[{ to, headId, headRun }]`, saved in `line.json`) holds
+  handoffs that wait for a free worker slot (cap of 8). The router starts them
+  at the end of each `workerClosed` and after a line loads. It drops an entry
+  when its head is gone or the head run changed. A stage member that was
+  running when the router stopped ends the chain with `HANDOFF FAILED`.
+- A `feedback` call to the head sets `reworkRounds` to `{}` and `stage` to `null`.
+- The built-in pipeline `choreographed` is the chain `impl -> val` with
+  rework (`maxRounds: 3`) and a report to the planner. The planner starts a task
+  with `start`; it gets one report when the chain ends.
+
 - The planner prompt has a `## Chains` section only when the pipeline has
   chains. It has one line for each chain head and for each wait node.
 
@@ -698,7 +732,8 @@ Run root and files:
   state carry `checkResults`.
 - Environment of each script: `CUCK_LINE_ID`, `CUCK_WORKER_ID`, `CUCK_SOURCE_ID`,
   `CUCK_REPO`, `CUCK_BRANCH`, `CUCK_WORKTREE` (the run root) and
-  `CUCK_SOURCE_WORKTREE` (the implementor worktree).
+  `CUCK_SOURCE_WORKTREE` (the implementor worktree) and `CUCK_BASE_COMMIT` (the base
+  commit of the chain head, that is, the checked implementor).
 - A script check that is running when the router starts becomes `stopped`.
 
 Security note: scripts are shell commands from pipeline files (built-in,

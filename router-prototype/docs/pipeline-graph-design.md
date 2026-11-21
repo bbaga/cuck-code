@@ -179,15 +179,29 @@ The building blocks the router implements:
 Choreographed pipelines add the interaction keys `when` (the run outcomes the
 interaction applies to; default all seven) and `fallback` (fires only when no
 non-fallback `complete` interaction applied; `report` is one). The effect
-`arrive` is reserved for built-in interactions, as `accept` is. The runtime for
-`handoff`, `rework` and `arrive` is added in a later part.
+`arrive` is reserved for built-in interactions, as `accept` is. The router runs
+`handoff` and `rework`; the runtime for `arrive` (the wait node) is added in a
+later part.
 
 Parts of the choreography that need no runtime are pure code. `call-fields.js`
 adds the caller fields of the nodes after the called node (complete-create
 edges, stop at `arrive`). `choreography.js` holds `routeCompletion`,
 `stageOf` and `resolveStage` (stage resolution: broken member, then reject, then
 common next step) and the text builders. The planner prompt gets a `## Chains`
-section. The runtime that acts on these answers is added in a later part.
+section.
+
+`chain-runtime.js` acts on these answers (`workerClosed` calls it). The chain
+head, an own-worktree instance that the planner started, keeps `chainFields`,
+`reworkRounds` and `stage`. A `done` run of a node with a complete-create edge
+starts the stage: every checker has `validates` = the head id. Each checker run
+that ends is recorded in the stage. A result of an older head run, or after a
+feedback reset, is stale and is ignored. After the last member ended,
+`resolveStage` gives one decision: rework to the head (the rounds grow), the
+next stage, or one report to the planner. The planner is woken only at a chain
+end. `line.pendingHandoffs` holds handoffs that wait for a worker slot; the
+router starts them when a run ends and after a line loads. Script checks get
+`CUCK_BASE_COMMIT` (the base commit of the head). `pipelines/choreographed.yaml`
+is the built-in example. The wait node runtime is added in a later part.
 
 The `accept` effect is reserved for the built-in `accept` interaction. It
 sends no message: it records the acceptance, which the integration rule uses.
@@ -221,8 +235,9 @@ supplies one of them is rejected.
 
 `pipeline.has.implementor`, `.checker` and `.integration` are booleans from
 `pipelineCapabilities(graph)`: a node has a type with workspace `own-worktree`,
-`source` or `integration`. `pipeline.has.wait` and `pipeline.has.chains` are
-always false until later parts add them. The planner prompt and the report
+`source` or `integration`. `pipeline.has.chains` is true when the pipeline has a
+complete-create, rework or arrive edge. `pipeline.has.wait` is false until the
+wait node runtime is added in a later part. The planner prompt and the report
 texts use them in sections. The built-in pipelines `planner-only` (one node)
 and `implement-only` (planner and implementor) have no checker and no
 integration node.
@@ -465,7 +480,9 @@ and the offending node, edge or field.
     `fallback: true` interaction to the start node as a path. The new node type
     `wait` (`runner: wait`, `workspace: none`, field type `instances`) and the
     node key `maxRounds` (1 to 20, default 3 applied by the runtime) belong to
-    the same feature.
+    the same feature. `maxRounds` is the number of automatic reworks. With
+    `maxRounds: 3` the router sends 3 reworks. The 4th FAIL gives REWORK LIMIT
+    REACHED to the planner.
 14. R17: the type chain of the start node starts at `planner`, and no other
     node has a type whose root is `planner`. Only the planner is mandatory:
     implementors, checkers and the integration node are optional.
