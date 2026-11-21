@@ -1263,6 +1263,111 @@
     return (delta < 0 && next > size) || (delta > 0 && next < size) ? size : next;
   }
 
+  // ---- Zoom of the pipeline graph (whole percents) ----
+  const ZOOM_MIN = 25;
+  const ZOOM_MAX = 300;
+  const ZOOM_STEP = 1.25;
+
+  function clampZoom(percent) {
+    const n = Number(percent);
+    if (!Number.isFinite(n)) return 100;
+    return Math.round(clampSize(n, ZOOM_MIN, ZOOM_MAX));
+  }
+
+  function stepZoom(percent, direction) {
+    const from = clampZoom(percent);
+    const next = clampZoom(Math.round(from * ZOOM_STEP ** direction));
+    // Rounding must never leave a step without effect away from the limits.
+    if (next === from && direction > 0 && from < ZOOM_MAX) return from + 1;
+    if (next === from && direction < 0 && from > ZOOM_MIN) return from - 1;
+    return next;
+  }
+
+  function fitZoom(contentWidth, boxWidth) {
+    const c = Number(contentWidth);
+    const b = Number(boxWidth);
+    if (!Number.isFinite(c) || !Number.isFinite(b) || c <= 0 || b <= 0) return 100;
+    return clampZoom(Math.floor(100 * b / c));
+  }
+
+  // The scroll offset that keeps the graph point under the pointer in place.
+  function zoomScrollOffset(scroll, pointer, oldPercent, newPercent) {
+    return Math.max(0, (scroll + pointer) * newPercent / oldPercent - pointer);
+  }
+
+  // Zoom toolbar, wheel and key handling for one graph box. The toolbar lives in
+  // toolbarHost (outside the box, so redraws of the box keep it). getContentSize()
+  // returns { width, height } of the current layout.
+  function attachGraphZoom({ doc, box, toolbarHost, getContentSize, storage, storageKey }) {
+    let zoom = readStoredSize(storage, storageKey, ZOOM_MIN, ZOOM_MAX) || 100;
+    let svg = null;
+    const bar = doc.createElement("div");
+    bar.className = "zoomBar";
+    bar.setAttribute("role", "toolbar");
+    bar.setAttribute("aria-label", "Graph zoom");
+    const button = (label, text, onClick) => {
+      const b = doc.createElement("button");
+      b.type = "button";
+      b.textContent = text;
+      b.setAttribute("aria-label", label);
+      b.addEventListener("click", onClick);
+      return b;
+    };
+    const out = button("Zoom out", "\u2212", () => set(stepZoom(zoom, -1)));
+    const reset = button("Reset zoom", "100%", () => set(100));
+    const zin = button("Zoom in", "+", () => set(stepZoom(zoom, 1)));
+    const fit = button("Fit graph to width", "Fit", () => {
+      const size = getContentSize() || {};
+      set(fitZoom(size.width, box.clientWidth - 10));
+    });
+    bar.append(out, reset, zin, fit);
+    toolbarHost.append(bar);
+    box.tabIndex = 0;
+
+    function paint() {
+      reset.textContent = zoom + "%";
+      out.disabled = zoom <= ZOOM_MIN;
+      zin.disabled = zoom >= ZOOM_MAX;
+      const size = getContentSize();
+      if (svg && size) {
+        svg.setAttribute("width", String(size.width * zoom / 100));
+        svg.setAttribute("height", String(size.height * zoom / 100));
+      }
+    }
+
+    function set(percent, pointer) {
+      const old = zoom;
+      zoom = clampZoom(percent);
+      writeStoredSize(storage, storageKey, zoom);
+      paint();
+      if (pointer && zoom !== old) {
+        box.scrollLeft = zoomScrollOffset(box.scrollLeft, pointer.x, old, zoom);
+        box.scrollTop = zoomScrollOffset(box.scrollTop, pointer.y, old, zoom);
+      }
+    }
+
+    box.addEventListener("wheel", (e) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const rect = box.getBoundingClientRect();
+      set(stepZoom(zoom, e.deltaY < 0 ? 1 : -1), { x: e.clientX - rect.left, y: e.clientY - rect.top });
+    }, { passive: false });
+    box.addEventListener("keydown", (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.target !== box) return;
+      if (e.key === "+" || e.key === "=") set(stepZoom(zoom, 1));
+      else if (e.key === "-") set(stepZoom(zoom, -1));
+      else if (e.key === "0") set(100);
+      else return;
+      e.preventDefault();
+    });
+    paint();
+    return {
+      apply(el) { svg = el; paint(); },
+      get() { return zoom; },
+      set(percent) { set(percent); },
+    };
+  }
+
   function chatMaxHeight(windowHeight) {
     return Math.max(120, Number(windowHeight) || 0);
   }
@@ -1450,5 +1555,13 @@
     chatMaxHeight,
     readStoredSize,
     writeStoredSize,
+    ZOOM_MIN,
+    ZOOM_MAX,
+    ZOOM_STEP,
+    clampZoom,
+    stepZoom,
+    fitZoom,
+    zoomScrollOffset,
+    attachGraphZoom,
   };
 });

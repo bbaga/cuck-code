@@ -256,7 +256,7 @@
       d.append(h("pre", { id: "source", class: "source", tabindex: "0", "aria-label": "Source text of " + item.name + " (read-only)", text: state.text }));
     }
     if (item.kind === "pipeline") {
-      d.append(h("h3", { text: "Graph" }), h("div", { id: "graphBox", class: "graphBox" }),
+      d.append(h("h3", { text: "Graph" }), h("div", { id: "graphZoom" }), h("div", { id: "graphBox", class: "graphBox" }),
         h("div", { class: "edgesText" }, h("ul", { id: "edgesList" })));
     }
   }
@@ -338,10 +338,15 @@
     const box = $("graphBox");
     if (!box) return;
     box.textContent = "";
+    if (!box.zoomCtl) {
+      box.zoomCtl = pipelineUI.attachGraphZoom({ doc: document, box, toolbarHost: $("graphZoom"),
+        getContentSize: () => box.layoutSize, storage: localStorage, storageKey: "cuck.pipelinesPageZoom" });
+    }
     const kinds = pipelineUI.loadGraphKinds(localStorage);
     const list = $("edgesList");
     if (list) list.textContent = "";
     const layout = input ? pipelineUI.layoutGraph(input) : { nodes: [], edges: [] };
+    box.layoutSize = { width: layout.width, height: layout.height };
     if (!layout.nodes.length) { box.append(h("p", { class: "hint", text: "No graph yet." })); return; }
     const el = (name, attrs, text) => {
       const node = document.createElementNS(SVGNS, name);
@@ -381,6 +386,7 @@
       for (const item of svg.querySelectorAll("[data-kind]")) item.style.display = kinds[item.dataset.kind] === false ? "none" : "";
     };
     box.append(pipelineUI.buildKindLegend(document, kinds, localStorage, showKinds), svg);
+    box.zoomCtl.apply(svg);
     showKinds();
     if (list) for (const line of pipelineUI.edgeTextLines(input)) list.append(h("li", { text: line }));
   }
