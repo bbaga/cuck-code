@@ -14,8 +14,8 @@ const memory = (init = {}) => {
   };
 };
 
-test("clampZoom keeps whole percents inside 25..300", () => {
-  assert.equal(clampZoom(10), 25);
+test("clampZoom keeps whole percents inside 10..300", () => {
+  assert.equal(clampZoom(5), 10);
   assert.equal(clampZoom(900), 300);
   assert.equal(clampZoom(124.6), 125);
   assert.equal(clampZoom(NaN), 100);
@@ -39,12 +39,17 @@ test("stepZoom changes the value whenever it is not at a limit", () => {
 
 test("fitZoom fits the width and clamps", () => {
   assert.equal(fitZoom(1000, 750), 75);
-  assert.equal(fitZoom(1000, 100), 25);
+  assert.equal(fitZoom(1000, 50), ZOOM_MIN);
   assert.equal(fitZoom(100, 1000), 300);
   assert.equal(fitZoom(0, 500), 100);
   assert.equal(fitZoom(-5, 500), 100);
   assert.equal(fitZoom(NaN, 500), 100);
   assert.equal(fitZoom(500, NaN), 100);
+});
+
+test("fitZoom fits the default graph in a 326 px box", () => {
+  assert.equal(fitZoom(1384, 326), 23);
+  assert.ok(1384 * 23 / 100 <= 326);
 });
 
 test("zoomScrollOffset keeps the point under the pointer fixed", () => {

@@ -1264,7 +1264,7 @@
   }
 
   // ---- Zoom of the pipeline graph (whole percents) ----
-  const ZOOM_MIN = 25;
+  const ZOOM_MIN = 10;
   const ZOOM_MAX = 300;
   const ZOOM_STEP = 1.25;
 
