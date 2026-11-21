@@ -74,3 +74,9 @@ test("the pages call attachGraphZoom", () => {
     assert.match(fs.readFileSync(require.resolve(f), "utf8"), /attachGraphZoom/);
   }
 });
+
+test("the graph boxes limit their height and scroll in both axes", () => {
+  const css = (f, sel) => fs.readFileSync(require.resolve(f), "utf8").match(new RegExp("\\" + sel + " \\{[^}]*\\}"))[0];
+  assert.match(css("../web/index.html", ".pipeGraphBox"), /max-height: 60vh; overflow: auto;/);
+  assert.match(css("../web/pipelines.html", ".graphBox"), /max-height: 60vh; overflow: auto;/);
+});

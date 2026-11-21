@@ -1349,8 +1349,11 @@
     box.addEventListener("wheel", (e) => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      const rect = box.getBoundingClientRect();
-      set(stepZoom(zoom, e.deltaY < 0 ? 1 : -1), { x: e.clientX - rect.left, y: e.clientY - rect.top });
+      // The pointer relative to the box scroll area, so that padding and border do not count.
+      const rect = (svg || box).getBoundingClientRect();
+      const lead = svg ? { x: box.scrollLeft, y: box.scrollTop } : { x: 0, y: 0 };
+      set(stepZoom(zoom, e.deltaY < 0 ? 1 : -1),
+        { x: e.clientX - rect.left - lead.x, y: e.clientY - rect.top - lead.y });
     }, { passive: false });
     box.addEventListener("keydown", (e) => {
       if (e.ctrlKey || e.metaKey || e.altKey || e.target !== box) return;
