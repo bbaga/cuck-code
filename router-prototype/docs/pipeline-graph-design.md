@@ -79,8 +79,8 @@ These node keys are optional. A missing key has its default:
 | `required` | A script check node must PASS before the work is accepted. | `false` |
 | `checkout` | The tree a script check node runs in. | `worktree` |
 
-Built-in pipelines use none of `after`, `scripts`, `failFast`, `required` and
-`checkout`. Scripts depend on the repository, so no built-in pipeline has a
+`default` and `minimal` use none of `after`, `scripts`, `failFast`, `required`
+and `checkout`; the example `example-choreographed` uses one repository-independent
 script node.
 
 The syntax of an edge is `<from> -> <to>: <interaction>[, <interaction>...]`.
@@ -200,7 +200,9 @@ next stage, or one report to the planner. The planner is woken only at a chain
 end. `line.pendingHandoffs` holds handoffs that wait for a worker slot; the
 router starts them when a run ends and after a line loads. Script checks get
 `CUCK_BASE_COMMIT` (the base commit of the head). `pipelines/choreographed.yaml`
-is the built-in example.
+is a built-in example. `pipelines/example-choreographed.yaml` is the reference
+example: a stage of a validator and a script check, a second chain, a wait node
+and integration.
 
 `wait-runtime.js` runs the wait node. A start call on a wait node creates one
 wait worker for each batch: `runner: wait`, no process, no worktree, no branch.

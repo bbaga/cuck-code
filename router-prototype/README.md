@@ -186,7 +186,8 @@ Nothing to do. The keys `after`, `scripts`, `failFast`, `required` and
 `checkout` and the type key `runner` are optional. A missing key has its
 default: `runner: agent`, `after: []`, `required: false`, `checkout: worktree`.
 The built-in pipelines `default` and `minimal` keep their behaviour and use none
-of these keys. Managed pipelines and the graphs stored in `line.json` load as
+of these keys; the example `example-choreographed` uses one repository-independent
+script node. Managed pipelines and the graphs stored in `line.json` load as
 they are, and the layout rules in "How pipelines are drawn" draw them.
 
 ### Pipeline file
@@ -631,6 +632,60 @@ or stage.
   chips go away when `stage` is `null`.
 - The state of a wait worker carries `outcome`, so a page load shows it.
 
+
+#### Reference example and walkthrough
+
+The built-in pipeline `example-choreographed` (`pipelines/example-choreographed.yaml`)
+is the reference example. Backend work goes to `backend-val` and the script check
+`backend-lint` at the same time (one stage). Frontend work goes to `frontend-val`.
+The wait node `batch` collects the tasks, then `integration` runs one time. The
+script of `backend-lint` is `git diff --check "$CUCK_BASE_COMMIT" HEAD`. It does
+not depend on the repository. The test `test/example-pipeline-server.test.js`
+runs the flow below.
+
+1. The planner starts one backend task (`backend-impl`) and one frontend task
+   (`frontend-impl`). Each start call has `task`, `repo` and `criteria`.
+2. The planner starts `batch` with `members` (the names of both tasks) and
+   `instructions` for the integration.
+3. The backend task ends its run. The router starts `backend-val` and
+   `backend-lint` on this run at the same time. The planner gets no wake.
+4. `backend-lint` fails and `backend-val` passes. After both ended, the router
+   sends one combined rework to `backend-impl`. The planner gets no wake.
+5. The next backend run ends. Both checkers pass, and the backend task arrives
+   at `batch`.
+6. The frontend task ends its run. `frontend-val` fails, and the router sends
+   one rework to `frontend-impl`. The next run passes, and the frontend task
+   arrives at `batch`.
+7. All members arrived. `batch` completes, and the router starts `integration`
+   one time with the `instructions` of the `batch` start call.
+8. The planner gets one report per ended chain or batch only when something
+   fails: the rework limit (`maxRounds`), a failed or stopped checker, or a
+   handoff error. It gets no PASS report per task and no report per checker.
+   At the end, it gets the integration report.
+
+The linear variant runs the script first and the validator after it. The
+validator starts only when the script passes. The snippet is a complete pipeline:
+
+```yaml
+name: linear
+start: planner
+nodes:
+  planner:     { type: planner }
+  impl:        { type: backend-implementor }
+  ci:          { type: script-check, checks: [impl], scripts: [{ name: unit, run: "npm test" }] }
+  val:         { type: backend-validator, checks: [impl] }
+  integration: { type: integration-validator }
+edges:
+  - planner -> impl: start, feedback, accept
+  - impl -> planner: report
+  - impl -> ci: handoff     # the implementor ends: the script runs first
+  - ci -> impl: rework      # the script fails: the implementor gets the rework
+  - ci -> val: handoff      # the script passes: the validator starts
+  - val -> impl: rework     # the validator rejects: the implementor gets the rework
+  - "[ci, val] -> planner: report"
+  - planner -> integration: start
+  - integration -> planner: report
+```
 
 ### How pipelines are drawn
 
