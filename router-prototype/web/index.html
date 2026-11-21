@@ -700,6 +700,7 @@ window.addEventListener("DOMContentLoaded", () => {
   // A line without such a worker shows no panel.
   function renderChainPanel(st) {
     const panel = st.chainPanel;
+    if (!panel) return;
     const cards = [];
     for (const w of st.workers.values()) {
       const wait = pipelineUI.waitCardView(w);
