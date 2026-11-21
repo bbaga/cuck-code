@@ -180,8 +180,7 @@ Choreographed pipelines add the interaction keys `when` (the run outcomes the
 interaction applies to; default all seven) and `fallback` (fires only when no
 non-fallback `complete` interaction applied; `report` is one). The effect
 `arrive` is reserved for built-in interactions, as `accept` is. The router runs
-`handoff` and `rework`; the runtime for `arrive` (the wait node) is added in a
-later part.
+`handoff`, `rework` and `arrive`.
 
 Parts of the choreography that need no runtime are pure code. `call-fields.js`
 adds the caller fields of the nodes after the called node (complete-create
@@ -201,7 +200,41 @@ next stage, or one report to the planner. The planner is woken only at a chain
 end. `line.pendingHandoffs` holds handoffs that wait for a worker slot; the
 router starts them when a run ends and after a line loads. Script checks get
 `CUCK_BASE_COMMIT` (the base commit of the head). `pipelines/choreographed.yaml`
-is the built-in example. The wait node runtime is added in a later part.
+is the built-in example.
+
+`wait-runtime.js` runs the wait node. A start call on a wait node creates one
+wait worker for each batch: `runner: wait`, no process, no worktree, no branch.
+It holds `members` (head ids), `arrivals` (`{ <head id>: { runGeneration,
+checkerId, at } }`) and the start fields (`chainFields`, for example
+`instructions`). `members` accepts names or ids. A member of another running wait
+instance of the same node gives 409 `MEMBER_IN_BATCH`. A wait worker does not
+count against the worker cap. The pure functions are in `wait-node.js`.
+
+- An `arrive` decision (one checker, or the stage) records the arrival on the
+  running wait instance of the target node that has the head as member, and
+  sends `wait_update`. The planner gets no wake. Without such an instance the
+  head keeps `pendingArrival` and the planner gets the normal report one time;
+  a later wait instance imports the arrival when its `runGeneration` is still
+  current.
+- A feedback call starts a new run of the head. Its earlier arrival stays and
+  shows as `stale`. The batch is ready when every member has an arrival for its
+  current run and no member runs. The router checks this after each arrival,
+  after a wait start, after each run end and after a line loads.
+- A ready batch completes (`status: completed`, `verdict: pass`) and the
+  router routes its completion. With a `handoff` edge it starts the node with
+  the `instructions` of the start call. It sends no `BATCH REPORT` when that
+  start works. If the start fails, the planner gets `HANDOFF FAILED` and the
+  `BATCH REPORT`; a full worker cap queues the handoff in
+  `pendingHandoffs`. With a `report` edge only, the planner gets the `BATCH
+  REPORT` one time.
+- `timeLimit` (the node settings): no limit means no timer. At expiry the wait
+  worker is `failed` with outcome `timeout`. A stop request makes it `stopped`
+  with outcome `stopped`. In both cases the planner gets one `BATCH REPORT` that
+  lists the members that did not arrive. A finished wait worker can be removed.
+- `saveLine` keeps `members`, `arrivals`, `startedAt`, `outcome` and, on heads,
+  `pendingArrival`. After a restart a running wait worker stays running. The
+  router sets its timer again with the rest of the time, or applies the expiry
+  at once.
 
 The `accept` effect is reserved for the built-in `accept` interaction. It
 sends no message: it records the acceptance, which the integration rule uses.
@@ -236,8 +269,8 @@ supplies one of them is rejected.
 `pipeline.has.implementor`, `.checker` and `.integration` are booleans from
 `pipelineCapabilities(graph)`: a node has a type with workspace `own-worktree`,
 `source` or `integration`. `pipeline.has.chains` is true when the pipeline has a
-complete-create, rework or arrive edge. `pipeline.has.wait` is false until the
-wait node runtime is added in a later part. The planner prompt and the report
+complete-create, rework or arrive edge. `pipeline.has.wait` is true when a node has a
+type with `runner: wait`. The planner prompt and the report
 texts use them in sections. The built-in pipelines `planner-only` (one node)
 and `implement-only` (planner and implementor) have no checker and no
 integration node.

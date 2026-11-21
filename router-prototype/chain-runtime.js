@@ -1,12 +1,12 @@
 "use strict";
 
-// The runtime of choreographed pipelines: handoff, rework and stages (the wait node is a later part).
+// The runtime of choreographed pipelines: handoff, rework, stages and the arrival at a wait node.
 // The server gives its helpers as parameters, so this module holds no server state.
 // The router calls routeCompleted when a run ends. The decisions come from choreography.js.
 
 const { outcomeOf, renderReports } = require("./report-interaction");
 const { routeCompletion, stageOf, resolveStage, combinedReworkText, combinedReportText,
-  reworkLimitText } = require("./choreography");
+  reworkLimitText, maxRoundsOf } = require("./choreography");
 const { chainFieldNames } = require("./call-fields");
 
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -20,13 +20,29 @@ function pickChainFields(graph, nodeId, body) {
 
 // The chain state of a head as saved in line.json, and its restore.
 function serializeChain(worker) {
-  return { chainFields: worker.chainFields || {}, reworkRounds: worker.reworkRounds || {}, stage: worker.stage || null };
+  return { chainFields: worker.chainFields || {}, reworkRounds: worker.reworkRounds || {}, stage: worker.stage || null,
+    pendingArrival: worker.pendingArrival || null };
 }
 
 function restoreChain(saved) {
   return { chainFields: isObject(saved.chainFields) ? saved.chainFields : {},
     reworkRounds: isObject(saved.reworkRounds) ? saved.reworkRounds : {},
-    stage: isObject(saved.stage) && isObject(saved.stage.members) ? saved.stage : null };
+    stage: isObject(saved.stage) && isObject(saved.stage.members) ? saved.stage : null,
+    pendingArrival: isObject(saved.pendingArrival) && typeof saved.pendingArrival.node === "string"
+      ? saved.pendingArrival : null };
+}
+
+// What the dashboard shows for a chain head: the rework counts, the limit of the next stage and the stage.
+function chainDashboardFields(graph, worker) {
+  const node = graph && graph.nodes && graph.nodes[worker.node];
+  if (!node || graph.types[node.type].workspace !== "own-worktree") return {};
+  const members = stageOf(graph, worker.node);
+  const stage = worker.stage ? { sender: worker.stage.sender,
+    members: Object.entries(worker.stage.members).map(([name, m]) => ({ node: name, status: m.status,
+      outcome: m.outcome, checkerId: m.checkerId })) } : null;
+  return { reworkRounds: worker.reworkRounds || {},
+    maxRounds: members.length > 0 ? { [worker.node]: Math.min(...members.map((n) => maxRoundsOf(graph, n))) } : {},
+    stage };
 }
 
 function restorePendingHandoffs(list) {
@@ -44,16 +60,23 @@ function renderKind(line, worker, head, kind, timedOut) {
 
 function createChainRuntime(deps) {
   const { saveLine, slog, runningCount, workerCap, afterGate, createSourceChecker, sourceIdentity,
-    reportForValidation, deliverToInstance, enqueueRequest, interactionReportRequest } = deps;
+    reportForValidation, deliverToInstance, enqueueRequest, interactionReportRequest, wait, broadcast } = deps;
   const tell = (line, text) => enqueueRequest(line, interactionReportRequest(text));
   const isHeadNode = (graph, node) => graph.types[graph.nodes[node].type].workspace === "own-worktree";
   const headOf = (line, worker) => (isHeadNode(line.graph, worker.node) ? worker : line.workers.get(worker.validates) || null);
+
+  // Tells the dashboard the current chain state of the head. Every change of head.stage calls it.
+  function announce(line, head) {
+    broadcast(line, "worker_status", { workerId: head.id, status: head.status, verdict: head.verdict || null,
+      worker: { id: head.id, ...chainDashboardFields(line.graph, head) } });
+  }
 
   // A handoff that cannot go on ends the chain: the planner gets one message.
   function handoffFailed(line, head, toNode, error) {
     slog("warn", "handoff.failed", { lineId: line.id, headId: head.id, node: toNode, error });
     head.stage = null;
     saveLine(line);
+    announce(line, head);
     const fallback = renderKind(line, head, null, "report", false);
     tell(line, [`HANDOFF FAILED - ${toNode} could not start for '${head.name}': ${error}`, fallback]
       .filter(Boolean).join("\n\n"));
@@ -83,6 +106,7 @@ function createChainRuntime(deps) {
       // The run may have ended already: keep a "done" member as it is.
       if (member && member.status === "queued") member.status = "running";
       if (member) member.checkerId = out.worker.id;
+      announce(line, head);
       return out.worker;
     }
     if (out.code === "WORKER_CAP") {
@@ -101,6 +125,7 @@ function createChainRuntime(deps) {
     for (const node of nodes) stage.members[node] = { status: "queued", checkerId: null, outcome: null };
     head.stage = stage;
     saveLine(line);
+    announce(line, head);
     for (const node of nodes) {
       if (head.stage !== stage) break;
       autoStartChecker(line, node, head);
@@ -114,7 +139,7 @@ function createChainRuntime(deps) {
     const startable = [];
     for (const entry of pending) {
       const head = line.workers.get(entry.headId);
-      const live = head && head.runGeneration === entry.headRun && head.stage
+      const live = entry.wait ? wait.handoffLive(line, entry) : head && head.runGeneration === entry.headRun && head.stage
         && head.stage.headRun === entry.headRun && head.stage.members[entry.to]
         && head.stage.members[entry.to].status === "queued";
       if (live) (runningCount(line) + startable.length < workerCap ? startable : kept).push(entry);
@@ -124,7 +149,8 @@ function createChainRuntime(deps) {
     saveLine(line);
     for (const entry of startable) {
       const head = line.workers.get(entry.headId);
-      if (head.stage && head.stage.headRun === entry.headRun) autoStartChecker(line, entry.to, head);
+      if (entry.wait) wait.retryHandoff(line, entry);
+      else if (head.stage && head.stage.headRun === entry.headRun) autoStartChecker(line, entry.to, head);
     }
   }
 
@@ -151,6 +177,15 @@ function createChainRuntime(deps) {
       : combinedReportText({ headName: head.name, sender: stage.sender, members: texts });
   }
 
+  // The head passed: the wait instance of `node` records it. Without a wait instance the head keeps a
+  // pending arrival and the planner gets the fallback report. A later wait instance imports the arrival.
+  function arrive(line, head, node, checker, fallbackText) {
+    if (wait.arrive(line, head, node, checker)) return;
+    head.pendingArrival = { node, runGeneration: head.runGeneration, checkerId: checker.id };
+    saveLine(line);
+    tell(line, fallbackText);
+  }
+
   function decideStage(line, head, stage) {
     const decision = resolveStage({ graph: line.graph, stage, reworkRounds: head.reworkRounds });
     const nodes = Object.keys(stage.members);
@@ -171,12 +206,16 @@ function createChainRuntime(deps) {
     } else if (decision.kind === "handoff") {
       startStage(line, head, nodes[0]);
     } else {
-      // A report, or an arrive (the wait node runtime is a later part: the planner gets the report).
       const text = reportText(line, head, stage, nodes);
-      tell(line, decision.exhausted
-        ? `${reworkLimitText({ sender: stage.sender, headName: head.name, rounds })}\n\n${text}` : text);
+      if (decision.kind === "arrive") {
+        arrive(line, head, decision.to, line.workers.get(stage.members[nodes[0]].checkerId), text);
+      } else {
+        tell(line, decision.exhausted
+          ? `${reworkLimitText({ sender: stage.sender, headName: head.name, rounds })}\n\n${text}` : text);
+      }
     }
     saveLine(line);
+    announce(line, head);
   }
 
   // A checker of a stage ended.
@@ -193,6 +232,7 @@ function createChainRuntime(deps) {
     member.checkerId = worker.id;
     member.outcome = outcomeOf(line.graph, worker, timedOut);
     saveLine(line);
+    announce(line, head);
     if (Object.values(stage.members).every((m) => m.status === "done")) decideStage(line, head, stage);
   }
 
@@ -206,12 +246,20 @@ function createChainRuntime(deps) {
       if (head) return startStage(line, head, worker.node);
       return handoffFailed(line, worker, worker.node, "the chain head is missing");
     }
-    // A rework or arrive action of a run outside a stage has no runtime: the planner gets the report.
     const text = renderKind(line, worker, head, "report", timedOut);
+    const arrival = actions.find((a) => a.kind === "arrive");
+    if (arrival && head) return arrive(line, head, arrival.to, worker, text);
+    // A rework action of a run outside a stage has no runtime: the planner gets the report.
     if (text && actions.length > 0) tell(line, text);
   }
 
-  return { routeCompleted, drainPendingHandoffs, recoverAfterLoad };
+  // The feedback of the planner starts the chain again from the head: the stage clears.
+  function clearChain(line, head) {
+    resetChain(head);
+    announce(line, head);
+  }
+
+  return { routeCompleted, drainPendingHandoffs, recoverAfterLoad, clearChain };
 }
 
 // The feedback of the planner starts the chain again from the head.
@@ -221,4 +269,4 @@ function resetChain(worker) {
 }
 
 module.exports = { createChainRuntime, pickChainFields, serializeChain, restoreChain,
-  restorePendingHandoffs, resetChain };
+  restorePendingHandoffs, resetChain, chainDashboardFields };
