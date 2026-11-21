@@ -182,6 +182,13 @@ non-fallback `complete` interaction applied; `report` is one). The effect
 `arrive` is reserved for built-in interactions, as `accept` is. The runtime for
 `handoff`, `rework` and `arrive` is added in a later part.
 
+Parts of the choreography that need no runtime are pure code. `call-fields.js`
+adds the caller fields of the nodes after the called node (complete-create
+edges, stop at `arrive`). `choreography.js` holds `routeCompletion`,
+`stageOf` and `resolveStage` (stage resolution: broken member, then reject, then
+common next step) and the text builders. The planner prompt gets a `## Chains`
+section. The runtime that acts on these answers is added in a later part.
+
 The `accept` effect is reserved for the built-in `accept` interaction. It
 sends no message: it records the acceptance, which the integration rule uses.
 

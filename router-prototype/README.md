@@ -525,6 +525,26 @@ runtime is added in a later part.
   default is not written into the node).
 - The pipeline files `default` and `minimal` do not change.
 
+Routing and prompt text (pure code; the runtime is added in a later part):
+
+- Chain fields: a call that creates node T also requires the caller fields of
+  each node that T reaches through complete-create edges (`handoff`). The walk
+  stops at `arrive` edges and visits each node one time. It adds no effect
+  fields (`source`, `repo`, `name`) of those nodes. `requiredBy` is
+  `handoff to node <id>`. A wait node also requires `members`.
+  `chainFieldNames` in `call-fields.js` lists these downstream fields.
+- `routeCompletion` in `choreography.js` picks the actions for one finished run.
+  It keeps the interactions whose `when` has the outcome, drops `rework` when
+  the rounds reach `maxRounds` (`exhausted`), and uses fallback interactions
+  only when no other one is left.
+- `resolveStage` decides one time after the last checker of a stage ended:
+  a failed, timed out or stopped member gives one report. A reject gives one
+  combined rework while rounds are below the smallest `maxRounds`, else a
+  report with `exhausted`. If all pass, the stage takes its common handoff or
+  arrive, else it reports.
+- The planner prompt has a `## Chains` section only when the pipeline has
+  chains. It has one line for each chain head and for each wait node.
+
 ### How pipelines are drawn
 
 The router computes the relations, the column and the row of each node from

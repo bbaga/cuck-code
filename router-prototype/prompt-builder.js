@@ -9,6 +9,7 @@ const { isRouterVariable } = require("./fields");
 const { introspect } = require("./call-fields");
 const { CHANGESET_LIMIT } = require("./changeset");
 const { pipelineCapabilities } = require("./line-graph");
+const { stageOf, maxRoundsOf } = require("./choreography");
 
 function has(obj, key) {
   return obj !== null && typeof obj === "object" && Object.prototype.hasOwnProperty.call(obj, key);
@@ -192,7 +193,57 @@ function protocolSection(resolved, nodeId, routerUrl, lineId) {
   }
   const gates = gateLines(resolved);
   if (gates.length) out.push(["## Gates", ...gates].join("\n"));
+  if (pipelineCapabilities(resolved).chains) out.push(["## Chains", ...chainLines(resolved, nodeId)].join("\n"));
   return out.join("\n\n");
+}
+
+const quoted = (ids) => {
+  const list = ids.map((id) => `'${id}'`);
+  return list.length < 2 ? list.join("") : `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}`;
+};
+
+// The nodes that `caller` starts with a request call that creates an instance.
+function startedNodes(resolved, caller) {
+  const out = [];
+  for (const edge of resolved.edges || []) {
+    if (edge.from !== caller || out.includes(edge.to)) continue;
+    const starts = (edge.interactions || []).some((name) => {
+      const it = has(resolved.interactions, name) ? resolved.interactions[name] : null;
+      return it && it.trigger === "request" && it.effect === "create";
+    });
+    if (starts) out.push(edge.to);
+  }
+  return out;
+}
+
+// The lines of the Chains section: one line for each chain head, one for each wait node.
+function chainLines(resolved, caller) {
+  const isWait = (id) => resolved.types[resolved.nodes[id].type].runner === "wait";
+  const lines = [];
+  for (const head of startedNodes(resolved, caller)) {
+    const stage = stageOf(resolved, head);
+    if (stage.length === 0 || isWait(head)) continue;
+    const together = stage.length > 1 ? " at the same time" : "";
+    const parts = [`After '${head}' finishes, the router starts ${quoted(stage)}${together} with the fields of your start call.`];
+    if (stage.length > 1) parts.push("The chain goes on when all of them pass.");
+    const limits = stage.filter((id) => (resolved.edges || []).some((e) => e.from === id && (e.interactions || [])
+      .some((name) => resolved.interactions[name] && resolved.interactions[name].target === "source"
+        && resolved.interactions[name].trigger === "complete")));
+    if (limits.length > 0) {
+      parts.push(`On FAIL the router sends the report back to the implementor, up to ${Math.min(...limits.map((id) => maxRoundsOf(resolved, id)))} rounds.`);
+    }
+    parts.push("You get a report only when the chain ends: a PASS at the last node, the rework limit, a failure, a stop, or a handoff error.");
+    lines.push(parts.join(" "));
+  }
+  for (const id of Object.keys(resolved.nodes)) {
+    if (!isWait(id)) continue;
+    const next = stageOf(resolved, id);
+    const tail = next.length > 0
+      ? `the router starts ${quoted(next)} with the fields of the '${id}' start call.`
+      : `you get one ${id} report.`;
+    lines.push(`Start '${id}' with the instance names of the tasks in 'members'. When every member passes its chain, ${tail}`);
+  }
+  return lines;
 }
 
 // The gate rules of 'required' script nodes and of nodes with 'after'. Empty when no node has one.
