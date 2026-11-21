@@ -79,8 +79,8 @@ These node keys are optional. A missing key has its default:
 | `required` | A script check node must PASS before the work is accepted. | `false` |
 | `checkout` | The tree a script check node runs in. | `worktree` |
 
-Built-in pipelines use none of `after`, `scripts`, `failFast`, `required` and
-`checkout`. Scripts depend on the repository, so no built-in pipeline has a
+`default` and `minimal` use none of `after`, `scripts`, `failFast`, `required`
+and `checkout`; the example `example-choreographed` uses one repository-independent
 script node.
 
 The syntax of an edge is `<from> -> <to>: <interaction>[, <interaction>...]`.
@@ -172,6 +172,72 @@ The building blocks the router implements:
 | `report` | deliver | complete | starter | none: the router fills `report` and `outcome` |
 | `accept` | accept | request | chosen | `instance`, `reason`. Records that the coordinator accepts the instance's latest run without a check. This replaces `SKIP VALIDATION`. |
 
+| `handoff` | create | complete | new | none. `when: [done, pass]`. |
+| `rework` | deliver | complete | source | none. `when: [reject, missing]`. |
+| `arrive` | arrive | complete | waiter | none. `when: [done, pass]`. |
+
+Choreographed pipelines add the interaction keys `when` (the run outcomes the
+interaction applies to; default all seven) and `fallback` (fires only when no
+non-fallback `complete` interaction applied; `report` is one). The effect
+`arrive` is reserved for built-in interactions, as `accept` is. The router runs
+`handoff`, `rework` and `arrive`.
+
+Parts of the choreography that need no runtime are pure code. `call-fields.js`
+adds the caller fields of the nodes after the called node (complete-create
+edges, stop at `arrive`). `choreography.js` holds `routeCompletion`,
+`stageOf` and `resolveStage` (stage resolution: broken member, then reject, then
+common next step) and the text builders. The planner prompt gets a `## Chains`
+section.
+
+`chain-runtime.js` acts on these answers (`workerClosed` calls it). The chain
+head, an own-worktree instance that the planner started, keeps `chainFields`,
+`reworkRounds` and `stage`. A `done` run of a node with a complete-create edge
+starts the stage: every checker has `validates` = the head id. Each checker run
+that ends is recorded in the stage. A result of an older head run, or after a
+feedback reset, is stale and is ignored. After the last member ended,
+`resolveStage` gives one decision: rework to the head (the rounds grow), the
+next stage, or one report to the planner. The planner is woken only at a chain
+end. `line.pendingHandoffs` holds handoffs that wait for a worker slot; the
+router starts them when a run ends and after a line loads. Script checks get
+`CUCK_BASE_COMMIT` (the base commit of the head). `pipelines/choreographed.yaml`
+is a built-in example. `pipelines/example-choreographed.yaml` is the reference
+example: a stage of a validator and a script check, a second chain, a wait node
+and integration.
+
+`wait-runtime.js` runs the wait node. A start call on a wait node creates one
+wait worker for each batch: `runner: wait`, no process, no worktree, no branch.
+It holds `members` (head ids), `arrivals` (`{ <head id>: { runGeneration,
+checkerId, at } }`) and the start fields (`chainFields`, for example
+`instructions`). `members` accepts names or ids. A member of another running wait
+instance of the same node gives 409 `MEMBER_IN_BATCH`. A wait worker does not
+count against the worker cap. The pure functions are in `wait-node.js`.
+
+- An `arrive` decision (one checker, or the stage) records the arrival on the
+  running wait instance of the target node that has the head as member, and
+  sends `wait_update`. The planner gets no wake. Without such an instance the
+  head keeps `pendingArrival` and the planner gets the normal report one time;
+  a later wait instance imports the arrival when its `runGeneration` is still
+  current.
+- A feedback call starts a new run of the head. Its earlier arrival stays and
+  shows as `stale`. The batch is ready when every member has an arrival for its
+  current run and no member runs. The router checks this after each arrival,
+  after a wait start, after each run end and after a line loads.
+- A ready batch completes (`status: completed`, `verdict: pass`) and the
+  router routes its completion. With a `handoff` edge it starts the node with
+  the `instructions` of the start call. It sends no `BATCH REPORT` when that
+  start works. If the start fails, the planner gets `HANDOFF FAILED` and the
+  `BATCH REPORT`; a full worker cap queues the handoff in
+  `pendingHandoffs`. With a `report` edge only, the planner gets the `BATCH
+  REPORT` one time.
+- `timeLimit` (the node settings): no limit means no timer. At expiry the wait
+  worker is `failed` with outcome `timeout`. A stop request makes it `stopped`
+  with outcome `stopped`. In both cases the planner gets one `BATCH REPORT` that
+  lists the members that did not arrive. A finished wait worker can be removed.
+- `saveLine` keeps `members`, `arrivals`, `startedAt`, `outcome` and, on heads,
+  `pendingArrival`. After a restart a running wait worker stays running. The
+  router sets its timer again with the rest of the time, or applies the expiry
+  at once.
+
 The `accept` effect is reserved for the built-in `accept` interaction. It
 sends no message: it records the acceptance, which the integration rule uses.
 
@@ -204,8 +270,9 @@ supplies one of them is rejected.
 
 `pipeline.has.implementor`, `.checker` and `.integration` are booleans from
 `pipelineCapabilities(graph)`: a node has a type with workspace `own-worktree`,
-`source` or `integration`. `pipeline.has.wait` and `pipeline.has.chains` are
-always false until later parts add them. The planner prompt and the report
+`source` or `integration`. `pipeline.has.chains` is true when the pipeline has a
+complete-create, rework or arrive edge. `pipeline.has.wait` is true when a node has a
+type with `runner: wait`. The planner prompt and the report
 texts use them in sections. The built-in pipelines `planner-only` (one node)
 and `implement-only` (planner and implementor) have no checker and no
 integration node.
@@ -434,13 +501,23 @@ and the offending node, edge or field.
    edges are errors.
 9. A `checks` node has a `source` type. The nodes it checks have an
    `own-worktree` type (R9).
-10. A `complete`-triggered interaction has no `effect: create` (R10).
+10. A `complete`-triggered `create` needs a target with workspace `source` or
+    `integration` (R10).
 11. R11: a node of a type with `runner: script` has `scripts` and `checks`,
     sets no agent key, and its type chain starts at `script-check`. Any other
     node sets no script key.
 12. R12: a node with `after` has `checks`. Each listed node is known, checks a
     shared target and is not the node itself.
-13. R13: the ordering relations form no loop.
+13. R13: the ordering relations form no loop. An `arrive` edge is an ordering
+    relation.
+    R14 (handoff shape), R15 (rework shape and `maxRounds`), R16 (wait shape)
+    and R18 (stage shape) check the choreographed pipelines. R4 accepts a
+    `fallback: true` interaction to the start node as a path. The new node type
+    `wait` (`runner: wait`, `workspace: none`, field type `instances`) and the
+    node key `maxRounds` (1 to 20, default 3 applied by the runtime) belong to
+    the same feature. `maxRounds` is the number of automatic reworks. With
+    `maxRounds: 3` the router sends 3 reworks. The 4th FAIL gives REWORK LIMIT
+    REACHED to the planner.
 14. R17: the type chain of the start node starts at `planner`, and no other
     node has a type whose root is `planner`. Only the planner is mandatory:
     implementors, checkers and the integration node are optional.
@@ -453,6 +530,27 @@ The relation kinds are `interaction` (an edge), `checks`, `after`,
 `accepted-work` (a type with `requires: accepted-work`) and `required`
 (`required: true`). The README section "How pipelines are drawn" has the full
 table.
+
+### Choreographed pipelines in the graph
+
+The graph code reads the `interactions` list of each relation and the runner
+of each node. It reads no node id or type name.
+
+- A node with `runner: wait` has the badge "wait" (`node-badge-wait`) and the
+  box class `wait`.
+- An interaction relation with `handoff` gets `edge-handoff`: a solid line in
+  the accent color. One with `rework` gets `edge-rework`: a dashed back edge with
+  the label "rework (FAIL)". One with `arrive` gets `edge-arrive`: a solid line
+  with the label "arrive (PASS)". The label changes only when the edge has this
+  one interaction. The text list of relations does not change.
+- A fan-out draws one edge for each handoff target. The targets share one
+  column, because the column rule gives them the same longest path.
+- Relations with the same two end nodes share one path. Each next label moves
+  down 13 px.
+- `planner-only` (one node, no edge) and `implement-only` (two nodes) draw
+  with one settings row for each node.
+- The "Change the pipeline" section shows the text of a non-empty `removeFirst`
+  answer in its alert box and blocks Apply.
 
 ## Order when after is not defined
 
@@ -628,3 +726,17 @@ The task list for these steps is in `pipeline-graph-tasks.md`.
 - **Prompt extensions in the pipeline file.** `defaults.prompt` and a node's
   `prompt` (inline or `{file}`) extend system prompts with no extra plugin
   file. They follow the same field rules.
+
+## Chain cards on the line dashboard
+
+The line graph puts a wait worker in the lane of its first member. It has its
+own column after the validators and stands in the row of its members. Under
+the graph, the chain panel shows one card for each wait worker and for each
+chain head with a rework count or a stage:
+
+- The wait card shows the status, the outcome and a chip for each member
+  (`wait-member-waiting`, `wait-member-arrived`, `wait-member-stale`).
+- The head card shows `rework round <n> / <max>` and a chip for each stage
+  member (`stage-chip-queued`, `-running`, `-pass`, `-fail`, `-outcome`).
+- A line on the default pipeline has none of these and looks as before.
+- The cards wrap in the panel width. There is no sideways page scroll at 320 px.

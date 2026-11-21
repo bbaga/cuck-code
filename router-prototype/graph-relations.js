@@ -25,7 +25,7 @@ function declaredRelations(graph) {
     const list = names.map((name) => (has(interactions, name) ? interactions[name] : {}));
     relations.push({
       from: edge.from, to: edge.to, kind: "interaction", label: names.join(", "), interactions: [...names],
-      ordering: list.some((i) => i.effect === "create"),
+      ordering: list.some((i) => i.effect === "create" || i.effect === "arrive"),
       dashed: list.length > 0 && list.every((i) => i.trigger === "complete"),
     });
   }

@@ -274,3 +274,18 @@ test("script keys on an agent node parse and stay for rule R11", () => {
   assert.equal(b.failFast, false);
   assert.equal(b.checkout, "clean");
 });
+
+// ---- maxRounds ----
+
+const WITH_ROUNDS = (value) => `name: x\nstart: planner\nnodes:\n  planner: { type: planner }\n  A: { type: implementor, maxRounds: ${value} }\nedges:\n  - planner -> A: start\n`;
+
+test("maxRounds is stored on the node, and no default is written", () => {
+  assert.equal(parse(WITH_ROUNDS(5)).nodes.A.maxRounds, 5);
+  assert.equal(parse(WITH_ROUNDS(1)).nodes.A.maxRounds, 1);
+  assert.equal(parse(WITH_ROUNDS(20)).nodes.A.maxRounds, 20);
+  assert.ok(!("maxRounds" in parse(WITH_ROUNDS(5).replace(", maxRounds: 5", "")).nodes.A));
+});
+
+test("maxRounds must be an integer from 1 to 20", () => {
+  for (const bad of [0, 21, 1.5, '"3"', "true"]) throwsFile(WITH_ROUNDS(bad), /maxRounds must be an integer from 1 to 20/);
+});

@@ -1,0 +1,21 @@
+name: choreographed
+description: The planner starts tasks. Each task runs implement, validate and rework until PASS, waits for its batch, then integration runs.
+start: planner
+nodes:
+  planner:     { type: planner }
+  impl:        { type: backend-implementor }
+  val:         { type: backend-validator, checks: [impl], maxRounds: 3 }
+  batch:       { type: wait }
+  integration: { type: integration-validator }
+edges:
+  - planner -> impl: start, feedback, accept
+  - impl -> val: handoff
+  - impl -> planner: report
+  - val -> impl: rework
+  - val -> batch: arrive
+  - val -> planner: report
+  - planner -> batch: start
+  - batch -> integration: handoff
+  - batch -> planner: report
+  - planner -> integration: start
+  - integration -> planner: report

@@ -5,7 +5,7 @@
 
 const { isDeepStrictEqual } = require("node:util");
 const { placeholders } = require("./template");
-const { checkValues, isRouterVariable } = require("./fields");
+const { checkValues, isRouterVariable, splitInstances, MAX_INSTANCES } = require("./fields");
 
 function has(obj, key) {
   return obj !== null && typeof obj === "object" && Object.prototype.hasOwnProperty.call(obj, key);
@@ -23,6 +23,70 @@ function callerVars(text) {
     out.push(v);
   }
   return out;
+}
+
+// The caller fields that the prompt of a node is built from: [{ name, decl, requiredBy }].
+function promptFields(resolved, nodeId) {
+  const node = resolved.nodes[nodeId];
+  const type = has(resolved.types, node.type) ? resolved.types[node.type] : undefined;
+  if (!type) throw new Error(`node '${nodeId}': unknown node type '${node.type}'`);
+  const nodeFields = node.fields || {};
+  const typeFields = type.fields || {};
+  const declOf = (v, where) => {
+    const inNode = has(nodeFields, v);
+    const inType = has(typeFields, v);
+    if (inNode && inType && !isDeepStrictEqual(nodeFields[v], typeFields[v])) {
+      throw new Error(`field '${v}' is declared in different ways by pipeline node ${nodeId} and node type ${node.type}`);
+    }
+    if (inNode) return nodeFields[v];
+    if (inType) return typeFields[v];
+    throw new Error(`${where}: caller field '${v}' is not declared`);
+  };
+  const defaults = resolved.defaults && resolved.defaults.prompt;
+  const out = [];
+  for (const v of callerVars(type.body)) {
+    out.push({ name: v, decl: declOf(v, `node type '${type.name}'`), requiredBy: `node type ${node.type}` });
+  }
+  for (const v of callerVars(defaults)) {
+    out.push({ name: v, decl: declOf(v, "defaults prompt"), requiredBy: "pipeline defaults" });
+  }
+  for (const v of callerVars(node.prompt)) {
+    out.push({ name: v, decl: declOf(v, `prompt of node '${nodeId}'`), requiredBy: `pipeline node ${nodeId}` });
+  }
+  return out;
+}
+
+// The nodes that the router starts after `nodeId` through complete-create edges, in edge order.
+// The walk follows these edges only: it stops at arrive edges, and it visits each node one time.
+function chainNodes(resolved, nodeId) {
+  const seen = new Set([nodeId]);
+  const order = [];
+  const queue = [nodeId];
+  while (queue.length > 0) {
+    const from = queue.shift();
+    for (const edge of resolved.edges || []) {
+      if (edge.from !== from || seen.has(edge.to)) continue;
+      const creates = (edge.interactions || []).some((name) => {
+        const it = has(resolved.interactions, name) ? resolved.interactions[name] : null;
+        return it && it.trigger === "complete" && it.effect === "create";
+      });
+      if (!creates || !has(resolved.nodes, edge.to)) continue;
+      seen.add(edge.to);
+      order.push(edge.to);
+      queue.push(edge.to);
+    }
+  }
+  return order;
+}
+
+// The names of the fields that a call to `nodeId` needs for the nodes after it in the chain.
+function chainFieldNames(resolved, nodeId) {
+  if (!resolved || !has(resolved.nodes, nodeId)) throw new Error(`unknown node '${nodeId}'`);
+  const names = [];
+  for (const id of chainNodes(resolved, nodeId)) {
+    for (const f of promptFields(resolved, id)) if (!names.includes(f.name)) names.push(f.name);
+  }
+  return names;
 }
 
 function requiredFields(resolved, interactionName, toNodeId) {
@@ -63,22 +127,15 @@ function requiredFields(resolved, interactionName, toNodeId) {
 
   if (interaction.effect === "create") {
     // 2. Everything the new instance's prompt is built from.
-    const nodeFields = node.fields || {};
-    const typeFields = type.fields || {};
-    const declOf = (v, where) => {
-      const inNode = has(nodeFields, v);
-      const inType = has(typeFields, v);
-      if (inNode && inType && !isDeepStrictEqual(nodeFields[v], typeFields[v])) {
-        throw new Error(`field '${v}' is declared in different ways by pipeline node ${toNodeId} and node type ${node.type}`);
-      }
-      if (inNode) return nodeFields[v];
-      if (inType) return typeFields[v];
-      throw undeclared(v, where);
-    };
-    for (const v of callerVars(type.body)) add(v, declOf(v, `node type '${type.name}'`), `node type ${node.type}`);
-    const defaults = resolved.defaults && resolved.defaults.prompt;
-    for (const v of callerVars(defaults)) add(v, declOf(v, "defaults prompt"), "pipeline defaults");
-    for (const v of callerVars(node.prompt)) add(v, declOf(v, `prompt of node '${toNodeId}'`), `pipeline node ${toNodeId}`);
+    for (const f of promptFields(resolved, toNodeId)) add(f.name, f.decl, f.requiredBy);
+    // A wait node has no prompt: all its declared fields (the members) are part of the call.
+    if (type.runner === "wait") {
+      for (const [name, decl] of Object.entries(type.fields || {})) add(name, decl, `node type ${node.type}`);
+    }
+    // 2b. The fields of the nodes that the router starts later, through complete-create edges.
+    for (const id of chainNodes(resolved, toNodeId)) {
+      for (const f of promptFields(resolved, id)) add(f.name, f.decl, `handoff to node ${id}`);
+    }
   }
 
   // 3. Effect fields.
@@ -105,6 +162,9 @@ function requiredFields(resolved, interactionName, toNodeId) {
 function describe(decl) {
   let kind = decl.type;
   if (decl.type === "instance" && decl.node !== undefined) {
+    kind += ` of ${Array.isArray(decl.node) ? decl.node.join(" or ") : decl.node}`;
+  }
+  if (decl.type === "instances" && decl.node !== undefined) {
     kind += ` of ${Array.isArray(decl.node) ? decl.node.join(" or ") : decl.node}`;
   }
   if (decl.type === "enum" && Array.isArray(decl.values)) kind += ` (${decl.values.join(", ")})`;
@@ -156,6 +216,25 @@ function checkLineValues(line, required, body) {
         const nodes = Array.isArray(decl.node) ? decl.node : [decl.node];
         if (!nodes.includes(inst.node)) add(field, `the instance belongs to node '${inst.node}': expected ${nodes.join(" or ")}`);
       }
+    } else if (decl.type === "instances") {
+      const list = splitInstances(value);
+      if (list.some((v) => v === "") || list.length > MAX_INSTANCES) {
+        add(field, `must be a comma-separated list of 1 to ${MAX_INSTANCES} instances`);
+        continue;
+      }
+      const nodes = decl.node === undefined ? null : [].concat(decl.node);
+      const seen = new Set();
+      for (const entry of list) {
+        const inst = line.instance(entry);
+        if (!inst) { add(field, `'${entry}': no such instance on this line`); continue; }
+        // A name and an id of one instance count as one entry.
+        const key = inst.id !== undefined ? inst.id : entry;
+        if (seen.has(key)) { add(field, `'${entry}': listed twice`); continue; }
+        seen.add(key);
+        if (nodes && !nodes.includes(inst.node)) {
+          add(field, `'${entry}': the instance belongs to node '${inst.node}': expected ${nodes.join(" or ")}`);
+        }
+      }
     } else if (decl.type === "repo") {
       if (!line.hasRepo(value)) add(field, "not a registered repo of this line");
     } else if (decl.type === "commit") {
@@ -194,4 +273,4 @@ function introspect(resolved, caller = resolved.start) {
   return { caller, interactions: [...byName.values()] };
 }
 
-module.exports = { requiredFields, checkCall, checkLineValues, introspect, describe };
+module.exports = { requiredFields, chainFieldNames, checkCall, checkLineValues, introspect, describe };

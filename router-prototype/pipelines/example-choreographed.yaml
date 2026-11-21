@@ -1,0 +1,35 @@
+# Example of a choreographed pipeline. Each task runs on its own from left to right.
+# The planner starts tasks and one wait node, then gets one report per finished chain or batch.
+name: example-choreographed
+description: "Example: backend work goes to a validator and a script check in parallel, frontend work to a validator. Rework runs on its own. A wait node collects the batch. Then integration runs once."
+start: planner
+nodes:
+  planner:       { type: planner }
+  backend-impl:  { type: backend-implementor }
+  frontend-impl: { type: frontend-implementor }
+  backend-val:   { type: backend-validator, checks: [backend-impl], maxRounds: 3 }
+  backend-lint:
+    type: script-check
+    checks: [backend-impl]
+    checkout: clean
+    maxRounds: 3
+    scripts:
+      - name: diff-check
+        run: git diff --check "$CUCK_BASE_COMMIT" HEAD
+        timeout: 120
+  frontend-val:  { type: frontend-validator, checks: [frontend-impl], maxRounds: 2 }
+  batch:         { type: wait, timeLimit: 14400 }
+  integration:   { type: integration-validator }
+edges:
+  - planner -> [backend-impl, frontend-impl]: start, feedback, accept
+  - backend-impl -> [backend-val, backend-lint]: handoff
+  - frontend-impl -> frontend-val: handoff
+  - "[backend-impl, frontend-impl] -> planner: report"
+  - "[backend-val, backend-lint] -> backend-impl: rework"
+  - frontend-val -> frontend-impl: rework
+  - "[backend-val, backend-lint, frontend-val] -> batch: arrive"
+  - "[backend-val, backend-lint, frontend-val] -> planner: report"
+  - planner -> [batch, integration]: start
+  - batch -> integration: handoff
+  - batch -> planner: report
+  - integration -> planner: report

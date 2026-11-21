@@ -134,6 +134,11 @@ test("router: GET /api/pipelines lists pipelines, node types and interactions", 
     const def = r.body.pipelines.find((p) => p.name === "default");
     assert.deepEqual(def, { name: "default", description: def.description, layer: "built-in", editable: false, problems: [] });
     assert.ok(r.body.pipelines.some((p) => p.name === "minimal"));
+    const example = r.body.pipelines.find((p) => p.name === "example-choreographed");
+    assert.equal(example.layer, "built-in");
+    assert.equal(example.description, "Example: backend work goes to a validator and a script check in parallel, " +
+      "frontend work to a validator. Rework runs on its own. A wait node collects the batch. Then integration runs once.");
+    assert.deepEqual(example.problems, []);
     assert.ok(r.body.nodeTypes.some((t) => t.name === "planner" && t.layer === "built-in"));
     assert.ok(r.body.interactions.some((i) => i.name === "report"));
     assert.equal((await call("POST", "/api/pipelines", {})).status, 405);
@@ -424,4 +429,35 @@ test("router: POST /api/lines refuses a pipeline with a loop", async () => {
   } finally {
     await stopRouter(router);
   }
+});
+
+// The page /pipelines draws a read-only pipeline: it sends the text under the name "graph-preview".
+function filesUnder(dir) {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...filesUnder(full)); else out.push(full + ":" + fs.statSync(full).size);
+  }
+  return out.sort();
+}
+
+test("router: the graph-preview validate call for a built-in pipeline writes nothing and stores nothing", async () => {
+  await withRouter(async ({ call, lines }) => {
+    const before = { files: filesUnder(lines), lines: (await call("GET", "/api/lines")).body };
+    for (const name of ["default", "minimal", "planner-only", "implement-only"]) {
+      const text = fs.readFileSync(path.join(ROOT, "pipelines", name + ".yaml"), "utf8")
+        .replace(/^name:.*$/m, "name: graph-preview");
+      const r = await call("POST", "/api/pipelines/validate", { text });
+      assert.equal(r.status, 200, name);
+      assert.deepEqual(r.body.errors, [], name);
+      assert.equal(r.body.graph.relations.length > 0, name !== "planner-only", name);
+      assert.ok(r.body.graph.nodes.length > 0, name);
+    }
+    const list = await call("GET", "/api/pipelines");
+    assert.ok(!list.body.pipelines.some((p) => p.name === "graph-preview"));
+    assert.equal((await call("GET", "/api/pipelines/graph-preview")).status, 404);
+    assert.equal(fs.existsSync(path.join(lines, "plugins", "pipelines", "graph-preview.yaml")), false);
+    assert.deepEqual(filesUnder(lines), before.files, "no file written under the lines folder");
+    assert.deepEqual((await call("GET", "/api/lines")).body, before.lines, "the stored lines did not change");
+  });
 });

@@ -8,7 +8,7 @@ const ROUTER_VARIABLES = [
   "integration.*", "protocol", "pipeline.*",
 ];
 
-const TYPES = ["string", "text", "enum", "commit", "instance", "repo"];
+const TYPES = ["string", "text", "enum", "commit", "instance", "instances", "repo"];
 const KEYS = ["description", "type", "maxLength", "pattern", "values", "node", "optional"];
 const DEFAULT_MAX = { string: 200, text: 20000 };
 
@@ -42,7 +42,7 @@ function checkDeclaration(name, decl) {
   only("maxLength", ["string", "text"]);
   only("pattern", ["string"]);
   only("values", ["enum"]);
-  only("node", ["instance"]);
+  only("node", ["instance", "instances"]);
 
   if ("maxLength" in decl && (!Number.isInteger(decl.maxLength) || decl.maxLength < 1)) err("maxLength must be a positive integer");
   if ("pattern" in decl) {
@@ -57,6 +57,13 @@ function checkDeclaration(name, decl) {
   if ("node" in decl && (typeof decl.node !== "string" || decl.node === "")) err("node must be a node id");
   if ("optional" in decl && decl.optional !== true) err("optional must be true or missing");
   return errors;
+}
+
+const MAX_INSTANCES = 50;
+
+// Split a value of type instances: a comma-separated list. Entries are trimmed.
+function splitInstances(value) {
+  return String(value).split(",").map((v) => v.trim());
 }
 
 function isBlank(v) {
@@ -79,6 +86,13 @@ function checkOne(decl, value) {
     }
     case "enum":
       return decl.values.includes(value) ? null : `must be one of: ${decl.values.join(", ")}`;
+    case "instances": {
+      const list = splitInstances(value);
+      if (list.some((v) => v === "")) return "must be a comma-separated list without empty entries";
+      if (list.length > MAX_INSTANCES) return `more than ${MAX_INSTANCES} entries`;
+      if (new Set(list).size !== list.length) return "lists an entry twice";
+      return null;
+    }
     default:
       return null; // instance, repo, commit: line checks come later (task C3)
   }
@@ -112,4 +126,4 @@ function checkOptionalUse(name, decl, sectionsAround) {
   return `optional field '${name}' may appear only inside {{#${name}}}...{{/${name}}}`;
 }
 
-module.exports = { ROUTER_VARIABLES, isRouterVariable, checkDeclaration, checkValues, checkOptionalUse };
+module.exports = { ROUTER_VARIABLES, isRouterVariable, checkDeclaration, checkValues, checkOptionalUse, splitInstances, MAX_INSTANCES };

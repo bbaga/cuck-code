@@ -39,6 +39,10 @@ const { loadBuiltinPipeline, migrateLine, normalizeLine, nodeSettingsFields, bui
   implementorNodeFor, validatorNodeFor, integrationNodeFor, isLineDirectory, integrationMerged, pipelineCapabilities } = require("./line-graph");
 const { checkCall, checkLineValues, requiredFields, introspect } = require("./call-fields");
 const { renderReports, kindOfNode } = require("./report-interaction");
+const { createChainRuntime, pickChainFields, serializeChain, restoreChain, restorePendingHandoffs,
+  chainDashboardFields } = require("./chain-runtime");
+const { createWaitRuntime, findWorker: findLineWorker, serializeWait, restoreWait } = require("./wait-runtime");
+const { memberStates } = require("./wait-node");
 const { describeFailure } = require("./run-failure");
 const { messageText, InvocationCapture, appendTranscript, reportForValidation,
   applyCompletion, completionFields, runOutputNote,
@@ -607,7 +611,7 @@ function dashboardStateForLine(line) {
       id: w.id, name: w.name, ...completionFields(w), branch: w.branch, role: w.role,
       node: w.node || null,
       validates: w.validates, persona: w.persona || "backend", kind: w.kind || "standard",
-      runner: w.runner || "agent", checkResults: w.checkResults || [], afterChecks: w.afterChecks || [],
+      runner: w.runner || "agent", ...chainViewFields(line, w), checkResults: w.checkResults || [], afterChecks: w.afterChecks || [],
       ...changesetFields(w), lastError: w.lastError || null,
       attention: w.attention === true, needsAttention: w.needsAttention === true,
       humanIntervention: w.humanIntervention === true,
@@ -618,6 +622,12 @@ function dashboardStateForLine(line) {
       transcript: serializeWorkerTranscript(w, 50),
       activity: w.activity || null,
     })) };
+}
+
+// What the dashboard shows of the chain: the members of a wait worker, the rework state of a head.
+function chainViewFields(line, w) {
+  if (w.runner === "wait") return { members: memberStates(w, line.workers), outcome: w.outcome || null };
+  return chainDashboardFields(line.graph, w);
 }
 
 // What the card of a script check shows: the node, the run mode and the checked commit.
@@ -898,6 +908,7 @@ function saveLine(line) {
         graph: line.graph || null,
         nodeSettings: line.nodeSettings || {},
         plannerQueue: serializePlannerRequests(line.queue),
+        pendingHandoffs: line.pendingHandoffs || [],
         knownNoticeIds: restoreKnownNoticeIds(line.knownNoticeIds),
         activePlannerRequest: line.activePlannerRequest
           ? serializePlannerRequest(line.activePlannerRequest)
@@ -932,12 +943,13 @@ function saveLine(line) {
           repo: w.repo || null, worktreePath: w.worktreePath,
           node: w.node || null, acceptedRuns: w.acceptedRuns || [],
           integration: w.integration || null,
-          ...changesetFields(w), ...baseFields(w),
+          ...changesetFields(w), ...baseFields(w), ...serializeChain(w),
           transcript: serializeWorkerTranscript(w),
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
           overrides: overridesOf(w),
           lastError: w.lastError || null,
           kind: w.kind || "standard", validatedCommit: w.validatedCommit || null,
+          ...(w.runner === "wait" ? serializeWait(w) : {}),
           runner: w.runner || null, scriptSpec: w.scriptSpec || null,
           checkedCommit: w.checkedCommit || null, checkResults: w.checkResults || null,
           afterChecks: w.afterChecks || [] })) }));
@@ -1053,7 +1065,8 @@ function enqueue(line, text) {
 
 const WAKE_PREFIXES = ["IMPLEMENTOR REPORT", "VALIDATION REPORT", "VALIDATOR FAILURE",
   "VALIDATOR STOPPED", "WORKER FAILURE", "WORKER STOPPED", "PLAN APPROVED",
-  "CHANGESET BLOCKED", "CHANGESET OVERSIZE WARNING"];
+  "CHANGESET BLOCKED", "CHANGESET OVERSIZE WARNING", "REWORK LIMIT REACHED", "REWORK BLOCKED",
+  "HANDOFF FAILED", "STAGE REPORT", "BATCH REPORT"];
 
 function isWake(text) {
   return typeof text === "string" && WAKE_PREFIXES.some((p) => text.startsWith(p));
@@ -1295,7 +1308,8 @@ try {
 }
 
 function runningCount(line) {
-  return [...line.workers.values()].filter((w) => w.status === "running").length;
+  // A wait worker has no process: it does not count against the worker cap.
+  return [...line.workers.values()].filter((w) => w.status === "running" && w.runner !== "wait").length;
 }
 
 function spawnWorker(line, worker, prompt, resume) {
@@ -1430,7 +1444,8 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
   saveLine(line);
   broadcast(line, "worker_status", { ...statusEvent, error: worker.lastError || null,
     worker: { id: worker.id, role: worker.role, persona: worker.persona,
-      repo: worker.repo, branch: worker.branch, ...scopeSummary(worker, line.workers) } });
+      repo: worker.repo, branch: worker.branch, ...chainViewFields(line, worker),
+      ...scopeSummary(worker, line.workers) } });
   const sid = worker.sessionId || "unknown";
   slog("info", "worker.closed", { lineId: line.id, workerId: worker.id, name: worker.name,
     role: worker.role, status: worker.status, verdict: worker.verdict || undefined,
@@ -1462,18 +1477,7 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
         enqueue(line, changesetOversizeMessage(cs, worker));
       }
     }
-    if (!overLimit) {
-      const reports = renderReports({ graph: line.graph, worker, report, timedOut,
-        source: worker.validates ? line.workers.get(worker.validates) || null : null });
-      for (const item of reports) {
-        if (item.target === "starter") {
-          enqueueRequest(line, interactionReportRequest(item.text));
-        } else {
-          slog("warn", "report.target-unsupported", { lineId: line.id, workerId: worker.id,
-            interaction: item.name, target: item.target });
-        }
-      }
-    }
+    if (!overLimit) chain.routeCompleted(line, worker, { timedOut });
   } else if (worker.role === "validator" && worker.kind === "integration") {
     if (worker.status === "completed") {
       enqueue(line, buildUnroutedNotification(worker, null, report));
@@ -1526,7 +1530,16 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
   } else {
     enqueue(line, `WORKER STOPPED - '${worker.name}' (workerId ${worker.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.` + runOutputNote(report, "implementor run output") + failureNote);
   }
+  waitRuntime.checkAll(line);
+  chain.drainPendingHandoffs(line);
 }
+
+// The runtime of the wait node (wait-runtime.js) and of handoff, rework and stages (chain-runtime.js).
+const waitRuntime = createWaitRuntime({ saveLine, slog, broadcast, runningCount, workerCap: WORKER_CAP,
+  resolveNodeSettings, createIntegration, tell: (line, text) => enqueueRequest(line, interactionReportRequest(text)) });
+const chain = createChainRuntime({ saveLine, slog, runningCount, workerCap: WORKER_CAP, afterGate,
+  createSourceChecker, sourceIdentity, reportForValidation, deliverToInstance, enqueueRequest,
+  interactionReportRequest, wait: waitRuntime, broadcast });
 
 function sendFailure(res, out) {
   const { ok, status, ...body } = out;
@@ -1584,7 +1597,8 @@ function startInstance(line, targetId, body, overrides = {}) {
     }
     return createOwnWorktree(line, targetId, { name: wname, prompt: body.task,
       persona: node.type.startsWith("frontend") ? "frontend" : "backend",
-      repo: body.repo, base: body.base, trackerTicket: body.trackerTicket, extra, ...overrides });
+      repo: body.repo, base: body.base, trackerTicket: body.trackerTicket, extra,
+      chainFields: pickChainFields(graph, targetId, body), ...overrides });
   }
   if (type.workspace === "source") {
     const impl = line.workers.get(body.source);
@@ -1602,6 +1616,7 @@ function startInstance(line, targetId, body, overrides = {}) {
   if (type.workspace === "integration") {
     return createIntegration(line, targetId, { instructions: body.instructions, extra });
   }
+  if (type.runner === "wait" && type.workspace === "none") return waitRuntime.createWaitInstance(line, targetId, body);
   return { ok: false, status: 400, error: `the node '${targetId}' cannot be started: workspace '${type.workspace}'` };
 }
 
@@ -1628,6 +1643,7 @@ function deliverToInstance(line, worker, message, { logText } = {}) {
   worker.stopRequested = false;
   worker.runGeneration = (worker.runGeneration || 0) + 1;
   broadcast(line, "worker_status", { workerId: worker.id, status: "running" });
+  waitRuntime.memberRunStarted(line, worker);
   saveLine(line);
   slog("info", "worker.continued", { lineId: line.id, workerId: worker.id,
     chars: shown.length, prompt: preview(shown, 400) });
@@ -1740,6 +1756,7 @@ function createOwnWorktree(line, nodeId, fields) {
     sessionId: null, context: newContextStats(), handoff: null,
     worktreePath, branch, status: "running", stopRequested: false,
     baseCommit, changeset: null, base, baseResolved,
+    chainFields: fields.chainFields || {}, reworkRounds: {}, stage: null,
     child: null, transcript: [] };
   line.workers.set(id, worker);
   if (!saveLine(line)) {
@@ -1751,7 +1768,7 @@ function createOwnWorktree(line, nodeId, fields) {
   slog("info", "worker.spawned", { lineId: line.id, workerId: id,
     name: fields.name, persona, branch, repo: repo.name, repoUrl: repo.url || undefined });
   spawnWorker(line, worker, worker.prompt);
-  broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, node: worker.node || null, validates: null, persona, repo: repo.name, ...scopeSummary(worker, line.workers) } });
+  broadcast(line, "worker_spawned", { worker: { id, name: worker.name, branch, status: worker.status, role: worker.role, node: worker.node || null, validates: null, persona, repo: repo.name, ...chainViewFields(line, worker), ...scopeSummary(worker, line.workers) } });
   return { ok: true, worker, response: { workerId: id, branch, worktree: worktreePath, repo: repo.name,
     baseCommit, ...baseFields(worker) } };
 }
@@ -2717,7 +2734,9 @@ const routeRequest = (req, res) => {
     if (!worker) return json(res, 404, { error: "no such worker" });
     slog("info", "worker.stop", { lineId: line.id, workerId: worker.id,
       name: worker.name, role: worker.role, wasRunning: !!worker.child });
-    if (worker.child) {
+    if (worker.runner === "wait") {
+      waitRuntime.stop(line, worker);
+    } else if (worker.child) {
       worker.stopRequested = true;
       worker.child.kill("SIGTERM");
     } else if (worker.compactChild) {
@@ -2909,8 +2928,8 @@ const routeRequest = (req, res) => {
       const checked = checkCall(graph, name, targetId, body);
       const lineProblems = checkLineValues({
         instance: (id) => {
-          const w = line.workers.get(id);
-          return w ? { node: w.node, repo: w.repo, status: w.status === "running" || w.child ? "running" : w.status } : undefined;
+          const w = findLineWorker(line.workers, id);
+          return w ? { id: w.id, node: w.node, repo: w.repo, status: w.status === "running" || w.child ? "running" : w.status } : undefined;
         },
         hasRepo: (repoName) => !!resolveRepo(line, repoName),
         commitExists: (repoName, sha) => {
@@ -2943,6 +2962,7 @@ const routeRequest = (req, res) => {
         }
         const sent = deliverToInstance(line, target, message);
         if (!sent.ok) return json(res, sent.status, { error: sent.error });
+        if (name === "feedback") chain.clearChain(line, target);
         return json(res, 202, { queued: true, compacting: sent.compacting });
       }
       if (interaction.effect === "accept") {
@@ -3414,6 +3434,7 @@ function loadLines() {
       const workers = new Map();
       for (const w of meta.workers || []) {
         if (w.role === "validator") continue;
+        if (w.runner === "wait") { workers.set(w.id, restoreWait(w, meta.id)); continue; }
         workers.set(w.id, { id: w.id, lineId: meta.id, name: w.name,
           role: "implementor",
           validates: null, prompt: typeof w.prompt === "string" ? w.prompt : null,
@@ -3438,7 +3459,7 @@ function loadLines() {
           lastCompletedInvocationId: w.lastCompletedInvocationId || null,
           baseCommit: w.baseCommit || null, changeset: w.changeset || null,
           validatedCommit: w.validatedCommit || null,
-          ...baseFields(w) });
+          ...baseFields(w), ...restoreChain(w) });
       }
       for (const w of meta.workers || []) {
         if (w.role !== "validator") continue;
@@ -3498,7 +3519,7 @@ function loadLines() {
         queue: restorePlannerRequests(meta.plannerQueue), activePlannerRequest: null,
         activePlannerRun: null, runId: null, stopPlannerRun,
         knownNoticeIds: restoreKnownNoticeIds(meta.knownNoticeIds),
-        started,
+        started, pendingHandoffs: restorePendingHandoffs(meta.pendingHandoffs),
         planApproved: meta.planApproved === true, workers, inventory,
         evidence: new Map((meta.evidence || []).map((e) => [e.id, e])),
         clients: new Set(), transcript: [] };
@@ -3525,6 +3546,8 @@ function loadLines() {
       transitionPlannerStatus(line, restoredStatus, meta.lastError, { broadcastState: false });
       saveLine(line);
       if (line.queue.length) pump(line);
+      waitRuntime.recoverAfterLoad(line);
+      chain.recoverAfterLoad(line);
     } catch (error) {
       slog("error", "boot.line-load-failed", { directory: entry.name, error: String(error.message || error) });
       console.error(`line ${entry.name} did not load and is quarantined: its containers are kept`);
@@ -3584,7 +3607,7 @@ if (HTTPS_PORT) {
 }
 }
 
-module.exports = { registryIdle, stopRegistryLoopsForTest, compactPlanner, saveLine, loadLines, restoreWorkerTranscript, normalizeWorkerTranscriptEntry, stopPlannerRun, pump, spawnWorker, deliverToInstance, dashboardStateForLine, requestHandler, lines,
+module.exports = { broadcast, registryIdle, stopRegistryLoopsForTest, compactPlanner, saveLine, loadLines, restoreWorkerTranscript, normalizeWorkerTranscriptEntry, stopPlannerRun, pump, spawnWorker, deliverToInstance, drainPendingHandoffs: (line) => chain.drainPendingHandoffs(line), waitRuntime, dashboardStateForLine, requestHandler, lines,
   createServer: () => server,
   setSpawnForTest: (fn) => { spawnProcess = fn; },
   setLifecycleHooksForTest: (hooks) => { lifecycleTestHooks = hooks; },

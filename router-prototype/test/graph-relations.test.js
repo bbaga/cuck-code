@@ -222,3 +222,23 @@ test("missing keys read as defaults", () => {
   const out = graphRelations({ start: "p", nodes: { p: { type: "zzz" } } });
   assert.deepEqual(out, { relations: [], columns: { p: 0 }, rows: { p: 0 }, cycle: null, cycleCauses: null });
 });
+
+// ---- arrive ----
+
+const choreo = require("./choreo-fixtures");
+
+test("an arrive edge is an ordering relation, and pipeline 1 has its columns", () => {
+  const resolved = choreo.resolve(choreo.CHAIN);
+  const out = graphRelations(resolved);
+  const arrive = out.relations.find((r) => r.interactions.includes("arrive"));
+  assert.equal(arrive.ordering, true);
+  assert.equal(out.cycle, null);
+  assert.deepEqual(out.columns, { planner: 0, impl: 1, val: 2, batch: 3, integration: 4 });
+});
+
+test("an arrive edge orders its nodes: a loop through it is a cycle", () => {
+  const withArrive = { ...interactions, arrive: { effect: "arrive", trigger: "complete", target: "waiter" } };
+  const g = { start: "a", nodes: { a: { type: "impl" }, b: { type: "impl" } }, types, interactions: withArrive,
+    edges: [edge("a", "b", "arrive"), edge("b", "a", "arrive")] };
+  assert.ok(graphRelations(g).cycle);
+});

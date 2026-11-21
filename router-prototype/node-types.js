@@ -10,9 +10,9 @@ const KEYS = ["name", "description", "extends", "session", "workspace", "outcome
 const NAME_RE = /^[a-z][a-z0-9-]{0,63}$/;
 const ENUMS = {
   session: ["resume", "fresh"],
-  workspace: ["coordinator", "own-worktree", "source", "integration"],
+  workspace: ["coordinator", "own-worktree", "source", "integration", "none"],
   outcome: ["none", "verdict"],
-  runner: ["agent", "script"],
+  runner: ["agent", "script", "wait"],
 };
 const REQUIRES = ["accepted-work"];
 
@@ -164,6 +164,19 @@ function resolveTypes(types) {
       if (wrong.length) {
         throw new NodeTypeError(own.file, 2, `runner: script needs ${wrong.join(", ")}`);
       }
+    }
+    if (out.runner === "wait") {
+      const wrong = [];
+      if (root.name !== "wait") wrong.push("root type wait");
+      if (out.session !== "fresh") wrong.push("session: fresh");
+      if (out.workspace !== "none") wrong.push("workspace: none");
+      if (out.outcome !== "verdict") wrong.push("outcome: verdict");
+      if (out.coordinator !== false) wrong.push("coordinator: false");
+      if (wrong.length) {
+        throw new NodeTypeError(own.file, 2, `runner: wait needs ${wrong.join(", ")}`);
+      }
+    } else if (out.workspace === "none") {
+      throw new NodeTypeError(own.file, 2, "workspace: none needs runner: wait");
     }
     out.chain = list.map((t) => t.name);
 

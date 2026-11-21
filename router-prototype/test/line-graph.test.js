@@ -307,3 +307,18 @@ test("planGraphChange: workers without a candidate node must be removed first", 
   assert.deepEqual(toMinimal.removeFirst, []);
   assert.equal(toMinimal.error, undefined);
 });
+
+test("phaseOfType maps the wait type to the phase wait", () => {
+  const chain = require("./choreo-fixtures").resolve(require("./choreo-fixtures").CHAIN);
+  assert.equal(phaseOfType(chain, "wait"), "wait");
+});
+
+test("pipelineCapabilities: wait and chains are true for a choreographed pipeline", () => {
+  const { pipelineCapabilities } = require("../line-graph");
+  const choreo = require("./choreo-fixtures");
+  const caps = pipelineCapabilities(choreo.resolve(choreo.CHAIN));
+  assert.equal(caps.wait, true);
+  assert.equal(caps.chains, true);
+  assert.deepEqual(pipelineCapabilities(resolved), {
+    implementor: true, checker: true, integration: true, wait: false, chains: false });
+});
