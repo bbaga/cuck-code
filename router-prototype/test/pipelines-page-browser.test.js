@@ -11,8 +11,19 @@ const path = require("node:path");
 // No pipelines of the real home folder in this test.
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "pipelines-page-home-"));
 process.env.CUCK_HOME = home;
-const { startDashboardFixture } = require("./fixtures/dashboard-browser");
+const dashboard = require("./fixtures/dashboard-browser");
 const { openPage } = require("./fixtures/browser-driver");
+const choreo = require("./choreo-fixtures");
+const checks = require("./fixtures/choreo-graph-checks");
+
+// server.js keeps the LINES_DIR of the first fixture of the process. Later fixtures change
+// process.env.LINES_DIR, but the server does not follow. Remember the folder of the first one.
+let serverLinesDir = null;
+async function startDashboardFixture() {
+  const fx = await dashboard.startDashboardFixture();
+  if (!serverLinesDir) serverLinesDir = process.env.LINES_DIR;
+  return fx;
+}
 
 const ERRS = "window.__errs = [];"
   + "window.addEventListener('error', (e) => window.__errs.push(String(e.message)));"
@@ -34,7 +45,7 @@ test("pipelines page: lists, read-only view, duplicate, edit with error, fix, sa
     const shot = async (name) => { if (shots) await page.screenshot(path.join(shots, name)); };
     const click = (sel) => page.evaluate(`document.querySelector(${JSON.stringify(sel)}).click()`);
     const text = (sel) => page.evaluate(`document.querySelector(${JSON.stringify(sel)}).textContent`);
-    const managedFile = path.join(process.env.LINES_DIR, "plugins", "pipelines", "my-copy.yaml");
+    const managedFile = path.join(serverLinesDir, "plugins", "pipelines", "my-copy.yaml");
     await page.setViewport(1100, 1000);
 
     // the three groups
@@ -144,7 +155,134 @@ test("pipelines page: lists, read-only view, duplicate, edit with error, fix, sa
     await page.waitFor("document.getElementById('pipelinesBtn')");
   } finally {
     if (page) await page.close();
+    await checks.removeManaged(fx.url, ["my-copy", "fresh"]);
     await fx.close();
     fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// Opens /pipelines with pipelines 1 and 2 stored as managed pipelines. `initScript` adds to ERRS.
+async function openChoreoPage(t, fx, initScript = "") {
+  let page;
+  try { page = await openPage(fx.url + "/pipelines", { initScript: ERRS + initScript }); }
+  catch (e) {
+    if (e.code === "BROWSER_UNAVAILABLE") { t.skip("Chrome is missing: " + e.message); return null; }
+    throw e;
+  }
+  await page.waitFor("!!document.querySelector('button[data-name=minimal]')");
+  for (const [name, text] of [["choreo-chain", choreo.CHAIN], ["choreo-stage", choreo.STAGE]]) {
+    const body = JSON.stringify({ text: text.replace("name: choreographed", "name: " + name) });
+    const status = await page.evaluate(`fetch('/api/pipelines/${name}', { method: 'PUT',
+      headers: { 'Content-Type': 'application/json' }, body: ${JSON.stringify(body)} }).then((r) => r.status)`);
+    assert.ok(status === 200 || status === 201, name + ": " + status);
+  }
+  await page.evaluate("location.reload()");
+  await page.waitFor("!!document.querySelector('button[data-name=choreo-stage]')");
+  return page;
+}
+
+async function openItem(page, name, nodes) {
+  await page.evaluate(`document.querySelector('button[data-name=${name}]').click()`);
+  await page.waitFor(`/name: ${name}/.test((document.getElementById('editor') || document.getElementById('source')).value
+    || document.getElementById('source').textContent) && document.querySelectorAll('#graphBox .pgNode').length === ${nodes}`);
+}
+
+const cleanManaged = (fx) => checks.removeManaged(fx.url, ["choreo-chain", "choreo-stage"]);
+
+test("pipelines page: pipelines 1 and 2 show wait badge, edge styles, fan-out and fit at 1280 px and 320 px", async (t) => {
+  const fx = await startDashboardFixture();
+  let page = null;
+  try {
+    page = await openChoreoPage(t, fx);
+    if (!page) return;
+    const shots = process.env.PIPELINES_PAGE_SHOTS;
+    if (shots) fs.mkdirSync(shots, { recursive: true });
+    const shot = async (name) => { if (shots) await page.screenshot(path.join(shots, name)); };
+    const count = (sel) => page.evaluate(`document.querySelectorAll(${JSON.stringify("#graphBox " + sel)}).length`);
+    await page.setViewport(1280, 1000);
+
+    await openItem(page, "choreo-chain", 5);
+    assert.equal(await page.evaluate("document.querySelector('#graphBox .pgNode.wait .node-badge-wait').textContent"), "wait");
+    assert.equal(await count("path.pgEdge.edge-handoff"), 2);
+    assert.equal(await count("path.pgEdge.edge-rework"), 1);
+    assert.equal(await count("path.pgEdge.edge-arrive"), 1);
+    await checks.checkEdgeStyles(page, "#graphBox");
+    assert.deepEqual(await page.evaluate("[...document.querySelectorAll('#edgesList li')].map((l) => l.textContent)"), checks.CHAIN_EDGE_LINES);
+    await checks.checkFit(page, "#graphBox", 1280);
+    await shot("chain-1280-before-scroll.png");
+    await checks.scrollRight(page, "#graphBox");
+    await shot("chain-1280-after-scroll.png");
+
+    await page.setViewport(320, 900);
+    await page.evaluate("document.getElementById('graphBox').scrollIntoView()");
+    await checks.checkFit(page, "#graphBox", 320);
+    assert.ok(await page.evaluate("document.getElementById('graphBox').getBoundingClientRect().right <= 320"));
+    await shot("chain-320-before-scroll.png");
+    await checks.scrollRight(page, "#graphBox");
+    await shot("chain-320-after-scroll.png");
+    await page.setViewport(1280, 1000);
+
+    await openItem(page, "choreo-stage", 6);
+    assert.equal(await count("path.pgEdge.edge-handoff"), 3);
+    assert.equal(await count("path.pgEdge.edge-rework"), 2);
+    assert.equal(await count("path.pgEdge.edge-arrive"), 2);
+    await checks.checkEdgeStyles(page, "#graphBox");
+    await checks.checkStage(page, "#graphBox");
+    await checks.checkFit(page, "#graphBox", 1280);
+    assert.deepEqual(await page.evaluate("window.__errs"), []);
+  } finally {
+    if (page) await page.close();
+    await cleanManaged(fx);
+    await fx.close();
+  }
+});
+
+test("pipelines page: default and minimal show edges in several columns; optional nodes draw", async (t) => {
+  const fx = await startDashboardFixture();
+  let page = null;
+  try {
+    page = await openChoreoPage(t, fx);
+    if (!page) return;
+    await page.setViewport(1280, 1000);
+    const columns = [["default", 6, 14], ["minimal", 4, 8], ["planner-only", 1, 0], ["implement-only", 2, 2]];
+    for (const [name, nodes, edges] of columns) {
+      await openItem(page, name, nodes);
+      await page.waitFor(`document.querySelectorAll('#graphBox path.pgEdge').length === ${edges}`);
+      assert.equal(await page.evaluate("document.querySelectorAll('#graphBox .hint').length"), 0, name);
+      assert.equal(await page.evaluate("document.querySelectorAll('#edgesList li').length > 0"), edges > 0, name);
+      const xs = await page.evaluate("new Set([...document.querySelectorAll('#graphBox .pgNode rect')].map((r) => r.getAttribute('x'))).size");
+      assert.equal(xs > 1, nodes > 1, name + ": " + xs + " x positions");
+      if (nodes > 2) assert.ok(xs >= 3, name);
+    }
+    assert.deepEqual(await page.evaluate("window.__errs"), []);
+  } finally {
+    if (page) await page.close();
+    await cleanManaged(fx);
+    await fx.close();
+  }
+});
+
+// The driver has no page.route: a flag in the page makes its fetch answer 500 for the validate call.
+const FAIL_VALIDATE = "window.__failValidate = true; const __vf = window.fetch; window.fetch = (url, opts) =>"
+  + " (window.__failValidate && opts && opts.method === 'POST' && /\\/api\\/pipelines\\/validate$/.test(String(url))"
+  + "   ? Promise.resolve(new Response(JSON.stringify({ error: 'boom' }), { status: 500, headers: { 'Content-Type': 'application/json' } }))"
+  + "   : __vf.call(window, url, opts));";
+
+test("pipelines page: a failing validate call leaves a nodes-only graph and no page error", async (t) => {
+  const fx = await startDashboardFixture();
+  let page = null;
+  try {
+    page = await openChoreoPage(t, fx, FAIL_VALIDATE);
+    if (!page) return;
+    await page.setViewport(1280, 1000);
+    await openItem(page, "default", 6);
+    assert.equal(await page.evaluate("window.__failValidate"), true);
+    assert.equal(await page.evaluate("document.querySelectorAll('#graphBox path.pgEdge').length"), 0);
+    assert.equal(await page.evaluate("document.querySelectorAll('#graphBox svg').length"), 1);
+    assert.deepEqual(await page.evaluate("window.__errs"), []);
+  } finally {
+    if (page) await page.close();
+    await cleanManaged(fx);
+    await fx.close();
   }
 });

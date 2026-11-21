@@ -84,3 +84,31 @@ test("create panel: picker lists pipelines, rows follow the picked pipeline", as
     await fx.close();
   }
 });
+
+test("create panel: planner-only gives one node row, implement-only two, no console error", async (t) => {
+  const fx = await startDashboardFixture();
+  let page = null;
+  try {
+    try { page = await openPage(fx.url, { initScript: STUBS }); }
+    catch (e) {
+      if (e.code === "BROWSER_UNAVAILABLE") return t.skip("Chrome is missing: " + e.message);
+      throw e;
+    }
+    await page.setViewport(1100, 1100);
+    await page.waitFor("/browser[- ]line/i.test(document.body.innerText)");
+    await page.evaluate("document.getElementById('create').click()");
+    await page.waitFor("document.querySelectorAll('#cp-pipeline option').length >= 4");
+    const pick = (name) => page.evaluate(`(() => { const s = document.getElementById('cp-pipeline'); s.value = ${JSON.stringify(name)}; s.dispatchEvent(new Event('change')); })()`);
+    await pick("planner-only");
+    await page.waitFor(`${ROWS}.length === 1`);
+    assert.deepEqual(await page.evaluate(ids), ["planner (planner)"]);
+    await pick("implement-only");
+    await page.waitFor(`${ROWS}.length === 2`);
+    assert.deepEqual(await page.evaluate(ids), ["planner (planner)", "impl (backend-implementor)"]);
+    assert.equal(await page.evaluate("document.querySelector('#createPanel .createErr').hidden"), true);
+    assert.deepEqual(await page.evaluate("window.__errs"), []);
+  } finally {
+    if (page) await page.close();
+    await fx.close();
+  }
+});
