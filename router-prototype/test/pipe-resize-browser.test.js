@@ -60,6 +60,13 @@ test("pipeline pane: handle resizes by keyboard, persists, resets", async (t) =>
     for (let i = 0; i < 60; i++) await key(page, "ArrowLeft");
     assert.equal(await width(page), 360);
     if (shots) await page.screenshot(path.join(shots, "pipe-narrower.png"));
+    // "Fit graph to width" must fit the graph in the narrow box.
+    await page.waitFor(`${PANE}.querySelector('svg.pipeGraph')`);
+    await page.evaluate(`${PANE}.querySelector('button[aria-label="Fit graph to width"]').click()`);
+    const fit = await page.evaluate(`({
+      svg: ${PANE}.querySelector('svg.pipeGraph').getBoundingClientRect().width,
+      box: ${PANE}.querySelector('.pipeGraphBox').clientWidth })`);
+    assert.ok(fit.svg <= fit.box + 1, `svg ${fit.svg} wider than box ${fit.box}`);
 
     await page.evaluate(`${HANDLE}.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))`);
     assert.equal(await page.evaluate(`localStorage.getItem("${storeKey}")`), null);
