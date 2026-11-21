@@ -199,8 +199,16 @@ The **required fields** of a call are the union of:
 A **caller placeholder** is any `{{name}}` that is not a router variable.
 Router variables are filled by the router and are never accepted from the
 caller: `line.*`, `node.*`, `instance.*`, `from.*`, `repo.url`, `router.url`,
-`source.name`, `source.report`, `report`, `outcome`. A call that supplies one
-of them is rejected.
+`source.name`, `source.report`, `report`, `outcome`, `pipeline.*`. A call that
+supplies one of them is rejected.
+
+`pipeline.has.implementor`, `.checker` and `.integration` are booleans from
+`pipelineCapabilities(graph)`: a node has a type with workspace `own-worktree`,
+`source` or `integration`. `pipeline.has.wait` and `pipeline.has.chains` are
+always false until later parts add them. The planner prompt and the report
+texts use them in sections. The built-in pipelines `planner-only` (one node)
+and `implement-only` (planner and implementor) have no checker and no
+integration node.
 
 ### Field declarations
 
@@ -433,6 +441,9 @@ and the offending node, edge or field.
 12. R12: a node with `after` has `checks`. Each listed node is known, checks a
     shared target and is not the node itself.
 13. R13: the ordering relations form no loop.
+14. R17: the type chain of the start node starts at `planner`, and no other
+    node has a type whose root is `planner`. Only the planner is mandatory:
+    implementors, checkers and the integration node are optional.
 
 ## How pipelines are drawn
 

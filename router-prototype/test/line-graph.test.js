@@ -280,3 +280,30 @@ test("graphView adds relations, columns and rows", () => {
   assert.ok(view.relations.some((r) => r.kind === "accepted-work" && r.to === "integration"));
   assert.equal(view.relations.filter((r) => r.kind === "interaction").length, view.edges.length);
 });
+
+// ---- pipelineCapabilities ----
+const { pipelineCapabilities } = require("../line-graph");
+
+test("pipelineCapabilities: default, planner-only and implement-only", () => {
+  assert.deepEqual(pipelineCapabilities(resolved),
+    { implementor: true, checker: true, integration: true, wait: false, chains: false });
+  assert.deepEqual(pipelineCapabilities(loadBuiltinPipeline("planner-only", fs, ROOT)),
+    { implementor: false, checker: false, integration: false, wait: false, chains: false });
+  assert.deepEqual(pipelineCapabilities(loadBuiltinPipeline("implement-only", fs, ROOT)),
+    { implementor: true, checker: false, integration: false, wait: false, chains: false });
+  assert.deepEqual(pipelineCapabilities(null),
+    { implementor: false, checker: false, integration: false, wait: false, chains: false });
+});
+
+test("planGraphChange: workers without a candidate node must be removed first", () => {
+  const plannerOnly = loadBuiltinPipeline("planner-only", fs, ROOT);
+  const out = planGraphChange({ line: planLine(), newGraph: plannerOnly, remap: {} });
+  assert.equal(out.ok, false);
+  assert.equal(out.code, "GRAPH_REMAP_REQUIRED");
+  assert.deepEqual(out.removeFirst.sort(), ["api", "api-val", "int", "ui"]);
+  assert.match(out.error, /remove these workers first: .*api/);
+  // a switch with candidates needs a remap only: nothing to remove first
+  const toMinimal = planGraphChange({ line: planLine(), newGraph: minimal, remap: {} });
+  assert.deepEqual(toMinimal.removeFirst, []);
+  assert.equal(toMinimal.error, undefined);
+});

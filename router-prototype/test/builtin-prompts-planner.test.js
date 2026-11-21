@@ -149,3 +149,48 @@ edges:
   assert.ok(!plain.includes("## Gates"));
   assert.ok(!plain.includes("Before integration, node"));
 });
+
+const crypto = require("node:crypto");
+const { wrapPlannerTurn } = require("../planner-turn");
+const sha = (text) => crypto.createHash("sha256").update(text).digest("hex");
+const prompt = (name) => {
+  const g = loadBuiltinPipeline(name, fs, root);
+  return plannerPrompt(g, "Build.", { trackerTicket: "AB-1" });
+};
+
+test("the default and minimal prompts are byte-equal to the prompts before optional nodes", () => {
+  // The hashes come from the prompts rendered at commit 5f0a3b7.
+  assert.equal(sha(prompt("default")), "4f465fc2eb92cdc589f844fcb222ea485da121b55e26e92be79c96a6ab286567");
+  assert.equal(sha(prompt("minimal")), "f7a6e7deecb16f58f684c410badd4278078f742ba2f1316d9e9199de19b709c5");
+});
+
+test("planner-only: the plan-only text and no validator or integration step", () => {
+  const text = prompt("planner-only");
+  assert.ok(text.includes("This pipeline has no worker node. Plan only: write plan.md, commit it, and report the plan to the user."));
+  assert.ok(!/validat/i.test(text), "no validator text");
+  assert.ok(!/integration/i.test(text), "no integration text");
+  assert.ok(!text.includes("5. Validation loop"));
+  assert.ok(!text.includes("6. Integration"));
+  assert.ok(!text.includes("After approval, spawn implementors"));
+});
+
+test("implement-only: the no-checker and no-integration text", () => {
+  const text = prompt("implement-only");
+  assert.ok(text.includes('This pipeline has no checker node. Read each IMPLEMENTOR REPORT. Then call "accept" or "feedback".'));
+  assert.ok(text.includes("This pipeline has no integration node. When you accept all work, report the accepted branches and commits to the user. Do not merge them."));
+  assert.ok(text.includes("Require an accepted result for each task before completion claims."));
+  assert.ok(!text.includes("Reserve merges, acceptance tests"));
+  assert.ok(!text.includes("5. Validation loop"));
+  assert.ok(text.includes("After approval, spawn implementors"));
+});
+
+test("wrapPlannerTurn: the claim rule changes only without checker and integration", () => {
+  const args = { lineId: "l", approved: true, workdir: "/w" };
+  const strip = (t) => t.replace(/planner-turn\/[0-9a-f]+/, "");
+  assert.equal(sha(strip(wrapPlannerTurn("x", args))), "7b7d3f80c663bb81bd52107113e783598f08e326ac638f0c348ac90f797645c7");
+  const full = { implementor: true, checker: true, integration: true };
+  assert.equal(strip(wrapPlannerTurn("x", { ...args, capabilities: full })), strip(wrapPlannerTurn("x", args)));
+  const none = wrapPlannerTurn("x", { ...args, capabilities: { implementor: true, checker: false, integration: false } });
+  assert.ok(none.includes("Do not claim acceptance without an accept call or a validator verdict."));
+  assert.ok(!none.includes("without the required validator verdict"));
+});

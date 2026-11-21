@@ -8,6 +8,7 @@ const { render, TASK_MARKER, TASK_MARKER_LINE } = require("./template");
 const { isRouterVariable } = require("./fields");
 const { introspect } = require("./call-fields");
 const { CHANGESET_LIMIT } = require("./changeset");
+const { pipelineCapabilities } = require("./line-graph");
 
 function has(obj, key) {
   return obj !== null && typeof obj === "object" && Object.prototype.hasOwnProperty.call(obj, key);
@@ -219,6 +220,7 @@ function plannerRouterValues({ line, nodeId, port, workerCap, graph }) {
     node: { id: nodeId },
     router: { ...router, workerCap },
     protocol: protocolSection(graph, nodeId, router.url, line.id),
+    pipeline: { has: pipelineCapabilities(graph) },
   };
 }
 

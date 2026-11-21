@@ -1,6 +1,6 @@
 "use strict";
 
-// Pipeline rules R1-R13. Pure: no file reads. Runs every rule and returns
+// Pipeline rules R1-R13 and R17. Pure: no file reads. Runs every rule and returns
 // a list of { rule, message }. An empty list means the pipeline is good.
 
 const { placeholders, TemplateError } = require("./template");
@@ -313,7 +313,27 @@ function ruleR13(c) {
   return [{ rule: "R13", message: `ordering relations form a loop: ${cycle.join(" -> ")} (${cycleCauses.join("; ")})` }];
 }
 
-const RULES = [ruleR1, ruleR2, ruleR3, ruleR4, ruleR5, ruleR6, ruleR7, ruleR8, ruleR9, ruleR10, ruleR11, ruleR12, ruleR13];
+// R17: the start node has a type that extends planner. No other node has one.
+function ruleR17(c) {
+  const out = [];
+  // The root of the type chain; a type without a chain is its own root.
+  const rootOf = (type, name) => (type && type.chain && type.chain.length ? type.chain[0] : name);
+  const startNode = c.known(c.start) ? c.nodes[c.start] : undefined;
+  const startType = c.typeOf(c.start);
+  if (startNode && startType && rootOf(startType, startNode.type) !== "planner") {
+    out.push({ rule: "R17", message: `start node '${c.start}' must have a type that extends planner (has '${startNode.type}')` });
+  }
+  if (!startNode) return out; // R1 reports a missing start node
+  for (const [id, node] of Object.entries(c.nodes)) {
+    if (id === c.start) continue;
+    if (rootOf(c.typeOf(id), node.type) === "planner") {
+      out.push({ rule: "R17", message: `node '${id}': type '${node.type}' extends planner, which only the start node can use` });
+    }
+  }
+  return out;
+}
+
+const RULES = [ruleR1, ruleR2, ruleR3, ruleR4, ruleR5, ruleR6, ruleR7, ruleR8, ruleR9, ruleR10, ruleR11, ruleR12, ruleR13, ruleR17];
 
 function checkPipeline(pipeline, types, interactions) {
   const c = buildContext(pipeline, types || {}, interactions || {});

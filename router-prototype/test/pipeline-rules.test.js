@@ -360,3 +360,36 @@ edges:
     message: "ordering relations form a loop: ci -> lint -> ci (lint: after [ci]; ci: after [lint])" }]);
   assert.deepEqual(check(parse(DEFAULT)).filter((e) => e.rule === "R13"), []);
 });
+
+const PLANNER_ONLY = `
+name: planner-only
+start: planner
+nodes:
+  planner: { type: planner }
+edges: []
+`;
+
+test("R17: a planner-only pipeline is good", () => {
+  assert.deepEqual(check(parse(PLANNER_ONLY)), []);
+});
+
+test("R17: the start node must have a type that extends planner", () => {
+  const p = parse(REVIEW_GATE);
+  p.start = "A";
+  const messages = check(p).filter((e) => e.rule === "R17").map((e) => e.message);
+  assert.deepEqual(messages.slice(0, 1),
+    ["start node 'A' must have a type that extends planner (has 'implementor')"]);
+});
+
+test("R17: no second node has a planner type", () => {
+  const p = parse(REVIEW_GATE);
+  p.nodes.second = { type: "planner" };
+  const messages = check(p).filter((e) => e.rule === "R17").map((e) => e.message);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0], /node 'second'.*extends planner/);
+  // a type that extends planner counts through its chain
+  const q = parse(REVIEW_GATE);
+  q.nodes.second = { type: "my-planner" };
+  const inChain = checkPipeline(q, { ...types, "my-planner": mk("resume", "coordinator", "none", { chain: ["planner", "my-planner"] }) }, interactions);
+  assert.ok(inChain.some((e) => e.rule === "R17" && /node 'second'/.test(e.message)));
+});
