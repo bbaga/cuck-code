@@ -197,8 +197,9 @@ for (const name of Object.keys(LAYOUT)) {
   });
 }
 
-test("planner-only and implement-only resolve and follow the rules", () => {
-  for (const [name, nodes] of [["planner-only", ["planner"]], ["implement-only", ["planner", "impl"]]]) {
+test("planner-only, implement-only and choreographed resolve and follow the rules", () => {
+  for (const [name, nodes] of [["planner-only", ["planner"]], ["implement-only", ["planner", "impl"]],
+    ["choreographed", ["planner", "impl", "val", "integration"]]]) {
     const r = resolvePipelineDefinition(name, catalog());
     assert.equal(r.name, name);
     assert.deepEqual(Object.keys(r.nodes), nodes);

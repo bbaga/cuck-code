@@ -179,15 +179,29 @@ The building blocks the router implements:
 Choreographed pipelines add the interaction keys `when` (the run outcomes the
 interaction applies to; default all seven) and `fallback` (fires only when no
 non-fallback `complete` interaction applied; `report` is one). The effect
-`arrive` is reserved for built-in interactions, as `accept` is. The runtime for
-`handoff`, `rework` and `arrive` is added in a later part.
+`arrive` is reserved for built-in interactions, as `accept` is. The router runs
+`handoff` and `rework`; the runtime for `arrive` (the wait node) is added in a
+later part.
 
 Parts of the choreography that need no runtime are pure code. `call-fields.js`
 adds the caller fields of the nodes after the called node (complete-create
 edges, stop at `arrive`). `choreography.js` holds `routeCompletion`,
 `stageOf` and `resolveStage` (stage resolution: broken member, then reject, then
 common next step) and the text builders. The planner prompt gets a `## Chains`
-section. The runtime that acts on these answers is added in a later part.
+section.
+
+`chain-runtime.js` acts on these answers (`workerClosed` calls it). The chain
+head, an own-worktree instance that the planner started, keeps `chainFields`,
+`reworkRounds` and `stage`. A `done` run of a node with a complete-create edge
+starts the stage: every checker has `validates` = the head id. Each checker run
+that ends is recorded in the stage. A result of an older head run, or after a
+feedback reset, is stale and is ignored. After the last member ended,
+`resolveStage` gives one decision: rework to the head (the rounds grow), the
+next stage, or one report to the planner. The planner is woken only at a chain
+end. `line.pendingHandoffs` holds handoffs that wait for a worker slot; the
+router starts them when a run ends and after a line loads. Script checks get
+`CUCK_BASE_COMMIT` (the base commit of the head). `pipelines/choreographed.yaml`
+is the built-in example. The wait node runtime is added in a later part.
 
 The `accept` effect is reserved for the built-in `accept` interaction. It
 sends no message: it records the acceptance, which the integration rule uses.

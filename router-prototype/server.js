@@ -39,6 +39,8 @@ const { loadBuiltinPipeline, migrateLine, normalizeLine, nodeSettingsFields, bui
   implementorNodeFor, validatorNodeFor, integrationNodeFor, isLineDirectory, integrationMerged, pipelineCapabilities } = require("./line-graph");
 const { checkCall, checkLineValues, requiredFields, introspect } = require("./call-fields");
 const { renderReports, kindOfNode } = require("./report-interaction");
+const { createChainRuntime, pickChainFields, serializeChain, restoreChain, restorePendingHandoffs,
+  resetChain } = require("./chain-runtime");
 const { describeFailure } = require("./run-failure");
 const { messageText, InvocationCapture, appendTranscript, reportForValidation,
   applyCompletion, completionFields, runOutputNote,
@@ -884,6 +886,7 @@ function saveLine(line) {
         graph: line.graph || null,
         nodeSettings: line.nodeSettings || {},
         plannerQueue: serializePlannerRequests(line.queue),
+        pendingHandoffs: line.pendingHandoffs || [],
         knownNoticeIds: restoreKnownNoticeIds(line.knownNoticeIds),
         activePlannerRequest: line.activePlannerRequest
           ? serializePlannerRequest(line.activePlannerRequest)
@@ -918,7 +921,7 @@ function saveLine(line) {
           repo: w.repo || null, worktreePath: w.worktreePath,
           node: w.node || null, acceptedRuns: w.acceptedRuns || [],
           integration: w.integration || null,
-          ...changesetFields(w), ...baseFields(w),
+          ...changesetFields(w), ...baseFields(w), ...serializeChain(w),
           transcript: serializeWorkerTranscript(w),
           harness: w.harness || null, model: w.model || null, effort: w.effort || null,
           overrides: overridesOf(w),
@@ -1039,7 +1042,8 @@ function enqueue(line, text) {
 
 const WAKE_PREFIXES = ["IMPLEMENTOR REPORT", "VALIDATION REPORT", "VALIDATOR FAILURE",
   "VALIDATOR STOPPED", "WORKER FAILURE", "WORKER STOPPED", "PLAN APPROVED",
-  "CHANGESET BLOCKED", "CHANGESET OVERSIZE WARNING"];
+  "CHANGESET BLOCKED", "CHANGESET OVERSIZE WARNING", "REWORK LIMIT REACHED", "REWORK BLOCKED",
+  "HANDOFF FAILED", "STAGE REPORT"];
 
 function isWake(text) {
   return typeof text === "string" && WAKE_PREFIXES.some((p) => text.startsWith(p));
@@ -1444,18 +1448,7 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
         enqueue(line, changesetOversizeMessage(cs, worker));
       }
     }
-    if (!overLimit) {
-      const reports = renderReports({ graph: line.graph, worker, report, timedOut,
-        source: worker.validates ? line.workers.get(worker.validates) || null : null });
-      for (const item of reports) {
-        if (item.target === "starter") {
-          enqueueRequest(line, interactionReportRequest(item.text));
-        } else {
-          slog("warn", "report.target-unsupported", { lineId: line.id, workerId: worker.id,
-            interaction: item.name, target: item.target });
-        }
-      }
-    }
+    if (!overLimit) chain.routeCompleted(line, worker, { timedOut });
   } else if (worker.role === "validator" && worker.kind === "integration") {
     if (worker.status === "completed") {
       enqueue(line, buildUnroutedNotification(worker, null, report));
@@ -1508,7 +1501,13 @@ function workerClosed(line, worker, code, signal, workerRunOutput = new Invocati
   } else {
     enqueue(line, `WORKER STOPPED - '${worker.name}' (workerId ${worker.id}, session ${sid}) was stopped (user request or timeout). Decide whether to restart it with an updated prompt (new name) or to proceed.` + runOutputNote(report, "implementor run output") + failureNote);
   }
+  chain.drainPendingHandoffs(line);
 }
+
+// The runtime of handoff, rework and stages (chain-runtime.js).
+const chain = createChainRuntime({ saveLine, slog, runningCount, workerCap: WORKER_CAP, afterGate,
+  createSourceChecker, sourceIdentity, reportForValidation, deliverToInstance, enqueueRequest,
+  interactionReportRequest });
 
 function sendFailure(res, out) {
   const { ok, status, ...body } = out;
@@ -1566,7 +1565,8 @@ function startInstance(line, targetId, body, overrides = {}) {
     }
     return createOwnWorktree(line, targetId, { name: wname, prompt: body.task,
       persona: node.type.startsWith("frontend") ? "frontend" : "backend",
-      repo: body.repo, base: body.base, trackerTicket: body.trackerTicket, extra, ...overrides });
+      repo: body.repo, base: body.base, trackerTicket: body.trackerTicket, extra,
+      chainFields: pickChainFields(graph, targetId, body), ...overrides });
   }
   if (type.workspace === "source") {
     const impl = line.workers.get(body.source);
@@ -1722,6 +1722,7 @@ function createOwnWorktree(line, nodeId, fields) {
     sessionId: null, context: newContextStats(), handoff: null,
     worktreePath, branch, status: "running", stopRequested: false,
     baseCommit, changeset: null, base, baseResolved,
+    chainFields: fields.chainFields || {}, reworkRounds: {}, stage: null,
     child: null, transcript: [] };
   line.workers.set(id, worker);
   if (!saveLine(line)) {
@@ -2925,6 +2926,7 @@ const routeRequest = (req, res) => {
         }
         const sent = deliverToInstance(line, target, message);
         if (!sent.ok) return json(res, sent.status, { error: sent.error });
+        if (name === "feedback") resetChain(target);
         return json(res, 202, { queued: true, compacting: sent.compacting });
       }
       if (interaction.effect === "accept") {
@@ -3420,7 +3422,7 @@ function loadLines() {
           lastCompletedInvocationId: w.lastCompletedInvocationId || null,
           baseCommit: w.baseCommit || null, changeset: w.changeset || null,
           validatedCommit: w.validatedCommit || null,
-          ...baseFields(w) });
+          ...baseFields(w), ...restoreChain(w) });
       }
       for (const w of meta.workers || []) {
         if (w.role !== "validator") continue;
@@ -3480,7 +3482,7 @@ function loadLines() {
         queue: restorePlannerRequests(meta.plannerQueue), activePlannerRequest: null,
         activePlannerRun: null, runId: null, stopPlannerRun,
         knownNoticeIds: restoreKnownNoticeIds(meta.knownNoticeIds),
-        started,
+        started, pendingHandoffs: restorePendingHandoffs(meta.pendingHandoffs),
         planApproved: meta.planApproved === true, workers, inventory,
         evidence: new Map((meta.evidence || []).map((e) => [e.id, e])),
         clients: new Set(), transcript: [] };
@@ -3507,6 +3509,7 @@ function loadLines() {
       transitionPlannerStatus(line, restoredStatus, meta.lastError, { broadcastState: false });
       saveLine(line);
       if (line.queue.length) pump(line);
+      chain.recoverAfterLoad(line);
     } catch (error) {
       slog("error", "boot.line-load-failed", { directory: entry.name, error: String(error.message || error) });
       console.error(`line ${entry.name} did not load and is quarantined: its containers are kept`);
@@ -3566,7 +3569,7 @@ if (HTTPS_PORT) {
 }
 }
 
-module.exports = { registryIdle, stopRegistryLoopsForTest, compactPlanner, saveLine, loadLines, restoreWorkerTranscript, normalizeWorkerTranscriptEntry, stopPlannerRun, pump, spawnWorker, deliverToInstance, dashboardStateForLine, requestHandler, lines,
+module.exports = { registryIdle, stopRegistryLoopsForTest, compactPlanner, saveLine, loadLines, restoreWorkerTranscript, normalizeWorkerTranscriptEntry, stopPlannerRun, pump, spawnWorker, deliverToInstance, drainPendingHandoffs: (line) => chain.drainPendingHandoffs(line), dashboardStateForLine, requestHandler, lines,
   createServer: () => server,
   setSpawnForTest: (fn) => { spawnProcess = fn; },
   setLifecycleHooksForTest: (hooks) => { lifecycleTestHooks = hooks; },
