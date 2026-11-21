@@ -332,8 +332,14 @@ test("each change of the stage sends worker_status with the current chain fields
   server.spawnWorker(r.item, r.heads.ha, "Work.", false);
   r.endNext("Did the work.");
   const started = chainEvents();
-  assert.deepEqual(statuses(started.find((p) => p.worker.stage)), ["queued", "queued"], "the stage start");
-  assert.deepEqual(statuses(started.at(-1)), ["running", "running"], "both members run");
+  // The members start one after the other, in the order of the stage: one event for each change.
+  const stageEvents = started.filter((p) => p.worker.stage);
+  assert.deepEqual(stageEvents.map(statuses),
+    [["queued", "queued"], ["queued", "running"], ["running", "running"]],
+    "the stage start, the first member start, the second member start");
+  const [firstNode, secondNode] = Object.keys(stageEvents[0].worker.stage.members);
+  assert.equal(stageEvents[1].worker.stage.members[firstNode].status, "running", "the first member starts first");
+  assert.equal(stageEvents[1].worker.stage.members[secondNode].status, "queued", "the second member still waits");
   r.endNext(PASS);
   assert.deepEqual(statuses(chainEvents().at(-1)), ["done", "running"], "the first member ended");
   r.endNext("Found a problem.\nVERDICT: FAIL");
@@ -342,4 +348,29 @@ test("each change of the stage sends worker_status with the current chain fields
   assert.deepEqual(last.worker.reworkRounds, { impl: 1 }, "one combined rework");
   assert.deepEqual(last.worker.maxRounds, { impl: 3 });
   assert.deepEqual(r.heads.ha.reworkRounds, { impl: 1 });
+});
+
+test("a feedback call on a head clears the stage and sends worker_status with stage null and no rework rounds", async () => {
+  const graph = resolve(STAGE.replace(/lint: \{ type: script-check.*\n/,
+    "lint: { type: backend-validator, checks: [impl], maxRounds: 3 }\n"));
+  const r = rig(["ha"], graph);
+  const events = [];
+  r.item.clients.add({ write: (chunk) => events.push(chunk) });
+  server.spawnWorker(r.item, r.heads.ha, "Work.", false);
+  r.endNext("Did the work.");
+  r.endNext(PASS);
+  r.endNext("Found a problem.\nVERDICT: FAIL");
+  assert.deepEqual(r.heads.ha.reworkRounds, { impl: 1 }, "the chain has one rework before the feedback");
+  r.endNext("Reworked.");
+  r.endNext(PASS);
+  r.endNext(PASS);
+  assert.deepEqual(r.heads.ha.reworkRounds, { impl: 1 }, "the rework count stays until the planner acts");
+  events.length = 0;
+  const fed = await r.post("feedback", { instance: r.heads.ha.id, instructions: "Change it." });
+  assert.equal(fed.status, 202, fed.text);
+  const cleared = events.filter((e) => e.startsWith("event: worker_status"))
+    .map((e) => JSON.parse(e.split("data: ")[1]))
+    .find((p) => p.workerId === r.heads.ha.id && p.worker && p.worker.stage === null);
+  assert.ok(cleared, "a worker_status event reports the cleared stage");
+  assert.deepEqual(cleared.worker.reworkRounds, {});
 });
