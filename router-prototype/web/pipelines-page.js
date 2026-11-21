@@ -200,21 +200,19 @@
     state.text = state.savedText = r.data.text;
     renderDetail(item);
     if (toolbarState(item).editor) runValidation();
-    else if (kind === "pipeline" && r.data.resolved) drawGraph(layoutInput(graphOfResolved(r.data.resolved)));
+    else if (kind === "pipeline" && r.data.resolved) await drawReadOnlyGraph(name, r.data.resolved);
   }
 
-  // The resolved definition of a read-only pipeline, as a preview graph.
-  function graphOfResolved(resolved) {
-    const kinds = {};
-    for (const e of resolved.edges) {
-      for (const n of e.interactions) {
-        const it = resolved.interactions && resolved.interactions[n];
-        kinds[n] = { effect: it ? it.effect || null : null, trigger: it ? it.trigger || null : null };
-      }
-    }
-    return { start: resolved.start, kinds,
-      nodes: Object.entries(resolved.nodes).map(([id, n]) => ({ id, type: n.type, phase: null })),
-      edges: resolved.edges };
+  // The graph of a read-only pipeline. The validate answer holds the relations, columns and
+  // rows. A built-in or user pipeline cannot be validated under its own name, so the text
+  // goes under a preview name. Without an answer, the resolved definition gives nodes only.
+  async function drawReadOnlyGraph(name, resolved) {
+    const preview = state.text.replace(/^name:.*$/m, "name: graph-preview");
+    const r = await call("POST", "/api/pipelines/validate", { text: preview });
+    if (!state.selected || state.selected.name !== name) return;
+    if (r.ok && r.data.graph) drawGraph(layoutInput(r.data.graph));
+    else drawGraph(layoutInput({ start: resolved.start,
+      nodes: Object.entries(resolved.nodes).map(([id, n]) => ({ id, type: n.type })) }));
   }
 
   function renderDetail(item) {
@@ -363,18 +361,19 @@
     const labelLayer = el("g", { class: "pgLabels" });
     for (const edge of layout.edges) {
       if (!edge) continue;
-      edgeLayer.append(el("path", { d: edge.path, class: "pgEdge " + edge.kind + (edge.dashed ? " dashed" : ""), "data-kind": edge.kind, "marker-end": "url(#pgArrow)" }));
+      edgeLayer.append(el("path", { d: edge.path, class: pipelineUI.edgeClassName(edge), "data-kind": edge.kind, "marker-end": "url(#pgArrow)" }));
       labelLayer.append(el("text", { x: edge.labelX, y: edge.labelY, class: "pgEdgeLabel", "data-kind": edge.kind, "text-anchor": "middle", "dominant-baseline": "central" }, edge.label));
     }
     svg.append(edgeLayer);
     for (const n of layout.nodes) {
       const script = n.runner === "script";
-      const g = el("g", { class: "pgNode" + (script ? " script" : "") + (n.id === input.start ? " start" : ""), "data-node": n.id });
+      const wait = pipelineUI.isWaitNode(n);
+      const g = el("g", { class: "pgNode" + (script ? " script" : "") + (wait ? " wait" : "") + (n.id === input.start ? " start" : ""), "data-node": n.id });
       g.append(el("rect", { x: n.x, y: n.y, width: n.width, height: n.height, rx: 6 }),
         el("text", { x: n.x + 10, y: n.y + 21, class: "pgNodeId" }, (script ? "⚙ " : "") + n.id),
         el("text", { x: n.x + 10, y: n.y + 38, class: "pgNodeType" }, script ? pipelineUI.scriptNodeLine(n) : n.type || ""),
-        el("text", { x: n.x + 10, y: n.y + 55, class: script ? "pgNodeBadge" : "pgNodeCfg" },
-          script ? (n.required ? "required" : "") : "runner: " + (n.runner || "agent")));
+        el("text", { x: n.x + 10, y: n.y + 55, class: script ? "pgNodeBadge" : wait ? "node-badge-wait" : "pgNodeCfg" },
+          script ? (n.required ? "required" : "") : wait ? "wait" : "runner: " + (n.runner || "agent")));
       svg.append(g);
     }
     svg.append(labelLayer);

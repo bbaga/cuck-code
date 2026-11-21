@@ -652,6 +652,29 @@ Rule R13: the ordering relations must not form a loop. A loop is an error that
 names the nodes and the declarations. Example:
 `ordering relations form a loop: ci -> lint -> ci (lint: after [ci]; ci: after [lint])`.
 
+### Choreographed pipelines in the graph
+
+The Pipeline tab and the page `/pipelines` draw three more things. They read the
+`interactions` list of each relation and the runner of each node.
+
+- **Wait badge.** A node with `runner: wait` shows the badge "wait" (class
+  `node-badge-wait`) and a `wait` box outline (class `pgNode wait`). A script
+  node shows its own badge in the same place.
+- **Edge styles.** An interaction relation gets one of these classes:
+  `edge-handoff` (solid line in the accent color), `edge-rework` (dashed back
+  edge, label "rework (FAIL)") and `edge-arrive` (solid line, label "arrive
+  (PASS)"). Other interactions keep their style. The text list of relations
+  keeps its format: `val -> impl: rework`.
+- **Fan-out.** A sender with several handoff targets draws one edge for each
+  target. The targets are in the same column, in separate rows.
+- Relations between the same two nodes share one path. Each next label moves
+  down one line, so the labels do not overlap.
+- **Optional nodes.** `planner-only` draws one node and no edge.
+  `implement-only` draws two nodes. Each node has one settings row.
+- **Change the pipeline.** When the answer has a non-empty `removeFirst` list,
+  the section shows the text that names the workers to remove first. The
+  section does not show the remap table and Apply stays off.
+
 ### Script check nodes
 
 A **script check node** runs a list of shell scripts, CI style, in the

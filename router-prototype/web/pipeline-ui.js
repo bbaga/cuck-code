@@ -383,6 +383,24 @@
   // Forward edges run between the boxes, a relation that skips columns goes over the
   // top, a back edge (to the same or an earlier column) goes out to the right of its
   // box, under all boxes and up into the bottom of the target.
+  // The choreography style of a relation, from its interactions list: "handoff",
+  // "rework", "arrive" or "". A relation with several of them takes the first in this order.
+  const CHOREO_STYLES = ["rework", "arrive", "handoff"];
+  const CHOREO_LABELS = { rework: "rework (FAIL)", arrive: "arrive (PASS)" };
+  function choreoStyle(edge) {
+    const names = Array.isArray(edge && edge.interactions) ? edge.interactions : [];
+    return CHOREO_STYLES.find((name) => names.includes(name)) || "";
+  }
+
+  // The SVG class of an edge path: kind, dashed flag and the "edge-<style>" class.
+  function edgeClassName(edge) {
+    const style = edge.style;
+    return "pgEdge " + edge.kind + (edge.dashed ? " dashed" : "") + (style ? " edge-" + style : "");
+  }
+
+  // True for a node that only waits for its member tasks (runner "wait").
+  const isWaitNode = (node) => !!node && node.runner === "wait";
+
   const GRAPH_GEOMETRY = { nodeWidth: 190, nodeHeight: 68, columnGap: 190, rowGap: 26, margin: 20, lane: 17 };
 
   function layoutGraph(graph) {
@@ -416,10 +434,17 @@
     const boxesBottom = originY + maxRows * G.nodeHeight + (maxRows - 1) * G.rowGap;
     const out = new Array(edges.length);
     let maxX = Math.max(...nodes.map((n) => n.x + n.width));
+    // Relations between the same two nodes share one path: each next label moves down one line.
+    const sameEnds = {};
     const finish = (item, points, path, labelX, labelY) => {
       for (const [x] of points) maxX = Math.max(maxX, x);
-      out[item.index] = { from: item.edge.from, to: item.edge.to, kind: item.edge.kind, label: item.edge.label || "",
-        dashed: item.edge.dashed === true, path, points, labelX, labelY };
+      const ends = item.edge.from + "\u0000" + item.edge.to;
+      labelY += (sameEnds[ends] || 0) * 13;
+      sameEnds[ends] = (sameEnds[ends] || 0) + 1;
+      const style = item.edge.kind === "interaction" ? choreoStyle(item.edge) : "";
+      out[item.index] = { from: item.edge.from, to: item.edge.to, kind: item.edge.kind, style,
+        label: (item.edge.interactions || []).length === 1 && CHOREO_LABELS[style] || item.edge.label || "",
+        dashed: item.edge.dashed === true || style === "rework", path, points, labelX, labelY };
     };
     const pathOf = (pts) => "M" + pts.map(([x, y]) => x + " " + y).join(" L");
 
@@ -1256,10 +1281,19 @@
     if (status === 409 && b.code === "PLANNER_BUSY") {
       return { ...base, state: "blocked", message: "The planner is running or compacting. Wait until it is idle, then check again." };
     }
+    if (status === 409 && Array.isArray(b.removeFirst) && b.removeFirst.length) {
+      return graphSwitchView(200, b);
+    }
     if (status !== 200) {
       const rules = Array.isArray(b.rules) ? b.rules : (Array.isArray(b.errors) ? b.errors : []);
       const text = b.error || (rules.length ? "" : "The pipeline could not be checked.");
       return { ...base, state: "error", message: [text, ...rules.map((r) => (r && r.message) || String(r))].filter(Boolean).join(" ") };
+    }
+    // A node of this line has no candidate in the new pipeline: its workers go first.
+    const removeFirst = Array.isArray(b.removeFirst) ? b.removeFirst : [];
+    if (removeFirst.length) {
+      return { ...base, state: "blocked", removeFirst, message: b.error
+        || "The new pipeline has no node for some workers. Remove these workers first: " + removeFirst.join(", ") + "." };
     }
     if (b.unchanged) return { ...base, state: "unchanged", message: "This line already uses this pipeline." };
     const moves = Array.isArray(b.moves) ? b.moves : [];
@@ -1316,7 +1350,7 @@
     isFreshSessionNode,
     nodeRowsFromResolved,
     defaultOptionLabels,
-    layoutGraph,
+    layoutGraph, choreoStyle, edgeClassName, isWaitNode,
     scriptCwdText, GRAPH_KINDS, GRAPH_KINDS_KEY, loadGraphKinds, buildKindLegend, scriptNodeLine,
     GRAPH_GEOMETRY,
     nodeRowsFromGraphView,
