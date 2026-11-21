@@ -55,4 +55,17 @@ async function checkFit(page, root, width) {
 // Scroll the graph box to its right end.
 const scrollRight = (page, selector) => page.evaluate(`(() => { const b = document.querySelector(${JSON.stringify(selector)}); b.scrollLeft = b.scrollWidth; })()`);
 
-module.exports = { CHAIN_EDGE_LINES, checkEdgeStyles, checkStage, checkFit, scrollRight };
+// Delete managed test pipelines through the router API, so the server rebuilds its catalog.
+// The server keeps the folder of the first fixture, so a direct file delete would miss it.
+// Then assert that GET /api/pipelines no longer lists them.
+async function removeManaged(baseUrl, names) {
+  for (const name of names) {
+    const res = await fetch(`${baseUrl}/api/pipelines/${name}`, { method: "DELETE" });
+    assert.ok(res.status === 200 || res.status === 404, `delete ${name}: ${res.status}`);
+  }
+  const list = await (await fetch(`${baseUrl}/api/pipelines`)).json();
+  const listed = list.pipelines.map((p) => p.name);
+  for (const name of names) assert.ok(!listed.includes(name), `${name} is still listed`);
+}
+
+module.exports = { CHAIN_EDGE_LINES, checkEdgeStyles, checkStage, checkFit, scrollRight, removeManaged };

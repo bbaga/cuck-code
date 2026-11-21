@@ -11,10 +11,19 @@ const path = require("node:path");
 // No pipelines of the real home folder in this test.
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "pipelines-page-home-"));
 process.env.CUCK_HOME = home;
-const { startDashboardFixture } = require("./fixtures/dashboard-browser");
+const dashboard = require("./fixtures/dashboard-browser");
 const { openPage } = require("./fixtures/browser-driver");
 const choreo = require("./choreo-fixtures");
 const checks = require("./fixtures/choreo-graph-checks");
+
+// server.js keeps the LINES_DIR of the first fixture of the process. Later fixtures change
+// process.env.LINES_DIR, but the server does not follow. Remember the folder of the first one.
+let serverLinesDir = null;
+async function startDashboardFixture() {
+  const fx = await dashboard.startDashboardFixture();
+  if (!serverLinesDir) serverLinesDir = process.env.LINES_DIR;
+  return fx;
+}
 
 const ERRS = "window.__errs = [];"
   + "window.addEventListener('error', (e) => window.__errs.push(String(e.message)));"
@@ -36,7 +45,7 @@ test("pipelines page: lists, read-only view, duplicate, edit with error, fix, sa
     const shot = async (name) => { if (shots) await page.screenshot(path.join(shots, name)); };
     const click = (sel) => page.evaluate(`document.querySelector(${JSON.stringify(sel)}).click()`);
     const text = (sel) => page.evaluate(`document.querySelector(${JSON.stringify(sel)}).textContent`);
-    const managedFile = path.join(process.env.LINES_DIR, "plugins", "pipelines", "my-copy.yaml");
+    const managedFile = path.join(serverLinesDir, "plugins", "pipelines", "my-copy.yaml");
     await page.setViewport(1100, 1000);
 
     // the three groups
@@ -146,6 +155,7 @@ test("pipelines page: lists, read-only view, duplicate, edit with error, fix, sa
     await page.waitFor("document.getElementById('pipelinesBtn')");
   } finally {
     if (page) await page.close();
+    await checks.removeManaged(fx.url, ["my-copy", "fresh"]);
     await fx.close();
     fs.rmSync(home, { recursive: true, force: true });
   }
@@ -177,11 +187,7 @@ async function openItem(page, name, nodes) {
     || document.getElementById('source').textContent) && document.querySelectorAll('#graphBox .pgNode').length === ${nodes}`);
 }
 
-const cleanManaged = () => {
-  for (const name of ["choreo-chain", "choreo-stage"]) {
-    fs.rmSync(path.join(process.env.LINES_DIR, "plugins", "pipelines", name + ".yaml"), { force: true });
-  }
-};
+const cleanManaged = (fx) => checks.removeManaged(fx.url, ["choreo-chain", "choreo-stage"]);
 
 test("pipelines page: pipelines 1 and 2 show wait badge, edge styles, fan-out and fit at 1280 px and 320 px", async (t) => {
   const fx = await startDashboardFixture();
@@ -226,8 +232,8 @@ test("pipelines page: pipelines 1 and 2 show wait badge, edge styles, fan-out an
     assert.deepEqual(await page.evaluate("window.__errs"), []);
   } finally {
     if (page) await page.close();
+    await cleanManaged(fx);
     await fx.close();
-    cleanManaged();
   }
 });
 
@@ -251,8 +257,8 @@ test("pipelines page: default and minimal show edges in several columns; optiona
     assert.deepEqual(await page.evaluate("window.__errs"), []);
   } finally {
     if (page) await page.close();
+    await cleanManaged(fx);
     await fx.close();
-    cleanManaged();
   }
 });
 
@@ -276,7 +282,7 @@ test("pipelines page: a failing validate call leaves a nodes-only graph and no p
     assert.deepEqual(await page.evaluate("window.__errs"), []);
   } finally {
     if (page) await page.close();
+    await cleanManaged(fx);
     await fx.close();
-    cleanManaged();
   }
 });
