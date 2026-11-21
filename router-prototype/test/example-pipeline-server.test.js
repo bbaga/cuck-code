@@ -107,9 +107,15 @@ function rig() {
       content: [{ type: "text", text }] }) + "\n");
     next.child.emitClose(0);
   };
+  // Count each planner wake: every request that enters the planner queue, by push or unshift.
+  const wakes = { count: 0 };
+  for (const method of ["push", "unshift"]) {
+    const original = item.queue[method].bind(item.queue);
+    item.queue[method] = (...requests) => { wakes.count += requests.length; return original(...requests); };
+  }
   const scripts = () => [...item.workers.values()].filter((w) => w.runner === "script");
   const reworks = () => spawned.filter((s) => s.args.includes("REWORK REQUEST"));
-  return { item, heads, spawned, endNext, scripts, reworks, base, envFile, texts: () => item.queue.map((r) => r.text) };
+  return { item, heads, spawned, endNext, scripts, reworks, wakes, base, envFile, texts: () => item.queue.map((r) => r.text) };
 }
 
 test("example-choreographed: two tasks, one combined rework each, the batch and integration, no planner wake", async () => {
@@ -118,18 +124,22 @@ test("example-choreographed: two tasks, one combined rework each, the batch and 
   const started = await post(r.item.id, "start", { to: "batch", members: "api-task,web-task", instructions: INSTRUCTIONS });
   assert.equal(started.status, 201, started.text);
   const wait = [...r.item.workers.values()].find((w) => w.runner === "wait");
+  const noWake = (step) => assert.equal(r.wakes.count, 0, `no planner wake ${step}`);
+  noWake("after the batch start");
 
   // Backend run 1: backend-val and backend-lint start together. The lint fails, the validator passes.
   server.spawnWorker(r.item, r.heads.backend, "Work.", false);
   r.endNext("Did the backend work.");
   assert.deepEqual(Object.keys(r.heads.backend.stage.members).sort(), ["backend-lint", "backend-val"]);
   assert.equal(r.scripts().length, 1, "the script check runs on the same backend run");
+  noWake("when the stage starts");
   r.endNext(PASS);
   await until(() => r.reworks().length === 1, "one combined rework to backend-impl");
   assert.equal(r.reworks().length, 1);
   assert.match(r.reworks()[0].args, /backend-lint/);
   assert.deepEqual(r.heads.backend.reworkRounds, { "backend-impl": 1 });
   assert.deepEqual(r.texts(), [], "no planner wake after the rework");
+  noWake("after the backend rework");
   assert.equal(fs.readFileSync(r.envFile, "utf8"), r.base, "backend-lint gets CUCK_BASE_COMMIT");
 
   // Backend run 2: both checkers pass and the task arrives at the batch.
@@ -140,6 +150,7 @@ test("example-choreographed: two tasks, one combined rework each, the batch and 
   assert.equal(r.reworks().length, 1, "no second rework");
   assert.equal(wait.arrivals[r.heads.backend.id].runGeneration, 2);
   assert.equal(wait.status, "running", "the frontend task has not arrived");
+  noWake("after the backend arrival");
 
   // Frontend: frontend-val fails one time, then passes, and the task arrives.
   server.spawnWorker(r.item, r.heads.frontend, "Work.", false);
@@ -148,8 +159,10 @@ test("example-choreographed: two tasks, one combined rework each, the batch and 
   assert.equal(r.reworks().length, 2, "one rework to frontend-impl");
   assert.deepEqual(r.heads.frontend.reworkRounds, { "frontend-impl": 1 });
   assert.deepEqual(r.texts(), [], "no planner wake after the frontend rework");
+  noWake("after the frontend rework");
   r.endNext("Fixed the frontend work.");
   r.endNext(PASS);
+  noWake("before the integration start");
 
   // The batch completes and integration starts one time with the instructions of the batch start call.
   assert.equal(wait.status, "completed");
@@ -157,4 +170,5 @@ test("example-choreographed: two tasks, one combined rework each, the batch and 
   assert.equal(integrations.length, 1, "integration starts one time");
   assert.match(integrations[0].prompt, new RegExp(INSTRUCTIONS));
   assert.deepEqual(r.texts(), [], "no per-task and no per-checker report reached the planner");
+  noWake("in the whole flow");
 });

@@ -136,7 +136,8 @@ test("router: GET /api/pipelines lists pipelines, node types and interactions", 
     assert.ok(r.body.pipelines.some((p) => p.name === "minimal"));
     const example = r.body.pipelines.find((p) => p.name === "example-choreographed");
     assert.equal(example.layer, "built-in");
-    assert.match(example.description, /^Example: backend work goes to a validator and a script check in parallel/);
+    assert.equal(example.description, "Example: backend work goes to a validator and a script check in parallel, " +
+      "frontend work to a validator. Rework runs on its own. A wait node collects the batch. Then integration runs once.");
     assert.deepEqual(example.problems, []);
     assert.ok(r.body.nodeTypes.some((t) => t.name === "planner" && t.layer === "built-in"));
     assert.ok(r.body.interactions.some((i) => i.name === "report"));

@@ -648,18 +648,27 @@ runs the flow below.
    At the end, it gets the integration report.
 
 The linear variant runs the script first and the validator after it. The
-validator starts only when the script passes:
+validator starts only when the script passes. The snippet is a complete pipeline:
 
 ```yaml
+name: linear
+start: planner
 nodes:
-  impl: { type: backend-implementor }
-  ci:   { type: script-check, checks: [impl], scripts: [{ name: unit, run: "npm test" }] }
-  val:  { type: backend-validator, checks: [impl] }
+  planner:     { type: planner }
+  impl:        { type: backend-implementor }
+  ci:          { type: script-check, checks: [impl], scripts: [{ name: unit, run: "npm test" }] }
+  val:         { type: backend-validator, checks: [impl] }
+  integration: { type: integration-validator }
 edges:
+  - planner -> impl: start, feedback, accept
+  - impl -> planner: report
   - impl -> ci: handoff     # the implementor ends: the script runs first
   - ci -> impl: rework      # the script fails: the implementor gets the rework
   - ci -> val: handoff      # the script passes: the validator starts
   - val -> impl: rework     # the validator rejects: the implementor gets the rework
+  - "[ci, val] -> planner: report"
+  - planner -> integration: start
+  - integration -> planner: report
 ```
 
 ### How pipelines are drawn
