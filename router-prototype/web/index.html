@@ -288,6 +288,11 @@
   .pipeGraph .pgEdge.required { stroke-dasharray: 2 4; stroke-width: 2.6; stroke: #e07a5f; }
   .pipeGraph .pgNode.script rect { fill: #1a2220; stroke: #5f9ea0; stroke-dasharray: 5 3; }
   .pipeGraph .pgNodeBadge { fill: #e07a5f; font-size: 11px; font-weight: 600; }
+  .pipeGraph .node-badge-wait { fill: #d9a441; font-size: 11px; font-weight: 600; }
+  .pipeGraph .pgNode.wait rect { stroke: #d9a441; }
+  .pipeGraph .pgEdge.edge-handoff { stroke: #2d6cdf; stroke-width: 2; stroke-dasharray: none; }
+  .pipeGraph .pgEdge.edge-rework { stroke: #e07a5f; stroke-dasharray: 6 4; }
+  .pipeGraph .pgEdge.edge-arrive { stroke: #35c46a; stroke-dasharray: none; }
   .pgLegend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 6px; padding: 4px 8px; border: 1px solid #262b33; border-radius: 6px; font-size: .75rem; color: #d8dee6; }
   .pgLegend legend { padding: 0 4px; color: #8fa3bd; }
   .pgKind { display: inline-flex; align-items: center; gap: 4px; }
@@ -392,7 +397,7 @@
 <script src="registry-line.js"></script>
 <script>
 window.addEventListener("DOMContentLoaded", () => {
-  const { nodeRowsFromResolved, defaultOptionLabels, layoutGraph, nodeRowsFromGraphView, nodeSummaryText, scriptNodeLine, scriptCwdText, loadGraphKinds, buildKindLegend, edgeTextLines, buildNodeSettingsPayload, buildCreateBody, pickerPipelines, buildGraphChangeBody, graphSwitchView, remapComplete,
+  const { nodeRowsFromResolved, defaultOptionLabels, layoutGraph, edgeClassName, isWaitNode, nodeRowsFromGraphView, nodeSummaryText, scriptNodeLine, scriptCwdText, loadGraphKinds, buildKindLegend, edgeTextLines, buildNodeSettingsPayload, buildCreateBody, pickerPipelines, buildGraphChangeBody, graphSwitchView, remapComplete,
     pipelineOptionLabel, pipelineErrorsText, EFFORT_LEVELS, parseContextSize, formatTokens, filterInstalled, authBadge, harnessOptionLabel, pluginProblemsSummary, harnessReloadOutcome, previewForIntegration,
     previewSelectionKey, previewSelectionExists, isPassingIntegration, mapPreviewPayload, fetchLinePreview, sanitizePreviewCommand,
     VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, harnessHasProviders, providerDetailUrl, providerFromModel, authStatusText,
@@ -1942,7 +1947,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const labelLayer = el("g", { class: "pgLabels" });
     for (const edge of layout.edges) {
       if (!edge) continue;
-      edgeLayer.appendChild(el("path", { d: edge.path, class: "pgEdge " + edge.kind + (edge.dashed ? " dashed" : ""),
+      edgeLayer.appendChild(el("path", { d: edge.path, class: edgeClassName(edge),
         "data-kind": edge.kind, "marker-end": "url(#pgArrow-" + st.id + ")" }));
       labelLayer.appendChild(el("text", { x: edge.labelX, y: edge.labelY, class: "pgEdgeLabel",
         "data-kind": edge.kind, "text-anchor": "middle", "dominant-baseline": "central" }, edge.label));
@@ -1951,12 +1956,15 @@ window.addEventListener("DOMContentLoaded", () => {
     const eff = st.effectiveNodeSettings || {};
     for (const n of layout.nodes) {
       const script = n.runner === "script";
-      const g = el("g", { class: "pgNode" + (script ? " script" : "") + (n.id === graph.start ? " start" : ""), "data-node": n.id });
+      const wait = isWaitNode(n);
+      const g = el("g", { class: "pgNode" + (script ? " script" : "") + (wait ? " wait" : "") + (n.id === graph.start ? " start" : ""), "data-node": n.id });
       g.appendChild(el("rect", { x: n.x, y: n.y, width: n.width, height: n.height, rx: 6 }));
       g.appendChild(el("text", { x: n.x + 10, y: n.y + 21, class: "pgNodeId" }, (script ? "⚙ " : "") + n.id));
       g.appendChild(el("text", { x: n.x + 10, y: n.y + 38, class: "pgNodeType" }, script ? scriptNodeLine(n) : n.type || ""));
       if (script) {
         if (n.required) g.appendChild(el("text", { x: n.x + 10, y: n.y + 55, class: "pgNodeBadge" }, "required"));
+      } else if (wait) {
+        g.appendChild(el("text", { x: n.x + 10, y: n.y + 55, class: "node-badge-wait" }, "wait"));
       } else {
         g.appendChild(el("text", { x: n.x + 10, y: n.y + 55, class: "pgNodeCfg" }, nodeSummaryText(eff[n.id])));
       }

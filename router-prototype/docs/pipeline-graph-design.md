@@ -472,6 +472,27 @@ The relation kinds are `interaction` (an edge), `checks`, `after`,
 (`required: true`). The README section "How pipelines are drawn" has the full
 table.
 
+### Choreographed pipelines in the graph
+
+The graph code reads the `interactions` list of each relation and the runner
+of each node. It reads no node id or type name.
+
+- A node with `runner: wait` has the badge "wait" (`node-badge-wait`) and the
+  box class `wait`.
+- An interaction relation with `handoff` gets `edge-handoff`: a solid line in
+  the accent color. One with `rework` gets `edge-rework`: a dashed back edge with
+  the label "rework (FAIL)". One with `arrive` gets `edge-arrive`: a solid line
+  with the label "arrive (PASS)". The label changes only when the edge has this
+  one interaction. The text list of relations does not change.
+- A fan-out draws one edge for each handoff target. The targets share one
+  column, because the column rule gives them the same longest path.
+- Relations with the same two end nodes share one path. Each next label moves
+  down 13 px.
+- `planner-only` (one node, no edge) and `implement-only` (two nodes) draw
+  with one settings row for each node.
+- The "Change the pipeline" section shows the text of a non-empty `removeFirst`
+  answer in its alert box and blocks Apply.
+
 ## Order when after is not defined
 
 A pipeline without `after` has no gate. The order comes from these sources:

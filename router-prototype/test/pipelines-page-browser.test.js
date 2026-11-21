@@ -13,6 +13,7 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), "pipelines-page-home-"));
 process.env.CUCK_HOME = home;
 const { startDashboardFixture } = require("./fixtures/dashboard-browser");
 const { openPage } = require("./fixtures/browser-driver");
+const choreo = require("./choreo-fixtures");
 
 const ERRS = "window.__errs = [];"
   + "window.addEventListener('error', (e) => window.__errs.push(String(e.message)));"
@@ -146,5 +147,71 @@ test("pipelines page: lists, read-only view, duplicate, edit with error, fix, sa
     if (page) await page.close();
     await fx.close();
     fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("pipelines page: choreographed pipeline, optional nodes, 1280 px and 320 px", async (t) => {
+  const fx = await startDashboardFixture();
+  let page = null;
+  let created = false;
+  try {
+    try { page = await openPage(fx.url + "/pipelines", { initScript: ERRS }); }
+    catch (e) {
+      if (e.code === "BROWSER_UNAVAILABLE") return t.skip("Chrome is missing: " + e.message);
+      throw e;
+    }
+    const shots = process.env.PIPELINES_PAGE_SHOTS;
+    if (shots) fs.mkdirSync(shots, { recursive: true });
+    const shot = async (name) => { if (shots) await page.screenshot(path.join(shots, name)); };
+    const count = (sel) => page.evaluate(`document.querySelectorAll(${JSON.stringify("#graphBox " + sel)}).length`);
+    const open = async (name) => {
+      await page.evaluate(`document.querySelector('button[data-name=${name}]').click()`);
+      await page.waitFor(`document.querySelector('#graphBox svg') && new RegExp('name: ${name}').test(document.getElementById('editor') ? document.getElementById('editor').value : document.getElementById('source').textContent)`);
+    };
+    await page.setViewport(1280, 1000);
+    // store pipeline 1 as a managed pipeline
+    const chain = JSON.stringify(choreo.CHAIN.replace("name: choreographed", "name: choreo-chain"));
+    await page.waitFor("!!document.querySelector('button[data-name=minimal]')");
+    created = true;
+    const status = await page.evaluate(`fetch('/api/pipelines/choreo-chain', { method: 'PUT',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: ${chain} }) }).then((r) => r.status)`);
+    assert.equal(status, 201);
+    await page.evaluate("location.reload()");
+    await page.waitFor("!!document.querySelector('button[data-name=choreo-chain]')");
+    await open("choreo-chain");
+    assert.equal(await count(".pgNode.wait .node-badge-wait"), 1);
+    assert.equal(await page.evaluate("document.querySelector('#graphBox .node-badge-wait').textContent"), "wait");
+    assert.equal(await count("path.pgEdge.edge-handoff"), 2);
+    assert.equal(await count("path.pgEdge.edge-rework"), 1);
+    assert.equal(await count("path.pgEdge.edge-arrive"), 1);
+    const labels = await page.evaluate("[...document.querySelectorAll('#graphBox .pgEdgeLabel')].map((l) => l.textContent)");
+    assert.ok(labels.includes("rework (FAIL)") && labels.includes("arrive (PASS)"), labels.join("|"));
+    // the text list keeps its format
+    assert.ok((await page.evaluate("[...document.querySelectorAll('#edgesList li')].map((l) => l.textContent)")).includes("val -> impl: rework"));
+    assert.ok(await page.evaluate("document.documentElement.scrollWidth <= 1281"));
+    await shot("pipelines-choreo-1280.png");
+
+    await page.setViewport(320, 900);
+    await page.evaluate("document.getElementById('graphBox').scrollIntoView()");
+    await shot("pipelines-choreo-320.png");
+    assert.ok(await page.evaluate("document.documentElement.scrollWidth <= 321"), "no horizontal page scroll at 320 px");
+    const box = "document.getElementById('graphBox')";
+    assert.ok(await page.evaluate(`${box}.getBoundingClientRect().right <= 320`), "graph box inside the viewport");
+    await page.setViewport(1280, 1000);
+
+    // optional nodes: planner-only has one node and no edge, implement-only two nodes
+    for (const [name, nodes, edges] of [["planner-only", 1, 0], ["implement-only", 2, 2]]) {
+      await open(name);
+      await page.waitFor(`document.querySelectorAll('#graphBox .pgNode').length === ${nodes} && document.querySelectorAll('#graphBox path.pgEdge').length === ${edges}`);
+      assert.equal(await count(".pgNode"), nodes, name);
+      assert.equal(await count("path.pgEdge"), edges, name);
+      assert.equal(await count(".hint"), 0, name);
+      assert.equal(await page.evaluate("document.querySelectorAll('#edgesList li').length"), edges, name);
+    }
+    assert.deepEqual(await page.evaluate("window.__errs"), []);
+  } finally {
+    if (page) await page.close();
+    await fx.close();
+    if (created) fs.rmSync(path.join(process.env.LINES_DIR, "plugins", "pipelines", "choreo-chain.yaml"), { force: true });
   }
 });
