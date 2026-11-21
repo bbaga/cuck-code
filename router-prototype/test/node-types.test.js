@@ -248,3 +248,44 @@ for (const [wrong, replacement, message] of [
     assert.throws(() => resolveTypes({ "script-check": type }), (e) => message.test(e.message) && /script-check/.test(e.message));
   });
 }
+
+// ---- runner wait ----
+
+const WAIT_TYPE = (name = "wait", extra = "") => `---
+name: ${name}
+runner: wait
+session: fresh
+workspace: none
+outcome: verdict
+coordinator: false
+${extra}---
+This node waits for its member tasks.
+`;
+
+test("the wait type loads and resolves", () => {
+  const out = resolveTypes({ wait: load("/t/wait", WAIT_TYPE()) });
+  assert.equal(out.wait.runner, "wait");
+  assert.equal(out.wait.workspace, "none");
+});
+
+for (const [wrong, replacement, message] of [
+  ["session: fresh", "session: resume", /session: fresh/],
+  ["workspace: none", "workspace: source", /workspace: none/],
+  ["outcome: verdict", "outcome: none", /outcome: verdict/],
+  ["coordinator: false", "coordinator: true", /coordinator: false/],
+]) {
+  test(`runner wait with ${replacement} is refused`, () => {
+    const type = load("/t/wait", WAIT_TYPE().replace(wrong, replacement));
+    assert.throws(() => resolveTypes({ wait: type }), (e) => message.test(e.message) && /runner: wait/.test(e.message));
+  });
+}
+
+test("runner wait needs the root type wait", () => {
+  const type = load("/t/waiter", WAIT_TYPE("waiter"));
+  assert.throws(() => resolveTypes({ waiter: type }), /runner: wait needs root type wait/);
+});
+
+test("workspace none is allowed only for runner wait", () => {
+  const type = load("/t/reviewer", GOOD.replace("workspace: source", "workspace: none"));
+  assert.throws(() => resolveTypes({ reviewer: type }), /workspace: none needs runner: wait/);
+});

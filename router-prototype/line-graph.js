@@ -28,6 +28,7 @@ function phaseOfType(resolved, typeName) {
     name = types[name].extends;
   }
   if (name === "script-check") return "validator";
+  if (name === "wait") return "wait";
   for (const [phase, root] of Object.entries(PHASE_TYPES)) if (root === name) return phase;
   return null;
 }
@@ -57,6 +58,29 @@ function nodeSettingsFromPipeline(graph, pipeline) {
     }
   }
   return out;
+}
+
+// What a pipeline offers. Pure. wait: a node has a type with runner wait.
+// chains: an edge starts the next checkers, sends a report back, or arrives at a wait node.
+function pipelineCapabilities(graph) {
+  const nodes = (graph && graph.nodes) || {};
+  const types = (graph && graph.types) || {};
+  const workspaces = Object.values(nodes).map((n) => (has(types, n.type) ? types[n.type].workspace : undefined));
+  const interactions = (graph && graph.interactions) || {};
+  const chains = ((graph && graph.edges) || []).some((edge) => (edge.interactions || []).some((name) => {
+    const it = has(interactions, name) ? interactions[name] : null;
+    if (!it) return false;
+    return it.effect === "arrive"
+      || (it.trigger === "complete" && (it.effect === "create" || (it.effect === "deliver" && it.target === "source")));
+  }));
+  const wait = Object.values(nodes).some((n) => has(types, n.type) && types[n.type].runner === "wait");
+  return {
+    implementor: workspaces.includes("own-worktree"),
+    checker: workspaces.includes("source"),
+    integration: workspaces.includes("integration"),
+    wait,
+    chains,
+  };
 }
 
 // The graph as the API shows it: name, start, nodes with type and phase, edges.
@@ -209,7 +233,15 @@ function planGraphChange({ line, newGraph, remap }) {
   }
   if (errors.length) return { ok: false, code: "GRAPH_REMAP_INVALID", errors };
   const missing = orphans.filter((o) => !has(entries, o.node));
-  if (missing.length) return { ok: false, code: "GRAPH_REMAP_REQUIRED", orphans: missing };
+  if (missing.length) {
+    // An orphan without a candidate cannot be remapped: its workers must go first.
+    const removeFirst = missing.filter((o) => o.candidates.length === 0).flatMap((o) => o.workerNames);
+    const result = { ok: false, code: "GRAPH_REMAP_REQUIRED", orphans: missing, removeFirst };
+    if (removeFirst.length) {
+      result.error = `the new pipeline has no node for some workers: remove these workers first: ${removeFirst.join(", ")}`;
+    }
+    return result;
+  }
 
   const moves = [];
   for (const w of workers) {
@@ -434,5 +466,5 @@ function integrationMerged(worker) {
 
 module.exports = {
   integrationMerged, RESERVED_LINES_SUBDIRS, isLineDirectory, PHASE_TYPES, phaseOfType, migrateLine, normalizeLine, nodeSettingsFromPipeline,
-  graphView, nodeSettingsFields, builtinPipelineNames, planGraphChange,
+  graphView, pipelineCapabilities, nodeSettingsFields, builtinPipelineNames, planGraphChange,
   implementorNodeFor, validatorNodeFor, integrationNodeFor, loadBuiltinPipeline };

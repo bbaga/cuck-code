@@ -207,3 +207,39 @@ test("start of a script node requires only source; name is optional", () => {
   assert.ok(!("criteria" in req));
   assert.equal(checkCall(r, "start", "ci", { source: "i1" }).ok, true);
 });
+
+// ---- type instances ----
+
+function manyLine() {
+  const known = { a: "A", b: "A", c: "A", p: "planner" };
+  return lineState({ instance: (id) => (known[id] ? { id, node: known[id], status: "completed", repo: "api" } : undefined) });
+}
+
+test("checkLineValues: instances accepts a good list", () => {
+  const req = need("members", { type: "instances", node: "A" });
+  assert.deepEqual(checkLineValues(manyLine(), req, { members: "a, b ,c" }), []);
+});
+
+test("checkLineValues: instances rejects an unknown entry", () => {
+  const req = need("members", { type: "instances" });
+  assert.match(checkLineValues(manyLine(), req, { members: "a,ghost" })[0].reason, /'ghost': no such instance/);
+});
+
+test("checkLineValues: instances rejects a duplicate entry", () => {
+  const req = need("members", { type: "instances" });
+  assert.match(checkLineValues(manyLine(), req, { members: "a,b,a" })[0].reason, /'a': listed twice/);
+});
+
+test("checkLineValues: instances rejects an entry of the wrong node", () => {
+  const req = need("members", { type: "instances", node: "A" });
+  const problems = checkLineValues(manyLine(), req, { members: "a,p" });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0].reason, /'p'.*belongs to node 'planner': expected A/);
+});
+
+test("checkLineValues: instances rejects more than 50 entries and an empty entry", () => {
+  const req = need("members", { type: "instances" });
+  const fifty1 = Array.from({ length: 51 }, (_, i) => `n${i}`).join(",");
+  assert.match(checkLineValues(manyLine(), req, { members: fifty1 })[0].reason, /1 to 50 instances/);
+  assert.match(checkLineValues(manyLine(), req, { members: "a,,b" })[0].reason, /1 to 50 instances/);
+});

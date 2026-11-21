@@ -97,3 +97,35 @@ test("does not nest wrappers and refreshes approval state", () => {
   assert.notEqual(contextEnd, -1);
   assert.equal(second.slice(contextEnd + "--- END PLANNER TURN CONTEXT ---\n".length), "continue");
 });
+
+test("REPORT HANDLING follows the capabilities of the pipeline", () => {
+  const { wrapPlannerTurn } = require("../planner-turn");
+  const wrap = (capabilities) => wrapPlannerTurn("x", { lineId: "l", approved: true, workdir: "/w", capabilities });
+  const strip = (t) => t.replace(/planner-turn\/[0-9a-f]+/, "");
+  const criteria = "For implementor reports, reply with numbered acceptance criteria only.";
+  const accept = "For implementor reports, call accept or feedback.";
+  const cap = (implementor, checker, integration) => ({ implementor, checker, integration });
+
+  const full = wrap(cap(true, true, true));
+  assert.equal(strip(full), strip(wrapPlannerTurn("x", { lineId: "l", approved: true, workdir: "/w" })));
+  assert.ok(full.includes(`${criteria} Route corrections to the original implementor. Preserve independent validation and integration approval. Do not claim acceptance without the required validator verdict.`));
+
+  const noIntegration = wrap(cap(true, true, false));
+  assert.ok(noIntegration.includes(criteria));
+  assert.ok(noIntegration.includes("Preserve independent validation. "));
+  assert.ok(!noIntegration.includes("integration approval"));
+
+  const noChecker = wrap(cap(true, false, true));
+  assert.ok(noChecker.includes(accept));
+  assert.ok(!noChecker.includes(criteria));
+  assert.ok(noChecker.includes("Preserve integration approval. "));
+  assert.ok(!noChecker.includes("independent validation"));
+
+  const neither = wrap(cap(true, false, false));
+  assert.ok(neither.includes(`${accept} Route corrections to the original implementor. Do not claim acceptance without an accept call or a validator verdict.`));
+  assert.ok(!neither.includes("Preserve independent") && !neither.includes("Preserve integration"));
+
+  const noWorker = wrap(cap(false, false, false));
+  assert.ok(noWorker.includes("There are no worker reports in this pipeline."));
+  assert.ok(!noWorker.includes("For implementor reports") && !noWorker.includes("Route corrections"));
+});

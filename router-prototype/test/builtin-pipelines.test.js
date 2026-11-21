@@ -8,6 +8,7 @@ const { resolvePipelineDefinition } = require("../resolve-pipeline");
 const { requiredFields, checkCall } = require("../call-fields");
 const { render, placeholders } = require("../template");
 const { graphRelations } = require("../graph-relations");
+const choreo = require("./choreo-fixtures");
 
 const ROOT = path.join(__dirname, "..");
 const readFile = (p) => fs.readFileSync(p, "utf8");
@@ -30,8 +31,31 @@ function catalog() {
 
 const edgeKey = (e) => `${e.from}->${e.to}:${e.interactions.join(",")}`;
 
-test("the four built-in interactions exist", () => {
-  assert.deepEqual(dirs("interactions").sort(), ["accept", "feedback", "report", "start"]);
+test("the built-in interactions exist", () => {
+  assert.deepEqual(dirs("interactions").sort(), ["accept", "arrive", "feedback", "handoff", "report", "rework", "start"]);
+});
+
+test("the built-in node types include the wait type", () => {
+  assert.ok(dirs("node-types").includes("wait"));
+});
+
+test("the choreography interactions load with the contract values", () => {
+  const r = choreo.resolve(choreo.CHAIN);
+  const { report, handoff, rework, arrive } = r.interactions;
+  assert.equal(report.fallback, true);
+  assert.deepEqual([handoff.effect, handoff.trigger, handoff.target, handoff.when, handoff.fallback],
+    ["create", "complete", "new", ["done", "pass"], false]);
+  assert.deepEqual([rework.effect, rework.target, rework.when], ["deliver", "source", ["reject", "missing"]]);
+  assert.deepEqual([arrive.effect, arrive.target, arrive.when], ["arrive", "waiter", ["done", "pass"]]);
+  assert.match(rework.body, /^REWORK REQUEST - checker '\{\{from\.name\}\}' \(node \{\{from\.node\}\}\) rejected your latest run\./);
+  assert.equal(handoff.body.trim(), "");
+  assert.equal(arrive.body.trim(), "");
+  assert.equal(r.types.wait.runner, "wait");
+});
+
+test("the report interaction body is unchanged: default prompts keep their text", () => {
+  const body = fs.readFileSync(path.join(ROOT, "interactions", "report", "INTERACTION.md"), "utf8");
+  assert.match(body, /target: starter\nfallback: true\n---\n\{\{#outcome\.done\}\}IMPLEMENTOR REPORT/);
 });
 
 test("default resolves with no errors", () => {
@@ -100,7 +124,7 @@ test("the report template uses router variables only and renders the old sentenc
     branch: "feat/x", type: {} }, report: "All done.", source: { name: "api", id: "w1", harness: "vibe", session: "s1" } };
   const as = (kind, outcome, extra = {}) => render(report.body, {
     ...base, from: { ...base.from, type: { [kind]: true }, ...(extra.from || {}) },
-    outcome: { [outcome]: true }, source: base.source,
+    outcome: { [outcome]: true }, source: base.source, pipeline: { has: { checker: true } },
   });
 
   assert.equal(as("implementor", "done"),
@@ -172,3 +196,13 @@ for (const name of Object.keys(LAYOUT)) {
     assert.deepEqual(kinds, ["accepted-work", "checks", "interaction"]);
   });
 }
+
+test("planner-only and implement-only resolve and follow the rules", () => {
+  for (const [name, nodes] of [["planner-only", ["planner"]], ["implement-only", ["planner", "impl"]]]) {
+    const r = resolvePipelineDefinition(name, catalog());
+    assert.equal(r.name, name);
+    assert.deepEqual(Object.keys(r.nodes), nodes);
+    assert.equal(r.start, "planner");
+  }
+  assert.deepEqual(resolvePipelineDefinition("planner-only", catalog()).edges, []);
+});

@@ -5,7 +5,7 @@
 
 const { isDeepStrictEqual } = require("node:util");
 const { placeholders } = require("./template");
-const { checkValues, isRouterVariable } = require("./fields");
+const { checkValues, isRouterVariable, splitInstances, MAX_INSTANCES } = require("./fields");
 
 function has(obj, key) {
   return obj !== null && typeof obj === "object" && Object.prototype.hasOwnProperty.call(obj, key);
@@ -107,6 +107,9 @@ function describe(decl) {
   if (decl.type === "instance" && decl.node !== undefined) {
     kind += ` of ${Array.isArray(decl.node) ? decl.node.join(" or ") : decl.node}`;
   }
+  if (decl.type === "instances" && decl.node !== undefined) {
+    kind += ` of ${Array.isArray(decl.node) ? decl.node.join(" or ") : decl.node}`;
+  }
   if (decl.type === "enum" && Array.isArray(decl.values)) kind += ` (${decl.values.join(", ")})`;
   if (decl.pattern !== undefined) kind += ` ${decl.pattern}`;
   return `${kind}, ${decl.optional ? "optional" : "required"}`;
@@ -155,6 +158,25 @@ function checkLineValues(line, required, body) {
       if (decl.node !== undefined) {
         const nodes = Array.isArray(decl.node) ? decl.node : [decl.node];
         if (!nodes.includes(inst.node)) add(field, `the instance belongs to node '${inst.node}': expected ${nodes.join(" or ")}`);
+      }
+    } else if (decl.type === "instances") {
+      const list = splitInstances(value);
+      if (list.some((v) => v === "") || list.length > MAX_INSTANCES) {
+        add(field, `must be a comma-separated list of 1 to ${MAX_INSTANCES} instances`);
+        continue;
+      }
+      const nodes = decl.node === undefined ? null : [].concat(decl.node);
+      const seen = new Set();
+      for (const entry of list) {
+        const inst = line.instance(entry);
+        if (!inst) { add(field, `'${entry}': no such instance on this line`); continue; }
+        // A name and an id of one instance count as one entry.
+        const key = inst.id !== undefined ? inst.id : entry;
+        if (seen.has(key)) { add(field, `'${entry}': listed twice`); continue; }
+        seen.add(key);
+        if (nodes && !nodes.includes(inst.node)) {
+          add(field, `'${entry}': the instance belongs to node '${inst.node}': expected ${nodes.join(" or ")}`);
+        }
       }
     } else if (decl.type === "repo") {
       if (!line.hasRepo(value)) add(field, "not a registered repo of this line");

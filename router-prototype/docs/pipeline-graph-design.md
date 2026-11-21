@@ -172,6 +172,16 @@ The building blocks the router implements:
 | `report` | deliver | complete | starter | none: the router fills `report` and `outcome` |
 | `accept` | accept | request | chosen | `instance`, `reason`. Records that the coordinator accepts the instance's latest run without a check. This replaces `SKIP VALIDATION`. |
 
+| `handoff` | create | complete | new | none. `when: [done, pass]`. |
+| `rework` | deliver | complete | source | none. `when: [reject, missing]`. |
+| `arrive` | arrive | complete | waiter | none. `when: [done, pass]`. |
+
+Choreographed pipelines add the interaction keys `when` (the run outcomes the
+interaction applies to; default all seven) and `fallback` (fires only when no
+non-fallback `complete` interaction applied; `report` is one). The effect
+`arrive` is reserved for built-in interactions, as `accept` is. The runtime for
+`handoff`, `rework` and `arrive` is added in a later part.
+
 The `accept` effect is reserved for the built-in `accept` interaction. It
 sends no message: it records the acceptance, which the integration rule uses.
 
@@ -199,8 +209,16 @@ The **required fields** of a call are the union of:
 A **caller placeholder** is any `{{name}}` that is not a router variable.
 Router variables are filled by the router and are never accepted from the
 caller: `line.*`, `node.*`, `instance.*`, `from.*`, `repo.url`, `router.url`,
-`source.name`, `source.report`, `report`, `outcome`. A call that supplies one
-of them is rejected.
+`source.name`, `source.report`, `report`, `outcome`, `pipeline.*`. A call that
+supplies one of them is rejected.
+
+`pipeline.has.implementor`, `.checker` and `.integration` are booleans from
+`pipelineCapabilities(graph)`: a node has a type with workspace `own-worktree`,
+`source` or `integration`. `pipeline.has.wait` and `pipeline.has.chains` are
+always false until later parts add them. The planner prompt and the report
+texts use them in sections. The built-in pipelines `planner-only` (one node)
+and `implement-only` (planner and implementor) have no checker and no
+integration node.
 
 ### Field declarations
 
@@ -426,13 +444,24 @@ and the offending node, edge or field.
    edges are errors.
 9. A `checks` node has a `source` type. The nodes it checks have an
    `own-worktree` type (R9).
-10. A `complete`-triggered interaction has no `effect: create` (R10).
+10. A `complete`-triggered `create` needs a target with workspace `source` or
+    `integration` (R10).
 11. R11: a node of a type with `runner: script` has `scripts` and `checks`,
     sets no agent key, and its type chain starts at `script-check`. Any other
     node sets no script key.
 12. R12: a node with `after` has `checks`. Each listed node is known, checks a
     shared target and is not the node itself.
-13. R13: the ordering relations form no loop.
+13. R13: the ordering relations form no loop. An `arrive` edge is an ordering
+    relation.
+    R14 (handoff shape), R15 (rework shape and `maxRounds`), R16 (wait shape)
+    and R18 (stage shape) check the choreographed pipelines. R4 accepts a
+    `fallback: true` interaction to the start node as a path. The new node type
+    `wait` (`runner: wait`, `workspace: none`, field type `instances`) and the
+    node key `maxRounds` (1 to 20, default 3 applied by the runtime) belong to
+    the same feature.
+14. R17: the type chain of the start node starts at `planner`, and no other
+    node has a type whose root is `planner`. Only the planner is mandatory:
+    implementors, checkers and the integration node are optional.
 
 ## How pipelines are drawn
 
