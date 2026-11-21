@@ -154,14 +154,16 @@ nodes:
 edges: []
 `, {
     types: {
+      ...ALL_TYPES,
       lead: {
         layer: "test",
-        text: "---\nname: lead\nsession: resume\nworkspace: coordinator\noutcome: none\ncoordinator: true\n---\nLead.\n",
+        // The start node type must extend planner (rule R17).
+        text: "---\nname: lead\nextends: planner\n---\nLead.\n",
       },
     },
   });
   const r = resolvePipelineDefinition("p", cat);
-  assert.equal(r.types.lead.body, "Lead.\n");
+  assert.ok(r.types.lead.body.endsWith("Lead.\n"));
   assert.equal(r.types.lead.layer, "test");
 });
 

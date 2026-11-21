@@ -36,7 +36,7 @@ const { planHarnessRun, phaseForWorker, resolveWorkerOverrides,
 const { buildCatalog, defaultReadDir, defaultReadFile } = require("./plugin-catalog");
 const { resolvePipelineDefinition, PipelineError } = require("./resolve-pipeline");
 const { loadBuiltinPipeline, migrateLine, normalizeLine, nodeSettingsFields, builtinPipelineNames, planGraphChange,
-  implementorNodeFor, validatorNodeFor, integrationNodeFor, isLineDirectory, integrationMerged } = require("./line-graph");
+  implementorNodeFor, validatorNodeFor, integrationNodeFor, isLineDirectory, integrationMerged, pipelineCapabilities } = require("./line-graph");
 const { checkCall, checkLineValues, requiredFields, introspect } = require("./call-fields");
 const { renderReports, kindOfNode } = require("./report-interaction");
 const { describeFailure } = require("./run-failure");
@@ -1129,7 +1129,7 @@ function pump(line) {
     turnText = line.initialBrief.task;
   }
   const prompt = wrapPlannerTurn(turnText, { lineId: line.id, approved: line.planApproved,
-    workdir: line.workdir });
+    workdir: line.workdir, capabilities: pipelineCapabilities(line.graph) });
   line.lastRun = text;
   const t0 = Date.now();
   let plan, handle, closePlanner, prevSessionCfg = line.sessionCfg;
@@ -2180,10 +2180,11 @@ const routeRequest = (req, res) => {
         const required = Object.fromEntries(plan.orphans.map((o) => [o.node, o.candidates]));
         if (dryRun) {
           return json(res, 200, { ok: false, code: plan.code, moves: [], orphans: plan.orphans,
-            candidates: required, droppedSettings: [], unchanged: false });
+            candidates: required, removeFirst: plan.removeFirst, droppedSettings: [], unchanged: false });
         }
         return json(res, 409, { code: plan.code, orphans: plan.orphans, candidates: required,
-          error: "some nodes of this line do not exist in the new pipeline: send a remap" });
+          removeFirst: plan.removeFirst,
+          error: plan.error || "some nodes of this line do not exist in the new pipeline: send a remap" });
       }
       const candidates = Object.fromEntries(plan.orphans.map((o) => [o.node, o.candidates]));
       for (const [id, settings] of Object.entries(plan.unchanged ? {} : plan.nodeSettings)) {

@@ -1,0 +1,13 @@
+# One planner and one implementor. No checker and no integration node.
+# The planner accepts the work itself.
+name: implement-only
+description: One planner and one implementor. The planner accepts the work without a checker or integration.
+start: planner
+
+nodes:
+  planner: { type: planner }
+  impl:    { type: backend-implementor }
+
+edges:
+  - planner -> impl: start, feedback, accept
+  - impl -> planner: report

@@ -5,7 +5,7 @@
 // worker. Pure: the caller passes the line graph, the worker and the run data.
 
 const { render } = require("./template");
-const { phaseOfType } = require("./line-graph");
+const { phaseOfType, pipelineCapabilities } = require("./line-graph");
 const { reportBody } = require("./handoff");
 
 const OUTCOMES = ["done", "pass", "reject", "missing", "timeout", "failed", "stopped"];
@@ -88,6 +88,7 @@ function reportValues({ graph, worker, source, report, timedOut }) {
       session: (source && source.sessionId) || "unknown",
     },
     report: reportBody(report, label),
+    pipeline: { has: pipelineCapabilities(graph) },
   };
 }
 

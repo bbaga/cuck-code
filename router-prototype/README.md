@@ -162,6 +162,24 @@ created (`POST /api/lines {pipelineName}`, default `default`; an unknown name is
 line. A line saved before this feature gets the `default` graph when it loads
 (see "Old data on load" below).
 
+### Only the planner is mandatory
+
+A pipeline needs the start node and nothing else. The start node has a type that
+extends `planner`, and no other node has one (rule R17). Implementors, checkers
+and the integration node are optional. The planner prompt, the report texts and
+the planner turn wrapper follow what the pipeline has (`pipeline.has.*`, see
+"Router variables"). Two built-in pipelines show this:
+
+- `planner-only`: one planner node, no edges. The planner writes `plan.md`,
+  commits it and reports the plan to the user.
+- `implement-only`: a planner and one implementor `impl`. There is no checker and
+  no integration node. The planner reads each IMPLEMENTOR REPORT and calls
+  `accept` or `feedback`. When it accepts all work, it reports the accepted
+  branches and commits to the user. It does not merge them.
+
+The `default` and `minimal` prompts and report texts are byte-equal to the texts
+before this change.
+
 ### What changed for existing pipelines
 
 Nothing to do. The keys `after`, `scripts`, `failFast`, `required` and
@@ -348,11 +366,17 @@ Templates use a small mustache subset, with no logic and no escaping:
   sent through that channel and the task part is the first turn. On `vibe`,
   which has none, the whole prompt is the first turn.
 
+**Router variables and caller fields.** `pipeline.has.implementor`,
+`pipeline.has.checker`, `pipeline.has.integration`, `pipeline.has.wait` and
+`pipeline.has.chains` are booleans for sections (`{{#pipeline.has.checker}}`).
+The first three are true when a node has a type with workspace `own-worktree`,
+`source` or `integration`. `wait` and `chains` are always false for now.
+
 **Router variables and caller fields.** The router fills these and never
 accepts them from a caller: `line.*`, `node.*`, `instance.*`, `from.*`,
 `repo.url`, `repo.name`, `router.url`, `router.workerCap`, `source.name`,
 `source.id`, `source.report`, `source.harness`, `source.session`, `report`,
-`outcome`, `outcome.*`, `integration.*`, `protocol`. Every other `{{name}}` is
+`outcome`, `outcome.*`, `integration.*`, `protocol`, `pipeline.*`. Every other `{{name}}` is
 a **caller field**: the caller supplies it, and it must be declared.
 
 ### Fields
@@ -455,6 +479,7 @@ when the pipelines API saves or validates it. Each error has a `rule` and a
 | R11 | A node whose type has `runner: script` has `scripts` and `checks`, sets no agent key, and its type chain starts at `script-check`. Any other node sets no script key. |
 | R12 | A node with `after` has `checks`. Each listed node is known, checks a shared target and is not the node itself. |
 | R13 | The ordering relations form no loop (see "How pipelines are drawn"). |
+| R17 | The type chain of the start node starts at `planner`. No other node has a type whose root is `planner`. |
 
 Two more error codes can appear: `LOAD` (the text, a node type, an interaction
 or a prompt file does not parse or load) and `NAME` (the name is not allowed,

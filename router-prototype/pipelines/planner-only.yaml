@@ -1,0 +1,9 @@
+# Only the planner is mandatory. This pipeline has one node: the planner plans and reports.
+name: planner-only
+description: One planner and no other node. The planner writes a plan and reports it.
+start: planner
+
+nodes:
+  planner: { type: planner }
+
+edges: []
