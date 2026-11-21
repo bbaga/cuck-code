@@ -9,6 +9,7 @@ const { startDashboardFixture } = require("./fixtures/dashboard-browser");
 const { openPage } = require("./fixtures/browser-driver");
 const { loadBuiltinPipeline } = require("../line-graph");
 const choreo = require("./choreo-fixtures");
+const checks = require("./fixtures/choreo-graph-checks");
 
 const ROOT = path.join(__dirname, "..");
 const STUBS = "window.mermaid = { initialize() {}, run() { return Promise.resolve(); } };"
@@ -107,57 +108,149 @@ test("pipeline tab: graph of the default pipeline, settings rows, save, 375 px",
   }
 });
 
-// P5: pipeline 1 with its wait node, planner-only, implement-only and the removeFirst text.
-const REMOVE_FIRST_STUB = "const __g = window.fetch; window.fetch = (url, opts) => {"
-  + " if (opts && opts.method === 'POST' && /\\/graph$/.test(String(url))) {"
-  + "  return Promise.resolve(new Response(JSON.stringify({ ok: false, code: 'GRAPH_REMAP_REQUIRED', orphans: [{ node: 'impl', workerNames: ['api', 'ui'] }],"
-  + "   removeFirst: ['api', 'ui'], droppedSettings: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })); }"
-  + " return __g.call(window, url, opts); };";
+// P5: pipelines 1 and 2, optional nodes and the remove-first text on the Pipeline tab.
+const openTab = async (page) => {
+  await page.waitFor("/browser[- ]line/i.test(document.body.innerText)");
+  await page.evaluate("[...document.querySelectorAll('button.tabBtn')].find((b) => b.textContent === 'Pipeline').click()");
+  await page.waitFor(`${PANE} && !${PANE}.hidden && ${PANE}.querySelector('svg.pipeGraph')`);
+};
+const countIn = (page, sel) => page.evaluate(`${PANE}.querySelectorAll(${JSON.stringify(sel)}).length`);
 
-test("pipeline tab: choreographed pipeline, optional nodes and the remove-first text", async (t) => {
+async function openWithGraph(t, fx, graph, setup) {
+  const line = require("../server").lines.get(fx.lineId);
+  line.graph = graph;
+  if (setup) setup(line);
+  try { return await openPage(fx.url, { initScript: STUBS }); }
+  catch (e) {
+    if (e.code === "BROWSER_UNAVAILABLE") { t.skip("Chrome is missing: " + e.message); return null; }
+    throw e;
+  }
+}
+
+test("pipeline tab: pipelines 1 and 2 show wait badge, edge styles, fan-out, relations text and fit", async (t) => {
   const fx = await startDashboardFixture();
   let page = null;
   try {
-    const line = require("../server").lines.get(fx.lineId);
-    line.graph = choreo.resolve(choreo.CHAIN);
-    try { page = await openPage(fx.url, { initScript: STUBS + REMOVE_FIRST_STUB }); }
-    catch (e) {
-      if (e.code === "BROWSER_UNAVAILABLE") return t.skip("Chrome is missing: " + e.message);
-      throw e;
-    }
+    page = await openWithGraph(t, fx, choreo.resolve(choreo.CHAIN));
+    if (!page) return;
+    const shots = process.env.PIPELINE_TAB_SHOTS;
+    if (shots) fs.mkdirSync(shots, { recursive: true });
+    const shot = async (name) => { if (shots) await page.screenshot(path.join(shots, name)); };
     await page.setViewport(1280, 1100);
-    await page.waitFor("/browser[- ]line/i.test(document.body.innerText)");
-    await page.evaluate("[...document.querySelectorAll('button.tabBtn')].find((b) => b.textContent === 'Pipeline').click()");
-    await page.waitFor(`${PANE} && !${PANE}.hidden && ${PANE}.querySelector('svg.pipeGraph')`);
-    const count = (sel) => page.evaluate(`${PANE}.querySelectorAll(${JSON.stringify(sel)}).length`);
-    assert.equal(await count(".pgNode.wait .node-badge-wait"), 1);
-    assert.equal(await page.evaluate(`${PANE}.querySelector('.node-badge-wait').textContent`), "wait");
-    assert.equal(await count("path.pgEdge.edge-handoff"), 2);
-    assert.equal(await count("path.pgEdge.edge-rework"), 1);
-    assert.equal(await count("path.pgEdge.edge-arrive"), 1);
-    assert.ok((await page.evaluate(`[...${PANE}.querySelectorAll('.pgEdgeLabel')].map((l) => l.textContent)`)).includes("rework (FAIL)"));
+    await openTab(page);
+    assert.equal(await page.evaluate(`${PANE}.querySelector('.pgNode.wait .node-badge-wait').textContent`), "wait");
+    assert.equal(await countIn(page, "path.pgEdge.edge-handoff"), 2);
+    assert.equal(await countIn(page, "path.pgEdge.edge-rework"), 1);
+    assert.equal(await countIn(page, "path.pgEdge.edge-arrive"), 1);
+    await checks.checkEdgeStyles(page, ".pipePane");
+    assert.deepEqual(await page.evaluate(`[...${PANE}.querySelectorAll('.pipeEdgesText li')].map((l) => l.textContent)`), checks.CHAIN_EDGE_LINES);
+    assert.equal(await countIn(page, ".phaseRow"), 5, "one settings row for each node");
+    await checks.checkFit(page, ".pipePane", 1280);
+    await shot("tab-chain-1280-before-scroll.png");
+    await checks.scrollRight(page, ".pipePane .pipeGraphBox");
+    await shot("tab-chain-1280-after-scroll.png");
+    await page.setViewport(320, 900);
+    await page.evaluate(`${PANE}.querySelector('.pipeGraphBox').scrollIntoView()`);
+    await checks.checkFit(page, ".pipePane", 320);
+    await shot("tab-chain-320-before-scroll.png");
+    await checks.scrollRight(page, ".pipePane .pipeGraphBox");
+    await shot("tab-chain-320-after-scroll.png");
+    assert.deepEqual(await page.evaluate("window.__errs"), []);
+  } finally {
+    if (page) await page.close();
+    await fx.close();
+  }
+});
 
-    // the remove-first text shows in the alert of the change section
-    await page.waitFor(`${PANE}.querySelectorAll('.pipeSwitch select option').length > 1`);
-    await page.evaluate(`(() => { const s = ${PANE}.querySelector('.pipeSwitch select'); s.value = 'planner-only'; s.dispatchEvent(new Event('change')); })()`);
-    await page.evaluate(`[...${PANE}.querySelectorAll('.pipeSwitch button')].find((b) => b.textContent === 'Check').click()`);
-    await page.waitFor(`/Remove these workers first: api, ui/.test(${PANE}.querySelector('.pipeSwitch .createErr').textContent)`);
-    assert.equal(await page.evaluate(`${PANE}.querySelector('.pipeSwitch .createErr').hidden`), false);
-    assert.equal(await page.evaluate(`${PANE}.querySelector('.pipeSwitch .swTable')`), null);
-    assert.equal(await page.evaluate(`[...${PANE}.querySelectorAll('.pipeSwitch > button')].find((b) => b.textContent === 'Apply').disabled`), true);
+test("pipeline tab: pipeline 2 draws the fan-out in one column", async (t) => {
+  const fx = await startDashboardFixture();
+  let page = null;
+  try {
+    page = await openWithGraph(t, fx, choreo.resolve(choreo.STAGE));
+    if (!page) return;
+    await page.setViewport(1280, 1100);
+    await openTab(page);
+    await checks.checkEdgeStyles(page, ".pipePane");
+    await checks.checkStage(page, ".pipePane");
+    await checks.checkFit(page, ".pipePane", 1280);
+    assert.equal(await countIn(page, ".phaseRow"), 6, "one settings row for each node");
+    assert.deepEqual(await page.evaluate("window.__errs"), []);
+  } finally {
+    if (page) await page.close();
+    await fx.close();
+  }
+});
 
-    // the optional nodes: one box and one settings row per node, no error
+test("pipeline tab: planner-only and implement-only have one settings row for each node and no error", async (t) => {
+  const fx = await startDashboardFixture();
+  let page = null;
+  try {
+    page = await openWithGraph(t, fx, loadBuiltinPipeline("planner-only", fs, ROOT));
+    if (!page) return;
+    const line = require("../server").lines.get(fx.lineId);
+    await page.setViewport(1280, 1100);
     for (const [name, nodes] of [["planner-only", 1], ["implement-only", 2]]) {
       line.graph = loadBuiltinPipeline(name, fs, ROOT);
       await page.evaluate("location.reload()");
-      await page.waitFor("/browser[- ]line/i.test(document.body.innerText)");
-      await page.evaluate("[...document.querySelectorAll('button.tabBtn')].find((b) => b.textContent === 'Pipeline').click()");
-      await page.waitFor(`${PANE} && !${PANE}.hidden && ${PANE}.querySelector('svg.pipeGraph')`);
-      assert.equal(await count(".pgNode"), nodes, name);
-      assert.equal(await count(".phaseRow"), nodes, name);
-      assert.equal(await count(".pipeGraphBox .pipeNote"), 0, name);
+      await openTab(page);
+      assert.equal(await countIn(page, ".pgNode"), nodes, name);
+      assert.equal(await countIn(page, ".phaseRow"), nodes, name);
+      assert.equal(await countIn(page, ".pipeGraphBox .pipeNote"), 0, name);
       assert.deepEqual(await page.evaluate("window.__errs"), [], name);
     }
+  } finally {
+    if (page) await page.close();
+    await fx.close();
+  }
+});
+
+// Switch the line to planner-only and press Check. Return the alert text of the switch section.
+async function checkSwitchTo(page, name) {
+  await page.waitFor(`${PANE}.querySelectorAll('.pipeSwitch select option').length > 1`);
+  await page.evaluate(`(() => { const s = ${PANE}.querySelector('.pipeSwitch select'); s.value = ${JSON.stringify(name)}; s.dispatchEvent(new Event('change')); })()`);
+  await page.evaluate(`[...${PANE}.querySelectorAll('.pipeSwitch button')].find((b) => b.textContent === 'Check').click()`);
+  await page.waitFor(`/Remove these workers first/.test(${PANE}.querySelector('.pipeSwitch .createErr').textContent)`);
+  return page.evaluate(`${PANE}.querySelector('.pipeSwitch .createErr').textContent`);
+}
+
+async function assertSwitchBlocked(page, workers) {
+  const alert = await checkSwitchTo(page, "planner-only");
+  assert.match(alert, new RegExp("Remove these workers first: " + workers + "\\."));
+  assert.equal(await page.evaluate(`${PANE}.querySelector('.pipeSwitch .createErr').hidden`), false);
+  assert.equal(await page.evaluate(`${PANE}.querySelector('.pipeSwitch .swTable')`), null, "no remap table");
+  assert.equal(await page.evaluate(`[...${PANE}.querySelectorAll('.pipeSwitch > button')].find((b) => b.textContent === 'Apply').disabled`), true);
+}
+
+test("pipeline tab: a stub answer with removeFirst shows the alert and blocks Apply", async (t) => {
+  const fx = await startDashboardFixture();
+  let page = null;
+  try {
+    page = await openWithGraph(t, fx, choreo.resolve(choreo.CHAIN));
+    if (!page) return;
+    await page.evaluate(`(() => { const f = window.fetch; window.fetch = (url, opts) => (opts && opts.method === 'POST' && /\\/graph$/.test(String(url))
+      ? Promise.resolve(new Response(JSON.stringify({ ok: false, code: 'GRAPH_REMAP_REQUIRED', orphans: [{ node: 'impl', workerNames: ['api', 'ui'] }],
+        removeFirst: ['api', 'ui'], droppedSettings: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      : f.call(window, url, opts)); })()`);
+    await openTab(page);
+    await assertSwitchBlocked(page, "api, ui");
+  } finally {
+    if (page) await page.close();
+    await fx.close();
+  }
+});
+
+test("pipeline tab: a real line with a stored implementor cannot switch to planner-only", async (t) => {
+  const fx = await startDashboardFixture();
+  let page = null;
+  try {
+    page = await openWithGraph(t, fx, loadBuiltinPipeline("implement-only", fs, ROOT), (line) => {
+      line.workers.set("impl-1", { id: "w-impl-1", name: "impl-1", node: "impl", status: "completed", child: null });
+    });
+    if (!page) return;
+    await openTab(page);
+    await assertSwitchBlocked(page, "impl-1");
+    assert.equal(require("../server").lines.get(fx.lineId).graph.name, "implement-only", "the line did not change");
+    assert.deepEqual(await page.evaluate("window.__errs"), []);
   } finally {
     if (page) await page.close();
     await fx.close();
