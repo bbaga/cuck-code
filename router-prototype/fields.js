@@ -5,7 +5,7 @@ const ROUTER_VARIABLES = [
   "repo.url", "repo.name", "router.url", "router.workerCap",
   "source.name", "source.report", "source.id", "source.harness", "source.session",
   "source.changesetWarning", "report", "outcome", "outcome.*",
-  "integration.*", "protocol",
+  "integration.*", "protocol", "pipeline.*",
 ];
 
 const TYPES = ["string", "text", "enum", "commit", "instance", "repo"];

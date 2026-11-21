@@ -10,8 +10,8 @@ target: starter
 REPORT BODY (complete):
 {{report}}
 
-Now give the acceptance criteria for the validation of this work.
-Start a validator with the criteria. If the work needs no validation, accept it.{{/outcome.done}}{{#outcome.pass}}{{#from.type.validator}}VALIDATION REPORT - validator '{{from.name}}' checked the work of implementor '{{source.name}}' (workerId {{source.id}}, {{source.harness}} session {{source.session}}, branch {{from.branch}}).
+{{#pipeline.has.checker}}Now give the acceptance criteria for the validation of this work.
+Start a validator with the criteria. If the work needs no validation, accept it.{{/pipeline.has.checker}}{{^pipeline.has.checker}}Read the report. Call "accept" or "feedback".{{/pipeline.has.checker}}{{/outcome.done}}{{#outcome.pass}}{{#from.type.validator}}VALIDATION REPORT - validator '{{from.name}}' checked the work of implementor '{{source.name}}' (workerId {{source.id}}, {{source.harness}} session {{source.session}}, branch {{from.branch}}).
 
 REPORT BODY (complete):
 {{report}}

@@ -59,6 +59,20 @@ function nodeSettingsFromPipeline(graph, pipeline) {
   return out;
 }
 
+// What a pipeline offers. Pure. wait and chains are false until later tasks add them.
+function pipelineCapabilities(graph) {
+  const nodes = (graph && graph.nodes) || {};
+  const types = (graph && graph.types) || {};
+  const workspaces = Object.values(nodes).map((n) => (has(types, n.type) ? types[n.type].workspace : undefined));
+  return {
+    implementor: workspaces.includes("own-worktree"),
+    checker: workspaces.includes("source"),
+    integration: workspaces.includes("integration"),
+    wait: false,
+    chains: false,
+  };
+}
+
 // The graph as the API shows it: name, start, nodes with type and phase, edges.
 // Each edge also carries `kinds`: for every interaction name its { effect,
 // trigger } from the resolved interactions, so a client can lay the graph out.
@@ -209,7 +223,15 @@ function planGraphChange({ line, newGraph, remap }) {
   }
   if (errors.length) return { ok: false, code: "GRAPH_REMAP_INVALID", errors };
   const missing = orphans.filter((o) => !has(entries, o.node));
-  if (missing.length) return { ok: false, code: "GRAPH_REMAP_REQUIRED", orphans: missing };
+  if (missing.length) {
+    // An orphan without a candidate cannot be remapped: its workers must go first.
+    const removeFirst = missing.filter((o) => o.candidates.length === 0).flatMap((o) => o.workerNames);
+    const result = { ok: false, code: "GRAPH_REMAP_REQUIRED", orphans: missing, removeFirst };
+    if (removeFirst.length) {
+      result.error = `the new pipeline has no node for some workers: remove these workers first: ${removeFirst.join(", ")}`;
+    }
+    return result;
+  }
 
   const moves = [];
   for (const w of workers) {
@@ -434,5 +456,5 @@ function integrationMerged(worker) {
 
 module.exports = {
   integrationMerged, RESERVED_LINES_SUBDIRS, isLineDirectory, PHASE_TYPES, phaseOfType, migrateLine, normalizeLine, nodeSettingsFromPipeline,
-  graphView, nodeSettingsFields, builtinPipelineNames, planGraphChange,
+  graphView, pipelineCapabilities, nodeSettingsFields, builtinPipelineNames, planGraphChange,
   implementorNodeFor, validatorNodeFor, integrationNodeFor, loadBuiltinPipeline };

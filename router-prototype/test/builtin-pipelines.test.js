@@ -100,7 +100,7 @@ test("the report template uses router variables only and renders the old sentenc
     branch: "feat/x", type: {} }, report: "All done.", source: { name: "api", id: "w1", harness: "vibe", session: "s1" } };
   const as = (kind, outcome, extra = {}) => render(report.body, {
     ...base, from: { ...base.from, type: { [kind]: true }, ...(extra.from || {}) },
-    outcome: { [outcome]: true }, source: base.source,
+    outcome: { [outcome]: true }, source: base.source, pipeline: { has: { checker: true } },
   });
 
   assert.equal(as("implementor", "done"),
@@ -172,3 +172,13 @@ for (const name of Object.keys(LAYOUT)) {
     assert.deepEqual(kinds, ["accepted-work", "checks", "interaction"]);
   });
 }
+
+test("planner-only and implement-only resolve and follow the rules", () => {
+  for (const [name, nodes] of [["planner-only", ["planner"]], ["implement-only", ["planner", "impl"]]]) {
+    const r = resolvePipelineDefinition(name, catalog());
+    assert.equal(r.name, name);
+    assert.deepEqual(Object.keys(r.nodes), nodes);
+    assert.equal(r.start, "planner");
+  }
+  assert.deepEqual(resolvePipelineDefinition("planner-only", catalog()).edges, []);
+});

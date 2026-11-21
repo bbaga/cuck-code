@@ -256,3 +256,14 @@ test("end to end: a finished implementor sends the new report to the planner", a
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("implement-only: the implementor report asks for accept or feedback, not a validator", () => {
+  const g = loadBuiltinPipeline("implement-only", fs, ROOT);
+  const worker = { ...impl, node: "impl" };
+  const out = renderReports({ graph: g, worker, source: null, report: "All done.", timedOut: false });
+  assert.equal(out.length, 1);
+  assert.ok(out[0].text.endsWith('Read the report. Call "accept" or "feedback".'));
+  assert.ok(!/validat/i.test(out[0].text));
+  // the default pipeline keeps the validator sentences
+  assert.match(newText(impl, "All done."), /Start a validator with the criteria/);
+});
