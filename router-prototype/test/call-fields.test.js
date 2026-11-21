@@ -207,3 +207,69 @@ test("start of a script node requires only source; name is optional", () => {
   assert.ok(!("criteria" in req));
   assert.equal(checkCall(r, "start", "ci", { source: "i1" }).ok, true);
 });
+
+// ---- type instances ----
+
+function manyLine() {
+  const known = { a: "A", b: "A", c: "A", p: "planner" };
+  return lineState({ instance: (id) => (known[id] ? { id, node: known[id], status: "completed", repo: "api" } : undefined) });
+}
+
+test("checkLineValues: instances accepts a good list", () => {
+  const req = need("members", { type: "instances", node: "A" });
+  assert.deepEqual(checkLineValues(manyLine(), req, { members: "a, b ,c" }), []);
+});
+
+test("checkLineValues: instances rejects an unknown entry", () => {
+  const req = need("members", { type: "instances" });
+  assert.match(checkLineValues(manyLine(), req, { members: "a,ghost" })[0].reason, /'ghost': no such instance/);
+});
+
+test("checkLineValues: instances rejects a duplicate entry", () => {
+  const req = need("members", { type: "instances" });
+  assert.match(checkLineValues(manyLine(), req, { members: "a,b,a" })[0].reason, /'a': listed twice/);
+});
+
+test("checkLineValues: instances rejects an entry of the wrong node", () => {
+  const req = need("members", { type: "instances", node: "A" });
+  const problems = checkLineValues(manyLine(), req, { members: "a,p" });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0].reason, /'p'.*belongs to node 'planner': expected A/);
+});
+
+test("checkLineValues: instances rejects more than 50 entries and an empty entry", () => {
+  const req = need("members", { type: "instances" });
+  const fifty1 = Array.from({ length: 51 }, (_, i) => `n${i}`).join(",");
+  assert.match(checkLineValues(manyLine(), req, { members: fifty1 })[0].reason, /1 to 50 instances/);
+  assert.match(checkLineValues(manyLine(), req, { members: "a,,b" })[0].reason, /1 to 50 instances/);
+});
+
+// Chain fields (choreographed pipelines).
+const { chainFieldNames } = require("../call-fields");
+const { CHAIN, STAGE, resolve: resolveChain } = require("./choreo-fixtures");
+
+test("the start of impl in a chain also requires the fields of the checkers", () => {
+  const fields = requiredFields(resolveChain(CHAIN), "start", "impl");
+  assert.ok(["task", "repo", "criteria"].every((f) => f in fields));
+  assert.equal(fields.criteria.requiredBy, "handoff to node val");
+  assert.ok(!("source" in fields));
+});
+
+test("the start of batch requires members and the fields of integration", () => {
+  const fields = requiredFields(resolveChain(CHAIN), "start", "batch");
+  assert.ok("members" in fields && "instructions" in fields);
+  assert.equal(fields.instructions.requiredBy, "handoff to node integration");
+});
+
+test("the arrive edge stops the chain fields, and a stage adds all its members", () => {
+  assert.deepEqual(chainFieldNames(resolveChain(CHAIN), "impl"), ["criteria"]);
+  assert.deepEqual(chainFieldNames(resolveChain(CHAIN), "batch"), ["instructions"]);
+  assert.deepEqual(chainFieldNames(resolveChain(CHAIN), "val"), []);
+  assert.ok(chainFieldNames(resolveChain(STAGE), "impl").includes("criteria"));
+});
+
+test("a pipeline without complete-create edges has no chain fields", () => {
+  const r = resolved({ edges: [{ from: "planner", to: "A", interactions: ["start"] }] });
+  assert.deepEqual(chainFieldNames(r, "A"), []);
+  assert.throws(() => chainFieldNames(r, "ghost"), /unknown node/);
+});

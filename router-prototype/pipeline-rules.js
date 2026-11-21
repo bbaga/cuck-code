@@ -1,6 +1,6 @@
 "use strict";
 
-// Pipeline rules R1-R13 and R17. Pure: no file reads. Runs every rule and returns
+// Pipeline rules R1-R18. Pure: no file reads. Runs every rule and returns
 // a list of { rule, message }. An empty list means the pipeline is good.
 
 const { placeholders, TemplateError } = require("./template");
@@ -36,9 +36,43 @@ function buildContext(pipeline, types, interactions) {
   for (const id of Object.keys(nodes)) starters[id] = [];
   for (const e of createEdges) if (!starters[e.to].includes(e.from)) starters[e.to].push(e.from);
 
+  const isRework = (i) => i.trigger === "complete" && i.effect === "deliver" && i.target === "source";
+  const isHandoff = (i) => i.trigger === "complete" && i.effect === "create";
+  const isArrive = (i) => i.effect === "arrive";
+  const handoffEdges = withInteractions(isHandoff);
+  const reworkEdges = withInteractions(isRework);
+  const arriveEdges = withInteractions(isArrive);
+
+  // The nodes that start `id` through request-triggered create edges. A node
+  // without such a starter takes the starters of the nodes that reach it
+  // through complete-create or arrive edges.
+  const requestStartersCache = {};
+  const requestStarters = (id, onPath = []) => {
+    if (has(requestStartersCache, id)) return requestStartersCache[id];
+    const direct = [];
+    for (const e of createEdges) {
+      if (e.to !== id || !e.list.some((i) => i.trigger === "request")) continue;
+      if (!direct.includes(e.from)) direct.push(e.from);
+    }
+    let out = direct;
+    if (direct.length === 0 && !onPath.includes(id)) {
+      out = [];
+      for (const e of [...handoffEdges, ...arriveEdges]) {
+        if (e.to !== id) continue;
+        for (const s of requestStarters(e.from, [...onPath, id])) if (!out.includes(s)) out.push(s);
+      }
+    }
+    if (onPath.length === 0) requestStartersCache[id] = out;
+    return out;
+  };
+  const isWait = (id) => (typeOf(id) || {}).runner === "wait";
+  // The stage of a node: the targets of its complete-create edges.
+  const stageOf = (id) => [...new Set(handoffEdges.filter((e) => e.from === id).map((e) => e.to))];
+
   return {
     types, interactions, pipeline, nodes, edges, typeOf, inter, known,
     withInteractions, createEdges, completeEdges, starters, start: pipeline.start,
+    isRework, isHandoff, isArrive, handoffEdges, reworkEdges, arriveEdges, requestStarters, isWait, stageOf,
   };
 }
 
@@ -98,13 +132,14 @@ function ruleR3(c) {
 }
 
 // Nodes a complete-triggered edge from `id` leads to. Target `starter`
-// means the nodes that start `id` through create edges.
+// means the nodes that start `id` through request-triggered create edges.
+// Rework edges are ignored: they send a task back, not forward.
 function completeNext(c, id) {
   const out = [];
   for (const e of c.completeEdges) {
     if (e.from !== id) continue;
-    for (const i of e.list.filter((x) => x.trigger === "complete")) {
-      const targets = i.target === "starter" ? c.starters[id] : [e.to];
+    for (const i of e.list.filter((x) => x.trigger === "complete" && !c.isRework(x))) {
+      const targets = i.target === "starter" ? c.requestStarters(id) : [e.to];
       for (const t of targets) if (!out.includes(t)) out.push(t);
     }
   }
@@ -127,8 +162,13 @@ function ruleR4(c) {
     }
     return null;
   };
+  // A fallback interaction that reaches the start node always gives the result back.
+  const hasFallbackToStart = (id) => c.completeEdges.some((e) => e.from === id && e.list.some((i) => (
+    i.trigger === "complete" && i.fallback === true
+    && (i.target === "starter" ? c.requestStarters(id) : [e.to]).includes(c.start))));
   for (const id of Object.keys(c.nodes)) {
     if (id === c.start || !seen.has(id)) continue; // unreachable nodes: see R2
+    if (hasFallbackToStart(id)) continue;
     const reason = check(id, []);
     if (reason) out.push({ rule: "R4", message: `the result of node '${id}' can get lost: ${reason}` });
   }
@@ -153,7 +193,7 @@ function ruleR6(c) {
   const out = [];
   for (const e of c.withInteractions((i) => i.effect === "deliver")) {
     for (const i of e.list.filter((x) => x.effect === "deliver")) {
-      const targets = i.target === "starter" ? c.starters[e.from] : [e.to];
+      const targets = i.target === "starter" ? c.requestStarters(e.from) : [e.to];
       for (const t of targets) {
         const type = c.typeOf(t);
         if (type && type.session !== "resume") {
@@ -243,13 +283,16 @@ function ruleR9(c) {
   return out;
 }
 
+// R10: a complete-triggered create starts a checker or an integration node only.
 function ruleR10(c) {
   const out = [];
-  for (const e of c.completeEdges) {
-    for (const i of e.list.filter((x) => x.trigger === "complete" && x.effect === "create")) {
+  for (const e of c.handoffEdges) {
+    const type = c.typeOf(e.to);
+    if (type && (type.workspace === "source" || type.workspace === "integration")) continue;
+    for (const i of e.list.filter(c.isHandoff)) {
       out.push({
         rule: "R10",
-        message: `edge ${e.from} -> ${e.to}: interaction '${i.name}' has trigger complete and effect create: a complete-triggered interaction cannot create an instance`,
+        message: `edge ${e.from} -> ${e.to}: interaction '${i.name}' has trigger complete and effect create, so node '${e.to}' needs a type with workspace source or integration`,
       });
     }
   }
@@ -333,7 +376,117 @@ function ruleR17(c) {
   return out;
 }
 
-const RULES = [ruleR1, ruleR2, ruleR3, ruleR4, ruleR5, ruleR6, ruleR7, ruleR8, ruleR9, ruleR10, ruleR11, ruleR12, ruleR13, ruleR17];
+// R14: the shape of a handoff (a complete-triggered create edge).
+function ruleR14(c) {
+  const out = [];
+  const add = (message) => out.push({ rule: "R14", message });
+  for (const e of c.handoffEdges) {
+    const type = c.typeOf(e.to);
+    const label = `edge ${e.from} -> ${e.to}`;
+    if (type && type.workspace === "source") {
+      const toChecks = c.nodes[e.to].checks || [];
+      const fromChecks = c.nodes[e.from].checks || [];
+      if (!toChecks.includes(e.from) && !fromChecks.some((t) => toChecks.includes(t))) {
+        add(`${label}: node '${e.to}' must check '${e.from}', or check a node that '${e.from}' checks`);
+      }
+    }
+    if (type && type.workspace === "integration" && !c.isWait(e.from)) {
+      add(`${label}: only a wait node can start the integration node '${e.to}' with a handoff`);
+    }
+  }
+  for (const e of c.arriveEdges) {
+    if (c.handoffEdges.some((h) => h.from === e.from)) {
+      add(`node '${e.from}' has an arrive edge, so it cannot also have a complete-triggered create edge`);
+    }
+  }
+  for (const id of Object.keys(c.nodes)) {
+    if (c.isWait(id) && c.stageOf(id).length > 1) {
+      add(`wait node '${id}' has ${c.stageOf(id).length} complete-triggered create edges: at most 1 is allowed`);
+    }
+  }
+  return out;
+}
+
+// R15: the shape of a rework edge, and where maxRounds is allowed.
+function ruleR15(c) {
+  const out = [];
+  for (const e of c.reworkEdges) {
+    if (!(c.nodes[e.from].checks || []).includes(e.to)) {
+      out.push({ rule: "R15", message: `edge ${e.from} -> ${e.to}: a rework edge needs node '${e.to}' in the checks of '${e.from}'` });
+    }
+  }
+  for (const [id, node] of Object.entries(c.nodes)) {
+    if ("maxRounds" in node && !c.reworkEdges.some((e) => e.from === id)) {
+      out.push({ rule: "R15", message: `node '${id}': maxRounds needs an outgoing rework edge` });
+    }
+  }
+  return out;
+}
+
+const WAIT_FORBIDDEN_KEYS = ["checks", "after", "scripts", "failFast", "required", "checkout", "harness", "model",
+  "effort", "maxContext", "prompt", "fields", "maxRounds"];
+
+// R16: the shape of arrive edges and wait nodes.
+function ruleR16(c) {
+  const out = [];
+  const add = (message) => out.push({ rule: "R16", message });
+  for (const e of c.arriveEdges) {
+    const label = `edge ${e.from} -> ${e.to}`;
+    if (!c.isWait(e.to)) add(`${label}: an arrive edge needs a target node with a type with runner wait`);
+    const from = c.typeOf(e.from);
+    const hasChecks = (c.nodes[e.from].checks || []).length > 0;
+    if (!hasChecks && !(from && from.workspace === "own-worktree")) {
+      add(`${label}: an arrive edge needs a source node with checks, or with a type with workspace own-worktree`);
+    }
+  }
+  for (const id of Object.keys(c.nodes)) {
+    if (!c.isWait(id)) continue;
+    for (const key of WAIT_FORBIDDEN_KEYS) {
+      if (key in c.nodes[id]) add(`node '${id}': a wait node cannot set ${key}`);
+    }
+    for (const e of c.handoffEdges.filter((h) => h.from === id)) {
+      const type = c.typeOf(e.to);
+      if (type && type.workspace !== "integration") {
+        add(`edge ${id} -> ${e.to}: a wait node can start only nodes with workspace integration`);
+      }
+    }
+  }
+  return out;
+}
+
+// R18: the members of one stage (the targets of the handoffs of one node).
+function ruleR18(c) {
+  const out = [];
+  const add = (message) => out.push({ rule: "R18", message });
+  for (const from of Object.keys(c.nodes)) {
+    const stage = c.stageOf(from);
+    if (stage.length < 2) continue;
+    const next = (id) => JSON.stringify([
+      c.stageOf(id).sort(),
+      [...new Set(c.arriveEdges.filter((e) => e.from === id).map((e) => e.to))].sort(),
+    ]);
+    const first = next(stage[0]);
+    for (const id of stage.slice(1)) {
+      if (next(id) !== first) {
+        add(`stage of '${from}': members '${stage[0]}' and '${id}' have different next targets (handoff and arrive)`);
+      }
+    }
+    for (const id of stage) {
+      const type = c.typeOf(id);
+      if (type && type.runner === "script" && c.nodes[id].checkout !== "clean") {
+        add(`stage of '${from}': script node '${id}' needs checkout: clean, because the stage has ${stage.length} members`);
+      }
+      for (const other of c.nodes[id].after || []) {
+        if (other !== id && stage.includes(other)) {
+          add(`stage of '${from}': member '${id}' lists member '${other}' in after`);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+const RULES = [ruleR1, ruleR2, ruleR3, ruleR4, ruleR5, ruleR6, ruleR7, ruleR8, ruleR9, ruleR10, ruleR11, ruleR12, ruleR13, ruleR14, ruleR15, ruleR16, ruleR17, ruleR18];
 
 function checkPipeline(pipeline, types, interactions) {
   const c = buildContext(pipeline, types || {}, interactions || {});

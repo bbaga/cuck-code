@@ -98,3 +98,19 @@ test("name check matches the server rule", () => {
   assert.equal(page.nameProblem("my-copy"), null);
   for (const bad of ["", "A", "-a", "a b", "../x", "x".repeat(61)]) assert.ok(page.nameProblem(bad), bad);
 });
+
+test("P5 page graph input keeps the interactions, the runner wait and the shared fan-out column", () => {
+  const { graphView } = require("../line-graph");
+  const choreo = require("./choreo-fixtures");
+  const ui = require("../web/pipeline-ui");
+  const view = graphView(choreo.resolve(choreo.STAGE));
+  const input = page.layoutInput({ start: view.start, relations: view.relations, columns: view.columns, rows: view.rows,
+    nodes: Object.entries(view.nodes).map(([id, n]) => ({ id, ...n })) });
+  const g = ui.layoutGraph(input);
+  assert.equal(input.nodes.batch.runner, "wait");
+  assert.deepEqual(g.nodes.filter(ui.isWaitNode).map((n) => n.id), ["batch"]);
+  assert.deepEqual(g.edges.map((e) => e.style).filter(Boolean).sort(),
+    ["arrive", "arrive", "handoff", "handoff", "handoff", "rework", "rework"]);
+  const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
+  assert.equal(by.val.x, by.lint.x);
+});

@@ -65,7 +65,8 @@ function spawnScriptWorker(line, worker, deps) {
       repoName: worker.repo, branch: worker.branch, commit: worker.checkedCommit,
       env: { ...process.env, CUCK_LINE_ID: line.id, CUCK_WORKER_ID: worker.id,
         CUCK_SOURCE_ID: worker.validates, CUCK_REPO: worker.repo || "", CUCK_BRANCH: worker.branch || "",
-        CUCK_WORKTREE: runRoot, CUCK_SOURCE_WORKTREE: sourceWorktree },
+        CUCK_WORKTREE: runRoot, CUCK_SOURCE_WORKTREE: sourceWorktree,
+        CUCK_BASE_COMMIT: (source && source.baseCommit) || "" },
       timeLimitSec: resolveNodeSettings(line, worker.node).timeLimit,
       logDir: path.join(base, "logs"),
       hooks: {

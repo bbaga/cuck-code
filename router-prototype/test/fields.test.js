@@ -173,3 +173,14 @@ test("checkOptionalUse allows an optional field only inside its own section", ()
   const req = { description: "d", type: "string" };
   assert.equal(checkOptionalUse("task", req, []), null);
 });
+
+test("type instances: a declaration may set node; values are a comma-separated list", () => {
+  assert.deepEqual(checkDeclaration("members", ok({ type: "instances", node: "impl" })), []);
+  assert.match(checkDeclaration("members", ok({ type: "string", node: "impl" }))[0], /'node' is not allowed/);
+  const decl = ok({ type: "instances" });
+  const check = (value) => checkValues({ members: { decl } }, { members: value }).invalid;
+  assert.deepEqual(check("a, b"), []);
+  assert.match(check("a,a")[0].reason, /twice/);
+  assert.match(check("a,,b")[0].reason, /empty entries/);
+  assert.match(check(Array.from({ length: 51 }, (_, i) => `n${i}`).join(","))[0].reason, /more than 50/);
+});

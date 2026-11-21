@@ -1286,3 +1286,99 @@ test("E1 kinds: all on by default, the stored choice is read back", () => {
   assert.deepEqual([kinds.checks, kinds.after], [false, true]);
   assert.deepEqual(u.GRAPH_KINDS.map((k) => k.kind), ["interaction", "checks", "after", "accepted-work", "required"]);
 });
+
+// P5: choreographed pipelines in the graph.
+const choreo = require("./choreo-fixtures");
+const choreoLayout = (text) => pipelineUiModule.layoutGraph(viewOf(choreo.resolve(text)));
+const choreoEdge = (g, from, to, style) => g.edges.find((e) => e.from === from && e.to === to && e.style === style);
+
+test("P5 layout: pipeline 1 draws handoff, rework and arrive edges with their labels", () => {
+  const g = choreoLayout(choreo.CHAIN);
+  const css = pipelineUiModule.edgeClassName;
+  assert.match(css(choreoEdge(g, "impl", "val", "handoff")), /\bedge-handoff\b/);
+  const rework = choreoEdge(g, "val", "impl", "rework");
+  assert.match(css(rework), /\bedge-rework\b.*\bdashed\b|\bdashed\b.*\bedge-rework\b/);
+  assert.equal(rework.label, "rework (FAIL)");
+  const arrive = choreoEdge(g, "val", "batch", "arrive");
+  assert.match(css(arrive), /\bedge-arrive\b/);
+  assert.equal(arrive.label, "arrive (PASS)");
+  assert.deepEqual(g.edges.filter((e) => e.style).map((e) => e.style).sort(), ["arrive", "handoff", "handoff", "rework"]);
+  const report = g.edges.find((e) => e.from === "impl" && e.to === "planner");
+  assert.equal(report.style, "");
+  assert.equal(report.label, "report");
+  assert.doesNotMatch(css(report), /edge-/);
+});
+
+test("P5 layout: the wait node is found by its runner", () => {
+  const g = choreoLayout(choreo.CHAIN);
+  assert.deepEqual(g.nodes.filter(pipelineUiModule.isWaitNode).map((n) => n.id), ["batch"]);
+  assert.equal(pipelineUiModule.isWaitNode(null), false);
+});
+
+test("P5 layout: a fan-out draws one edge per target and the targets share a column", () => {
+  const g = choreoLayout(choreo.STAGE);
+  const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
+  assert.equal(by.val.column, by.lint.column);
+  assert.equal(by.val.x, by.lint.x);
+  assert.notEqual(by.val.row, by.lint.row);
+  assert.ok(choreoEdge(g, "impl", "val", "handoff"));
+  assert.ok(choreoEdge(g, "impl", "lint", "handoff"));
+  assert.ok(choreoEdge(g, "lint", "impl", "rework"));
+  assert.ok(choreoEdge(g, "lint", "batch", "arrive"));
+  assert.notEqual(choreoEdge(g, "impl", "val", "handoff").path, choreoEdge(g, "impl", "lint", "handoff").path);
+});
+
+test("P5 layout: planner-only draws one node, implement-only draws two", () => {
+  const one = pipelineUiModule.layoutGraph(viewOf(resolvedBuiltIn("planner-only")));
+  assert.equal(one.nodes.length, 1);
+  assert.equal(one.edges.length, 0);
+  assert.ok(one.width > 0 && one.height > 0);
+  const two = pipelineUiModule.layoutGraph(viewOf(resolvedBuiltIn("implement-only")));
+  assert.deepEqual(two.nodes.map((n) => n.id), ["planner", "impl"]);
+  assert.equal(pipelineUiModule.nodeRowsFromGraphView(viewOf(resolvedBuiltIn("planner-only"))).length, 1);
+  assert.equal(pipelineUiModule.nodeRowsFromGraphView(viewOf(resolvedBuiltIn("implement-only"))).length, 2);
+});
+
+test("P5 change: removeFirst names the workers to remove first and blocks Apply", () => {
+  const text = "the new pipeline has no node for some workers: remove these workers first: api, ui";
+  const dry = pipelineUiModule.graphSwitchView(200, { ok: false, code: "GRAPH_REMAP_REQUIRED", orphans: [{ node: "x" }], removeFirst: ["api", "ui"] });
+  assert.equal(dry.state, "blocked");
+  assert.equal(dry.canApply, false);
+  assert.match(dry.message, /Remove these workers first: api, ui/);
+  const hard = pipelineUiModule.graphSwitchView(409, { code: "GRAPH_REMAP_REQUIRED", removeFirst: ["api"], error: text });
+  assert.equal(hard.state, "blocked");
+  assert.equal(hard.message, text);
+  assert.equal(pipelineUiModule.graphSwitchView(200, { ok: false, orphans: [], removeFirst: [] }).state, "needs-remap");
+});
+
+test("waitCardView: members keep their order and an unknown state shows as waiting", () => {
+  const ui = require("../web/pipeline-ui.js");
+  assert.equal(ui.waitCardView({ runner: "agent" }), null);
+  const view = ui.waitCardView({ id: "w", name: "b", runner: "wait", status: "stopped", outcome: "timeout",
+    members: [{ id: "1", name: "x", state: "stale" }, { id: "2", name: "y", state: "odd" }] });
+  assert.deepEqual(view.members.map((m) => m.className), ["wait-member-stale", "wait-member-waiting"]);
+  assert.equal(view.outcome, "timed out");
+});
+
+test("headCardView and stageChipView: counter, PASS, FAIL and other outcomes", () => {
+  const ui = require("../web/pipeline-ui.js");
+  assert.equal(ui.headCardView({ reworkRounds: {}, stage: null }), null);
+  assert.equal(ui.headCardView({ id: "h", reworkRounds: { impl: 1 }, maxRounds: { impl: 3 } }).rework[0], "rework round 1 / 3");
+  const label = (m) => ui.stageChipView({ node: "n", ...m }).label;
+  assert.equal(label({ status: "queued" }), "queued");
+  assert.equal(label({ status: "running" }), "running");
+  assert.equal(label({ status: "done", outcome: "pass" }), "PASS");
+  assert.equal(label({ status: "done", outcome: "reject" }), "FAIL");
+  assert.equal(label({ status: "done" }), "FAIL");
+  assert.equal(label({ status: "done", outcome: "timeout" }), "timeout");
+});
+
+test("buildGraphLanes: a wait worker joins the lane and the row of its first member", () => {
+  const ui = require("../web/pipeline-ui.js");
+  const graph = { columns: { impl: 1, val: 2, batch: 3 } };
+  const workers = [{ id: "a", node: "impl" }, { id: "v", node: "val", role: "validator", validates: "a" },
+    { id: "w", node: "batch", runner: "wait", members: [{ id: "a" }] }];
+  const out = ui.buildGraphLanes(workers, false, graph);
+  assert.equal(out.lanes.length, 1);
+  assert.deepEqual(out.placed.map((e) => [e.worker.id, e.column, e.row]), [["a", 1, 0], ["v", 2, 0], ["w", 3, 0]]);
+});

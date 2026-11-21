@@ -383,6 +383,24 @@
   // Forward edges run between the boxes, a relation that skips columns goes over the
   // top, a back edge (to the same or an earlier column) goes out to the right of its
   // box, under all boxes and up into the bottom of the target.
+  // The choreography style of a relation, from its interactions list: "handoff",
+  // "rework", "arrive" or "". A relation with several of them takes the first in this order.
+  const CHOREO_STYLES = ["rework", "arrive", "handoff"];
+  const CHOREO_LABELS = { rework: "rework (FAIL)", arrive: "arrive (PASS)" };
+  function choreoStyle(edge) {
+    const names = Array.isArray(edge && edge.interactions) ? edge.interactions : [];
+    return CHOREO_STYLES.find((name) => names.includes(name)) || "";
+  }
+
+  // The SVG class of an edge path: kind, dashed flag and the "edge-<style>" class.
+  function edgeClassName(edge) {
+    const style = edge.style;
+    return "pgEdge " + edge.kind + (edge.dashed ? " dashed" : "") + (style ? " edge-" + style : "");
+  }
+
+  // True for a node that only waits for its member tasks (runner "wait").
+  const isWaitNode = (node) => !!node && node.runner === "wait";
+
   const GRAPH_GEOMETRY = { nodeWidth: 190, nodeHeight: 68, columnGap: 190, rowGap: 26, margin: 20, lane: 17 };
 
   function layoutGraph(graph) {
@@ -416,10 +434,17 @@
     const boxesBottom = originY + maxRows * G.nodeHeight + (maxRows - 1) * G.rowGap;
     const out = new Array(edges.length);
     let maxX = Math.max(...nodes.map((n) => n.x + n.width));
+    // Relations between the same two nodes share one path: each next label moves down one line.
+    const sameEnds = {};
     const finish = (item, points, path, labelX, labelY) => {
       for (const [x] of points) maxX = Math.max(maxX, x);
-      out[item.index] = { from: item.edge.from, to: item.edge.to, kind: item.edge.kind, label: item.edge.label || "",
-        dashed: item.edge.dashed === true, path, points, labelX, labelY };
+      const ends = item.edge.from + "\u0000" + item.edge.to;
+      labelY += (sameEnds[ends] || 0) * 13;
+      sameEnds[ends] = (sameEnds[ends] || 0) + 1;
+      const style = item.edge.kind === "interaction" ? choreoStyle(item.edge) : "";
+      out[item.index] = { from: item.edge.from, to: item.edge.to, kind: item.edge.kind, style,
+        label: (item.edge.interactions || []).length === 1 && CHOREO_LABELS[style] || item.edge.label || "",
+        dashed: item.edge.dashed === true || style === "rework", path, points, labelX, labelY };
     };
     const pathOf = (pts) => "M" + pts.map(([x, y]) => x + " " + y).join(" L");
 
@@ -711,10 +736,13 @@
       else lanable.push(entry);
     }
     const byId = new Map(lanable.map((e) => [e.worker.id, e]));
+    // A wait worker joins the lane of its first member, so it stands in the row of the members.
+    const sourceOf = (worker) => (worker.runner === "wait" && Array.isArray(worker.members) && worker.members.length
+      ? worker.members[0].id : worker.validates);
     const rootOf = (entry) => {
       let current = entry;
       for (let hops = 0; hops <= lanable.length; hops++) {
-        const next = byId.get(current.worker.validates);
+        const next = byId.get(sourceOf(current.worker));
         if (!next || next === current) return current;
         current = next;
       }
@@ -767,6 +795,47 @@
     const placed = [...lanable, ...mergers];
     const columns = [...new Set(placed.map((e) => e.column))].sort((a, b) => a - b);
     return { lanes, placed, columns, unplaced, totalRows: row };
+  }
+
+  const WAIT_MEMBER_STATES = ["waiting", "arrived", "stale"];
+  const OUTCOME_TEXT = { timeout: "timed out", stopped: "stopped", pass: "all members arrived" };
+
+  // The view of a wait worker card, or null for any other worker.
+  // Members keep their order. An unknown member state shows as "waiting".
+  function waitCardView(worker) {
+    if (!worker || worker.runner !== "wait") return null;
+    const members = (Array.isArray(worker.members) ? worker.members : []).map((m) => {
+      const state = WAIT_MEMBER_STATES.includes(m && m.state) ? m.state : "waiting";
+      return { id: m && m.id, name: (m && m.name) || String(m && m.id), state, className: "wait-member-" + state };
+    });
+    const outcome = worker.outcome ? (OUTCOME_TEXT[worker.outcome] || String(worker.outcome)) : null;
+    return { id: worker.id, name: worker.name, status: worker.status, outcome, members };
+  }
+
+  // The text of one stage member: queued and running, PASS or FAIL, or the outcome text.
+  function stageChipView(member) {
+    let state = "queued";
+    let label = "queued";
+    if (member.status === "running") { state = "running"; label = "running"; }
+    else if (member.status === "done") {
+      const outcome = member.outcome;
+      if (outcome === "pass") { state = "pass"; label = "PASS"; }
+      else if (!outcome || outcome === "reject") { state = "fail"; label = "FAIL"; }
+      else { state = "outcome"; label = String(outcome); }
+    }
+    return { node: member.node, state, label, className: "stage-chip-" + state };
+  }
+
+  // The view of the chain state of a head card, or null when it has no rework and no stage.
+  function headCardView(worker) {
+    if (!worker) return null;
+    const rounds = worker.reworkRounds && typeof worker.reworkRounds === "object" ? worker.reworkRounds : {};
+    const limits = worker.maxRounds && typeof worker.maxRounds === "object" ? worker.maxRounds : {};
+    const rework = Object.keys(rounds).map((node) => "rework round " + rounds[node]
+      + (Number.isInteger(limits[node]) ? " / " + limits[node] : ""));
+    const members = worker.stage && Array.isArray(worker.stage.members) ? worker.stage.members.map(stageChipView) : [];
+    if (!rework.length && !members.length) return null;
+    return { id: worker.id, name: worker.name, rework, chips: members };
   }
 
   // The step summary of a script check: "3/3 ✓", "2/3 ✗" or "1/3 …".
@@ -1256,10 +1325,19 @@
     if (status === 409 && b.code === "PLANNER_BUSY") {
       return { ...base, state: "blocked", message: "The planner is running or compacting. Wait until it is idle, then check again." };
     }
+    if (status === 409 && Array.isArray(b.removeFirst) && b.removeFirst.length) {
+      return graphSwitchView(200, b);
+    }
     if (status !== 200) {
       const rules = Array.isArray(b.rules) ? b.rules : (Array.isArray(b.errors) ? b.errors : []);
       const text = b.error || (rules.length ? "" : "The pipeline could not be checked.");
       return { ...base, state: "error", message: [text, ...rules.map((r) => (r && r.message) || String(r))].filter(Boolean).join(" ") };
+    }
+    // A node of this line has no candidate in the new pipeline: its workers go first.
+    const removeFirst = Array.isArray(b.removeFirst) ? b.removeFirst : [];
+    if (removeFirst.length) {
+      return { ...base, state: "blocked", removeFirst, message: b.error
+        || "The new pipeline has no node for some workers. Remove these workers first: " + removeFirst.join(", ") + "." };
     }
     if (b.unchanged) return { ...base, state: "unchanged", message: "This line already uses this pipeline." };
     const moves = Array.isArray(b.moves) ? b.moves : [];
@@ -1316,7 +1394,7 @@
     isFreshSessionNode,
     nodeRowsFromResolved,
     defaultOptionLabels,
-    layoutGraph,
+    layoutGraph, choreoStyle, edgeClassName, isWaitNode,
     scriptCwdText, GRAPH_KINDS, GRAPH_KINDS_KEY, loadGraphKinds, buildKindLegend, scriptNodeLine,
     GRAPH_GEOMETRY,
     nodeRowsFromGraphView,
@@ -1349,6 +1427,9 @@
     shouldHideValidator,
     shouldShowIntegrationValidator,
     buildGraphLanes,
+    waitCardView,
+    stageChipView,
+    headCardView,
     scriptSummary,
     graphColumnOf,
     attentionIndicator,

@@ -11,7 +11,9 @@ const { validateNodeSettings } = require("./pipeline-config");
 
 const TOP_KEYS = ["name", "description", "start", "defaults", "nodes", "edges"];
 const NODE_KEYS = ["type", "harness", "model", "effort", "timeLimit", "maxContext", "prompt", "fields", "checks",
-  "scripts", "failFast", "required", "checkout", "after"];
+  "scripts", "failFast", "required", "checkout", "after", "maxRounds"];
+// Most rework rounds a checker allows. The runtime applies 3 when the key is absent.
+const MAX_ROUNDS_LIMIT = 20;
 const SETTING_KEYS = ["harness", "model", "effort", "timeLimit", "maxContext"];
 const ID_RE = /^[A-Za-z][A-Za-z0-9-]{0,63}$/;
 const SCRIPT_KEYS = ["name", "run", "cwd", "timeout", "env", "repos"];
@@ -113,6 +115,12 @@ function parseNode(fileName, id, raw, readFile) {
       }
     }
     node.after = raw.after.slice();
+  }
+  if ("maxRounds" in raw) {
+    if (!Number.isInteger(raw.maxRounds) || raw.maxRounds < 1 || raw.maxRounds > MAX_ROUNDS_LIMIT) {
+      fail(fileName, `${where}: maxRounds must be an integer from 1 to ${MAX_ROUNDS_LIMIT}`);
+    }
+    node.maxRounds = raw.maxRounds;
   }
   if ("scripts" in raw) parseScriptSettings(fileName, where, raw, node);
   for (const key of ["failFast", "required"]) {

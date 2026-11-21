@@ -309,7 +309,14 @@ When done, reply with a report: what you changed, files changed, how you verifie
 |---|---|
 | `effect` | `create`: a new instance of the target node; the message is its first turn. `deliver`: the message goes into an existing instance and wakes it. `accept`: records an acceptance and sends no message (the body must be empty); only built-in interactions may use it. |
 | `trigger` | `request`: the planner calls the router API. `complete`: the router acts when a run of the sender ends. |
-| `target` | `new` (only with `create`), `chosen` (an instance the caller names; needs `request`), `starter` (the instance that created the sender), `source` (the instance whose work the sender checks). |
+| `target` | `new` (only with `create`), `chosen` (an instance the caller names; needs `request`), `starter` (the instance that created the sender), `source` (the instance whose work the sender checks), `waiter` (the wait node; only with `arrive`). |
+| `when` | Only with `trigger: complete`. A list of run outcomes: `done`, `pass`, `reject`, `missing`, `timeout`, `failed`, `stopped`. The interaction applies only to those outcomes. Default: all seven. |
+| `fallback` | Only with `trigger: complete`. `true` or `false` (default `false`). A fallback interaction fires only when no non-fallback `complete` interaction of the node applied. |
+
+The effect `arrive` records that a task reached a wait node. Like `accept`, only
+built-in interactions may use it. It needs `trigger: complete`, `target: waiter`
+and an empty body. The effect `create` with `trigger: complete` loads, but rules
+R10 and R14 decide where it is allowed.
 
 The built-in interactions:
 
@@ -318,6 +325,12 @@ The built-in interactions:
 | `start` | create | request | new | whatever the target node needs, see "Strict calls" |
 | `feedback` | deliver | request | chosen | `instance`, `instructions` |
 | `accept` | accept | request | chosen | `instance`, `reason` |
+| `report` | deliver | complete | starter | none. It is a `fallback` interaction. |
+| `handoff` | create | complete | new | none. `when: [done, pass]`. Starts the next checkers of the task chain. |
+| `rework` | deliver | complete | source | none. `when: [reject, missing]`. Sends the checker report back to the implementor. |
+| `arrive` | arrive | complete | waiter | none. `when: [done, pass]`. Records that the task chain reached the wait node. |
+
+The router runs `handoff`, `rework` and `arrive` (see "Choreographed pipelines" below).
 | `report` | deliver | complete | starter | none; the router fills `report` and `outcome` |
 
 A `complete`-triggered interaction has no caller. It declares no `fields` and
@@ -370,7 +383,9 @@ Templates use a small mustache subset, with no logic and no escaping:
 `pipeline.has.checker`, `pipeline.has.integration`, `pipeline.has.wait` and
 `pipeline.has.chains` are booleans for sections (`{{#pipeline.has.checker}}`).
 The first three are true when a node has a type with workspace `own-worktree`,
-`source` or `integration`. `wait` and `chains` are always false for now.
+`source` or `integration`. `wait` is true when a node has a type with `runner: wait`. `chains` is true when an
+edge has a `complete`-triggered `create` interaction, a `complete` `deliver`
+interaction with target `source`, or an `arrive` interaction.
 
 **Router variables and caller fields.** The router fills these and never
 accepts them from a caller: `line.*`, `node.*`, `instance.*`, `from.*`,
@@ -403,7 +418,9 @@ for some types `maxLength`, `pattern`, `values`, `node`, `optional`. Types:
 `pattern`), `text` (at most 20000 characters unless `maxLength` is set), `enum`
 (needs `values`), `instance` (an instance of the line; `node` narrows it),
 `repo` (a registered repository of the line) and `commit` (40 lowercase hex
-characters that exist in the repository). A field is required and must be
+characters that exist in the repository) and `instances` (a comma-separated list
+of 1 to 50 instance names or ids, with no duplicates; `node` narrows it, as for
+`instance`). A field is required and must be
 non-empty, unless it has `optional: true`. An optional field may be used only
 inside a section for that field (`{{#trackerTicket}}...{{/trackerTicket}}`),
 so an optional value can never leave a hole in a prompt.
@@ -469,21 +486,151 @@ when the pipelines API saves or validates it. Each error has a `rule` and a
 | R1 | The `start` node exists in `nodes`. |
 | R2 | Every node can be reached from the start node through `create` interactions. |
 | R3 | The `create` edges form no cycle. Loops happen between instances (feedback, a fresh instance), never in the graph. |
-| R4 | The result of every other node cannot get lost: following `complete`-triggered interactions from any node ends at the start node. |
+| R4 | The result of every other node cannot get lost. Either following `complete`-triggered interactions (rework edges ignored) from the node ends at the start node, or the node has a `complete` interaction with `fallback: true` whose target is the start node. The target `starter` means the nodes that start the node through `request` create edges; if there are none, the same for the nodes that reach it through `complete` create or `arrive` edges. |
 | R5 | Only the start node may use `request`-triggered interactions. |
 | R6 | A `deliver` interaction needs a target node whose type has `session: resume`. |
 | R7 | The prompt extensions (`defaults.prompt`, node `prompt`) parse, every caller field in them is declared, optional fields are used only in their own sections, and the node `fields` declarations are valid. |
 | R8 | No unknown node type, unknown node (in an edge or in `checks`), unknown interaction or duplicate edge. |
 | R9 | A node with `checks` has a type with `workspace: source`, and each node it checks has a type with `workspace: own-worktree`. |
-| R10 | A `complete`-triggered interaction does not have `effect: create`. |
+| R10 | A `complete`-triggered `create` interaction needs a target node whose type has `workspace: source` or `workspace: integration`. R3 still applies to all `create` edges. |
 | R11 | A node whose type has `runner: script` has `scripts` and `checks`, sets no agent key, and its type chain starts at `script-check`. Any other node sets no script key. |
 | R12 | A node with `after` has `checks`. Each listed node is known, checks a shared target and is not the node itself. |
 | R13 | The ordering relations form no loop (see "How pipelines are drawn"). |
+| R14 | Handoff shape. For a `complete` create edge F -> T: a `source` target T checks F (or F checks a node that T checks); an `integration` target needs F to be a wait node. A node with an outgoing `arrive` edge has no `complete` create edge. A wait node has at most one. |
+| R15 | Rework shape. A `rework` edge (`complete` deliver, target `source`) F -> T needs T in the `checks` of F. `maxRounds` is allowed only on a node with an outgoing rework edge. |
+| R16 | Wait shape. An `arrive` edge F -> W needs W with a type with `runner: wait`, and F with `checks` or an `own-worktree` type. A wait node sets no `checks`, `after`, `scripts`, `failFast`, `required`, `checkout`, `harness`, `model`, `effort`, `maxContext`, `prompt` or `fields`. Its `complete` create edges go only to `integration` nodes. |
+| R18 | Stage shape. The stage of a node F is the set of targets of its `complete` create edges. The members of a stage have the same outgoing `complete` create targets and `arrive` targets. A script node in a stage with two or more members needs `checkout: clean`. No member lists another member in `after`. |
 | R17 | The type chain of the start node starts at `planner`. No other node has a type whose root is `planner`. |
 
 Two more error codes can appear: `LOAD` (the text, a node type, an interaction
 or a prompt file does not parse or load) and `NAME` (the name is not allowed,
 differs from the file name, or is a built-in name).
+
+### Choreographed pipelines
+
+A choreographed pipeline lets a task move from left to right through a task
+chain without the planner. The router runs handoff, rework, stages and the wait node.
+
+- Node type `wait` (`runner: wait`, `workspace: none`, field `members` of type
+  `instances`): it waits until each member task arrived with a PASS. A wait node
+  takes only `timeLimit` settings, as a script node does. It has no default time limit: a
+  batch can wait for many hours. It has a limit only when the pipeline node or
+  the line settings set `timeLimit`. It sets no `maxRounds`. The loader needs root
+  type `wait`, `session: fresh`, `workspace: none`, `outcome: verdict` and
+  `coordinator: false` for every type with `runner: wait`.
+- Node key `maxRounds` (an integer from 1 to 20): the number of automatic
+  reworks. With `maxRounds: 3` the router sends 3 reworks. The 4th FAIL gives
+  REWORK LIMIT REACHED to the planner. It is stored on the node. When it is absent, the runtime uses 3 (the
+  default is not written into the node).
+- The pipeline files `default` and `minimal` do not change.
+
+Routing and prompt text (pure code in `choreography.js`):
+
+- Chain fields: a call that creates node T also requires the caller fields of
+  each node that T reaches through complete-create edges (`handoff`). The walk
+  stops at `arrive` edges and visits each node one time. It adds no effect
+  fields (`source`, `repo`, `name`) of those nodes. `requiredBy` is
+  `handoff to node <id>`. A wait node also requires `members`.
+  `chainFieldNames` in `call-fields.js` lists these downstream fields.
+- `routeCompletion` in `choreography.js` picks the actions for one finished run.
+  It keeps the interactions whose `when` has the outcome, drops `rework` when
+  the rounds reach `maxRounds` (`exhausted`), and uses fallback interactions
+  only when no other one is left.
+- `resolveStage` decides one time after the last checker of a stage ended:
+  a failed, timed out or stopped member gives one report. A reject gives one
+  combined rework while rounds are below the smallest `maxRounds`, else a
+  report with `exhausted`. If all pass, the stage takes its common handoff or
+  arrive, else it reports.
+Runtime (`chain-runtime.js`, called from `workerClosed` in `server.js`):
+
+- A chain head is an own-worktree instance that the planner started. It keeps
+  `chainFields` (the start-call values of the downstream nodes, such as
+  `criteria`), `reworkRounds` (`{ <stage sender node>: n }`) and `stage`
+  (`{ sender, headRun, members: { <node>: { status, checkerId, outcome } } }` or
+  `null`). `line.json` stores them. A line saved before they existed loads with
+  `{}`, `{}` and `null`.
+- When a head run ends with `done`, the router starts the checkers of the stage
+  (`stageOf`) with `validates` set to the head, the criteria from `chainFields`
+  and the last run text as the report. The planner gets no wake.
+- When a checker of a stage ends, the router records its outcome. The result of
+  a stage of an older head run (or of a stage that feedback reset) is ignored.
+  After the last member ended, `resolveStage` gives one decision:
+  rework (the combined rework text goes to the head, `reworkRounds` grows by
+  one; a blocked delivery sends `REWORK BLOCKED` and the report to the planner),
+  handoff (the next stage starts), or report. For `arrive` the planner gets the
+  report until the wait runtime exists. A report after the rework limit starts
+  with a `REWORK LIMIT REACHED` line.
+- The planner gets a message only when the chain ends: a report, the rework
+  limit, a failed, timed out or stopped checker, a blocked change set, or a
+  handoff error (`HANDOFF FAILED - <node> could not start for '<head>': <error>`).
+  A change set that is over the size target only adds the oversize warning.
+- `line.pendingHandoffs` (`[{ to, headId, headRun }]`, saved in `line.json`) holds
+  handoffs that wait for a free worker slot (cap of 8). The router starts them
+  at the end of each `workerClosed` and after a line loads. It drops an entry
+  when its head is gone or the head run changed. A stage member that was
+  running when the router stopped ends the chain with `HANDOFF FAILED`.
+- A `feedback` call to the head sets `reworkRounds` to `{}` and `stage` to `null`.
+- The built-in pipeline `choreographed` is the chain `impl -> val` with
+  rework (`maxRounds: 3`) and a report to the planner. The planner starts a task
+  with `start`; it gets one report when the chain ends.
+
+- The planner prompt has a `## Chains` section only when the pipeline has
+  chains. It has one line for each chain head and for each wait node.
+- The wait node runtime: a `start` call on a wait node (`members` by name or
+  id, plus the fields of its handoff target, for example `instructions`) creates
+  a wait worker. A member of another running wait instance of the same node gives
+  409 `MEMBER_IN_BATCH`. A wait worker has no process and does not count against
+  the worker cap. A head that passed its checkers arrives; if no wait instance
+  exists the head keeps `pendingArrival`, the planner gets the normal report
+  one time, and a later wait instance imports the arrival. A feedback call makes
+  the arrival `stale`. When every member has a current arrival, the wait worker
+  completes and the router starts the handoff node with the `instructions` of the
+  start call. The planner gets no `BATCH REPORT` when that start works. If it
+  fails the planner gets `HANDOFF FAILED` and the `BATCH REPORT`. A pipeline with
+  only a report edge gets the `BATCH REPORT` one time. At the `timeLimit`
+  (no limit: no timer) or after a stop, the planner gets one `BATCH REPORT` that
+  names the members that did not arrive. A running wait worker survives a
+  router restart with its arrivals and the rest of its time.
+
+#### Dashboard state of the chain (contract for the UI)
+
+`dashboardStateForLine`, the `worker_spawned` event and the `worker_status`
+event carry these fields:
+
+- A wait worker: `runner: "wait"` and `members`, a list of `{ id, name, state }`
+  in member order. `state` is `arrived`, `stale` (the arrival is for an older
+  run of the member) or `waiting`. `status` is `running`, `completed`, `failed`
+  or `stopped`; `worker_status` also carries `outcome` (`pass`, `timeout`,
+  `stopped`).
+- An own-worktree worker (a chain head): `reworkRounds` (`{ <node>: n }`),
+  `maxRounds` (`{ <head node>: n }`, the lowest `maxRounds` of the next stage,
+  3 by default) and `stage` (`{ sender, members: [{ node, status, outcome,
+  checkerId }] }`, or `null` when no stage runs). The router sends a
+  `worker_status` event for the head (`{ workerId, status, verdict, worker: { id,
+  reworkRounds, maxRounds, stage } }`) after each change of `stage`: the stage
+  start, the start of a member, the end of a member, the end of the stage
+  (rework, next stage or report), a failed handoff and the clear by a
+  `feedback` call. `worker_spawned` and `worker_status` always carry the current
+  value of `stage`.
+- The SSE event `wait_update` `{ workerId, members }` follows each arrival and
+  each start of a member run (an arrival becomes `stale`).
+
+The dashboard shows this state in a chain panel under the line graph. The panel
+has no content, and it is hidden, on a line without a wait worker, rework count
+or stage.
+
+- Wait card (`.waitCard`): the status of the wait worker, the outcome when it
+  ended (`timed out`, `stopped`, `all members arrived`) and one chip for each
+  member in member order. The chip classes are `wait-member-waiting`,
+  `wait-member-arrived` and `wait-member-stale`. `wait_update` and
+  `worker_status` update it without a reload.
+- Head card (`.headCard`): `rework round <n> / <max>` when `reworkRounds` is not
+  empty, and one chip for each stage member: `stage-chip-queued`,
+  `stage-chip-running`, `stage-chip-pass` (PASS), `stage-chip-fail` (FAIL, for
+  `reject` or no outcome) or `stage-chip-outcome` (other outcome text). The
+  chips go away when `stage` is `null`.
+- The state of a wait worker carries `outcome`, so a page load shows it.
+
 
 ### How pipelines are drawn
 
@@ -491,7 +638,9 @@ The router computes the relations, the column and the row of each node from
 the declarations of the pipeline. The graphs in the UI use only this data
 (`relations`, `columns`, `rows` in the line graph and in the validate answer).
 Node ids, type names, phases and roles carry no meaning: if you rename every
-node and type and keep the relations, the layout stays the same.
+node and type and keep the relations, the layout stays the same. An edge with an
+`arrive` interaction is an ordering relation, as an edge with a `create`
+interaction is.
 
 | kind | Declared by | Relation | Ordering |
 |---|---|---|---|
@@ -518,6 +667,29 @@ other declarations.
 Rule R13: the ordering relations must not form a loop. A loop is an error that
 names the nodes and the declarations. Example:
 `ordering relations form a loop: ci -> lint -> ci (lint: after [ci]; ci: after [lint])`.
+
+### Choreographed pipelines in the graph
+
+The Pipeline tab and the page `/pipelines` draw three more things. They read the
+`interactions` list of each relation and the runner of each node.
+
+- **Wait badge.** A node with `runner: wait` shows the badge "wait" (class
+  `node-badge-wait`) and a `wait` box outline (class `pgNode wait`). A script
+  node shows its own badge in the same place.
+- **Edge styles.** An interaction relation gets one of these classes:
+  `edge-handoff` (solid line in the accent color), `edge-rework` (dashed back
+  edge, label "rework (FAIL)") and `edge-arrive` (solid line, label "arrive
+  (PASS)"). Other interactions keep their style. The text list of relations
+  keeps its format: `val -> impl: rework`.
+- **Fan-out.** A sender with several handoff targets draws one edge for each
+  target. The targets are in the same column, in separate rows.
+- Relations between the same two nodes share one path. Each next label moves
+  down one line, so the labels do not overlap.
+- **Optional nodes.** `planner-only` draws one node and no edge.
+  `implement-only` draws two nodes. Each node has one settings row.
+- **Change the pipeline.** When the answer has a non-empty `removeFirst` list,
+  the section shows the text that names the workers to remove first. The
+  section does not show the remap table and Apply stays off.
 
 ### Script check nodes
 
@@ -636,7 +808,8 @@ Run root and files:
   state carry `checkResults`.
 - Environment of each script: `CUCK_LINE_ID`, `CUCK_WORKER_ID`, `CUCK_SOURCE_ID`,
   `CUCK_REPO`, `CUCK_BRANCH`, `CUCK_WORKTREE` (the run root) and
-  `CUCK_SOURCE_WORKTREE` (the implementor worktree).
+  `CUCK_SOURCE_WORKTREE` (the implementor worktree) and `CUCK_BASE_COMMIT` (the base
+  commit of the chain head, that is, the checked implementor).
 - A script check that is running when the router starts becomes `stopped`.
 
 Security note: scripts are shell commands from pipeline files (built-in,
