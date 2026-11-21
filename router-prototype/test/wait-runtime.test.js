@@ -11,7 +11,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { createFakeChild } = require("./fixtures/planner-child");
-const { CHAIN, resolve } = require("./choreo-fixtures");
+const { CHAIN, STAGE, resolve } = require("./choreo-fixtures");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "wait-runtime-"));
 // The repositories stay outside LINES_DIR: loadLines would read them as lines.
@@ -26,12 +26,25 @@ after(() => {
 const git = (cwd, ...args) => execFileSync("git",
   ["-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", ...args], { encoding: "utf8" }).trim();
 const PASS = "Checked.\nVERDICT: PASS";
-const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+
+// A fake clock and fake timers for the wait runtime: the time limit tests do not depend on real time.
+// Call the returned function (t.after) to put the real clock back.
+const clock = { now: 1_000_000, timers: [] };
+function useFakeTime() {
+  const timing = server.waitRuntime.timing;
+  const saved = { ...timing };
+  clock.timers = [];
+  timing.now = () => clock.now;
+  timing.setTimer = (fn, ms) => { clock.timers.push({ fn, ms, cleared: false }); return clock.timers.length - 1; };
+  timing.clearTimer = (id) => { if (clock.timers[id]) clock.timers[id].cleared = true; };
+  return () => Object.assign(timing, saved);
+}
+const fire = (timer) => { if (!timer.cleared) timer.fn(); };
 const INSTRUCTIONS = "Merge the batch and run the full suite.";
 
 let seq = 0;
 // A line with the chain heads `names`, all on one registered repo. Texts for the planner collect in item.queue.
-function rig(names = ["ha", "hb"]) {
+function rig(names = ["ha", "hb"], graph = resolve(CHAIN)) {
   const id = `wait-${++seq}`;
   const dir = path.join(reposRoot, id);
   fs.mkdirSync(dir, { recursive: true });
@@ -49,7 +62,7 @@ function rig(names = ["ha", "hb"]) {
     deleted: false, compacting: false, started: true, planApproved: true, queue: [], transcript: [],
     workers: new Map(), clients: new Set(), inventory: new Map(), repos: new Map([["api", { name: "api", url: dir, path: dir }]]),
     pendingValidations: [], sessionId: null, sessionCfg: null, context: null, nodeSettings: {},
-    graph: resolve(CHAIN), pendingHandoffs: [] };
+    graph, pendingHandoffs: [] };
   const heads = {};
   for (const name of names) {
     git(dir, "branch", `b/${name}`);
@@ -166,20 +179,27 @@ test("a name and an id of one worker in members count as a duplicate", async () 
   assert.equal(r.waits().length, 0);
 });
 
-test("the time limit gives one planner wake with the missing members; no limit sets no timer", async () => {
+test("the time limit gives one planner wake with the missing members; no limit sets no timer", async (t) => {
+  t.after(useFakeTime());
   const r = rig();
-  r.item.nodeSettings = { batch: { timeLimit: 0.05 } };
+  r.item.nodeSettings = { batch: { timeLimit: 60 } };
   await r.post("start", { to: "batch", members: "ha,hb", instructions: INSTRUCTIONS });
   const [wait] = r.waits();
   assert.equal(server.waitRuntime.hasTimer(wait.id), true);
-  await sleep(250);
+  assert.equal(clock.timers.length, 1);
+  assert.equal(clock.timers[0].ms, 60_000, "the whole limit remains at the start");
+  assert.equal(wait.status, "running");
+  assert.deepEqual(r.texts(), []);
+  fire(clock.timers[0]);
   assert.equal(wait.status, "failed");
   assert.equal(wait.outcome, "timeout");
+  assert.equal(server.waitRuntime.hasTimer(wait.id), false);
   assert.equal(r.texts().length, 1);
   assert.match(r.texts()[0], /time limit reached\. 2 of 2 members did not arrive\./);
   const none = rig();
   await none.post("start", { to: "batch", members: "ha", instructions: INSTRUCTIONS });
   assert.equal(server.waitRuntime.hasTimer(none.waits()[0].id), false);
+  assert.equal(clock.timers.length, 1, "no new timer");
 });
 
 test("stop gives one planner wake with the missing members", async () => {
@@ -197,20 +217,27 @@ test("stop gives one planner wake with the missing members", async () => {
   assert.equal(removed.status, 200, "a finished wait worker can be removed");
 });
 
-test("a running wait worker with arrivals survives a save and a load with its timer", async () => {
+// Saves the line and writes a new start time of the wait worker into line.json.
+function saveWithStart(item, wait, startedAtMs) {
+  item.activePlannerRequest = null;
+  server.saveLine(item);
+  const file = path.join(item.workdir, "line.json");
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  saved.workers.find((w) => w.id === wait.id).startedAt = new Date(startedAtMs).toISOString();
+  fs.writeFileSync(file, JSON.stringify(saved));
+  server.lines.delete(item.id);
+}
+
+test("a running wait worker with arrivals survives a save and a load with the rest of its time", async (t) => {
+  t.after(useFakeTime());
   const r = rig();
   r.item.nodeSettings = { batch: { timeLimit: 100 } };
   await r.post("start", { to: "batch", members: "ha,hb", instructions: INSTRUCTIONS });
   const [wait] = r.waits();
   r.passChain(r.heads.ha);
-  r.item.activePlannerRequest = null;
-  server.saveLine(r.item);
   // The saved start time is 99.9 s ago: 0.1 s of the limit remain.
-  const file = path.join(r.item.workdir, "line.json");
-  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
-  saved.workers.find((w) => w.id === wait.id).startedAt = new Date(Date.now() - 99_900).toISOString();
-  fs.writeFileSync(file, JSON.stringify(saved));
-  server.lines.delete(r.item.id);
+  saveWithStart(r.item, wait, clock.now - 99_900);
+  clock.timers = [];
   server.loadLines();
   const loaded = server.lines.get(r.item.id);
   // The planner stays busy, so the report stays in the queue.
@@ -223,9 +250,35 @@ test("a running wait worker with arrivals survives a save and a load with its ti
   assert.equal(again.arrivals[r.heads.ha.id].runGeneration, 1);
   assert.deepEqual(again.chainFields, { instructions: INSTRUCTIONS });
   assert.equal(server.waitRuntime.hasTimer(again.id), true);
-  await sleep(300);
+  const timer = clock.timers.find((x) => x.ms === 100);
+  assert.ok(timer, "the timer has the rest of the time");
+  fire(timer);
   assert.equal(again.status, "failed", "the rest of the time ran out");
   assert.equal(loaded.queue.length, 1);
+});
+
+test("a time limit that is over at load time applies at once: one wake, no timer", async (t) => {
+  t.after(useFakeTime());
+  const r = rig();
+  r.item.nodeSettings = { batch: { timeLimit: 100 } };
+  await r.post("start", { to: "batch", members: "ha,hb", instructions: INSTRUCTIONS });
+  const [wait] = r.waits();
+  r.passChain(r.heads.ha);
+  saveWithStart(r.item, wait, clock.now - 200_000);
+  // The load pumps the planner queue at once: record the wake requests that the pump sees.
+  const wakes = new Set();
+  server.setLifecycleHooksForTest({ pump: (line) => {
+    if (line.id === r.item.id) line.queue.filter((q) => /^BATCH REPORT/.test(q.text)).forEach((q) => wakes.add(q.id));
+  } });
+  t.after(() => server.setLifecycleHooksForTest(null));
+  server.loadLines();
+  const again = server.lines.get(r.item.id).workers.get(wait.id);
+  assert.equal(again.status, "failed");
+  assert.equal(again.outcome, "timeout");
+  assert.equal(server.waitRuntime.hasTimer(again.id), false);
+  assert.equal(wakes.size, 1, "the planner gets exactly one wake");
+  assert.match(again.lastRunText, /time limit reached\. 1 of 2 members did not arrive\./);
+  assert.match(again.lastRunText, /hb.*waiting/);
 });
 
 test("a wait worker does not count against the worker cap", async () => {
@@ -263,4 +316,30 @@ test("the dashboard state has the members, the rework state and the wait_update 
   r.heads.hb.stage = { sender: "impl", headRun: 1, members: { val: { status: "running", checkerId: "c", outcome: null } } };
   const running = server.dashboardStateForLine(r.item).workers.find((w) => w.id === r.heads.hb.id);
   assert.deepEqual(running.stage, { sender: "impl", members: [{ node: "val", status: "running", outcome: null, checkerId: "c" }] });
+});
+
+test("each change of the stage sends worker_status with the current chain fields of the head", () => {
+  const graph = resolve(STAGE.replace(/lint: \{ type: script-check.*\n/,
+    "lint: { type: backend-validator, checks: [impl], maxRounds: 3 }\n"));
+  const r = rig(["ha"], graph);
+  const events = [];
+  r.item.clients.add({ write: (chunk) => events.push(chunk) });
+  // The chain events of the head: worker_status events that carry the chain fields.
+  const chainEvents = () => events.filter((e) => e.startsWith("event: worker_status"))
+    .map((e) => JSON.parse(e.split("data: ")[1]))
+    .filter((p) => p.workerId === r.heads.ha.id && p.worker && p.worker.stage !== undefined);
+  const statuses = (p) => p.worker.stage.members.map((m) => m.status).sort();
+  server.spawnWorker(r.item, r.heads.ha, "Work.", false);
+  r.endNext("Did the work.");
+  const started = chainEvents();
+  assert.deepEqual(statuses(started.find((p) => p.worker.stage)), ["queued", "queued"], "the stage start");
+  assert.deepEqual(statuses(started.at(-1)), ["running", "running"], "both members run");
+  r.endNext(PASS);
+  assert.deepEqual(statuses(chainEvents().at(-1)), ["done", "running"], "the first member ended");
+  r.endNext("Found a problem.\nVERDICT: FAIL");
+  const last = chainEvents().at(-1);
+  assert.equal(last.worker.stage, null, "the stage ended");
+  assert.deepEqual(last.worker.reworkRounds, { impl: 1 }, "one combined rework");
+  assert.deepEqual(last.worker.maxRounds, { impl: 3 });
+  assert.deepEqual(r.heads.ha.reworkRounds, { impl: 1 });
 });

@@ -40,12 +40,14 @@ function createWaitRuntime(deps) {
   const { saveLine, slog, broadcast, runningCount, workerCap, resolveNodeSettings, createIntegration,
     tell } = deps;
   const timers = new Map();
+  // The clock and the timer functions. A test replaces them to control time.
+  const timing = { now: Date.now, setTimer: setTimeout, clearTimer: clearTimeout };
 
   const runningWaits = (line, node) => [...line.workers.values()]
     .filter((w) => w.runner === "wait" && w.status === "running" && (node === undefined || w.node === node));
 
   function clearTimer(wait) {
-    clearTimeout(timers.get(wait.id));
+    timing.clearTimer(timers.get(wait.id));
     timers.delete(wait.id);
   }
 
@@ -72,9 +74,9 @@ function createWaitRuntime(deps) {
     clearTimer(wait);
     const limit = resolveNodeSettings(line, wait.node).timeLimit;
     if (limit === null || limit === undefined) return;
-    const rest = Date.parse(wait.startedAt) + limit * 1000 - Date.now();
+    const rest = Date.parse(wait.startedAt) + limit * 1000 - timing.now();
     if (rest <= 0) return endUnready(line, wait, "failed", "timeout", "time limit reached");
-    const timer = setTimeout(() => endUnready(line, wait, "failed", "timeout", "time limit reached"), rest);
+    const timer = timing.setTimer(() => endUnready(line, wait, "failed", "timeout", "time limit reached"), rest);
     if (timer.unref) timer.unref();
     timers.set(wait.id, timer);
   }
@@ -143,7 +145,7 @@ function createWaitRuntime(deps) {
   function arrive(line, head, node, checker) {
     const wait = runningWaits(line, node).find((w) => w.members.includes(head.id));
     if (!wait) return false;
-    recordArrival(wait, head, checker, Date.now());
+    recordArrival(wait, head, checker, timing.now());
     saveLine(line);
     notify(line, wait);
     checkReady(line, wait);
@@ -183,13 +185,13 @@ function createWaitRuntime(deps) {
     for (const key of chainFieldNames(line.graph, nodeId)) if (body[key] !== undefined) chainFields[key] = body[key];
     const wait = { id: crypto.randomUUID(), lineId: line.id, name, node: nodeId, runner: "wait", role: "wait",
       kind: "wait", members: members.map((m) => m.id), arrivals: {}, chainFields, status: "running",
-      verdict: null, outcome: null, lastRunText: "", runGeneration: 1, startedAt: new Date().toISOString(),
+      verdict: null, outcome: null, lastRunText: "", runGeneration: 1, startedAt: new Date(timing.now()).toISOString(),
       stopRequested: false, child: null, transcript: [] };
     // An arrival that came before this instance existed counts when it is for the current run.
     for (const member of members) {
       const pending = member.pendingArrival;
       if (pending && pending.node === nodeId && pending.runGeneration === member.runGeneration) {
-        recordArrival(wait, member, { id: pending.checkerId }, Date.now());
+        recordArrival(wait, member, { id: pending.checkerId }, timing.now());
         member.pendingArrival = null;
       }
     }
@@ -218,7 +220,7 @@ function createWaitRuntime(deps) {
   }
 
   return { createWaitInstance, arrive, memberRunStarted, checkAll, stop, recoverAfterLoad,
-    handoffLive, retryHandoff, hasTimer: (id) => timers.has(id) };
+    handoffLive, retryHandoff, timing, hasTimer: (id) => timers.has(id) };
 }
 
 module.exports = { createWaitRuntime, findWorker, serializeWait, restoreWait };

@@ -60,16 +60,23 @@ function renderKind(line, worker, head, kind, timedOut) {
 
 function createChainRuntime(deps) {
   const { saveLine, slog, runningCount, workerCap, afterGate, createSourceChecker, sourceIdentity,
-    reportForValidation, deliverToInstance, enqueueRequest, interactionReportRequest, wait } = deps;
+    reportForValidation, deliverToInstance, enqueueRequest, interactionReportRequest, wait, broadcast } = deps;
   const tell = (line, text) => enqueueRequest(line, interactionReportRequest(text));
   const isHeadNode = (graph, node) => graph.types[graph.nodes[node].type].workspace === "own-worktree";
   const headOf = (line, worker) => (isHeadNode(line.graph, worker.node) ? worker : line.workers.get(worker.validates) || null);
+
+  // Tells the dashboard the current chain state of the head. Every change of head.stage calls it.
+  function announce(line, head) {
+    broadcast(line, "worker_status", { workerId: head.id, status: head.status, verdict: head.verdict || null,
+      worker: { id: head.id, ...chainDashboardFields(line.graph, head) } });
+  }
 
   // A handoff that cannot go on ends the chain: the planner gets one message.
   function handoffFailed(line, head, toNode, error) {
     slog("warn", "handoff.failed", { lineId: line.id, headId: head.id, node: toNode, error });
     head.stage = null;
     saveLine(line);
+    announce(line, head);
     const fallback = renderKind(line, head, null, "report", false);
     tell(line, [`HANDOFF FAILED - ${toNode} could not start for '${head.name}': ${error}`, fallback]
       .filter(Boolean).join("\n\n"));
@@ -99,6 +106,7 @@ function createChainRuntime(deps) {
       // The run may have ended already: keep a "done" member as it is.
       if (member && member.status === "queued") member.status = "running";
       if (member) member.checkerId = out.worker.id;
+      announce(line, head);
       return out.worker;
     }
     if (out.code === "WORKER_CAP") {
@@ -117,6 +125,7 @@ function createChainRuntime(deps) {
     for (const node of nodes) stage.members[node] = { status: "queued", checkerId: null, outcome: null };
     head.stage = stage;
     saveLine(line);
+    announce(line, head);
     for (const node of nodes) {
       if (head.stage !== stage) break;
       autoStartChecker(line, node, head);
@@ -206,6 +215,7 @@ function createChainRuntime(deps) {
       }
     }
     saveLine(line);
+    announce(line, head);
   }
 
   // A checker of a stage ended.
@@ -222,6 +232,7 @@ function createChainRuntime(deps) {
     member.checkerId = worker.id;
     member.outcome = outcomeOf(line.graph, worker, timedOut);
     saveLine(line);
+    announce(line, head);
     if (Object.values(stage.members).every((m) => m.status === "done")) decideStage(line, head, stage);
   }
 
@@ -242,7 +253,13 @@ function createChainRuntime(deps) {
     if (text && actions.length > 0) tell(line, text);
   }
 
-  return { routeCompleted, drainPendingHandoffs, recoverAfterLoad };
+  // The feedback of the planner starts the chain again from the head: the stage clears.
+  function clearChain(line, head) {
+    resetChain(head);
+    announce(line, head);
+  }
+
+  return { routeCompleted, drainPendingHandoffs, recoverAfterLoad, clearChain };
 }
 
 // The feedback of the planner starts the chain again from the head.

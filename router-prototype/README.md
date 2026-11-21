@@ -605,9 +605,13 @@ event carry these fields:
 - An own-worktree worker (a chain head): `reworkRounds` (`{ <node>: n }`),
   `maxRounds` (`{ <head node>: n }`, the lowest `maxRounds` of the next stage,
   3 by default) and `stage` (`{ sender, members: [{ node, status, outcome,
-  checkerId }] }`, or `null` when no stage runs). `worker_spawned` and
-  `worker_status` carry the values at the time of the event; the state
-  snapshot is the source of truth.
+  checkerId }] }`, or `null` when no stage runs). The router sends a
+  `worker_status` event for the head (`{ workerId, status, verdict, worker: { id,
+  reworkRounds, maxRounds, stage } }`) after each change of `stage`: the stage
+  start, the start of a member, the end of a member, the end of the stage
+  (rework, next stage or report), a failed handoff and the clear by a
+  `feedback` call. `worker_spawned` and `worker_status` always carry the current
+  value of `stage`.
 - The SSE event `wait_update` `{ workerId, members }` follows each arrival and
   each start of a member run (an arrival becomes `stale`).
 

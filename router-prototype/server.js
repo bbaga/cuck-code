@@ -40,7 +40,7 @@ const { loadBuiltinPipeline, migrateLine, normalizeLine, nodeSettingsFields, bui
 const { checkCall, checkLineValues, requiredFields, introspect } = require("./call-fields");
 const { renderReports, kindOfNode } = require("./report-interaction");
 const { createChainRuntime, pickChainFields, serializeChain, restoreChain, restorePendingHandoffs,
-  resetChain, chainDashboardFields } = require("./chain-runtime");
+  chainDashboardFields } = require("./chain-runtime");
 const { createWaitRuntime, findWorker: findLineWorker, serializeWait, restoreWait } = require("./wait-runtime");
 const { memberStates } = require("./wait-node");
 const { describeFailure } = require("./run-failure");
@@ -1521,7 +1521,7 @@ const waitRuntime = createWaitRuntime({ saveLine, slog, broadcast, runningCount,
   resolveNodeSettings, createIntegration, tell: (line, text) => enqueueRequest(line, interactionReportRequest(text)) });
 const chain = createChainRuntime({ saveLine, slog, runningCount, workerCap: WORKER_CAP, afterGate,
   createSourceChecker, sourceIdentity, reportForValidation, deliverToInstance, enqueueRequest,
-  interactionReportRequest, wait: waitRuntime });
+  interactionReportRequest, wait: waitRuntime, broadcast });
 
 function sendFailure(res, out) {
   const { ok, status, ...body } = out;
@@ -2944,7 +2944,7 @@ const routeRequest = (req, res) => {
         }
         const sent = deliverToInstance(line, target, message);
         if (!sent.ok) return json(res, sent.status, { error: sent.error });
-        if (name === "feedback") resetChain(target);
+        if (name === "feedback") chain.clearChain(line, target);
         return json(res, 202, { queued: true, compacting: sent.compacting });
       }
       if (interaction.effect === "accept") {
