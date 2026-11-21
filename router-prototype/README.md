@@ -330,8 +330,7 @@ The built-in interactions:
 | `rework` | deliver | complete | source | none. `when: [reject, missing]`. Sends the checker report back to the implementor. |
 | `arrive` | arrive | complete | waiter | none. `when: [done, pass]`. Records that the task chain reached the wait node. |
 
-The router runs `handoff` and `rework` (see "Choreographed pipelines" below). The
-runtime for `arrive` (the wait node) is added in a later part.
+The router runs `handoff`, `rework` and `arrive` (see "Choreographed pipelines" below).
 | `report` | deliver | complete | starter | none; the router fills `report` and `outcome` |
 
 A `complete`-triggered interaction has no caller. It declares no `fields` and
@@ -510,8 +509,7 @@ differs from the file name, or is a built-in name).
 ### Choreographed pipelines
 
 A choreographed pipeline lets a task move from left to right through a task
-chain without the planner. The router runs handoff, rework and stages. The
-runtime of the wait node (`arrive`) is added in a later part.
+chain without the planner. The router runs handoff, rework, stages and the wait node.
 
 - Node type `wait` (`runner: wait`, `workspace: none`, field `members` of type
   `instances`): it waits until each member task arrived with a PASS. A wait node
@@ -578,6 +576,41 @@ Runtime (`chain-runtime.js`, called from `workerClosed` in `server.js`):
 
 - The planner prompt has a `## Chains` section only when the pipeline has
   chains. It has one line for each chain head and for each wait node.
+- The wait node runtime: a `start` call on a wait node (`members` by name or
+  id, plus the fields of its handoff target, for example `instructions`) creates
+  a wait worker. A member of another running wait instance of the same node gives
+  409 `MEMBER_IN_BATCH`. A wait worker has no process and does not count against
+  the worker cap. A head that passed its checkers arrives; if no wait instance
+  exists the head keeps `pendingArrival`, the planner gets the normal report
+  one time, and a later wait instance imports the arrival. A feedback call makes
+  the arrival `stale`. When every member has a current arrival, the wait worker
+  completes and the router starts the handoff node with the `instructions` of the
+  start call. The planner gets no `BATCH REPORT` when that start works. If it
+  fails the planner gets `HANDOFF FAILED` and the `BATCH REPORT`. A pipeline with
+  only a report edge gets the `BATCH REPORT` one time. At the `timeLimit`
+  (no limit: no timer) or after a stop, the planner gets one `BATCH REPORT` that
+  names the members that did not arrive. A running wait worker survives a
+  router restart with its arrivals and the rest of its time.
+
+#### Dashboard state of the chain (contract for the UI)
+
+`dashboardStateForLine`, the `worker_spawned` event and the `worker_status`
+event carry these fields:
+
+- A wait worker: `runner: "wait"` and `members`, a list of `{ id, name, state }`
+  in member order. `state` is `arrived`, `stale` (the arrival is for an older
+  run of the member) or `waiting`. `status` is `running`, `completed`, `failed`
+  or `stopped`; `worker_status` also carries `outcome` (`pass`, `timeout`,
+  `stopped`).
+- An own-worktree worker (a chain head): `reworkRounds` (`{ <node>: n }`),
+  `maxRounds` (`{ <head node>: n }`, the lowest `maxRounds` of the next stage,
+  3 by default) and `stage` (`{ sender, members: [{ node, status, outcome,
+  checkerId }] }`, or `null` when no stage runs). `worker_spawned` and
+  `worker_status` carry the values at the time of the event; the state
+  snapshot is the source of truth.
+- The SSE event `wait_update` `{ workerId, members }` follows each arrival and
+  each start of a member run (an arrival becomes `stale`).
+
 
 ### How pipelines are drawn
 
