@@ -615,6 +615,22 @@ event carry these fields:
 - The SSE event `wait_update` `{ workerId, members }` follows each arrival and
   each start of a member run (an arrival becomes `stale`).
 
+The dashboard shows this state in a chain panel under the line graph. The panel
+has no content, and it is hidden, on a line without a wait worker, rework count
+or stage.
+
+- Wait card (`.waitCard`): the status of the wait worker, the outcome when it
+  ended (`timed out`, `stopped`, `all members arrived`) and one chip for each
+  member in member order. The chip classes are `wait-member-waiting`,
+  `wait-member-arrived` and `wait-member-stale`. `wait_update` and
+  `worker_status` update it without a reload.
+- Head card (`.headCard`): `rework round <n> / <max>` when `reworkRounds` is not
+  empty, and one chip for each stage member: `stage-chip-queued`,
+  `stage-chip-running`, `stage-chip-pass` (PASS), `stage-chip-fail` (FAIL, for
+  `reject` or no outcome) or `stage-chip-outcome` (other outcome text). The
+  chips go away when `stage` is `null`.
+- The state of a wait worker carries `outcome`, so a page load shows it.
+
 
 ### How pipelines are drawn
 

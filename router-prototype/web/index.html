@@ -171,6 +171,22 @@
   .graphDetails summary { cursor: pointer; padding: 6px 16px; color: #6c7a8c; font-size: .8rem; }
   .graphDetails[open] summary { color: #8fa3bd; }
   .graphDetails .graph { border-bottom: 0; }
+  .chainPanel { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 16px; border-top: 1px solid #262b33; }
+  .chainPanel[hidden] { display: none; }
+  .chainCard { flex: 1 1 220px; min-width: 0; padding: 8px 10px; border: 1px solid #333c48;
+    border-radius: 8px; background: #10141a; font-size: .8rem; }
+  .chainCard h3 { margin: 0 0 6px; font-size: .8rem; font-weight: 600; color: #d8dee6; overflow-wrap: anywhere; }
+  .chainCard .chainMeta { color: #8fa3bd; margin: 0 0 6px; }
+  .chainCard ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chainCard li { padding: 2px 8px; border-radius: 10px; border: 1px solid #333c48; font-size: .75rem; overflow-wrap: anywhere; }
+  .wait-member-waiting { color: #e5c07b; border-color: #e5c07b; }
+  .wait-member-arrived { color: #5fd6b4; border-color: #35c46a; }
+  .wait-member-stale { color: #e5a04b; border-color: #e5a04b; border-style: dashed; }
+  .stage-chip-queued { color: #8fa3bd; border-color: #6c7a8c; }
+  .stage-chip-running { color: #7fb2ff; border-color: #3d8bff; }
+  .stage-chip-pass { color: #5fd6b4; border-color: #35c46a; }
+  .stage-chip-fail { color: #ff8095; border-color: #ff5f6e; }
+  .stage-chip-outcome { color: #e5a04b; border-color: #e5a04b; }
   .card.chatSized { max-height: none; }
   .card.chatSized .transcriptWrap { flex: none; }
   .resizeHandle { height: 8px; flex: none; cursor: row-resize; touch-action: none;
@@ -403,7 +419,7 @@ window.addEventListener("DOMContentLoaded", () => {
     VIBE_HARNESS_ID, authModeOptions, modelOptionsForPhase, harnessHasProviders, providerDetailUrl, providerFromModel, authStatusText,
     authModeSelectState, piDetailApply, createRequestTracker, fetchPiDetail,
     clearHarnessState, clearProviderState, shouldHideValidator,
-    shouldShowIntegrationValidator, buildGraphLanes, scriptSummary,
+    shouldShowIntegrationValidator, buildGraphLanes, waitCardView, headCardView, scriptSummary,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
     evidencePollIsCurrent, promptKeyAction, acceptStateStamp, queueRowLabel, createDraftOwner, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
     formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator, markerState, lineMarkerState } = window.pipelineUI;
@@ -680,7 +696,53 @@ window.addEventListener("DOMContentLoaded", () => {
     bindResizeHandle(chatHandle, { ...area(transcriptWrap, setChat, chatKey), limits: chatLimits });
   }
 
+  // Cards of the chain state: a wait worker and a head with a rework count or a stage.
+  // A line without such a worker shows no panel.
+  function renderChainPanel(st) {
+    const panel = st.chainPanel;
+    const cards = [];
+    for (const w of st.workers.values()) {
+      const wait = pipelineUI.waitCardView(w);
+      const head = wait ? null : pipelineUI.headCardView(w);
+      if (!wait && !head) continue;
+      const card = document.createElement("section");
+      card.className = "chainCard " + (wait ? "waitCard" : "headCard");
+      card.dataset.worker = w.id;
+      const title = document.createElement("h3");
+      title.textContent = (wait ? "wait " : "") + w.name;
+      card.appendChild(title);
+      const addMeta = (text, className) => {
+        const p = document.createElement("p");
+        p.className = "chainMeta " + className;
+        p.textContent = text;
+        card.appendChild(p);
+      };
+      const addList = (items, label) => {
+        const ul = document.createElement("ul");
+        ul.setAttribute("aria-label", label);
+        for (const item of items) {
+          const li = document.createElement("li");
+          li.className = item.className;
+          li.textContent = item.text;
+          ul.appendChild(li);
+        }
+        card.appendChild(ul);
+      };
+      if (wait) {
+        addMeta("status: " + wait.status + (wait.outcome ? " \u00b7 outcome: " + wait.outcome : ""), "waitStatus");
+        addList(wait.members.map((m) => ({ className: m.className, text: m.name + ": " + m.state })), "Members of " + w.name);
+      } else {
+        for (const text of head.rework) addMeta(text, "reworkCounter");
+        if (head.chips.length) addList(head.chips.map((c) => ({ className: c.className, text: c.node + ": " + c.label })), "Stage of " + w.name);
+      }
+      cards.push(card);
+    }
+    panel.replaceChildren(...cards);
+    panel.hidden = cards.length === 0;
+  }
+
   function renderGraph(st) {
+    renderChainPanel(st);
     const graph = st.graph;
     const top = graph.scrollTop, left = graph.scrollLeft;
     try {
@@ -1252,7 +1314,10 @@ window.addEventListener("DOMContentLoaded", () => {
     const graphSummary = document.createElement("summary");
     graphSummary.textContent = "Pipeline";
     const graphHandle = createResizeHandle("Resize pipeline schematic height");
-    graphDetails.append(graphSummary, graph, graphHandle);
+    const chainPanel = document.createElement("div");
+    chainPanel.className = "chainPanel";
+    chainPanel.hidden = true;
+    graphDetails.append(graphSummary, graph, chainPanel, graphHandle);
     const previewPanel = document.createElement("div"); previewPanel.className = "previewPanel"; previewPanel.hidden = true;
 
     const transcript = document.createElement("div");
@@ -1307,7 +1372,7 @@ window.addEventListener("DOMContentLoaded", () => {
       ctxMeter, compactBtn, plannerCtx: null, queuePane, composerError,
       stamp: null, draft: createDraftOwner(), submitting: false, cancelling: new Set(),
       queueErrors: new Map(), queued: [],
-      waiting, planBody, planHandle, graph, graphDetails, graphHandle, chatHandle, previewPanel, approveBtn, badge, planDetails, planControls: controls,
+      waiting, planBody, planHandle, graph, chainPanel, graphDetails, graphHandle, chatHandle, previewPanel, approveBtn, badge, planDetails, planControls: controls,
       pipePane, tabPipeBtn, pipeForm, pipeGraphBox, pipeEdgesList,
       pipeGraph: line.graph || null, nodeSettings: line.nodeSettings || null,
       effectiveNodeSettings: line.effectiveNodeSettings || null,
@@ -1474,10 +1539,12 @@ window.addEventListener("DOMContentLoaded", () => {
         if (!st.workerTranscripts.has(worker.id)) st.workerTranscripts.set(worker.id, []);
         renderGraph(st); updateListEntry(st); refreshPreview();
       },
-      worker_status({ workerId, status, verdict, error, worker }) {
+      worker_status({ workerId, status, verdict, error, worker, members, outcome }) {
         const w = st.workers.get(workerId);
         if (w) {
           if (worker) Object.assign(w, worker);
+          if (Array.isArray(members)) w.members = members;
+          if (outcome) w.outcome = outcome;
           w.status = status;
           if (verdict) w.verdict = verdict;
           w.lastError = error || null;
@@ -1485,6 +1552,12 @@ window.addEventListener("DOMContentLoaded", () => {
           if (st.selected === workerId) { renderTranscript(st); renderScopePanel(st); }
         }
         renderGraph(st); updateListEntry(st); refreshPreview(); renderContextControls(st);
+      },
+      wait_update({ workerId, members }) {
+        const w = st.workers.get(workerId);
+        if (!w || !Array.isArray(members)) return;
+        w.members = members;
+        renderGraph(st);
       },
       worker_check({ workerId, checkResults }) {
         const w = st.workers.get(workerId);

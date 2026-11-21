@@ -612,7 +612,7 @@ function dashboardStateForLine(line) {
 
 // What the dashboard shows of the chain: the members of a wait worker, the rework state of a head.
 function chainViewFields(line, w) {
-  if (w.runner === "wait") return { members: memberStates(w, line.workers) };
+  if (w.runner === "wait") return { members: memberStates(w, line.workers), outcome: w.outcome || null };
   return chainDashboardFields(line.graph, w);
 }
 
@@ -3589,7 +3589,7 @@ if (HTTPS_PORT) {
 }
 }
 
-module.exports = { registryIdle, stopRegistryLoopsForTest, compactPlanner, saveLine, loadLines, restoreWorkerTranscript, normalizeWorkerTranscriptEntry, stopPlannerRun, pump, spawnWorker, deliverToInstance, drainPendingHandoffs: (line) => chain.drainPendingHandoffs(line), waitRuntime, dashboardStateForLine, requestHandler, lines,
+module.exports = { broadcast, registryIdle, stopRegistryLoopsForTest, compactPlanner, saveLine, loadLines, restoreWorkerTranscript, normalizeWorkerTranscriptEntry, stopPlannerRun, pump, spawnWorker, deliverToInstance, drainPendingHandoffs: (line) => chain.drainPendingHandoffs(line), waitRuntime, dashboardStateForLine, requestHandler, lines,
   createServer: () => server,
   setSpawnForTest: (fn) => { spawnProcess = fn; },
   setLifecycleHooksForTest: (hooks) => { lifecycleTestHooks = hooks; },

@@ -1350,3 +1350,35 @@ test("P5 change: removeFirst names the workers to remove first and blocks Apply"
   assert.equal(hard.message, text);
   assert.equal(pipelineUiModule.graphSwitchView(200, { ok: false, orphans: [], removeFirst: [] }).state, "needs-remap");
 });
+
+test("waitCardView: members keep their order and an unknown state shows as waiting", () => {
+  const ui = require("../web/pipeline-ui.js");
+  assert.equal(ui.waitCardView({ runner: "agent" }), null);
+  const view = ui.waitCardView({ id: "w", name: "b", runner: "wait", status: "stopped", outcome: "timeout",
+    members: [{ id: "1", name: "x", state: "stale" }, { id: "2", name: "y", state: "odd" }] });
+  assert.deepEqual(view.members.map((m) => m.className), ["wait-member-stale", "wait-member-waiting"]);
+  assert.equal(view.outcome, "timed out");
+});
+
+test("headCardView and stageChipView: counter, PASS, FAIL and other outcomes", () => {
+  const ui = require("../web/pipeline-ui.js");
+  assert.equal(ui.headCardView({ reworkRounds: {}, stage: null }), null);
+  assert.equal(ui.headCardView({ id: "h", reworkRounds: { impl: 1 }, maxRounds: { impl: 3 } }).rework[0], "rework round 1 / 3");
+  const label = (m) => ui.stageChipView({ node: "n", ...m }).label;
+  assert.equal(label({ status: "queued" }), "queued");
+  assert.equal(label({ status: "running" }), "running");
+  assert.equal(label({ status: "done", outcome: "pass" }), "PASS");
+  assert.equal(label({ status: "done", outcome: "reject" }), "FAIL");
+  assert.equal(label({ status: "done" }), "FAIL");
+  assert.equal(label({ status: "done", outcome: "timeout" }), "timeout");
+});
+
+test("buildGraphLanes: a wait worker joins the lane and the row of its first member", () => {
+  const ui = require("../web/pipeline-ui.js");
+  const graph = { columns: { impl: 1, val: 2, batch: 3 } };
+  const workers = [{ id: "a", node: "impl" }, { id: "v", node: "val", role: "validator", validates: "a" },
+    { id: "w", node: "batch", runner: "wait", members: [{ id: "a" }] }];
+  const out = ui.buildGraphLanes(workers, false, graph);
+  assert.equal(out.lanes.length, 1);
+  assert.deepEqual(out.placed.map((e) => [e.worker.id, e.column, e.row]), [["a", 1, 0], ["v", 2, 0], ["w", 3, 0]]);
+});

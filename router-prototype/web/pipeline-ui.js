@@ -736,10 +736,13 @@
       else lanable.push(entry);
     }
     const byId = new Map(lanable.map((e) => [e.worker.id, e]));
+    // A wait worker joins the lane of its first member, so it stands in the row of the members.
+    const sourceOf = (worker) => (worker.runner === "wait" && Array.isArray(worker.members) && worker.members.length
+      ? worker.members[0].id : worker.validates);
     const rootOf = (entry) => {
       let current = entry;
       for (let hops = 0; hops <= lanable.length; hops++) {
-        const next = byId.get(current.worker.validates);
+        const next = byId.get(sourceOf(current.worker));
         if (!next || next === current) return current;
         current = next;
       }
@@ -792,6 +795,47 @@
     const placed = [...lanable, ...mergers];
     const columns = [...new Set(placed.map((e) => e.column))].sort((a, b) => a - b);
     return { lanes, placed, columns, unplaced, totalRows: row };
+  }
+
+  const WAIT_MEMBER_STATES = ["waiting", "arrived", "stale"];
+  const OUTCOME_TEXT = { timeout: "timed out", stopped: "stopped", pass: "all members arrived" };
+
+  // The view of a wait worker card, or null for any other worker.
+  // Members keep their order. An unknown member state shows as "waiting".
+  function waitCardView(worker) {
+    if (!worker || worker.runner !== "wait") return null;
+    const members = (Array.isArray(worker.members) ? worker.members : []).map((m) => {
+      const state = WAIT_MEMBER_STATES.includes(m && m.state) ? m.state : "waiting";
+      return { id: m && m.id, name: (m && m.name) || String(m && m.id), state, className: "wait-member-" + state };
+    });
+    const outcome = worker.outcome ? (OUTCOME_TEXT[worker.outcome] || String(worker.outcome)) : null;
+    return { id: worker.id, name: worker.name, status: worker.status, outcome, members };
+  }
+
+  // The text of one stage member: queued and running, PASS or FAIL, or the outcome text.
+  function stageChipView(member) {
+    let state = "queued";
+    let label = "queued";
+    if (member.status === "running") { state = "running"; label = "running"; }
+    else if (member.status === "done") {
+      const outcome = member.outcome;
+      if (outcome === "pass") { state = "pass"; label = "PASS"; }
+      else if (!outcome || outcome === "reject") { state = "fail"; label = "FAIL"; }
+      else { state = "outcome"; label = String(outcome); }
+    }
+    return { node: member.node, state, label, className: "stage-chip-" + state };
+  }
+
+  // The view of the chain state of a head card, or null when it has no rework and no stage.
+  function headCardView(worker) {
+    if (!worker) return null;
+    const rounds = worker.reworkRounds && typeof worker.reworkRounds === "object" ? worker.reworkRounds : {};
+    const limits = worker.maxRounds && typeof worker.maxRounds === "object" ? worker.maxRounds : {};
+    const rework = Object.keys(rounds).map((node) => "rework round " + rounds[node]
+      + (Number.isInteger(limits[node]) ? " / " + limits[node] : ""));
+    const members = worker.stage && Array.isArray(worker.stage.members) ? worker.stage.members.map(stageChipView) : [];
+    if (!rework.length && !members.length) return null;
+    return { id: worker.id, name: worker.name, rework, chips: members };
   }
 
   // The step summary of a script check: "3/3 ✓", "2/3 ✗" or "1/3 …".
@@ -1383,6 +1427,9 @@
     shouldHideValidator,
     shouldShowIntegrationValidator,
     buildGraphLanes,
+    waitCardView,
+    stageChipView,
+    headCardView,
     scriptSummary,
     graphColumnOf,
     attentionIndicator,

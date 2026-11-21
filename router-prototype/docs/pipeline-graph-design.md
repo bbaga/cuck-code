@@ -724,3 +724,17 @@ The task list for these steps is in `pipeline-graph-tasks.md`.
 - **Prompt extensions in the pipeline file.** `defaults.prompt` and a node's
   `prompt` (inline or `{file}`) extend system prompts with no extra plugin
   file. They follow the same field rules.
+
+## Chain cards on the line dashboard
+
+The line graph puts a wait worker in the lane of its first member. It has its
+own column after the validators and stands in the row of its members. Under
+the graph, the chain panel shows one card for each wait worker and for each
+chain head with a rework count or a stage:
+
+- The wait card shows the status, the outcome and a chip for each member
+  (`wait-member-waiting`, `wait-member-arrived`, `wait-member-stale`).
+- The head card shows `rework round <n> / <max>` and a chip for each stage
+  member (`stage-chip-queued`, `-running`, `-pass`, `-fail`, `-outcome`).
+- A line on the default pipeline has none of these and looks as before.
+- The cards wrap in the panel width. There is no sideways page scroll at 320 px.
