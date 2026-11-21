@@ -194,3 +194,21 @@ test("wrapPlannerTurn: the claim rule changes only without checker and integrati
   assert.ok(none.includes("Do not claim acceptance without an accept call or a validator verdict."));
   assert.ok(!none.includes("without the required validator verdict"));
 });
+
+test("the Chains section appears only in pipelines with chains", () => {
+  const { CHAIN, STAGE, resolve } = require("./choreo-fixtures");
+  const section = (g) => protocolSection(g, g.start, "http://r", "l1").split("## Chains\n")[1];
+  const fail = "On FAIL the router sends the report back to the implementor, up to 3 rounds. " +
+    "You get a report only when the chain ends: a PASS at the last node, the rework limit, a failure, a stop, or a handoff error.";
+  const wait = "Start 'batch' with the instance names of the tasks in 'members'. When every member passes its chain, " +
+    "the router starts 'integration' with the fields of the 'batch' start call.";
+  assert.equal(section(resolve(CHAIN)),
+    `After 'impl' finishes, the router starts 'val' with the fields of your start call. ${fail}\n${wait}`);
+  assert.equal(section(resolve(STAGE)),
+    "After 'impl' finishes, the router starts 'val' and 'lint' at the same time with the fields of your start call. " +
+    `The chain goes on when all of them pass. ${fail}\n${wait}`);
+  for (const name of ["default", "minimal", "planner-only", "implement-only"]) {
+    const g = loadBuiltinPipeline(name, fs, root);
+    assert.ok(!protocolSection(g, g.start, "http://r", "l1").includes("## Chains"), name);
+  }
+});

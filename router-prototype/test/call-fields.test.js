@@ -243,3 +243,33 @@ test("checkLineValues: instances rejects more than 50 entries and an empty entry
   assert.match(checkLineValues(manyLine(), req, { members: fifty1 })[0].reason, /1 to 50 instances/);
   assert.match(checkLineValues(manyLine(), req, { members: "a,,b" })[0].reason, /1 to 50 instances/);
 });
+
+// Chain fields (choreographed pipelines).
+const { chainFieldNames } = require("../call-fields");
+const { CHAIN, STAGE, resolve: resolveChain } = require("./choreo-fixtures");
+
+test("the start of impl in a chain also requires the fields of the checkers", () => {
+  const fields = requiredFields(resolveChain(CHAIN), "start", "impl");
+  assert.ok(["task", "repo", "criteria"].every((f) => f in fields));
+  assert.equal(fields.criteria.requiredBy, "handoff to node val");
+  assert.ok(!("source" in fields));
+});
+
+test("the start of batch requires members and the fields of integration", () => {
+  const fields = requiredFields(resolveChain(CHAIN), "start", "batch");
+  assert.ok("members" in fields && "instructions" in fields);
+  assert.equal(fields.instructions.requiredBy, "handoff to node integration");
+});
+
+test("the arrive edge stops the chain fields, and a stage adds all its members", () => {
+  assert.deepEqual(chainFieldNames(resolveChain(CHAIN), "impl"), ["criteria"]);
+  assert.deepEqual(chainFieldNames(resolveChain(CHAIN), "batch"), ["instructions"]);
+  assert.deepEqual(chainFieldNames(resolveChain(CHAIN), "val"), []);
+  assert.ok(chainFieldNames(resolveChain(STAGE), "impl").includes("criteria"));
+});
+
+test("a pipeline without complete-create edges has no chain fields", () => {
+  const r = resolved({ edges: [{ from: "planner", to: "A", interactions: ["start"] }] });
+  assert.deepEqual(chainFieldNames(r, "A"), []);
+  assert.throws(() => chainFieldNames(r, "ghost"), /unknown node/);
+});
