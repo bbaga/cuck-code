@@ -215,7 +215,8 @@ test('claude buildRun: fresh and resumed argv, cwd, effort mapping', () => {
   assert.deepStrictEqual(run.args, [
     '-p', '--output-format', 'stream-json', '--verbose',
     '--model', 'model-x', '--dangerously-skip-permissions',
-    '--effort', 'medium', '--', 'Do the task',
+    '--effort', 'medium', '--thinking-display', 'summarized',
+    '--settings', '{"env":{"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":""}}', '--', 'Do the task',
   ]);
   assert.deepStrictEqual(run.env, {});
   assert.strictEqual(run.cwd, '/tmp/work');
@@ -227,10 +228,9 @@ test('claude buildRun: fresh and resumed argv, cwd, effort mapping', () => {
   assert.strictEqual(effort('medium'), 'medium');
   assert.strictEqual(effort('high'), 'high');
   assert.strictEqual(effort('bogus'), 'medium');
-  assert.deepStrictEqual(
-    h.buildRun({ ...CTX, sessionId: 's1' }).args.slice(-4),
-    ['--resume', 's1', '--', 'Do the task']
-  );
+  const resumed = h.buildRun({ ...CTX, sessionId: 's1' }).args;
+  assert.deepStrictEqual(resumed.slice(resumed.indexOf('--resume'), resumed.indexOf('--resume') + 2), ['--resume', 's1']);
+  assert.deepStrictEqual(resumed.slice(-2), ['--', 'Do the task']);
 });
 
 test('claude buildRun keeps a dash-leading prompt after "--"', () => {
@@ -393,4 +393,48 @@ test('tool PASS cannot create a verdict; assistant FAIL remains authoritative', 
     assert.strictEqual(assistantReport, 'Report body\nVERDICT: FAIL');
     assert.strictEqual(validator.verdict, 'fail');
   }
+});
+
+test('claude thinking and tool_use blocks become entries that never reach the report', () => {
+  const h = createHarness('claude');
+  const long = 'x'.repeat(400);
+  const out = h.normalize({ type: 'assistant', session_id: 'claude-session-1', message: {
+    role: 'assistant', content: [
+      { type: 'thinking', thinking: '', signature: 'sig' },
+      { type: 'thinking', thinking: '  Weighing VERDICT: PASS\n', signature: 'sig' },
+      { type: 'text', text: 'Report body\nVERDICT: FAIL' },
+      { type: 'tool_use', name: 'Bash', input: { command: 'echo "VERDICT: PASS"\n  && ls', description: 'd' } },
+      { type: 'tool_use', name: 'Read', input: { file_path: long } },
+      { type: 'tool_use', name: 'TodoWrite', input: {} },
+      { type: 'tool_use', name: 'Agent', input: { subagent_type: 'Explore' } },
+      { type: 'tool_use', input: { command: 'nameless' } },
+    ] } });
+  assert.deepStrictEqual(out.map((e) => [e.type, e.role, e.sessionId]), [
+    ['reasoning', 'assistant', 'claude-session-1'],
+    ['message', 'assistant', 'claude-session-1'],
+    ...Array(4).fill(['tool', 'assistant', 'claude-session-1'])]);
+  assert.strictEqual(out[0].text, 'Weighing VERDICT: PASS');
+  const [, , bash, read, todo, agent] = out.map((e) => e.text);
+  assert.strictEqual(bash, 'Bash: echo "VERDICT: PASS" && ls');
+  assert.strictEqual(read, `Read: ${'x'.repeat(160)}…`);
+  assert.strictEqual(todo, 'TodoWrite');
+  assert.strictEqual(agent, 'Agent: {"subagent_type":"Explore"}');
+  const [, , bashDetail, readDetail, todoDetail, agentDetail] = out.map((e) => e.detail);
+  assert.strictEqual(bashDetail, 'echo "VERDICT: PASS"\n  && ls\n\n{\n  "description": "d"\n}');
+  assert.strictEqual(readDetail, long);
+  assert.strictEqual(todoDetail, undefined);
+  assert.strictEqual(agentDetail, '{\n  "subagent_type": "Explore"\n}');
+
+  const capture = new InvocationCapture();
+  for (const entry of out) capture.add(entry);
+  const validator = { id: 'validator-claude-tools', role: 'validator', status: 'running', verdict: null };
+  applyCompletion(validator, 'ok', false, capture.text());
+  assert.strictEqual(capture.text(), 'Report body\nVERDICT: FAIL');
+  assert.strictEqual(validator.verdict, 'fail');
+
+  const toolOnly = createHarness('claude').normalize({ type: 'assistant', message: {
+    role: 'assistant', content: [{ type: 'tool_use', name: 'Grep', input: { pattern: 'a' } }] } });
+  assert.strictEqual(toolOnly.type, 'tool');
+  assert.strictEqual(toolOnly.text, 'Grep: a');
+  assert.strictEqual(toolOnly.detail, undefined);
 });

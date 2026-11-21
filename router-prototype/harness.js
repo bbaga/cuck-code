@@ -104,6 +104,46 @@ function textFromContent(content) {
     .join('');
 }
 
+const TOOL_PREVIEW_KEYS = ['command', 'file_path', 'notebook_path', 'pattern', 'url', 'query',
+  'skill', 'description', 'prompt', 'path'];
+const TOOL_PREVIEW_CHARS = 160;
+const TOOL_DETAIL_CHARS = 20_000;
+
+function capText(text, limit) {
+  return text.length > limit ? text.slice(0, limit) + '…' : text;
+}
+
+// The preview is one flattened line; the detail keeps the leading field raw
+// and shows the remaining input fields as JSON.
+function toolCall(name, input) {
+  if (!input || typeof input !== 'object' || !Object.keys(input).length) return { text: name, detail: null };
+  const key = TOOL_PREVIEW_KEYS.find((k) => typeof input[k] === 'string' && input[k].trim());
+  let raw = JSON.stringify(input);
+  let full = JSON.stringify(input, null, 2);
+  if (key) {
+    const rest = { ...input };
+    delete rest[key];
+    raw = input[key];
+    full = Object.keys(rest).length ? `${raw}\n\n${JSON.stringify(rest, null, 2)}` : raw;
+  }
+  const preview = capText(raw.replace(/\s+/g, ' ').trim(), TOOL_PREVIEW_CHARS);
+  return { text: `${name}: ${preview}`, detail: full === preview ? null : capText(full, TOOL_DETAIL_CHARS) };
+}
+
+function thinkingFromContent(content) {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((part) => part && part.type === 'thinking' && typeof part.thinking === 'string' && part.thinking.trim())
+    .map((part) => part.thinking.trim());
+}
+
+function toolCallsFromContent(content) {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((part) => part && part.type === 'tool_use' && typeof part.name === 'string' && part.name)
+    .map((part) => toolCall(part.name, part.input));
+}
+
 class BaseHarness {
   constructor(id) {
     this.id = id;
@@ -179,8 +219,10 @@ class BaseHarness {
     }
   }
 
-  entry(role, text) {
-    return { type: 'message', role, text, sessionId: this.sessionId, at: Date.now() };
+  entry(role, text, type = 'message', detail = null) {
+    const entry = { type, role, text, sessionId: this.sessionId, at: Date.now() };
+    if (detail) entry.detail = detail;
+    return entry;
   }
 
   // Only pi accumulates a partial message; the other adapters stream
@@ -377,6 +419,10 @@ class ClaudeHarness extends BaseHarness {
       '--effort', CLAUDE_EFFORT_LEVELS.has(ctx.effort) ? ctx.effort : 'medium');
     if (ctx.sessionId) args.push('--resume', ctx.sessionId);
     if (systemArgs) args.push(...systemArgs);
+    // In -p mode the CLI asks the API to omit thinking text. Summaries also
+    // need experimental betas on, which a user env setting can turn off.
+    args.push('--thinking-display', 'summarized',
+      '--settings', JSON.stringify({ env: { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '' } }));
     // The prompt goes last, after "--": the CLI parses an argument that
     // starts with "-" (the planner turn wrapper starts with "---") as an
     // unknown option and exits.
@@ -416,8 +462,14 @@ class ClaudeHarness extends BaseHarness {
       const roleFields = [obj.role, obj.message.role].filter((role) => role !== undefined);
       if (roleFields.some((role) => role !== 'assistant')) return null;
       this.captureSessionId(obj.session_id);
+      const entries = thinkingFromContent(obj.message.content)
+        .map((thinking) => this.entry('assistant', thinking, 'reasoning'));
       const text = textFromContent(obj.message.content);
-      if (text) return this.entry('assistant', text);
+      if (text) entries.push(this.entry('assistant', text));
+      for (const call of toolCallsFromContent(obj.message.content)) {
+        entries.push(this.entry('assistant', call.text, 'tool', call.detail));
+      }
+      if (entries.length) return entries.length === 1 ? entries[0] : entries;
     }
     return null;
   }

@@ -29,10 +29,11 @@ function cliSessionRun(sdk, ctx, AdapterClass, id, request, sink, overrides = nu
 
   const parser = {
     record(obj, runSink) {
-      const entry = adapter.normalize(obj);
-      if (!entry) return;
-      runSink.session(entry.sessionId);
-      runSink.entry(entry);
+      const out = adapter.normalize(obj);
+      for (const entry of Array.isArray(out) ? out : out ? [out] : []) {
+        runSink.session(entry.sessionId);
+        runSink.entry(entry);
+      }
     },
     end(runSink) {
       const last = adapter.finalize();

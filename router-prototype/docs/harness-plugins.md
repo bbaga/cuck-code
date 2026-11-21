@@ -73,9 +73,9 @@ Provider methods (required when `capabilities.providers` is `true`):
   `log` writes to the router log with the plugin id.
 - `request = { phase, prompt, workdir, sessionId|null, model|null, effort, timeLimitSec, autoApprove, systemPrompt: string|null, systemPromptFile: string|null }`.
   `effort` is `"low"`, `"medium"`, or `"high"`.
-- `Entry = { type: "message", role, text, sessionId, at }` (a router entry).
+- `Entry = { type: "message" | "tool" | "reasoning", role, text, detail?, sessionId, at }` (a router entry). A `tool` entry is one tool call of the agent (`text` = tool name and a short input preview, `detail` = the full input, at most 20,000 characters); a `reasoning` entry is the agent's thinking text. Both show run activity and never become report text.
 - `sink` (owned by the router, given to the run):
-  - `sink.entry({ role, text })`: add a transcript entry. Only `role: "assistant"` can become a report.
+  - `sink.entry({ type, role, text, detail })`: add a transcript entry. `type` is `"message"` (default), `"tool"` or `"reasoning"`; `detail` is kept on tool entries only. Only assistant messages can become a report.
   - `sink.session(id)`: set the session id. The first id wins.
   - `sink.contextTokens(n)`: set the context size. The latest value wins.
   - `sink.error(text)`: add a stream error. It never becomes a report.

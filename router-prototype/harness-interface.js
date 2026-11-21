@@ -33,10 +33,10 @@ const ALLOWED_KEYS = [
  *   autoApprove: boolean, systemPrompt: string|null,
  *   systemPromptFile: string|null }} HarnessRequest
  *
- * @typedef {{ type: "message", role: string, text: string,
+ * @typedef {{ type: "message"|"tool"|"reasoning", role: string, text: string, detail?: string,
  *   sessionId: string|null, at: string }} Entry
  *
- * @typedef {{ entry: (e: { role: string, text: string }) => void,
+ * @typedef {{ entry: (e: { type?: "message"|"tool"|"reasoning", role: string, text: string, detail?: string }) => void,
  *   session: (id: string) => void,
  *   contextTokens: (n: number) => void,
  *   error: (text: string) => void }} HarnessSink

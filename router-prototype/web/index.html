@@ -250,6 +250,18 @@
   .ctxMeter { align-self: center; font-size: .72rem; color: #6c7a8c; white-space: nowrap;
     font-variant-numeric: tabular-nums; }
   .ctxMeter.near { color: #e5a04b; }
+  .transcript .tool { color: #7d8a9b; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .transcript .tool .toolName { color: #9fb4cf; }
+  .transcript .tool details { display: inline; }
+  .transcript .tool summary { cursor: pointer; }
+  .transcript .tool details[open] { display: block; }
+  .transcript .tool details[open] summary { white-space: normal; }
+  .transcript .tool pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow: auto;
+    margin: 4px 0 2px; padding: 6px 8px; background: #0d1014; border: 1px solid #262b33; border-radius: 4px; }
+  .runActivity { align-self: center; font-size: .72rem; color: #6c7a8c; white-space: nowrap;
+    font-variant-numeric: tabular-nums; }
+  .runActivity.stale { color: #e5a04b; }
   .transcript .compacted { color: #8fa3bd; border-left: 2px solid #3b5170; padding-left: 8px;
     white-space: pre-wrap; }
   #createPanel { border: 1px solid #262b33; border-radius: 8px; background: #161a20;
@@ -474,6 +486,29 @@ window.addEventListener("DOMContentLoaded", () => {
       div.className = "compacted";
       stamp();
       div.appendChild(document.createTextNode(textOf(entry)));
+    } else if (entry && entry.type === "tool") {
+      div.className = "tool";
+      stamp();
+      const text = textOf(entry);
+      const cut = text.indexOf(": ");
+      const line = document.createElement("span");
+      const name = document.createElement("span");
+      name.className = "toolName";
+      name.textContent = "⚙ " + (cut < 0 ? text : text.slice(0, cut));
+      line.appendChild(name);
+      if (cut >= 0) line.appendChild(document.createTextNode(" " + text.slice(cut + 2)));
+      if (typeof entry.detail === "string" && entry.detail) {
+        const d = document.createElement("details");
+        const s = document.createElement("summary");
+        s.appendChild(line);
+        const pre = document.createElement("pre");
+        pre.textContent = entry.detail;
+        d.append(s, pre);
+        div.appendChild(d);
+      } else {
+        div.appendChild(line);
+      }
+      div.title = text;
     } else if (entry && entry.type === "reasoning") {
       stamp();
       details("thinking", textOf(entry));
@@ -982,6 +1017,7 @@ window.addEventListener("DOMContentLoaded", () => {
       : (typeof st.selected === "string" && !st.selected.startsWith("preview:")
         ? st.workers.get(st.selected) : null);
     const ctx = target && target.context;
+    renderActivity(st);
     st.ctxMeter.hidden = st.compactBtn.hidden = !ctx;
     if (!ctx) return;
     const limit = ctx.threshold ? " / " + formatTokens(ctx.threshold) : "";
@@ -998,6 +1034,42 @@ window.addEventListener("DOMContentLoaded", () => {
     st.compactBtn.title = target.compacted && !target.hasSession
       ? "Compacted; the next run starts a fresh session with the summary."
       : "Summarize this session and continue in a fresh one.";
+  }
+
+  const STALE_ACTIVITY_MS = 120_000;
+
+  function formatAgo(ms) {
+    const sec = Math.max(0, Math.floor(ms / 1000));
+    if (sec < 60) return sec + "s";
+    const min = Math.floor(sec / 60);
+    return min < 60 ? min + "m " + (sec % 60) + "s" : Math.floor(min / 60) + "h " + (min % 60) + "m";
+  }
+
+  function renderActivity(st) {
+    if (!st.activityEl) return;
+    const worker = typeof st.selected === "string" && !st.selected.startsWith("preview:")
+      ? st.workers.get(st.selected) : null;
+    const running = st.selected === null ? st.plannerStatus === "running" : !!worker && worker.status === "running";
+    const activity = st.selected === null ? st.plannerActivity : worker && worker.activity;
+    st.activityEl.hidden = !running || !activity;
+    if (st.activityEl.hidden) return;
+    const now = Date.now();
+    const idle = now - activity.lastAt;
+    const calls = activity.toolCalls === 1 ? "1 tool call" : activity.toolCalls + " tool calls";
+    st.activityEl.textContent = calls + ", last activity " + formatAgo(idle) + " ago";
+    st.activityEl.classList.toggle("stale", idle >= STALE_ACTIVITY_MS);
+    st.activityEl.title = "Running for " + formatAgo(now - activity.startedAt) + ".";
+  }
+
+  function freshActivity() {
+    const now = Date.now();
+    return { startedAt: now, lastAt: now, toolCalls: 0 };
+  }
+
+  function noteActivity(activity, entry) {
+    if (!activity || !entry || (entry.type === "message" && entry.role === "user")) return;
+    activity.lastAt = typeof entry.at === "number" ? entry.at : Date.now();
+    if (entry.type === "tool") activity.toolCalls += 1;
   }
 
   function applyStateWorkers(st, state, { updateListEntry, refreshPreview }) {
@@ -1269,13 +1341,17 @@ window.addEventListener("DOMContentLoaded", () => {
     input.setAttribute("aria-label", "Message prompt");
     const send = document.createElement("button");
     send.textContent = "Send";
+    const activityEl = document.createElement("span");
+    activityEl.className = "runActivity";
+    activityEl.setAttribute("role", "status");
+    activityEl.hidden = true;
     const ctxMeter = document.createElement("span");
     ctxMeter.className = "ctxMeter";
     ctxMeter.hidden = true;
     const compactBtn = document.createElement("button");
     compactBtn.textContent = "Compact";
     compactBtn.hidden = true;
-    row.append(input, send, ctxMeter, compactBtn);
+    row.append(input, send, activityEl, ctxMeter, compactBtn);
     const queuePane = document.createElement("div");
     queuePane.className = "queuePane";
     queuePane.setAttribute("role", "region");
@@ -1299,7 +1375,8 @@ window.addEventListener("DOMContentLoaded", () => {
     setupLayoutResize({ lineId: line.id, card, plan, planBody, planDetails, planHandle, graph, graphDetails, graphHandle, transcriptWrap, chatHandle });
 
     const st = { id: line.id, dot, banner, transcript, transcriptWrap, scrollBottomBtn, input, send,
-      ctxMeter, compactBtn, plannerCtx: null, queuePane, composerError,
+      ctxMeter, compactBtn, plannerCtx: null, activityEl, plannerActivity: line.activity || null,
+      queuePane, composerError,
       stamp: null, draft: createDraftOwner(), submitting: false, cancelling: new Set(),
       queueErrors: new Map(), queued: [],
       waiting, planBody, planHandle, graph, graphDetails, graphHandle, chatHandle, previewPanel, approveBtn, badge, planDetails, planControls: controls,
@@ -1353,6 +1430,7 @@ window.addEventListener("DOMContentLoaded", () => {
     });
 
     const setStatus = (status) => {
+      if (status === "running" && st.plannerStatus !== "running") st.plannerActivity = freshActivity();
       st.plannerStatus = status;
       updateStatusMarker(st);
       if (st.started) {
@@ -1422,6 +1500,8 @@ window.addEventListener("DOMContentLoaded", () => {
         }
         if (Array.isArray(state.queuedUserPrompts)) setQueue(st, state.queuedUserPrompts);
         st.plannerTranscript = state.transcript || [];
+        st.plannerStatus = state.status;
+        st.plannerActivity = state.activity || null;
         st.approved = !!state.planApproved;
         st.plannerCtx = state.context ? { context: state.context, compacting: !!state.compacting,
           hasSession: !!state.hasSession, compacted: !!state.compacted } : null;
@@ -1453,6 +1533,9 @@ window.addEventListener("DOMContentLoaded", () => {
       },
       entry(entry) {
         st.plannerTranscript.push(entry);
+        if (!st.plannerActivity && st.plannerStatus === "running") st.plannerActivity = freshActivity();
+        noteActivity(st.plannerActivity, entry);
+        if (st.selected === null) renderActivity(st);
         if (st.selected === null) appendEntry(st, entryEl(entry));
       },
       worker_entry({ workerId, entry }) {
@@ -1462,6 +1545,10 @@ window.addEventListener("DOMContentLoaded", () => {
             status: "running", branch: "", role: "implementor", kind: "standard" });
         }
         st.workerTranscripts.get(workerId).push(entry);
+        const w = st.workers.get(workerId);
+        if (w && !w.activity && w.status === "running") w.activity = freshActivity();
+        if (w) noteActivity(w.activity, entry);
+        if (st.selected === workerId) renderActivity(st);
         if (st.selected === workerId) appendEntry(st, entryEl(entry));
       },
       worker_spawned({ worker }) {
@@ -1473,6 +1560,7 @@ window.addEventListener("DOMContentLoaded", () => {
         const w = st.workers.get(workerId);
         if (w) {
           if (worker) Object.assign(w, worker);
+          if (status === "running" && (w.status !== "running" || !w.activity)) w.activity = freshActivity();
           w.status = status;
           if (verdict) w.verdict = verdict;
           w.lastError = error || null;
@@ -2989,6 +3077,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
   openStream();
   refresh();
+  setInterval(() => { for (const st of cards.values()) renderActivity(st); }, 1000);
   setInterval(pollPlans, 3000);
   setInterval(pollInventory, 3000);
   setInterval(pollEvidence, 3000);
