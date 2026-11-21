@@ -151,10 +151,12 @@ const SCRIPT_NODE_TIME_LIMIT = 1800;
 // on a node whose type has session: resume. Returns an error string or null.
 function validateNodeSettingsForNode(graph, nodeId, settings) {
   if (!graphType(graph, nodeId)) return `no such node '${nodeId}'`;
-  if (nodeRunner(graph, nodeId) === "script") {
+  const runner = nodeRunner(graph, nodeId);
+  if (runner === "script" || runner === "wait") {
     const other = Object.keys(settings || {}).find((k) => k !== "timeLimit");
     if (other !== undefined) {
-      return `nodeSettings.${nodeId}: node '${nodeId}' runs scripts: only timeLimit can be set`;
+      const what = runner === "wait" ? "is a wait node" : "runs scripts";
+      return `nodeSettings.${nodeId}: node '${nodeId}' ${what}: only timeLimit can be set`;
     }
     return validateNodeSettings(`nodeSettings.${nodeId}`, settings || {}, { strict: true, maxContext: false });
   }
@@ -174,10 +176,11 @@ function resolveNodeSettings(line, nodeId, env) {
   const graph = line && line.graph;
   const node = graphType(graph, nodeId);
   if (!node) throw new Error(`no such node '${nodeId}'`);
-  if (nodeRunner(graph, nodeId) === "script") {
+  const runner = nodeRunner(graph, nodeId);
+  if (runner === "script" || runner === "wait") {
     const own = line.nodeSettings && line.nodeSettings[nodeId] ? line.nodeSettings[nodeId] : {};
     const fromNode = node.settings || {};
-    return { runner: "script", timeLimit: own.timeLimit || fromNode.timeLimit || SCRIPT_NODE_TIME_LIMIT };
+    return { runner, timeLimit: own.timeLimit || fromNode.timeLimit || SCRIPT_NODE_TIME_LIMIT };
   }
   const phase = phaseOfType(graph, node.type);
   if (!phase) throw new Error(`node '${nodeId}' has a type without a phase`);
@@ -212,7 +215,7 @@ function fallbackPhaseSettings(line, phase, env) {
   const e = env || process.env;
   const graph = line && line.graph;
   const nodeId = graph && graph.nodes
-    ? Object.keys(graph.nodes).find((id) => nodeRunner(graph, id) !== "script"
+    ? Object.keys(graph.nodes).find((id) => nodeRunner(graph, id) === "agent"
       && phaseOfType(graph, graph.nodes[id].type) === phase)
     : null;
   if (nodeId) {

@@ -133,3 +133,64 @@ test("missing file and bad frontmatter", () => {
   assert.throws(() => loadInteraction("d/x", () => { throw new Error("nope"); }), /INTERACTION.md/);
   assert.match(fault("no header").message, /---/);
 });
+
+// ---- when, fallback, arrive, waiter ----
+
+const COMPLETE = { trigger: "complete", target: "starter", fields: null, body: "{{report}}" };
+const ALL_OUTCOMES = ["done", "pass", "reject", "missing", "timeout", "failed", "stopped"];
+
+test("when defaults to all seven outcomes and fallback to false", () => {
+  const i = load(doc(COMPLETE));
+  assert.deepEqual(i.when, ALL_OUTCOMES);
+  assert.equal(i.fallback, false);
+  assert.deepEqual(load(doc()).when, ALL_OUTCOMES);
+});
+
+test("when and fallback are read from a complete-triggered interaction", () => {
+  const i = load(doc({ ...COMPLETE, extra: "when: [reject, missing]\nfallback: true\n" }));
+  assert.deepEqual(i.when, ["reject", "missing"]);
+  assert.equal(i.fallback, true);
+});
+
+test("when and fallback are refused on a request interaction", () => {
+  assert.match(fault(doc({ extra: "when: [done]\n" })).message, /when is allowed only with trigger complete/);
+  assert.match(fault(doc({ extra: "fallback: true\n" })).message, /fallback is allowed only with trigger complete/);
+});
+
+test("when refuses an unknown outcome, an empty list and a duplicate", () => {
+  for (const when of ["[done, late]", "[]", "[done, done]", "done"]) {
+    assert.match(fault(doc({ ...COMPLETE, extra: `when: ${when}\n` })).message, /when must be a non-empty list/, when);
+  }
+});
+
+test("fallback must be a boolean", () => {
+  assert.match(fault(doc({ ...COMPLETE, extra: "fallback: yes please\n" })).message, /fallback must be true or false/);
+});
+
+const ARRIVE = { effect: "arrive", trigger: "complete", target: "waiter", fields: null, body: "" };
+
+test("effect arrive loads for a built-in interaction", () => {
+  const i = load(doc(ARRIVE), { builtIn: true });
+  assert.equal(i.effect, "arrive");
+  assert.equal(i.target, "waiter");
+});
+
+test("effect arrive is reserved for built-in interactions", () => {
+  assert.match(fault(doc(ARRIVE)).message, /effect arrive is reserved for built-in interactions/);
+});
+
+test("effect arrive needs trigger complete, target waiter and an empty body", () => {
+  assert.match(fault(doc({ ...ARRIVE, trigger: "request" }), { builtIn: true }).message, /needs trigger complete and target waiter/);
+  assert.match(fault(doc({ ...ARRIVE, target: "starter" }), { builtIn: true }).message, /needs trigger complete and target waiter/);
+  assert.match(fault(doc({ ...ARRIVE, body: "text" }), { builtIn: true }).message, /arrive interaction must have an empty body/);
+});
+
+test("target waiter needs effect arrive", () => {
+  assert.match(fault(doc({ ...COMPLETE, target: "waiter", effect: "deliver" }), { builtIn: true }).message, /target waiter needs effect arrive/);
+  assert.match(fault(doc({ effect: "create", trigger: "complete", target: "waiter", fields: null, body: "" }), { builtIn: true }).message, /target waiter needs effect arrive/);
+});
+
+test("effect create with trigger complete stays legal in the loader", () => {
+  const i = load(doc({ effect: "create", trigger: "complete", target: "new", fields: null, body: "" }));
+  assert.equal(i.effect, "create");
+});

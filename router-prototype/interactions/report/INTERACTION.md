@@ -4,6 +4,7 @@ description: Deliver the result of a finished run to the instance that started i
 effect: deliver
 trigger: complete
 target: starter
+fallback: true
 ---
 {{#outcome.done}}IMPLEMENTOR REPORT - '{{from.name}}' (workerId {{from.id}}, {{from.harness}} session {{from.session}}, branch {{from.branch}}) finished.
 

@@ -260,13 +260,13 @@ test("R9: a checked node needs workspace own-worktree", () => {
   assert.match(errors[0].message, /'planner'/);
 });
 
-test("R10: a complete-triggered interaction cannot create an instance", () => {
+test("R10: a complete-triggered interaction cannot create an own-worktree instance", () => {
   const p = parse(REVIEW_GATE);
   p.edges = p.edges.filter((e) => !(e.from === "planner" && e.to === "A"));
   p.edges.push({ from: "planner", to: "A", interactions: ["start", "feedback", "spawn-done"] });
   const errors = check(p);
   assert.deepEqual(rules(p), ["R10"]);
-  assert.match(errors[0].message, /cannot create an instance/);
+  assert.match(errors[0].message, /needs a type with workspace source or integration/);
 });
 
 test("all rules run: errors from several rules come together", () => {
@@ -392,4 +392,104 @@ test("R17: no second node has a planner type", () => {
   q.nodes.second = { type: "my-planner" };
   const inChain = checkPipeline(q, { ...types, "my-planner": mk("resume", "coordinator", "none", { chain: ["planner", "my-planner"] }) }, interactions);
   assert.ok(inChain.some((e) => e.rule === "R17" && /node 'second'/.test(e.message)));
+});
+
+// ---- Choreographed pipelines: R4, R10, R14, R15, R16, R18 ----
+
+const choreo = require("./choreo-fixtures");
+
+// The reference pipeline text with one line changed.
+const swap = (text, from, to) => {
+  assert.ok(text.includes(from), `fixture has no "${from}"`);
+  return text.replace(from, to);
+};
+
+test("choreographed pipelines 1 and 2 have no rule errors", () => {
+  assert.deepEqual(choreo.rulesOf(choreo.CHAIN), []);
+  assert.deepEqual(choreo.rulesOf(choreo.STAGE), []);
+  assert.equal(choreo.resolve(choreo.CHAIN).nodes.val.maxRounds, 3);
+  assert.equal(choreo.resolve(choreo.CHAIN).nodes.impl.maxRounds, undefined);
+});
+
+test("R4: a fallback report to the start node keeps the result", () => {
+  // The report is the fallback of every node, so the nodes need no other path to the start node.
+  assert.deepEqual(choreo.rulesOf(choreo.CHAIN), []);
+});
+
+test("R4: without a fallback and without a path to the start node, the result can get lost", () => {
+  // Remove every report edge: no node has a path to the start node any more.
+  let text = choreo.CHAIN;
+  for (const from of ["impl", "val", "batch", "integration"]) text = swap(text, `  - ${from} -> planner: report\n`, "");
+  assert.ok(choreo.rulesOf(text).includes("R4"));
+});
+
+test("R4: the rework edge is not a path to the start node", () => {
+  // val -> impl is a rework edge. Without the report of val, only the arrive edge leaves val.
+  let text = swap(choreo.CHAIN, "  - val -> planner: report\n", "");
+  for (const from of ["batch", "integration"]) text = swap(text, `  - ${from} -> planner: report\n`, "");
+  assert.ok(choreo.rulesOf(text).includes("R4"));
+});
+
+test("R10: complete plus create needs a target with workspace source or integration", () => {
+  assert.deepEqual(choreo.rulesOf(choreo.CHAIN), []);
+  // impl has workspace own-worktree: val -> impl with handoff breaks R10 (and R3: a create cycle).
+  const text = swap(choreo.CHAIN, "  - val -> impl: rework\n", "  - val -> impl: handoff\n");
+  assert.ok(choreo.rulesOf(text).includes("R10"));
+});
+
+test("R14: a handoff to a checker needs the checks link", () => {
+  const bad = swap(choreo.CHAIN, "checks: [impl], maxRounds: 3", "checks: [planner], maxRounds: 3");
+  assert.ok(choreo.rulesOf(bad).includes("R14"));
+});
+
+test("R14: only a wait node starts integration with a handoff", () => {
+  const bad = swap(choreo.CHAIN, "  - val -> batch: arrive\n", "  - val -> integration: handoff\n");
+  assert.ok(choreo.rulesOf(bad).includes("R14"));
+});
+
+test("R14: an arrive node has no handoff, and a wait node has one handoff at most", () => {
+  const both = swap(choreo.CHAIN, "  - val -> batch: arrive\n", "  - val -> batch: arrive\n  - val -> integration: handoff\n");
+  assert.ok(choreo.rulesOf(both).includes("R14"));
+  const two = swap(choreo.CHAIN, "  - batch -> integration: handoff\n",
+    "  - batch -> integration: handoff\n  - batch -> second: handoff\n")
+    .replace("  integration: {", "  second:      { type: integration-validator }\n  integration: {");
+  assert.ok(choreo.rulesOf(two).includes("R14"));
+});
+
+test("R15: rework needs the target in checks; maxRounds needs a rework edge", () => {
+  const noLink = swap(choreo.CHAIN, "  - val -> planner: report\n", "  - val -> planner: report, rework\n");
+  assert.ok(choreo.rulesOf(noLink).includes("R15"));
+  const noRework = swap(choreo.CHAIN, "  - val -> impl: rework\n", "");
+  assert.deepEqual(choreo.rulesOf(noRework), ["R15"]);
+});
+
+test("R16: an arrive edge needs a wait node target and a checker or implementor source", () => {
+  const notWait = swap(choreo.CHAIN, "  - val -> batch: arrive\n", "  - val -> integration: arrive\n");
+  assert.ok(choreo.rulesOf(notWait).includes("R16"));
+  const badSource = swap(choreo.CHAIN, "  - planner -> batch: start\n", "  - planner -> batch: start, arrive\n");
+  assert.ok(choreo.rulesOf(badSource).includes("R16"));
+});
+
+test("R16: a wait node sets no agent keys and starts only integration nodes", () => {
+  const withModel = swap(choreo.CHAIN, "batch:       { type: wait }", "batch:       { type: wait, model: m1, checks: [impl] }");
+  assert.ok(choreo.rulesOf(withModel).includes("R16"));
+  const timeLimit = swap(choreo.CHAIN, "batch:       { type: wait }", "batch:       { type: wait, timeLimit: 600 }");
+  assert.deepEqual(choreo.rulesOf(timeLimit), []);
+  const toChecker = swap(choreo.CHAIN, "  - batch -> integration: handoff\n", "  - batch -> val: handoff\n");
+  assert.ok(choreo.rulesOf(toChecker).includes("R16"));
+});
+
+test("R18: stage members have the same next targets", () => {
+  const bad = swap(choreo.STAGE, '"[val, lint] -> batch: arrive"', "val -> batch: arrive");
+  assert.ok(choreo.rulesOf(bad).includes("R18"));
+});
+
+test("R18: a script member of a stage needs checkout clean", () => {
+  const bad = swap(choreo.STAGE, "checkout: clean, ", "");
+  assert.deepEqual(choreo.rulesOf(bad), ["R18"]);
+});
+
+test("R18: a stage member does not list a sibling in after", () => {
+  const bad = swap(choreo.STAGE, "checks: [impl], maxRounds: 3 }", "checks: [impl], maxRounds: 3, after: [lint] }");
+  assert.ok(choreo.rulesOf(bad).includes("R18"));
 });

@@ -720,3 +720,16 @@ test("the fallback settings of a phase skip script nodes", () => {
   assert.equal(out.harness, "vibe");
   assert.equal(out.runner, undefined);
 });
+
+// ---- wait nodes ----
+
+test("a wait node gets only timeLimit settings", () => {
+  const choreo = require("./choreo-fixtures");
+  const { validateNodeSettingsForNode, resolveNodeSettings, defaultNodeSettingsFor } = require("../pipeline-config");
+  const graph = choreo.resolve(choreo.CHAIN);
+  assert.match(validateNodeSettingsForNode(graph, "batch", { model: "m" }), /is a wait node: only timeLimit can be set/);
+  assert.equal(validateNodeSettingsForNode(graph, "batch", { timeLimit: 60 }), null);
+  const settings = resolveNodeSettings({ graph, nodeSettings: { batch: { timeLimit: 60 } } }, "batch", {});
+  assert.deepEqual(settings, { runner: "wait", timeLimit: 60 });
+  assert.equal(defaultNodeSettingsFor(graph, {}).batch.runner, "wait");
+});

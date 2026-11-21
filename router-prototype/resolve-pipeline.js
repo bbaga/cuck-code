@@ -139,6 +139,7 @@ function resolvePipelineDefinition(name, catalog) {
     const out = { type: node.type, settings, fields: node.fields || {}, checks: node.checks || [] };
     if (node.prompt !== undefined) out.prompt = node.prompt;
     if (node.after !== undefined) out.after = node.after;
+    if (node.maxRounds !== undefined) out.maxRounds = node.maxRounds;
     if (node.scripts !== undefined) {
       for (const key of ["scripts", "failFast", "required", "checkout"]) out[key] = node[key];
     }
