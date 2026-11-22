@@ -167,7 +167,7 @@
   .previewPanel h2 { font-size: .95rem; margin: 0 0 8px; }
   .previewStep { margin: 8px 0; }
   .previewStep pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #0d1014; padding: 8px; }
-  .graphDetails { border-bottom: 1px solid #262b33; }
+  .graphDetails { border-bottom: 1px solid #262b33; position: relative; }
   .graphDetails summary { cursor: pointer; padding: 6px 16px; color: #6c7a8c; font-size: .8rem; }
   .graphDetails[open] summary { color: #8fa3bd; }
   .graphDetails .graph { border-bottom: 0; }
@@ -194,6 +194,11 @@
   .resizeHandle:hover, .resizeHandle:focus-visible, .resizeHandle.dragging { background: #2f5d9e; outline: none; }
   body.resizing { user-select: none; cursor: row-resize; }
   .graph svg { display: block; }
+  .graphSizer { position: relative; overflow: hidden; }
+  .graphSizer > div { transform-origin: 0 0; }
+  .graphZoomHost { position: absolute; top: 2px; right: 16px; }
+  .graphZoomHost .zoomBar button { padding: 1px 8px; font-size: .75rem; }
+  .graphZoomHost .zoomBar { margin-bottom: 0; }
   .graph svg .edge { stroke: #333c48; stroke-width: 1.5; fill: none; }
   .gnode { position: absolute; display: flex; align-items: center; gap: 8px;
     padding: 0 10px; height: 36px; border: 1px solid #333c48; border-radius: 8px;
@@ -850,7 +855,14 @@ window.addEventListener("DOMContentLoaded", () => {
     svg.setAttribute("width", innerW);
     svg.setAttribute("height", h);
     inner.appendChild(svg);
-    graph.appendChild(inner);
+    // The sizer takes the scaled size, so the scroll area follows the zoom.
+    const sizer = document.createElement("div");
+    sizer.className = "graphSizer";
+    sizer.appendChild(inner);
+    graph.appendChild(sizer);
+    st.graphInner = inner; st.graphSizer = sizer;
+    st.graphLayoutSize = { width: innerW, height: h, fitWidth: nextX - 46 + 12 };
+    if (st.graphZoom) st.graphZoom.apply(sizer);
     const plannerY = Math.round(h / 2 - 18);
     const place = new Map(entries.map((e) => [e.worker.id,
       { x: columnX.get(e.column), y: 14 + e.row * 46, w: columnW.get(e.column) }]));
@@ -1394,7 +1406,9 @@ window.addEventListener("DOMContentLoaded", () => {
     const chainPanel = document.createElement("div");
     chainPanel.className = "chainPanel";
     chainPanel.hidden = true;
-    graphDetails.append(graphSummary, graph, chainPanel, graphHandle);
+    const graphZoomHost = document.createElement("div");
+    graphZoomHost.className = "graphZoomHost";
+    graphDetails.append(graphSummary, graphZoomHost, graph, chainPanel, graphHandle);
     const previewPanel = document.createElement("div"); previewPanel.className = "previewPanel"; previewPanel.hidden = true;
 
     const transcript = document.createElement("div");
@@ -1470,6 +1484,14 @@ window.addEventListener("DOMContentLoaded", () => {
       plannerTranscript: [], selected: null, scopeDetails, scopeText, scopeStatus };
     st.pipeZoom = attachGraphZoom({ doc: document, box: pipeGraphBox, toolbarHost: pipeZoomHost,
       getContentSize: () => st.pipeLayoutSize, storage: localStorage, storageKey: "cuck.pipeZoom." + line.id });
+    st.graphZoom = attachGraphZoom({ doc: document, box: graph, toolbarHost: graphZoomHost,
+      getContentSize: () => st.graphLayoutSize, storage: localStorage, storageKey: "cuck.graphZoom." + line.id,
+      onZoom: (zoom, size) => {
+        if (!st.graphSizer) return;
+        st.graphSizer.style.width = size.width * zoom / 100 + "px";
+        st.graphSizer.style.height = size.height * zoom / 100 + "px";
+        st.graphInner.style.transform = zoom === 100 ? "" : `scale(${zoom / 100})`;
+      } });
     st.scopeLoader = window.workerScope.createScopeLoader({ lineId: st.id,
       fetchImpl: (url, options) => fetch(url, options), onChange: () => renderScopePanel(st) });
     st.historyLoader = window.workerScope.createScopeLoader({ lineId: st.id, resource: "transcript",

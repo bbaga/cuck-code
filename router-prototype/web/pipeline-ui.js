@@ -1266,7 +1266,7 @@
   // ---- Zoom of the pipeline graph (whole percents) ----
   const ZOOM_MIN = 10;
   const ZOOM_MAX = 300;
-  const ZOOM_STEP = 1.25;
+  const ZOOM_STEP = 1.0625;
 
   function clampZoom(percent) {
     const n = Number(percent);
@@ -1297,8 +1297,9 @@
 
   // Zoom toolbar, wheel and key handling for one graph box. The toolbar lives in
   // toolbarHost (outside the box, so redraws of the box keep it). getContentSize()
-  // returns { width, height } of the current layout.
-  function attachGraphZoom({ doc, box, toolbarHost, getContentSize, storage, storageKey }) {
+  // returns { width, height } of the current layout (optionally fitWidth, the width Fit
+  // targets). With onZoom(percent, size) the caller scales the content itself.
+  function attachGraphZoom({ doc, box, toolbarHost, getContentSize, storage, storageKey, onZoom }) {
     let zoom = readStoredSize(storage, storageKey, ZOOM_MIN, ZOOM_MAX) || 100;
     let svg = null;
     const bar = doc.createElement("div");
@@ -1318,7 +1319,7 @@
     const zin = button("Zoom in", "+", () => set(stepZoom(zoom, 1)));
     const fit = button("Fit graph to width", "Fit", () => {
       const size = getContentSize() || {};
-      set(fitZoom(size.width, box.clientWidth - 10));
+      set(fitZoom(size.fitWidth || size.width, box.clientWidth - 10));
     });
     bar.append(out, reset, zin, fit);
     toolbarHost.append(bar);
@@ -1329,7 +1330,8 @@
       out.disabled = zoom <= ZOOM_MIN;
       zin.disabled = zoom >= ZOOM_MAX;
       const size = getContentSize();
-      if (svg && size) {
+      if (onZoom) { if (size) onZoom(zoom, size); }
+      else if (svg && size) {
         svg.setAttribute("width", String(size.width * zoom / 100));
         svg.setAttribute("height", String(size.height * zoom / 100));
       }

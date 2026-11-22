@@ -22,12 +22,12 @@ test("clampZoom keeps whole percents inside 10..300", () => {
   assert.equal(clampZoom(Infinity), 100);
 });
 
-test("stepZoom zooms in and out by 1.25", () => {
-  assert.equal(stepZoom(100, 1), 125);
-  assert.equal(stepZoom(100, -1), 80);
+test("stepZoom zooms in and out by 1.0625", () => {
+  assert.equal(stepZoom(100, 1), 106);
+  assert.equal(stepZoom(100, -1), 94);
   assert.equal(stepZoom(ZOOM_MAX, 1), ZOOM_MAX);
   assert.equal(stepZoom(ZOOM_MIN, -1), ZOOM_MIN);
-  assert.equal(stepZoom(250, 1), ZOOM_MAX);
+  assert.equal(stepZoom(295, 1), ZOOM_MAX);
 });
 
 test("stepZoom changes the value whenever it is not at a limit", () => {

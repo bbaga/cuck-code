@@ -38,8 +38,8 @@ test("pipeline tab: zoom buttons scale the SVG and keep the zoom", async (t) => 
     const layoutWidth = await page.evaluate(`Number(${SVG}.getAttribute('width'))`);
     assert.equal(await page.evaluate(`${BTN("Reset zoom")}.textContent`), "100%");
     await page.evaluate(`${BTN("Zoom in")}.click()`);
-    assert.equal(await page.evaluate(`Number(${SVG}.getAttribute('width'))`), layoutWidth * 1.25);
-    assert.equal(await page.evaluate(`${BTN("Reset zoom")}.textContent`), "125%");
+    assert.equal(await page.evaluate(`Number(${SVG}.getAttribute('width'))`), Math.round(layoutWidth * 106) / 100);
+    assert.equal(await page.evaluate(`${BTN("Reset zoom")}.textContent`), "106%");
     assert.equal(await page.evaluate(`document.querySelectorAll('.pipePane .zoomBar').length`), 1);
     if (shots) await page.screenshot(path.join(shots, "zoom-125.png"));
     // Ctrl+wheel keeps the graph point under the pointer in both axes.
