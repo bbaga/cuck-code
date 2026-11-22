@@ -67,6 +67,23 @@ test("pipeline pane: handle resizes by keyboard, persists, resets", async (t) =>
       svg: ${PANE}.querySelector('svg.pipeGraph').getBoundingClientRect().width,
       box: ${PANE}.querySelector('.pipeGraphBox').clientWidth })`);
     assert.ok(fit.svg <= fit.box + 1, `svg ${fit.svg} wider than box ${fit.box}`);
+    // At 200% zoom the box scrolls in both axes, at the narrow and at a wider pane.
+    const scrolls = async (label) => {
+      await page.evaluate(`localStorage.setItem("cuck.pipeZoom.${fx.lineId}", "200")`);
+      await page.evaluate("location.reload()");
+      await openPipeline(page);
+      await page.waitFor(`${PANE}.querySelector('svg.pipeGraph')`);
+      const box = await page.evaluate(`(() => { const b = ${PANE}.querySelector('.pipeGraphBox');
+        return { sw: b.scrollWidth, cw: b.clientWidth, sh: b.scrollHeight, ch: b.clientHeight,
+          paneW: ${PANE}.getBoundingClientRect().width, boxW: b.getBoundingClientRect().width }; })()`);
+      assert.ok(box.sw > box.cw, `${label}: no horizontal scroll`);
+      assert.ok(box.sh > box.ch, `${label}: no vertical scroll`);
+      assert.ok(box.boxW <= box.paneW, `${label}: box wider than pane`);
+    };
+    await scrolls("360px");
+    for (let i = 0; i < 12; i++) await key(page, "ArrowRight");
+    await scrolls("wider");
+    await page.evaluate(`localStorage.removeItem("cuck.pipeZoom.${fx.lineId}")`);
 
     await page.evaluate(`${HANDLE}.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))`);
     assert.equal(await page.evaluate(`localStorage.getItem("${storeKey}")`), null);
