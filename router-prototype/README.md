@@ -129,22 +129,29 @@ The graph places each standard validator in the lane of the implementor it valid
 
 ## Pipelines, node types and interactions
 
-The shape of a line is data, not code. A **pipeline file** lists the nodes of a
-line, the one start node (the planner) and which **interactions** each node may
-have with which other node. A **node type** (`NODE.md`) defines a role and its
-system prompt. An **interaction** (`INTERACTION.md`) defines one kind of
-communication: what it does, which values the caller must supply, and the
-message it delivers. The built-in files live in `router-prototype/pipelines/`,
-`node-types/` and `interactions/`. The design is in
-`docs/pipeline-graph-design.md`.
+The shape of a line is data, not code. Three kinds of file describe it. Each
+is a folder or file of plain text, with no code.
 
-**Status.** The router, the files, the plugin layers, the strict calls, the
-pipelines HTTP API and the web UI are built. In the web UI, the create panel has
-a pipeline picker and one settings row per node, the Pipeline tab of a line
-shows the graph and the settings of each node, and the `/pipelines` page lists,
-edits and checks pipelines. The old per-phase `pipeline` request shape was
-removed (it answers 400, see "Pipeline settings"). The three old protocol routes
-`/workers`, `/continue` and `/integration` still work as deprecated aliases.
+| Kind | File | Defines | Example |
+|---|---|---|---|
+| Pipeline | `pipelines/<name>.yaml` | The nodes of a line, the start node, and which interactions each node may use toward which other node. | `minimal` |
+| Node type | `node-types/<name>/NODE.md` | A role: the prompt, the session and workspace behavior, the caller fields. | `validator` |
+| Interaction | `interactions/<name>/INTERACTION.md` | One kind of message: what it does, who triggers it, the fields it needs, the text it delivers. | `feedback` |
+
+A **plugin** is a set of such files in the managed or user layer (see "Plugin
+layers"). It can also hold `harnesses/` (see "Harness plugins"). The built-in
+files live in `router-prototype/`. The layout of a plugin folder:
+
+```
+~/.cuck/                      (user layer)
+├── pipelines/review-gate.yaml
+├── node-types/security-reviewer/NODE.md
+├── interactions/nudge/INTERACTION.md
+└── harnesses/my-cli/index.js
+```
+
+Add your own: see "Write a node type" and "Write an interaction". The design is
+in `docs/pipeline-graph-design.md`.
 
 ### Concepts
 
@@ -332,7 +339,6 @@ The built-in interactions:
 | `arrive` | arrive | complete | waiter | none. `when: [done, pass]`. Records that the task chain reached the wait node. |
 
 The router runs `handoff`, `rework` and `arrive` (see "Choreographed pipelines" below).
-| `report` | deliver | complete | starter | none; the router fills `report` and `outcome` |
 
 A `complete`-triggered interaction has no caller. It declares no `fields` and
 its template may use router variables only. Its text depends on the outcome
@@ -1091,6 +1097,56 @@ under its own `fields`, like `riskLevel` above, is required by every `start`
 of that node, checked like any other field, and passed to the prompt of the
 new instance, so the node's `prompt` can use it (`{{riskLevel}}`). The same
 holds for the fields a node type declares in its `NODE.md`.
+
+
+## Write an interaction
+
+This example adds `nudge`: the planner reminds a running instance of one thing.
+
+1. **Make the file.** Put it in the user layer:
+   `~/.cuck/interactions/nudge/INTERACTION.md` (or in
+   `<LINES_DIR>/plugins/interactions/`). The folder name must equal `name`.
+
+   ```markdown
+   ---
+   name: nudge
+   description: Remind a running instance of one thing. It resumes its session.
+   effect: deliver
+   trigger: request
+   target: chosen
+   fields:
+     reminder:
+       description: The one thing the instance must not forget, in one sentence.
+       type: string
+   ---
+   Reminder from the planner: {{reminder}}
+   Continue your work. Report as before when you are done.
+   ```
+
+   - `effect: deliver` puts the message into an existing instance, so the target
+     node needs a type with `session: resume` (rule R6).
+   - `trigger: request` and `target: chosen`: the planner calls it, and names
+     the instance. The router adds the field `instance` itself.
+   - `reminder` is a caller field, so it is declared. Router variables
+     (`{{line.name}}`, `{{from.name}}`, ...) need no declaration.
+   - Only built-in interactions may use the effects `accept` and `arrive`.
+
+2. **Use it on an edge.** List its name after the colon:
+
+   ```yaml
+   edges:
+     - planner -> impl: start, feedback, accept, nudge
+     - impl -> planner: report
+   ```
+
+3. **Check it.** Restart the router, then validate the pipeline as in
+   "Write a node type" step 3. The call needs `instance` and `reminder`
+   (see "Strict calls").
+
+For `trigger: complete` interactions (the router acts when a run ends), the
+template has no caller: it declares no `fields` and uses router variables only.
+Use `when` to limit it to some outcomes and `fallback: true` for a default.
+The built-in `report` is the model.
 
 ## Pipelines HTTP API
 
