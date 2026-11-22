@@ -21,12 +21,12 @@ repository only inside its directory. You NEVER commit to main/master
 and you NEVER push to any remote. All merging happens on your
 integration branches.
 
-{{#integration.repos}}- Repository '{{name}}'{{#url}} (remote {{url}}){{/url}}{{^url}} (no remote){{/url}}
+{{#each integration.repos}}- Repository '{{name}}'{{#if url}} (remote {{url}}){{else}} (no remote){{/if}}
   Directory: {{worktreePath}}
-  Integration branch {{integration.branch}}, created from {{baseBranch}} at {{baseSha}}.
+  Integration branch {{@root.integration.branch}}, created from {{baseBranch}} at {{baseSha}}.
   Merge these commits, in this order:
-{{#branches}}  - {{sha}} (branch {{branch}}, implementor '{{name}}')
-{{/branches}}{{/integration.repos}}You are the ONLY stage that runs integration tests locally: the
+{{#each branches}}  - {{sha}} (branch {{branch}}, implementor '{{name}}')
+{{/each}}{{/each}}You are the ONLY stage that runs integration tests locally: the
 implementors and the validators run unit tests only. Run the full
 acceptance and integration test suites here.
 

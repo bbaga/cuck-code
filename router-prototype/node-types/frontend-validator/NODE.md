@@ -33,10 +33,10 @@ the changed pages when the work includes a user interface.
   inside dies with the labeled container. Never mount the host docker
   socket (-v /var/run/docker.sock:...): containers started through a
   shared socket escape the label cleanup.
-{{#source.id}}- The implementor's app port: read ui.port at the repo root, or call
+{{#if source.id}}- The implementor's app port: read ui.port at the repo root, or call
   curl -s {{router.url}}/api/protocol/workers/{{source.id}}/port
   If the app is not running, you may start it yourself (directly or in
-  a docker container) on that port.{{/source.id}}
+  a docker container) on that port.{{/if}}
 - Before browser tests, acquire a UI test slot (other validators may run
   at the same time):
   curl -s -X POST {{router.url}}/api/protocol/workers/{{instance.id}}/uitest

@@ -23,7 +23,7 @@ playwright browser tools (browser_navigate, browser_snapshot,
 browser_click) for a smoke pass of the pages you touched. Keep the
 browser console free of errors.
 Whenever you perform browser-based UI or UX testing, launch the browser in headless mode so it cannot disrupt the user's desktop or session.
-{{#trackerTicket}}Tracker ticket: {{trackerTicket}}. Your related branch must begin with exactly {{trackerTicket}}.{{/trackerTicket}}
+{{#if trackerTicket}}Tracker ticket: {{trackerTicket}}. Your related branch must begin with exactly {{trackerTicket}}.{{/if}}
 
 ## Browser, port, and docker tools (frontend persona)
 - Your session has its own playwright browser (MCP tools). No other

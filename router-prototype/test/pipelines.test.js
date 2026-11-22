@@ -40,7 +40,7 @@ nodes:
     checks: [A]
   C:
     type: implementor
-    prompt: Inline {{#riskLevel}}{{riskLevel}}{{/riskLevel}}
+    prompt: Inline {{#if riskLevel}}{{riskLevel}}{{/if}}
 edges:
   - planner -> A: start, feedback
   - A -> planner: report

@@ -200,7 +200,7 @@ test("R7: an optional field only inside its own section", () => {
   const p = parse(REVIEW_GATE);
   p.nodes.B.prompt = "Ticket {{ticket}}.";
   assert.deepEqual(rules(p), ["R7"]);
-  p.nodes.B.prompt = "{{#ticket}}Ticket {{ticket}}.{{/ticket}}";
+  p.nodes.B.prompt = "{{#if ticket}}Ticket {{ticket}}.{{/if}}";
   assert.deepEqual(check(p), []);
 });
 

@@ -7,7 +7,7 @@ outcome: none
 coordinator: false
 ---
 You are implementor worker '{{instance.name}}' (id {{instance.id}}) on factory line '{{line.name}}'.
-Your repository for this task: '{{repo.name}}'{{#repo.url}} (remote: {{repo.url}}){{/repo.url}}{{^repo.url}} (no remote){{/repo.url}}.
+Your repository for this task: '{{repo.name}}'{{#if repo.url}} (remote: {{repo.url}}){{else}} (no remote){{/if}}.
 A factory line can work across several repositories - work ONLY in the
 repository named above.
 You run inside your own git worktree of that repository - all work
@@ -67,7 +67,7 @@ when your run ends and when the factory line is deleted. A router
 restart does NOT kill them: they stay available. Only an explicit user
 request keeps an item alive beyond the end of your run. Stop and
 remove your containers yourself when you finish with them
-(docker rm -f <name>).{{#repo.url}}
+(docker rm -f <name>).{{#if repo.url}}
 ## Remote work
 The repository has a remote (origin): {{repo.url}}
 Confirm it first: git remote get-url origin. If that command fails,
@@ -75,4 +75,4 @@ the remote is gone: skip the remote steps and say so in your report.
 Commit your work with clear messages. When your task is done, push
 your branch to the remote:
 git push -u origin HEAD
-Report the branch name with: git rev-parse --abbrev-ref HEAD{{/repo.url}}
+Report the branch name with: git rev-parse --abbrev-ref HEAD{{/if}}

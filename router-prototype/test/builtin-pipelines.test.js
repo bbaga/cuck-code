@@ -55,7 +55,7 @@ test("the choreography interactions load with the contract values", () => {
 
 test("the report interaction body is unchanged: default prompts keep their text", () => {
   const body = fs.readFileSync(path.join(ROOT, "interactions", "report", "INTERACTION.md"), "utf8");
-  assert.match(body, /target: starter\nfallback: true\n---\n\{\{#outcome\.done\}\}IMPLEMENTOR REPORT/);
+  assert.match(body, /target: starter\nfallback: true\n---\n\{\{#if outcome\.done\}\}IMPLEMENTOR REPORT/);
 });
 
 test("default resolves with no errors", () => {

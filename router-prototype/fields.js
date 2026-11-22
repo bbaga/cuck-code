@@ -123,7 +123,7 @@ function checkValues(declared, body) {
 function checkOptionalUse(name, decl, sectionsAround) {
   if (!decl || decl.optional !== true) return null;
   if (Array.isArray(sectionsAround) && sectionsAround.includes(name)) return null;
-  return `optional field '${name}' may appear only inside {{#${name}}}...{{/${name}}}`;
+  return `optional field '${name}' may appear only inside {{#if ${name}}}...{{/if}}`;
 }
 
 module.exports = { ROUTER_VARIABLES, isRouterVariable, checkDeclaration, checkValues, checkOptionalUse, splitInstances, MAX_INSTANCES };

@@ -294,7 +294,7 @@ fields:
     description: Ticket id that every branch name must start with.
     type: string
     pattern: "^[A-Z]+-[0-9]+$"
-    optional: true        # used only inside {{#trackerTicket}}...{{/trackerTicket}}
+    optional: true        # used only inside {{#if trackerTicket}}...{{/if}}
 ```
 
 A field is required and must be non-empty, unless it is `optional: true`. An
@@ -402,14 +402,14 @@ choose from that set but cannot add behaviour:
 
 ### Templates
 
-Templates use a small mustache subset with no logic and no escaping:
+Templates are Handlebars, with no escaping and only a small part of the language:
 
 - `{{name}}` and `{{a.b}}` insert a value.
-- `{{#name}}...{{/name}}` renders its content if the value is set. If the
-  value is a list, it renders once per item.
-- `{{^name}}...{{/name}}` renders its content if the value is not set.
+- `{{#if name}}...{{else}}...{{/if}}` renders its content if the value is set.
+- `{{#unless name}}...{{/unless}}` renders its content if the value is not set.
+- `{{#each name}}...{{/each}}` renders once per item of a list. `{{@root.name}}` reads a top-level value.
 
-Sections are what the current prompts need: the remote block only when a
+Blocks are what the current prompts need: the remote block only when a
 repo has a remote, the tracker-ticket line, and the per-repo commit list of
 the integration brief. The rules on fields above apply to every template.
 

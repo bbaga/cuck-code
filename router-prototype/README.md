@@ -366,13 +366,21 @@ The router reads three folders, highest priority first. Each can hold
 
 ### Templates
 
-Templates use a small mustache subset, with no logic and no escaping:
+Templates are [Handlebars](https://handlebarsjs.com), compiled with no HTML escaping and
+with only a small part of the language allowed:
 
 - `{{name}}` and `{{a.b}}` insert a value. A missing value is an error. The
   router never sends a prompt with an unfilled placeholder.
-- `{{#name}}...{{/name}}` renders its content when the value is set (not
-  missing, not empty, not `false`). For a list, it renders once per item.
-- `{{^name}}...{{/name}}` renders its content when the value is not set.
+- `{{#if name}}...{{else}}...{{/if}}` renders the first part when the value is set
+  (not missing, not empty, not `false`) and the `{{else}}` part when it is not.
+  `{{else}}` is optional. A missing name in `{{#if}}` is not an error.
+- `{{#unless name}}...{{/unless}}` renders its content when the value is not set.
+- `{{#each name}}...{{/each}}` renders once per item of a list. Inside it, a name
+  is read from the item. Use `{{@root.name}}` for a top-level value.
+- `{{! comment }}` renders nothing.
+- Nothing else is allowed: no helpers with arguments, partials, sub-expressions,
+  `{{{ }}}` raw output, `{{#with}}` or `../` paths. A line that holds only a block
+  tag keeps its line break (the router turns off Handlebars standalone-tag removal).
 - The marker `<!-- task -->` splits a type body into a role part (before) and a
   task part (after). A prompt has at most one marker. The marker is removed
   from the text. On harnesses with a trusted system-prompt channel (`claude`,
@@ -382,7 +390,7 @@ Templates use a small mustache subset, with no logic and no escaping:
 
 **Router variables and caller fields.** `pipeline.has.implementor`,
 `pipeline.has.checker`, `pipeline.has.integration`, `pipeline.has.wait` and
-`pipeline.has.chains` are booleans for sections (`{{#pipeline.has.checker}}`).
+`pipeline.has.chains` are booleans for sections (`{{#if pipeline.has.checker}}`).
 The first three are true when a node has a type with workspace `own-worktree`,
 `source` or `integration`. `wait` is true when a node has a type with `runner: wait`. `chains` is true when an
 edge has a `complete`-triggered `create` interaction, a `complete` `deliver`
@@ -423,7 +431,7 @@ characters that exist in the repository) and `instances` (a comma-separated list
 of 1 to 50 instance names or ids, with no duplicates; `node` narrows it, as for
 `instance`). A field is required and must be
 non-empty, unless it has `optional: true`. An optional field may be used only
-inside a section for that field (`{{#trackerTicket}}...{{/trackerTicket}}`),
+inside a block for that field (`{{#if trackerTicket}}...{{/if}}`),
 so an optional value can never leave a hole in a prompt.
 
 ### Strict calls

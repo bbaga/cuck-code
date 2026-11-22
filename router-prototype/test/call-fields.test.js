@@ -21,7 +21,7 @@ function resolved(extra = {}) {
       planner: { name: "planner", workspace: "coordinator", fields: {}, body: "" },
       implementor: {
         name: "implementor", workspace: "own-worktree", fields: { task, trackerTicket: ticket },
-        body: "Repo {{repo.name}}.\n{{#trackerTicket}}Ticket {{trackerTicket}}{{/trackerTicket}}\n{{task}}",
+        body: "Repo {{repo.name}}.\n{{#if trackerTicket}}Ticket {{trackerTicket}}{{/if}}\n{{task}}",
       },
       validator: {
         name: "validator", workspace: "source", fields: { criteria },

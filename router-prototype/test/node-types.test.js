@@ -188,7 +188,7 @@ test("a child may use a parent's field", () => {
 test("an optional field outside its section is an error", () => {
   const opt = F("t", "    optional: true\n");
   failsWith(() => resolveTypes(typesOf({ root: doc("root", `${ROOT}\n${opt}`, "bad {{t}}") })), /optional field 't'/);
-  resolveTypes(typesOf({ root: doc("root", `${ROOT}\n${opt}`, "{{#t}}ok {{t}}{{/t}}") }));
+  resolveTypes(typesOf({ root: doc("root", `${ROOT}\n${opt}`, "{{#if t}}ok {{t}}{{/if}}") }));
 });
 
 test("a child that changes a parent field is an error", () => {

@@ -22,7 +22,7 @@ Priorities:
   tests: the CI pipelines of the repository run them.
 Verify the work: run the build and the unit tests you added.
 Whenever you perform browser-based UI or UX testing, launch the browser in headless mode so it cannot disrupt the user's desktop or session.
-{{#trackerTicket}}Tracker ticket: {{trackerTicket}}. Your related branch must begin with exactly {{trackerTicket}}.{{/trackerTicket}}
+{{#if trackerTicket}}Tracker ticket: {{trackerTicket}}. Your related branch must begin with exactly {{trackerTicket}}.{{/if}}
 
 
 <!-- task -->

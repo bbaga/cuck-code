@@ -126,7 +126,7 @@ test("request trigger: router variables need no declaration", () => {
 test("request trigger: optional field outside its section", () => {
   const opt = FIELD + "  note:\n    description: A note.\n    type: string\n    optional: true\n";
   assert.match(fault(doc({ fields: opt, body: "{{instructions}} {{note}}" })).message, /optional field 'note'/);
-  load(doc({ fields: opt, body: "{{instructions}} {{#note}}{{note}}{{/note}}" }));
+  load(doc({ fields: opt, body: "{{instructions}} {{#if note}}{{note}}{{/if}}" }));
 });
 
 test("missing file and bad frontmatter", () => {
