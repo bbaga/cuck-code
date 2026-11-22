@@ -79,3 +79,23 @@ test("the plan section has its own resize handle and saved height", () => {
   assert.ok(page.includes(".card:not(.planSized) .plan"));
   assert.ok(page.includes(".card.planSized .plan"));
 });
+
+test("the pipeline pane has a vertical resize handle and a saved width", () => {
+  assert.match(page, /\.resizeHandleX \{[^}]*cursor: col-resize;/s);
+  assert.match(page, /\.pipePane\.pipeSized \{[^}]*max-width: none;[^}]*width: var\(--pipe-width\);/s);
+  assert.match(page, /body\.resizingX \{[^}]*user-select: none;/s);
+  assert.ok(page.includes('createResizeHandle("Resize pipeline pane", "vertical")'));
+  assert.ok(page.includes('h.setAttribute("aria-orientation", orientation)'));
+  assert.ok(page.includes('"cuck.pipeWidth."'));
+  assert.ok(page.includes("st.pipeRow.hidden = st.pipePane.hidden"));
+});
+
+test("pipeline pane width limits: min 360, keyboard step 16", () => {
+  assert.equal(clampSize(200, 360, 900), 360);
+  assert.equal(clampSize(1200, 360, 900), 900);
+  assert.equal(clampSize(300, 360, 200), 360);
+  assert.equal(stepSize(500, 16, 360, 900), 516);
+  assert.equal(stepSize(500, -16, 360, 900), 484);
+  assert.equal(stepSize(900, 16, 360, 900), 900);
+  assert.equal(stepSize(360, -16, 360, 900), 360);
+});
