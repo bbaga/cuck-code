@@ -60,6 +60,21 @@ test("GET /favicon.svg serves the svg with the right content type", { timeout: 3
   assert.ok(body.includes("viewBox"), "svg must have a viewBox");
 });
 
+test("GET /favicon-duck.svg serves the duck svg with the right content type", { timeout: 30_000 }, async () => {
+  const res = await fetch(baseUrl + "/favicon-duck.svg");
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.headers.get("content-type"), "image/svg+xml");
+  const body = await res.text();
+  assert.ok(body.includes("<svg"), "body must contain an <svg root");
+  assert.ok(body.includes("viewBox"), "svg must have a viewBox");
+});
+
+test("GET /sfw-mode.js serves the module with the right content type", { timeout: 30_000 }, async () => {
+  const res = await fetch(baseUrl + "/sfw-mode.js");
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.headers.get("content-type"), "application/javascript");
+});
+
 test("GET / includes the favicon link", { timeout: 30_000 }, async () => {
   const res = await fetch(baseUrl + "/");
   assert.strictEqual(res.status, 200);
@@ -74,7 +89,23 @@ test("GET / shows the logo img before the text in the sidebar h1", { timeout: 30
   const h1 = html.match(/<h1>([\s\S]*?)<\/h1>/);
   assert.ok(h1, "html must contain an h1");
   assert.ok(
-    h1[1].indexOf('<img src="/favicon.svg" alt="">') < h1[1].indexOf("cuck-code"),
+    h1[1].indexOf('<img src="/favicon.svg" alt="" data-brand-logo>') < h1[1].indexOf("cuck-code"),
     "the logo img must come before the text cuck-code",
   );
+});
+
+test("GET / includes the sfw mode script and host", { timeout: 30_000 }, async () => {
+  const res = await fetch(baseUrl + "/");
+  assert.strictEqual(res.status, 200);
+  const html = await res.text();
+  assert.ok(html.includes('<script src="sfw-mode.js"></script>'), "html must load sfw-mode.js");
+  assert.ok(html.includes('id="sfwHost"'), "html must contain the sfw host");
+});
+
+test("GET /pipelines includes the sfw mode script and host", { timeout: 30_000 }, async () => {
+  const res = await fetch(baseUrl + "/pipelines");
+  assert.strictEqual(res.status, 200);
+  const html = await res.text();
+  assert.ok(html.includes("/sfw-mode.js"), "html must load sfw-mode.js");
+  assert.ok(html.includes('id="sfwHost"'), "html must contain the sfw host");
 });
