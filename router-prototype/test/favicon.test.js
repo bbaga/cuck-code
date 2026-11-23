@@ -60,6 +60,21 @@ test("GET /favicon.svg serves the svg with the right content type", { timeout: 3
   assert.ok(body.includes("viewBox"), "svg must have a viewBox");
 });
 
+test("GET /favicon-duck.svg serves the duck svg with the right content type", { timeout: 30_000 }, async () => {
+  const res = await fetch(baseUrl + "/favicon-duck.svg");
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.headers.get("content-type"), "image/svg+xml");
+  const body = await res.text();
+  assert.ok(body.includes("<svg"), "body must contain an <svg root");
+  assert.ok(body.includes("viewBox"), "svg must have a viewBox");
+});
+
+test("GET /sfw-mode.js serves the module with the right content type", { timeout: 30_000 }, async () => {
+  const res = await fetch(baseUrl + "/sfw-mode.js");
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.headers.get("content-type"), "application/javascript");
+});
+
 test("GET / includes the favicon link", { timeout: 30_000 }, async () => {
   const res = await fetch(baseUrl + "/");
   assert.strictEqual(res.status, 200);

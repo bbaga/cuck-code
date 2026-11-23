@@ -3346,9 +3346,20 @@ const routeRequest = (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/favicon-duck.svg") {
+    try {
+      res.writeHead(200, { "Content-Type": "image/svg+xml" });
+      res.end(fs.readFileSync(path.join(__dirname, "web", "favicon-duck.svg")));
+    } catch {
+      return json(res, 404, { error: "not found" });
+    }
+    return;
+  }
+
   if (req.method === "GET" && (url.pathname === "/pipeline-ui.js" || url.pathname === "/registry-ui.js"
     || url.pathname === "/markdown-renderer.js" || url.pathname === "/registry-ui-extra.js"
-    || url.pathname === "/pipelines-page.js" || url.pathname === "/worker-scope.js" || url.pathname === "/registry-line.js")) {
+    || url.pathname === "/pipelines-page.js" || url.pathname === "/worker-scope.js" || url.pathname === "/sfw-mode.js"
+    || url.pathname === "/registry-line.js")) {
     try {
       res.writeHead(200, { "Content-Type": "application/javascript" });
       res.end(fs.readFileSync(path.join(__dirname, "web", url.pathname.slice(1))));
