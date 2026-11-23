@@ -74,7 +74,7 @@ test("script check: columns, edge to the validator, summary, table and log link"
     await page.setViewport(1100, 900);
     await page.waitFor("document.querySelectorAll('.gnode.worker').length === 2");
     assert.equal(await page.evaluate("document.body.innerText.includes('check-backend-impl-1')"), false, "failed check is hidden");
-    await page.evaluate("document.querySelector('.graphToolbar input[type=checkbox], input[type=checkbox]').click()");
+    await page.evaluate("document.querySelector('.hideFailedToggle input[type=checkbox]').click()");
     await page.waitFor("document.querySelectorAll('.gnode.worker').length === 3");
     const nodes = await page.evaluate(`Object.fromEntries([...document.querySelectorAll('.gnode.worker')].map((n) => [
       n.querySelector('.nodeName').textContent, { left: n.offsetLeft, top: n.offsetTop, w: n.offsetWidth,
