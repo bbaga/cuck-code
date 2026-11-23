@@ -89,7 +89,23 @@ test("GET / shows the logo img before the text in the sidebar h1", { timeout: 30
   const h1 = html.match(/<h1>([\s\S]*?)<\/h1>/);
   assert.ok(h1, "html must contain an h1");
   assert.ok(
-    h1[1].indexOf('<img src="/favicon.svg" alt="">') < h1[1].indexOf("cuck-code"),
+    h1[1].indexOf('<img src="/favicon.svg" alt="" data-brand-logo>') < h1[1].indexOf("cuck-code"),
     "the logo img must come before the text cuck-code",
   );
+});
+
+test("GET / includes the sfw mode script and host", { timeout: 30_000 }, async () => {
+  const res = await fetch(baseUrl + "/");
+  assert.strictEqual(res.status, 200);
+  const html = await res.text();
+  assert.ok(html.includes('<script src="sfw-mode.js"></script>'), "html must load sfw-mode.js");
+  assert.ok(html.includes('id="sfwHost"'), "html must contain the sfw host");
+});
+
+test("GET /pipelines includes the sfw mode script and host", { timeout: 30_000 }, async () => {
+  const res = await fetch(baseUrl + "/pipelines");
+  assert.strictEqual(res.status, 200);
+  const html = await res.text();
+  assert.ok(html.includes("/sfw-mode.js"), "html must load sfw-mode.js");
+  assert.ok(html.includes('id="sfwHost"'), "html must contain the sfw host");
 });
