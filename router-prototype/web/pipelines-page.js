@@ -340,7 +340,7 @@
     box.textContent = "";
     if (!box.zoomCtl) {
       box.zoomCtl = pipelineUI.attachGraphZoom({ doc: document, box, toolbarHost: $("graphZoom"),
-        getContentSize: () => box.layoutSize, storage: localStorage, storageKey: "cuck.pipelinesPageZoom" });
+        getContentSize: () => box.layoutSize, storage: localStorage, storageKey: "duck.pipelinesPageZoom" });
     }
     const kinds = pipelineUI.loadGraphKinds(localStorage);
     const list = $("edgesList");

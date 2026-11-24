@@ -22,14 +22,14 @@ const edge = (from, to, ...names) => ({ from, to, interactions: names });
 const mk = (nodes, edges, start = "planner") => ({ start, nodes, edges, interactions, types });
 const rel = (g, kind) => graphRelations(g).relations.filter((r) => r.kind === kind);
 
-const CUCK_CI_NODES = {
+const DUCK_CI_NODES = {
   planner: { type: "planner" },
   "backend-impl": { type: "impl" },
   "backend-val": { type: "val", checks: ["backend-impl"], after: ["ci"] },
   ci: { type: "ci", checks: ["backend-impl"], required: true },
   integration: { type: "integ" },
 };
-const CUCK_CI_EDGES = [
+const DUCK_CI_EDGES = [
   edge("planner", "backend-impl", "start", "feedback"),
   edge("backend-impl", "planner", "report"),
   edge("planner", "backend-val", "start"),
@@ -39,11 +39,11 @@ const CUCK_CI_EDGES = [
   edge("planner", "integration", "start"),
   edge("integration", "planner", "report"),
 ];
-const cuckCi = () => mk(JSON.parse(JSON.stringify(CUCK_CI_NODES)), CUCK_CI_EDGES);
+const duckCi = () => mk(JSON.parse(JSON.stringify(DUCK_CI_NODES)), DUCK_CI_EDGES);
 
 test("interaction relations: one per edge, label, ordering and dashed", () => {
-  const out = rel(cuckCi(), "interaction");
-  assert.equal(out.length, CUCK_CI_EDGES.length);
+  const out = rel(duckCi(), "interaction");
+  assert.equal(out.length, DUCK_CI_EDGES.length);
   assert.deepEqual(out[0], { from: "planner", to: "backend-impl", kind: "interaction", label: "start, feedback",
     interactions: ["start", "feedback"], ordering: true, dashed: false });
   assert.deepEqual(out[1], { from: "backend-impl", to: "planner", kind: "interaction", label: "report",
@@ -54,7 +54,7 @@ test("interaction relations: one per edge, label, ordering and dashed", () => {
 });
 
 test("checks relation: W -> C, label checks, ordering", () => {
-  const out = rel(cuckCi(), "checks");
+  const out = rel(duckCi(), "checks");
   assert.deepEqual(out, [
     { from: "backend-impl", to: "backend-val", kind: "checks", label: "checks", ordering: true },
     { from: "backend-impl", to: "ci", kind: "checks", label: "checks", ordering: true },
@@ -62,27 +62,27 @@ test("checks relation: W -> C, label checks, ordering", () => {
 });
 
 test("after relation: X -> C, label after PASS, ordering", () => {
-  assert.deepEqual(rel(cuckCi(), "after"),
+  assert.deepEqual(rel(duckCi(), "after"),
     [{ from: "ci", to: "backend-val", kind: "after", label: "after PASS", ordering: true }]);
 });
 
 test("accepted-work relation: each own-worktree node -> each node that requires it", () => {
-  assert.deepEqual(rel(cuckCi(), "accepted-work"),
+  assert.deepEqual(rel(duckCi(), "accepted-work"),
     [{ from: "backend-impl", to: "integration", kind: "accepted-work", label: "accepted work", ordering: true }]);
 });
 
 test("required relation: a required script node -> each node that requires accepted work", () => {
-  assert.deepEqual(rel(cuckCi(), "required"),
+  assert.deepEqual(rel(duckCi(), "required"),
     [{ from: "ci", to: "integration", kind: "required", label: "required PASS", ordering: true }]);
 });
 
 test("relations come in the order edges, checks, after, accepted-work, required", () => {
-  const kinds = graphRelations(cuckCi()).relations.map((r) => r.kind);
+  const kinds = graphRelations(duckCi()).relations.map((r) => r.kind);
   assert.deepEqual([...new Set(kinds)], ["interaction", "checks", "after", "accepted-work", "required"]);
 });
 
-test("cuck-ci columns and rows", () => {
-  const out = graphRelations(cuckCi());
+test("duck-ci columns and rows", () => {
+  const out = graphRelations(duckCi());
   assert.deepEqual(out.columns, { planner: 0, "backend-impl": 1, ci: 2, "backend-val": 3, integration: 4 });
   assert.equal(out.cycle, null);
   assert.equal(out.cycleCauses, null);
@@ -106,14 +106,14 @@ test("the default pipeline columns", () => {
     planner: 0, "backend-impl": 1, "frontend-impl": 1, "backend-val": 2, "frontend-val": 2, integration: 3 });
 });
 
-test("cuck-ci without after: backend-val is in column 2", () => {
-  const g = cuckCi();
+test("duck-ci without after: backend-val is in column 2", () => {
+  const g = duckCi();
   delete g.nodes["backend-val"].after;
   assert.equal(graphRelations(g).columns["backend-val"], 2);
 });
 
 test("rows follow the edge list", () => {
-  const g = cuckCi();
+  const g = duckCi();
   g.nodes["backend-val"].after = [];
   const first = graphRelations({ ...g, edges: [
     edge("planner", "backend-impl", "start"), edge("planner", "backend-val", "start"), edge("planner", "ci", "start")] });
@@ -198,11 +198,11 @@ test("a checker type that also requires accepted-work is no loop", () => {
 });
 
 test("renaming every node and type gives the same layout", () => {
-  const base = graphRelations(cuckCi());
+  const base = graphRelations(duckCi());
   const nodeMap = { planner: "n0", "backend-impl": "n1", "backend-val": "n2", ci: "n3", integration: "n4" };
   const typeMap = { planner: "t0", impl: "t1", val: "t2", ci: "t3", integ: "t4", gate: "t5" };
   const nodes = {};
-  for (const [id, n] of Object.entries(CUCK_CI_NODES)) {
+  for (const [id, n] of Object.entries(DUCK_CI_NODES)) {
     const copy = { ...n, type: typeMap[n.type] };
     if (n.checks) copy.checks = n.checks.map((x) => nodeMap[x]);
     if (n.after) copy.after = n.after.map((x) => nodeMap[x]);
@@ -210,7 +210,7 @@ test("renaming every node and type gives the same layout", () => {
   }
   const renamedTypes = Object.fromEntries(Object.entries(types).map(([k, v]) => [typeMap[k], v]));
   const out = graphRelations({ start: "n0", nodes, interactions, types: renamedTypes,
-    edges: CUCK_CI_EDGES.map((e) => ({ ...e, from: nodeMap[e.from], to: nodeMap[e.to] })) });
+    edges: DUCK_CI_EDGES.map((e) => ({ ...e, from: nodeMap[e.from], to: nodeMap[e.to] })) });
   const back = (obj) => Object.fromEntries(Object.entries(obj).map(([k, v]) => [Object.keys(nodeMap).find((o) => nodeMap[o] === k), v]));
   assert.deepEqual(back(out.columns), base.columns);
   assert.deepEqual(back(out.rows), base.rows);

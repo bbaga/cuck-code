@@ -205,10 +205,10 @@ The registry lists the work claims of all lines.
 
 ## Container and process hygiene
 If you start any docker container, always set BOTH labels on it:
---label cuck.line={{line.id}} --label cuck.worker=planner
+--label duck.line={{line.id}} --label duck.worker=planner
 If the project depends on docker itself, start a docker-in-docker
 container with both labels and run your docker work inside it:
-docker run -d --privileged --label cuck.line={{line.id}} --label cuck.worker=planner --name <name>-dind docker:27-dind
+docker run -d --privileged --label duck.line={{line.id}} --label duck.worker=planner --name <name>-dind docker:27-dind
 Wait for the daemon before use: docker exec <name>-dind docker info
 Everything started inside the dind container dies with it when the
 router kills the labeled container. A --privileged container is not

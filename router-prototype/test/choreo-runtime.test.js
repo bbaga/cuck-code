@@ -44,7 +44,7 @@ const FAN_OUT = () => pipeline("  val: { type: backend-validator, checks: [impl]
   - "[val, lint] -> impl: rework"
   - "[val, lint] -> planner: report"`);
 const SCRIPT = () => pipeline(
-  '  lint: { type: script-check, checks: [impl], scripts: [{ name: env, run: "printf %s \\"$CUCK_BASE_COMMIT\\"" }] }',
+  '  lint: { type: script-check, checks: [impl], scripts: [{ name: env, run: "printf %s \\"$DUCK_BASE_COMMIT\\"" }] }',
   "  - impl -> lint: handoff\n  - lint -> planner: report");
 
 let seq = 0;
@@ -238,7 +238,7 @@ test("a fan-out result of an older head run is ignored", () => {
   assert.deepEqual(r.head.reworkRounds, {});
 });
 
-test("CUCK_BASE_COMMIT reaches the script environment", async () => {
+test("DUCK_BASE_COMMIT reaches the script environment", async () => {
   const graph = SCRIPT();
   const r = rig(graph);
   r.runHead();

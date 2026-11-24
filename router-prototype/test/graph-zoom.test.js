@@ -62,10 +62,10 @@ test("zoomScrollOffset keeps the point under the pointer fixed", () => {
 
 test("the stored zoom round-trips as a whole percent", () => {
   const s = memory();
-  assert.equal(readStoredSize(s, "cuck.pipeZoom.l1", ZOOM_MIN, ZOOM_MAX), null);
-  writeStoredSize(s, "cuck.pipeZoom.l1", 125);
-  assert.equal(s.getItem("cuck.pipeZoom.l1"), "125");
-  assert.equal(readStoredSize(s, "cuck.pipeZoom.l1", ZOOM_MIN, ZOOM_MAX), 125);
+  assert.equal(readStoredSize(s, "duck.pipeZoom.l1", ZOOM_MIN, ZOOM_MAX), null);
+  writeStoredSize(s, "duck.pipeZoom.l1", 125);
+  assert.equal(s.getItem("duck.pipeZoom.l1"), "125");
+  assert.equal(readStoredSize(s, "duck.pipeZoom.l1", ZOOM_MIN, ZOOM_MAX), 125);
   assert.equal(readStoredSize(memory({ k: "900" }), "k", ZOOM_MIN, ZOOM_MAX), 300);
 });
 

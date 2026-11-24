@@ -27,7 +27,7 @@ async function run(box, steps, extra = {}) {
   const dones = [];
   const handle = startScriptRun({
     nodeId: "ci", steps, failFast: true, runRoot: box.runRoot, checkout: "clean",
-    checkClean: false, repoName: "cuck-code", branch: "b", commit: "c",
+    checkClean: false, repoName: "duck-code", branch: "b", commit: "c",
     env: { PATH: process.env.PATH }, timeLimitSec: 30, logDir: box.logDir,
     killGraceMs: 200,
     hooks: {
@@ -84,10 +84,10 @@ test("repo filter and no applicable script", async (t) => {
   const box = sandbox(t);
   const mixed = await run(box, [step("a", "exit 0"), step("py", "exit 1", { repos: ["other"] })]);
   assert.equal(mixed.stepCalls.at(-1)[1].skipKind, "repo");
-  assert.match(mixed.report, /2\. py: SKIPPED \(not for repo 'cuck-code'\)/);
+  assert.match(mixed.report, /2\. py: SKIPPED \(not for repo 'duck-code'\)/);
   assert.equal(explicitVerdict(mixed.report), "pass");
   const none = await run(box, [step("py", "exit 0", { repos: ["other"] })]);
-  assert.match(none.report, /No script applies to repo 'cuck-code'\./);
+  assert.match(none.report, /No script applies to repo 'duck-code'\./);
   assert.equal(explicitVerdict(none.report), "fail");
 });
 

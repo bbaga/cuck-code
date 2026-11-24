@@ -15,7 +15,7 @@ nodes:
     maxRounds: 3
     scripts:
       - name: diff-check
-        run: git diff --check "$CUCK_BASE_COMMIT" HEAD
+        run: git diff --check "$DUCK_BASE_COMMIT" HEAD
         timeout: 120
   frontend-val:  { type: frontend-validator, checks: [frontend-impl], maxRounds: 2 }
   batch:         { type: wait, timeLimit: 14400 }

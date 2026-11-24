@@ -53,11 +53,11 @@ async function post(line, name, body) {
 }
 
 // The example pipeline. The script of backend-lint fails on its first run only. It writes
-// CUCK_BASE_COMMIT to a file first, then it ends with the real command of the example.
+// DUCK_BASE_COMMIT to a file first, then it ends with the real command of the example.
 function lintGraph(envFile, marker) {
   const graph = loadBuiltinPipeline("example-choreographed", fs, path.join(__dirname, ".."));
   const script = graph.nodes["backend-lint"].scripts[0];
-  script.run = `printf %s "$CUCK_BASE_COMMIT" > '${envFile}'; ` +
+  script.run = `printf %s "$DUCK_BASE_COMMIT" > '${envFile}'; ` +
     `if [ ! -f '${marker}' ]; then touch '${marker}'; exit 1; fi; ${script.run}`;
   return graph;
 }
@@ -140,7 +140,7 @@ test("example-choreographed: two tasks, one combined rework each, the batch and 
   assert.deepEqual(r.heads.backend.reworkRounds, { "backend-impl": 1 });
   assert.deepEqual(r.texts(), [], "no planner wake after the rework");
   noWake("after the backend rework");
-  assert.equal(fs.readFileSync(r.envFile, "utf8"), r.base, "backend-lint gets CUCK_BASE_COMMIT");
+  assert.equal(fs.readFileSync(r.envFile, "utf8"), r.base, "backend-lint gets DUCK_BASE_COMMIT");
 
   // Backend run 2: both checkers pass and the task arrives at the batch.
   r.endNext("Fixed the backend work.");

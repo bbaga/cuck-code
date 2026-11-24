@@ -44,7 +44,7 @@ test("pipeline tab: zoom buttons scale the SVG and keep the zoom", async (t) => 
     if (shots) await page.screenshot(path.join(shots, "zoom-125.png"));
     // Ctrl+wheel keeps the graph point under the pointer in both axes.
     const BOX = `${PANE}.querySelector('.pipeGraphBox')`;
-    await page.evaluate(`localStorage.setItem("cuck.pipeZoom.${fx.lineId}", "200")`);
+    await page.evaluate(`localStorage.setItem("duck.pipeZoom.${fx.lineId}", "200")`);
     await page.evaluate("location.reload()");
     await page.waitFor("/browser[- ]line/i.test(document.body.innerText)");
     await page.evaluate("[...document.querySelectorAll('button.tabBtn')].find((b) => b.textContent === 'Pipeline').click()");
@@ -68,7 +68,7 @@ test("pipeline tab: zoom buttons scale the SVG and keep the zoom", async (t) => 
     if (shots) {
       // The saved zoom applies again after a reload.
       for (const pct of [50, 100, 200]) {
-        await page.evaluate(`localStorage.setItem("cuck.pipeZoom.${fx.lineId}", "${pct}")`);
+        await page.evaluate(`localStorage.setItem("duck.pipeZoom.${fx.lineId}", "${pct}")`);
         await page.evaluate("location.reload()");
         await page.waitFor("/browser[- ]line/i.test(document.body.innerText)");
         await page.evaluate("[...document.querySelectorAll('button.tabBtn')].find((b) => b.textContent === 'Pipeline').click()");

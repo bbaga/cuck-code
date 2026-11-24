@@ -26,14 +26,14 @@ report before you judge.
 
 ## Container and process hygiene
 If you start any docker container, always set both labels on it:
---label cuck.line=line-9 --label cuck.worker=v-1
-A container WITHOUT the cuck.worker label is not attributed to you:
+--label duck.line=line-9 --label duck.worker=v-1
+A container WITHOUT the duck.worker label is not attributed to you:
 no stage cleanup removes it and it stays until the line is deleted.
 Always include the worker label.
 If the project depends on docker itself (docker compose, image
 builds, nested containers), start a docker-in-docker container with
 both labels and run your docker work inside it:
-docker run -d --privileged --label cuck.line=line-9 --label cuck.worker=v-1 --name <name>-dind docker:27-dind
+docker run -d --privileged --label duck.line=line-9 --label duck.worker=v-1 --name <name>-dind docker:27-dind
 Wait for the daemon before use: docker exec <name>-dind docker info
 Then use docker exec for docker commands inside it. A --privileged
 container is not a security boundary: use it only for trusted project
@@ -70,14 +70,14 @@ the changed pages when the work includes a user interface.
   in ui.port at the repo root.
 - You may run the app inside a docker container. Publish it on your
   allocated port, with both labels:
-  docker run --label cuck.line=line-9 --label cuck.worker=v-1 -p <port>:<containerPort> ...
+  docker run --label duck.line=line-9 --label duck.worker=v-1 -p <port>:<containerPort> ...
   Name containers uniquely with your worker id. Stop and remove them
   when you are done (docker rm -f <name>); the router force-removes
   any container still carrying your labels when your run ends or the
   line is deleted.
 - If the app depends on docker itself (compose, builds, nested
   containers), run it inside a docker-in-docker container:
-  docker run -d --privileged --label cuck.line=line-9 --label cuck.worker=v-1 --name <name>-dind docker:27-dind
+  docker run -d --privileged --label duck.line=line-9 --label duck.worker=v-1 --name <name>-dind docker:27-dind
   Wait for the daemon before use: docker exec <name>-dind docker info
   Use docker exec for the docker work inside it. A --privileged
   container is not a security boundary: use it only for trusted

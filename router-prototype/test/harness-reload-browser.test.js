@@ -37,7 +37,7 @@ const STUBS = "window.mermaid = { initialize() {}, run() { return Promise.resolv
 // not installed. Under CPU load a fake CLI shell script can exceed that, and
 // the catalog silently loses claude. The tests control the catalog through
 // fake CLIs, so they lift the limit. The server reads it when it first loads.
-process.env.CUCK_PROBE_TIMEOUT_MS = "60000";
+process.env.DUCK_PROBE_TIMEOUT_MS = "60000";
 const { startDashboardFixture } = require("./fixtures/dashboard-browser");
 
 const ROWS = "document.querySelectorAll('#createPanel .phaseRow').length";

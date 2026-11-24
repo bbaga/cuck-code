@@ -50,21 +50,21 @@ async function freePort() {
 }
 
 // A loaded machine must not turn a slow fake CLI into a failed probe. A test or the caller env can override these.
-const SLOW_MACHINE_LIMITS = { CUCK_PROBE_TIMEOUT_MS: "60000" };
+const SLOW_MACHINE_LIMITS = { DUCK_PROBE_TIMEOUT_MS: "60000" };
 
 async function startRouter(root, extraEnv = {}, { docker = NOOP_DOCKER } = {}) {
   const port = await freePort();
   const bin = dockerBin(docker);
-  // Tests never read the host's plugin folder: CUCK_HOME is a fresh empty folder unless a test sets it.
-  const cuckHome = extraEnv.CUCK_HOME ? null : fs.mkdtempSync(path.join(os.tmpdir(), "router-test-cuck-"));
+  // Tests never read the host's plugin folder: DUCK_HOME is a fresh empty folder unless a test sets it.
+  const duckHome = extraEnv.DUCK_HOME ? null : fs.mkdtempSync(path.join(os.tmpdir(), "router-test-duck-"));
   const child = spawn(process.execPath, [SERVER], {
-    env: { ...SLOW_MACHINE_LIMITS, ...process.env, ...(cuckHome ? { CUCK_HOME: cuckHome } : {}), ...extraEnv, PORT: String(port), LINES_DIR: root,
+    env: { ...SLOW_MACHINE_LIMITS, ...process.env, ...(duckHome ? { DUCK_HOME: duckHome } : {}), ...extraEnv, PORT: String(port), LINES_DIR: root,
       PATH: `${bin}:${extraEnv.PATH || process.env.PATH}` },
     stdio: ["ignore", "pipe", "ignore"],
   });
   liveChildren.add(child);
   child.once("exit", () => liveChildren.delete(child));
-  const router = { child, bin, cuckHome, base: `http://127.0.0.1:${port}` };
+  const router = { child, bin, duckHome, base: `http://127.0.0.1:${port}` };
   // Read all output so the child never blocks. Resolve `ready` on the registry.ready line.
   let readyLine;
   const ready = new Promise((resolve) => { readyLine = resolve; });
@@ -103,7 +103,7 @@ async function startRouter(root, extraEnv = {}, { docker = NOOP_DOCKER } = {}) {
 }
 
 // SIGTERM, then SIGKILL after the grace period. Resolves after the exit.
-async function stopRouter({ child, bin, cuckHome }, graceMs = 3000) {
+async function stopRouter({ child, bin, duckHome }, graceMs = 3000) {
   if (child.exitCode === null && child.signalCode === null) {
     const exited = new Promise((resolve) => child.once("exit", resolve));
     child.kill("SIGTERM");
@@ -112,7 +112,7 @@ async function stopRouter({ child, bin, cuckHome }, graceMs = 3000) {
     clearTimeout(timer);
   }
   fs.rmSync(bin, { recursive: true, force: true });
-  if (cuckHome) fs.rmSync(cuckHome, { recursive: true, force: true });
+  if (duckHome) fs.rmSync(duckHome, { recursive: true, force: true });
 }
 
 module.exports = { startRouter, stopRouter, wait };

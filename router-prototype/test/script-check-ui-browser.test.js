@@ -1,5 +1,5 @@
 "use strict";
-// Real-browser check of the line graph with a script check (pipeline cuck-ci) and the check card.
+// Real-browser check of the line graph with a script check (pipeline duck-ci) and the check card.
 // Skipped when no Chrome is available. Screenshots go to SCRIPT_CHECK_SHOTS=<dir> when set.
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -16,7 +16,7 @@ const STUBS = "window.mermaid = { initialize() {}, run() { return Promise.resolv
   + "window.__errs = [];"
   + "window.addEventListener('error', (e) => window.__errs.push(String(e.message)));";
 
-const CUCK_CI = `name: cuck-ci
+const DUCK_CI = `name: duck-ci
 start: planner
 nodes:
   planner: { type: planner }
@@ -31,14 +31,14 @@ edges:
   - "[backend-val, ci, integration] -> planner: report"
 `;
 
-function cuckCiGraph() {
+function duckCiGraph() {
   const catalog = buildCatalog({ builtInDir: path.join(__dirname, "..") });
-  catalog.pipelines["cuck-ci"] = { layer: "managed", text: CUCK_CI };
-  return resolvePipelineDefinition("cuck-ci", catalog);
+  catalog.pipelines["duck-ci"] = { layer: "managed", text: DUCK_CI };
+  return resolvePipelineDefinition("duck-ci", catalog);
 }
 
 function seed(line, logFile) {
-  line.graph = cuckCiGraph();
+  line.graph = duckCiGraph();
   const done = { status: "completed", transcript: [], runGeneration: 1 };
   const results = [
     { index: 1, name: "lint", status: "pass", exitCode: 0, signal: null, durationMs: 1200, reason: null, logFile },

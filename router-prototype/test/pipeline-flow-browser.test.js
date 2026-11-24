@@ -1,5 +1,5 @@
 "use strict";
-// Real-browser check of the Pipeline tab for the README example cuck-ci (E1): columns from the
+// Real-browser check of the Pipeline tab for the README example duck-ci (E1): columns from the
 // server data, the relation kind checkboxes, the script node and its settings row.
 // Skipped when no Chrome is available. Set PIPELINE_TAB_SHOTS=<dir> to save screenshots.
 const test = require("node:test");
@@ -23,21 +23,21 @@ const STUBS = "window.mermaid = { initialize() {}, run() { return Promise.resolv
 const PANE = "document.querySelector('.pipePane')";
 const SVG = PANE + ".querySelector('svg.pipeGraph')";
 
-// The cuck-ci pipeline of the README, resolved from a temporary copy of the repository folders.
-function cuckCiGraph() {
-  const yaml = /```yaml\n(name: cuck-ci[\s\S]*?)```/.exec(fs.readFileSync(path.join(ROOT, "README.md"), "utf8"))[1];
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cuck-ci-"));
+// The duck-ci pipeline of the README, resolved from a temporary copy of the repository folders.
+function duckCiGraph() {
+  const yaml = /```yaml\n(name: duck-ci[\s\S]*?)```/.exec(fs.readFileSync(path.join(ROOT, "README.md"), "utf8"))[1];
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "duck-ci-"));
   fs.mkdirSync(path.join(root, "pipelines"));
   for (const dir of ["node-types", "interactions"]) fs.symlinkSync(path.join(ROOT, dir), path.join(root, dir));
-  fs.writeFileSync(path.join(root, "pipelines", "cuck-ci.yaml"), yaml);
-  try { return loadBuiltinPipeline("cuck-ci", fs, root); } finally { fs.rmSync(root, { recursive: true }); }
+  fs.writeFileSync(path.join(root, "pipelines", "duck-ci.yaml"), yaml);
+  try { return loadBuiltinPipeline("duck-ci", fs, root); } finally { fs.rmSync(root, { recursive: true }); }
 }
 
-test("pipeline tab: cuck-ci columns, kind checkboxes, script node and settings row", async (t) => {
+test("pipeline tab: duck-ci columns, kind checkboxes, script node and settings row", async (t) => {
   const fx = await startDashboardFixture();
   let page = null;
   try {
-    require("../server").lines.get(fx.lineId).graph = cuckCiGraph();
+    require("../server").lines.get(fx.lineId).graph = duckCiGraph();
     try { page = await openPage(fx.url, { initScript: STUBS }); }
     catch (e) {
       if (e.code === "BROWSER_UNAVAILABLE") return t.skip("Chrome is missing: " + e.message);
@@ -75,7 +75,7 @@ test("pipeline tab: cuck-ci columns, kind checkboxes, script node and settings r
     assert.equal(await page.evaluate(`[...${PANE}.querySelectorAll('.pgLegend input')].every((i) => i.checked)`), true);
     const visible = (kind) => page.evaluate(`[...${SVG}.querySelectorAll('path.pgEdge.${kind}')].filter((p) => p.style.display !== 'none').length`);
     assert.ok(await visible("checks") > 0);
-    await shot("pipeline-tab-cuck-ci.png");
+    await shot("pipeline-tab-duck-ci.png");
     await page.evaluate(`${box("checks")}.click()`);
     assert.equal(await visible("checks"), 0);
     assert.ok(await visible("after") > 0);

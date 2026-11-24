@@ -4,9 +4,9 @@ Revision: P0 review, 2026-10-30
 
 ## 1. Confirmed checkout and hooks
 
-1. The checkout root is `/Users/bbagameri/github/cuck-code/router-prototype/lines/worktrees/7aeb1fa2-da12-4ffd-8f3a-31e5949480dc/app/p0-execution-handoff`.
+1. The checkout root is `/Users/bbagameri/github/duck-code/router-prototype/lines/worktrees/7aeb1fa2-da12-4ffd-8f3a-31e5949480dc/app/p0-execution-handoff`.
 2. The application root is `router-prototype/` below that checkout.
-3. The remote is `git@github.com:bbaga/cuck-code.git`.
+3. The remote is `git@github.com:bbaga/duck-code.git`.
 4. The branch is `7aeb1fa2/p0-execution-handoff`.
 5. Request construction is `planner-request.js:plannerRequest`.
 6. Request restoration is `restorePlannerRequest` and `restorePlannerRequests`.

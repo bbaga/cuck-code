@@ -142,7 +142,7 @@ test("router: POST /api/lines resolves pipelineName from the user layer", async 
   put(home, "pipelines/broken-flow.yaml", pipelineText("broken-flow", "no-such-type"));
   const linesDir = path.join(root, "lines");
   fs.mkdirSync(linesDir);
-  const router = await startRouter(linesDir, { CUCK_HOME: home });
+  const router = await startRouter(linesDir, { DUCK_HOME: home });
   const post = async (body) => {
     const res = await fetch(router.base + "/api/lines", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });

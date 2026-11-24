@@ -115,7 +115,7 @@ test("graphPreview, listing, rename and the managed writer", () => {
 
 async function withRouter(fn, { home } = {}) {
   const lines = tmp();
-  const router = await startRouter(lines, home ? { CUCK_HOME: home } : {});
+  const router = await startRouter(lines, home ? { DUCK_HOME: home } : {});
   const call = async (method, url, body, raw) => {
     const res = await fetch(router.base + url, { method,
       headers: body !== undefined || raw !== undefined ? { "Content-Type": "application/json" } : {},

@@ -733,7 +733,7 @@ const ciWorkers = () => [
 ];
 const placement = (r) => r.placed.map((e) => [e.worker.id, e.column, e.row]);
 
-test("cuck-ci: implementor, check, validator and integration share one lane in columns 1 to 4", () => {
+test("duck-ci: implementor, check, validator and integration share one lane in columns 1 to 4", () => {
   const r = pipelineUiModule.buildGraphLanes(ciWorkers(), false, CI_GRAPH);
   assert.deepEqual(r.columns, [1, 2, 3, 4]);
   assert.deepEqual(placement(r), [["i1", 1, 0], ["c1", 2, 0], ["v1", 3, 0], ["g1", 4, 2]]);

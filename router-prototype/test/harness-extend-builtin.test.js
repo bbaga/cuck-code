@@ -183,8 +183,8 @@ test("models option goes through normalizeChoices", async () => {
   assert.deepStrictEqual(await plugin.listModels({}, {}), [{ value: "a", label: "a" }, { value: "b", label: "B" }]);
 });
 
-test("both examples load from a CUCK_HOME copy", () => {
-  const home = fs.mkdtempSync(path.join(root, "cuck-home-"));
+test("both examples load from a DUCK_HOME copy", () => {
+  const home = fs.mkdtempSync(path.join(root, "duck-home-"));
   fs.cpSync(EXAMPLES, path.join(home, "harnesses"), { recursive: true });
   const { sdk } = makeSdk();
   for (const id of ["remote-claude", "echo"]) {

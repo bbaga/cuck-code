@@ -44,14 +44,14 @@ report before you judge.
 
 ## Container and process hygiene
 If you start any docker container, always set both labels on it:
---label cuck.line={{line.id}} --label cuck.worker={{instance.id}}
-A container WITHOUT the cuck.worker label is not attributed to you:
+--label duck.line={{line.id}} --label duck.worker={{instance.id}}
+A container WITHOUT the duck.worker label is not attributed to you:
 no stage cleanup removes it and it stays until the line is deleted.
 Always include the worker label.
 If the project depends on docker itself (docker compose, image
 builds, nested containers), start a docker-in-docker container with
 both labels and run your docker work inside it:
-docker run -d --privileged --label cuck.line={{line.id}} --label cuck.worker={{instance.id}} --name <name>-dind docker:27-dind
+docker run -d --privileged --label duck.line={{line.id}} --label duck.worker={{instance.id}} --name <name>-dind docker:27-dind
 Wait for the daemon before use: docker exec <name>-dind docker info
 Then use docker exec for docker commands inside it. A --privileged
 container is not a security boundary: use it only for trusted project

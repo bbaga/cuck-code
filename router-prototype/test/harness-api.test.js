@@ -51,8 +51,8 @@ before(async () => {
   // Known limits: a slow machine must not turn a slow fake CLI into an empty catalog.
   router = await startRouter(path.join(tmpDir, "lines"), {
     PATH: `${binDir}:${process.env.PATH}`,
-    CUCK_PROBE_TIMEOUT_MS: "60000",
-    CUCK_DISCOVERY_TIMEOUT_MS: "60000",
+    DUCK_PROBE_TIMEOUT_MS: "60000",
+    DUCK_DISCOVERY_TIMEOUT_MS: "60000",
   });
   baseUrl = router.base;
 });

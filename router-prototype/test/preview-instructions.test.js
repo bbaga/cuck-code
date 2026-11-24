@@ -47,7 +47,7 @@ test("API response preserves structured steps and includes a pinned clone and de
   assert.equal(result.directory, "app");
   assert.equal(result.steps.find(step => step.phase === "obtain").command.includes(commit), true);
   assert.match(result.steps.find(step => step.phase === "obtain").command, /git clone .* && git -C .* checkout --detach/);
-  assert.ok(result.steps.some(step => step.phase === "install" && step.command === "cd 'cuck-code-" + commit.slice(0, 8) + "/app/' && npm ci"));
+  assert.ok(result.steps.some(step => step.phase === "install" && step.command === "cd 'duck-code-" + commit.slice(0, 8) + "/app/' && npm ci"));
   assert.deepEqual(result.steps.map(step => step.phase), ["prepare", "obtain", "enter", "install", "run", "verify", "stop"]);
   assert.ok(result.steps.every(step => step.description && step.expected && typeof step.phase === "string" && (typeof step.command === "string" || step.command === null)));
   assert.match(result.steps.find(step => step.phase === "run").command, /cd .* && npm run start/);

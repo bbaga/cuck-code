@@ -193,8 +193,8 @@ function removeContainers(filter, cb) {
 // ---- line inventory: processes and containers started by stages ----
 
 function reconcileInventory(line, cb) {
-  dockerRun(["ps", "-a", "--filter", `label=cuck.line=${line.id}`,
-    "--format", "{{.ID}}\t{{.Names}}\t{{.Label \"cuck.worker\"}}"], (out) => {
+  dockerRun(["ps", "-a", "--filter", `label=duck.line=${line.id}`,
+    "--format", "{{.ID}}\t{{.Names}}\t{{.Label \"duck.worker\"}}"], (out) => {
     if (out != null) {
       const seen = new Set();
       for (const row of out.split("\n").filter(Boolean)) {
@@ -248,8 +248,8 @@ function cleanupStage(line, by) {
   // belongs to nobody in particular and must not be reaped here (that
   // misattribution killed worker dind containers after every planner
   // turn). Unowned containers die with the line delete instead.
-  dockerRun(["ps", "-aq", "--filter", `label=cuck.line=${line.id}`,
-    "--format", "{{.ID}}\t{{.Label \"cuck.worker\"}}"], (out) => {
+  dockerRun(["ps", "-aq", "--filter", `label=duck.line=${line.id}`,
+    "--format", "{{.ID}}\t{{.Label \"duck.worker\"}}"], (out) => {
     if (!out) return;
     const kept = new Set([...line.inventory.values()]
       .filter((i) => i.keep && i.kind === "container").map((i) => i.ref));
@@ -668,7 +668,7 @@ const DEFAULT_PIPELINE = loadBuiltinPipeline("default", fs, __dirname);
 // The plugin catalog: managed, user and built-in layers. rebuildCatalog() runs at
 // boot and after each write to the managed layer; it also clears the graph cache.
 const MANAGED_PLUGINS_DIR = path.join(LINES_DIR, "plugins");
-const USER_PLUGINS_DIR = process.env.CUCK_HOME || path.join(os.homedir(), ".cuck");
+const USER_PLUGINS_DIR = process.env.DUCK_HOME || path.join(os.homedir(), ".duck");
 let CATALOG = null;
 const CATALOG_GRAPHS = new Map();
 const HARNESS_CACHE_MS = 30000;
@@ -982,7 +982,7 @@ function envMs(name, fallback) {
   const n = Number(process.env[name]);
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
-const PROBE_TIMEOUT_MS = envMs("CUCK_PROBE_TIMEOUT_MS", 2000);
+const PROBE_TIMEOUT_MS = envMs("DUCK_PROBE_TIMEOUT_MS", 2000);
 
 function runProbe(cmd, timeoutMs = PROBE_TIMEOUT_MS) {
   return new Promise((resolve) => {
@@ -1029,7 +1029,7 @@ function harnessPluginProblems() {
 // Base harness probe with the 30-second cache. The cache holds only the
 // base probe; per-provider detail results are computed per request and
 // never cached, so one provider's result cannot become another's.
-const DISCOVERY_TIMEOUT = envMs("CUCK_DISCOVERY_TIMEOUT_MS", DISCOVERY_TIMEOUT_MS);
+const DISCOVERY_TIMEOUT = envMs("DUCK_DISCOVERY_TIMEOUT_MS", DISCOVERY_TIMEOUT_MS);
 
 async function harnessProbe(refresh) {
   if (!refresh && harnessCache
@@ -2511,7 +2511,7 @@ const routeRequest = (req, res) => {
     }
     const keptRefs = new Set([...line.inventory.values()]
       .filter((i) => i.keep && i.kind === "container").map((i) => i.ref));
-    dockerRun(["ps", "-aq", "--filter", `label=cuck.line=${line.id}`, "--format", "{{.ID}}"],
+    dockerRun(["ps", "-aq", "--filter", `label=duck.line=${line.id}`, "--format", "{{.ID}}"],
       (out) => {
         if (!out) return;
         const kill = out.split(/\s+/).filter((c) => c && !keptRefs.has(c));
@@ -3346,19 +3346,9 @@ const routeRequest = (req, res) => {
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/favicon-duck.svg") {
-    try {
-      res.writeHead(200, { "Content-Type": "image/svg+xml" });
-      res.end(fs.readFileSync(path.join(__dirname, "web", "favicon-duck.svg")));
-    } catch {
-      return json(res, 404, { error: "not found" });
-    }
-    return;
-  }
-
   if (req.method === "GET" && (url.pathname === "/pipeline-ui.js" || url.pathname === "/registry-ui.js"
     || url.pathname === "/markdown-renderer.js" || url.pathname === "/registry-ui-extra.js"
-    || url.pathname === "/pipelines-page.js" || url.pathname === "/worker-scope.js" || url.pathname === "/sfw-mode.js"
+    || url.pathname === "/pipelines-page.js" || url.pathname === "/worker-scope.js"
     || url.pathname === "/registry-line.js")) {
     try {
       res.writeHead(200, { "Content-Type": "application/javascript" });
@@ -3579,7 +3569,7 @@ loadLines();
   let deleted = [];
   try { deleted = fs.readdirSync(TOMBSTONE_DIR); } catch {}
   for (const lineId of deleted) {
-    dockerRun(["ps", "-aq", "--filter", `label=cuck.line=${lineId}`], (out) => {
+    dockerRun(["ps", "-aq", "--filter", `label=duck.line=${lineId}`], (out) => {
       if (out == null) return;
       const containers = out.split(/\s+/).filter(Boolean);
       // Forget the tombstone only after Docker shows no container for it.

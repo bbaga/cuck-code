@@ -35,7 +35,7 @@ test("example-choreographed resolves with the built-in catalog and has no rule e
   assert.equal(r.description, DESCRIPTION);
   assert.deepEqual(Object.keys(r.nodes), ["planner", "backend-impl", "frontend-impl", "backend-val",
     "backend-lint", "frontend-val", "batch", "integration"]);
-  assert.equal(r.nodes["backend-lint"].scripts[0].run, 'git diff --check "$CUCK_BASE_COMMIT" HEAD');
+  assert.equal(r.nodes["backend-lint"].scripts[0].run, 'git diff --check "$DUCK_BASE_COMMIT" HEAD');
 });
 
 test("example-choreographed has stable columns", () => {

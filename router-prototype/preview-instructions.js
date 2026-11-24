@@ -45,7 +45,7 @@ function instructionFor(root, sha, repoUrl) {
   const dir = relative === null ? null : (relative ? path.join(root, relative) : root);
   const directory = relative || ".";
   const cloneUrl = safeCloneUrl(repoUrl);
-  const target = `cuck-code-${sha.slice(0, 8)}`;
+  const target = `duck-code-${sha.slice(0, 8)}`;
   const steps = cloneUrl ? [{ description: "Clone the repository and check out the validated revision.", command: `git clone ${shellQuote(cloneUrl)} ${shellQuote(target)} && git -C ${shellQuote(target)} checkout --detach ${shellQuote(sha)}` }] : [{ description: "Obtain the repository and check out the validated revision manually. No safe repository URL is available.", command: null }];
   if (!dir) {
     const guidance = [...steps, { phase: "prepare", description: "Identify the application directory and package manager from the validated source before continuing.", expected: "Select one unambiguous application directory and supported lockfile.", command: null }, { phase: "verify", description: "What to verify: run the changed code in its intended context and compare its observable result with the requested behavior.", expected: "The expected behavior needs confirmation because the validated source does not identify an application or acceptance checks.", command: null }];

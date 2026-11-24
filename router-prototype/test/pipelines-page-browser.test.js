@@ -10,7 +10,7 @@ const path = require("node:path");
 
 // No pipelines of the real home folder in this test.
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "pipelines-page-home-"));
-process.env.CUCK_HOME = home;
+process.env.DUCK_HOME = home;
 const dashboard = require("./fixtures/dashboard-browser");
 const { openPage } = require("./fixtures/browser-driver");
 const choreo = require("./choreo-fixtures");

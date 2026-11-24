@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pipelines - cuck-code router</title>
+<title>Pipelines - duck-code router</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
   :root { color-scheme: dark; --bg: #111418; --panel: #151a21; --deep: #0d1014; --line: #262b33; --line2: #333c48;
@@ -16,7 +16,6 @@
   header.top { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); }
   header.top h1 { font-size: 1rem; margin: 0; display: flex; align-items: center; gap: 8px; }
   header.top img { width: 20px; height: 20px; }
-  .sfwToggle { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; cursor: pointer; }
   .layout { display: grid; grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); gap: 0; min-height: calc(100vh - 50px); }
   #listCol { border-right: 1px solid var(--line); padding: 12px; min-width: 0; }
   #detailCol { padding: 12px 16px; min-width: 0; }
@@ -102,8 +101,7 @@
 </head>
 <body>
 <header class="top">
-  <h1><img src="/favicon.svg" alt="" data-brand-logo><span data-brand>cuck-code</span></h1>
-  <div id="sfwHost"></div>
+  <h1><img src="/favicon.svg" alt="">duck-code</h1>
   <a href="/" id="backLink">Back to the dashboard</a>
 </header>
 <div class="layout">
@@ -117,10 +115,6 @@
     <div id="detail"></div>
   </main>
 </div>
-<script src="/sfw-mode.js"></script>
-<script>
-window.sfwMode.mountToggle(document, document.getElementById("sfwHost"), (() => { try { return window.localStorage; } catch { return null; } })(), window);
-</script>
 <script src="/pipeline-ui.js"></script>
 <script src="/pipelines-page.js"></script>
 </body>

@@ -1,7 +1,7 @@
 "use strict";
 
 // D7: a plugin pipeline end to end through a real router. The plugin folder
-// (test/fixtures/plugins) is copied to a temp CUCK_HOME. Every harness binary
+// (test/fixtures/plugins) is copied to a temp DUCK_HOME. Every harness binary
 // is a fake script: it logs its arguments, prints the text of the file named
 // by FAKE_FINAL as its final message, and exits 0.
 const test = require("node:test");
@@ -79,8 +79,8 @@ test.before(async () => {
   git(src, "add", ".");
   git(src, "commit", "-qm", "init");
   // The plugin folder is copied so the repository stays clean.
-  const cuckHome = path.join(root, "cuck-home");
-  fs.cpSync(PLUGINS, cuckHome, { recursive: true });
+  const duckHome = path.join(root, "duck-home");
+  fs.cpSync(PLUGINS, duckHome, { recursive: true });
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin);
   for (const agent of ["claude", "vibe", "codex", "pi"]) {
@@ -90,7 +90,7 @@ test.before(async () => {
   logFile = path.join(root, "agent-args.log");
   finalFile = path.join(root, "final.txt");
   setFinal("Done.");
-  router = await startRouter(linesDir, { ROUTER_ALLOW_LOCAL_REPOS: "1", CUCK_HOME: cuckHome,
+  router = await startRouter(linesDir, { ROUTER_ALLOW_LOCAL_REPOS: "1", DUCK_HOME: duckHome,
     FAKE_LOG: logFile, FAKE_FINAL: finalFile, PATH: `${bin}:${process.env.PATH}` });
   base = router.base;
 });

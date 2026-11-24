@@ -39,7 +39,7 @@ Phase A tasks A2, A3 and A4 can run in parallel after A1. Each later task names 
 Depends on: none.
 Files: `router-prototype/package.json` (new), `router-prototype/package-lock.json` (new), `.github/workflows/ci.yml`, `README.md` (root).
 
-1. Make `router-prototype/package.json`. Set `"name": "cuck-router"`, `"private": true`, and no scripts.
+1. Make `router-prototype/package.json`. Set `"name": "duck-router"`, `"private": true`, and no scripts.
 2. In `router-prototype/`, run `npm install --save-exact yaml@2`.
 3. Make sure that `package-lock.json` is in `router-prototype/`. Commit it.
 4. Make sure that `node_modules/` stays in `.gitignore`. It is there now. Do not remove it.
@@ -611,13 +611,13 @@ Depends on: A10.
 Files: `router-prototype/plugin-catalog.js` (new), `server.js`, `test/plugin-catalog.test.js` (new).
 
 1. Export `buildCatalog({ managedDir, userDir, builtInDir, readDir, readFile })`.
-2. Layers, highest priority first: managed (`<LINES_DIR>/plugins`), user (`$CUCK_HOME` or `~/.cuck`), built-in (`router-prototype/`).
+2. Layers, highest priority first: managed (`<LINES_DIR>/plugins`), user (`$DUCK_HOME` or `~/.duck`), built-in (`router-prototype/`).
 3. In each layer, read `node-types/*/NODE.md`, `interactions/*/INTERACTION.md` and `pipelines/*.yaml`.
 4. A non-built-in file with a built-in name is an error. A name in two non-built-in layers: the higher layer wins, and the catalog records a `shadowed` note.
 5. A file that fails to load does not stop the catalog. Record `{ layer, path, errors }` in `catalog.problems`. A pipeline that uses a broken file fails at resolve time.
 6. In `server.js`, build the catalog at boot. Rebuild it after each write through the pipelines API (D3).
 7. `POST /api/lines` with `pipelineName` resolves from the catalog.
-8. Tests use temporary folders. Set `CUCK_HOME` for the user layer.
+8. Tests use temporary folders. Set `DUCK_HOME` for the user layer.
 
 Tests: one file per layer, a shadowed name, a built-in name in the user layer, a broken file in `problems`.
 
@@ -739,7 +739,7 @@ Files: `router-prototype/test/fixtures/plugins/` (new), `test/plugin-e2e.test.js
 1. In `test/fixtures/plugins/node-types/security-reviewer/NODE.md`, write the type from the design document.
 2. In `test/fixtures/plugins/pipelines/review-gate.yaml`, write the pipeline from the design document. Add a node `prompt` with a `{{riskLevel}}` field.
 3. Add a fake `vibe` command to the router fixture, in the same way as the fake `docker` command. It writes the lines of `test/fixtures/vibe.jsonl` and ends with exit code 0. Let a test choose the final text, for example `VERDICT: FAIL`.
-4. Start the router with `CUCK_HOME=test/fixtures/plugins`. Make a line with `pipelineName: "review-gate"` and approve the plan.
+4. Start the router with `DUCK_HOME=test/fixtures/plugins`. Make a line with `pipelineName: "review-gate"` and approve the plan.
 5. Check these steps through the API:
    1. `start` on `A` without `repo` returns 400 and lists `task` and `repo`.
    2. `start` on `A` with all fields returns 201.

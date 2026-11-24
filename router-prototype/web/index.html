@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>cuck-code router</title>
+<title>duck-code router</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <script defer src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
@@ -62,8 +62,6 @@
     background: #161a20; flex-shrink: 0; }
   #sidebar h1 { display: flex; align-items: center; gap: 8px; font-size: 1.1rem; margin: 0 0 16px; }
   #sidebar h1 img { width: 1.2em; height: 1.2em; }
-  .sfwToggle { display: flex; align-items: center; gap: 6px; font-size: 0.85rem;
-    cursor: pointer; margin: 0 0 12px; }
   #sidebar button { width: 100%; }
   button { padding: 8px 14px; background: #2d6cdf; color: #fff; border: 0;
     border-radius: 4px; cursor: pointer; }
@@ -417,8 +415,7 @@
 </head>
 <body>
 <aside id="sidebar">
-  <h1><img src="/favicon.svg" alt="" data-brand-logo><span data-brand>cuck-code</span></h1>
-  <div id="sfwHost"></div>
+  <h1><img src="/favicon.svg" alt="">duck-code</h1>
   <button id="create">+ Create new line</button>
   <button id="registryBtn" aria-pressed="false">Registry</button>
   <button id="pipelinesBtn" type="button">Pipelines</button>
@@ -428,10 +425,6 @@
   <div id="empty">Select or create a production line.</div>
 </main>
 <section id="registry" hidden aria-label="Registry"></section>
-<script src="sfw-mode.js"></script>
-<script>
-window.sfwMode.mountToggle(document, document.getElementById("sfwHost"), (() => { try { return window.localStorage; } catch { return null; } })(), window);
-</script>
 <script src="pipeline-ui.js"></script>
 <script src="worker-scope.js"></script>
 <script src="markdown-renderer.js"></script>
@@ -1490,9 +1483,9 @@ window.addEventListener("DOMContentLoaded", () => {
 
       plannerTranscript: [], selected: null, scopeDetails, scopeText, scopeStatus };
     st.pipeZoom = attachGraphZoom({ doc: document, box: pipeGraphBox, toolbarHost: pipeZoomHost,
-      getContentSize: () => st.pipeLayoutSize, storage: localStorage, storageKey: "cuck.pipeZoom." + line.id });
+      getContentSize: () => st.pipeLayoutSize, storage: localStorage, storageKey: "duck.pipeZoom." + line.id });
     st.graphZoom = attachGraphZoom({ doc: document, box: graph, toolbarHost: graphZoomHost,
-      getContentSize: () => st.graphLayoutSize, storage: localStorage, storageKey: "cuck.graphZoom." + line.id,
+      getContentSize: () => st.graphLayoutSize, storage: localStorage, storageKey: "duck.graphZoom." + line.id,
       onZoom: (zoom, size) => {
         if (!st.graphSizer) return;
         st.graphSizer.style.width = size.width * zoom / 100 + "px";

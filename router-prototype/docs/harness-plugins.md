@@ -18,7 +18,7 @@ A plugin is a folder. The folder name is the plugin id.
 | Layer | Where | Notes |
 |---|---|---|
 | managed | `<LINES_DIR>/plugins/harnesses/<id>/` (default `./lines/plugins`) | Highest priority. |
-| user | `$CUCK_HOME/harnesses/<id>/`, else `~/.cuck/harnesses/<id>/` | Your own plugins. |
+| user | `$DUCK_HOME/harnesses/<id>/`, else `~/.duck/harnesses/<id>/` | Your own plugins. |
 | built-in | the router code | Reserved. A folder cannot add a built-in harness. |
 
 - A plugin in the managed layer wins over a plugin with the same id in the user layer.

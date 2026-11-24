@@ -126,7 +126,7 @@ test("the role part of the planner holds the rules and the task part the request
 test("the protocol has gate lines only for required and after nodes", () => {
   const { resolvePipelineDefinition } = require("../resolve-pipeline");
   const { buildCatalog } = require("../plugin-catalog");
-  const text = `name: cuck-ci
+  const text = `name: duck-ci
 start: planner
 nodes:
   planner: { type: planner }
@@ -140,8 +140,8 @@ edges:
   - "[backend-val, ci] -> planner: report"
 `;
   const catalog = buildCatalog({ builtInDir: root });
-  catalog.pipelines["cuck-ci"] = { layer: "managed", text };
-  const ci = resolvePipelineDefinition("cuck-ci", catalog);
+  catalog.pipelines["duck-ci"] = { layer: "managed", text };
+  const ci = resolvePipelineDefinition("duck-ci", catalog);
   const withGates = protocolSection(ci, "planner", "http://r", "l1");
   assert.ok(withGates.includes("Before integration, node 'ci' must PASS on the latest run of every instance of: backend-impl."));
   assert.ok(withGates.includes("Start 'backend-val' on an instance only after ci passed on its latest run."));
@@ -160,8 +160,8 @@ const prompt = (name) => {
 
 test("the default and minimal prompts are byte-equal to the prompts before optional nodes", () => {
   // The hashes come from the prompts rendered at commit 5f0a3b7.
-  assert.equal(sha(prompt("default")), "4f465fc2eb92cdc589f844fcb222ea485da121b55e26e92be79c96a6ab286567");
-  assert.equal(sha(prompt("minimal")), "f7a6e7deecb16f58f684c410badd4278078f742ba2f1316d9e9199de19b709c5");
+  assert.equal(sha(prompt("default")), "085a3776bf1060090ca95a136ddd312b3ff7c6494d1677e31dbf08d2fadd8045");
+  assert.equal(sha(prompt("minimal")), "51dec23351fe842910c82a8b3311d0cdac85ae4c60e9a81b683fc7e0cb354627");
 });
 
 test("planner-only: the plan-only text and no validator or integration step", () => {

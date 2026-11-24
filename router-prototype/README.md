@@ -143,7 +143,7 @@ layers"). It can also hold `harnesses/` (see "Harness plugins"). The built-in
 files live in `router-prototype/`. The layout of a plugin folder:
 
 ```
-~/.cuck/                      (user layer)
+~/.duck/                      (user layer)
 ├── pipelines/review-gate.yaml
 ├── node-types/security-reviewer/NODE.md
 ├── interactions/nudge/INTERACTION.md
@@ -354,7 +354,7 @@ The router reads three folders, highest priority first. Each can hold
 | Layer | Where | Notes |
 |---|---|---|
 | managed | `<LINES_DIR>/plugins/` (default `./lines/plugins`) | The pipelines API writes here (`pipelines/` only). Migrated presets land here. |
-| user | `$CUCK_HOME`, else `~/.cuck` | Your own plugins. Read-only for the API. |
+| user | `$DUCK_HOME`, else `~/.duck` | Your own plugins. Read-only for the API. |
 | built-in | `router-prototype/` | Read-only. |
 
 - A name in a higher layer wins over the same name in a lower plugin layer (the
@@ -368,7 +368,7 @@ The router reads three folders, highest priority first. Each can hold
   listed under `problems`. The other files still work.
 - The catalog is read at boot and again after each write through the pipelines
   API. After you edit a file on disk by hand, restart the router.
-- A `.cuck/` folder inside a project repository is not read.
+- A `.duck/` folder inside a project repository is not read.
 
 ### Templates
 
@@ -653,7 +653,7 @@ The built-in pipeline `example-choreographed` (`pipelines/example-choreographed.
 is the reference example. Backend work goes to `backend-val` and the script check
 `backend-lint` at the same time (one stage). Frontend work goes to `frontend-val`.
 The wait node `batch` collects the tasks, then `integration` runs one time. The
-script of `backend-lint` is `git diff --check "$CUCK_BASE_COMMIT" HEAD`. It does
+script of `backend-lint` is `git diff --check "$DUCK_BASE_COMMIT" HEAD`. It does
 not depend on the repository. The test `test/example-pipeline-server.test.js`
 runs the flow below.
 
@@ -775,7 +775,7 @@ change does not change a running check. The router stores the checked commit
 (`git rev-parse HEAD` of the source worktree) in `checkedCommit`.
 
 ```yaml
-name: cuck-ci
+name: duck-ci
 start: planner
 nodes:
   planner:       { type: planner }
@@ -875,14 +875,14 @@ Run root and files:
   step that is not a non-negative integer, and 404 for a worker that is not a script
   worker, an unknown step or a missing log. The `worker_check` event and the worker
   state carry `checkResults`.
-- Environment of each script: `CUCK_LINE_ID`, `CUCK_WORKER_ID`, `CUCK_SOURCE_ID`,
-  `CUCK_REPO`, `CUCK_BRANCH`, `CUCK_WORKTREE` (the run root) and
-  `CUCK_SOURCE_WORKTREE` (the implementor worktree) and `CUCK_BASE_COMMIT` (the base
+- Environment of each script: `DUCK_LINE_ID`, `DUCK_WORKER_ID`, `DUCK_SOURCE_ID`,
+  `DUCK_REPO`, `DUCK_BRANCH`, `DUCK_WORKTREE` (the run root) and
+  `DUCK_SOURCE_WORKTREE` (the implementor worktree) and `DUCK_BASE_COMMIT` (the base
   commit of the chain head, that is, the checked implementor).
 - A script check that is running when the router starts becomes `stopped`.
 
 Security note: scripts are shell commands from pipeline files (built-in,
-`~/.cuck/`, or the managed layer that the UI writes). They run with the
+`~/.duck/`, or the managed layer that the UI writes). They run with the
 environment of the router user, as the agents do. The router binds to
 localhost (`http-guard.js`). No new trust boundary is created.
 
@@ -979,7 +979,7 @@ This example adds a `security-reviewer`: a validator that checks the work for
 security defects and has one extra field of its own, `riskLevel`.
 
 1. **Make the folder.** Put it in the user layer, for example
-   `~/.cuck/node-types/security-reviewer/NODE.md` (or in
+   `~/.duck/node-types/security-reviewer/NODE.md` (or in
    `<LINES_DIR>/plugins/node-types/`). The folder name must equal `name`.
 
    ```markdown
@@ -1104,7 +1104,7 @@ holds for the fields a node type declares in its `NODE.md`.
 This example adds `nudge`: the planner reminds a running instance of one thing.
 
 1. **Make the file.** Put it in the user layer:
-   `~/.cuck/interactions/nudge/INTERACTION.md` (or in
+   `~/.duck/interactions/nudge/INTERACTION.md` (or in
    `<LINES_DIR>/plugins/interactions/`). The folder name must equal `name`.
 
    ```markdown
@@ -1445,8 +1445,8 @@ A line whose pipeline has no matching node or edge answers the old routes with
 ### Container lifecycle
 
 Every stage labels its containers: workers set both
-`--label cuck.line=<lineId> --label cuck.worker=<workerId>`, the planner sets
-`--label cuck.line=<lineId>`. Stages register background processes that
+`--label duck.line=<lineId> --label duck.worker=<workerId>`, the planner sets
+`--label duck.line=<lineId>`. Stages register background processes that
 outlive their commands: `POST /api/protocol/lines/:id/inventory` with
 `{kind: "process", pid, name}`.
 
@@ -1455,7 +1455,7 @@ containers), stages give the container docker-in-docker capability instead of
 sharing the host daemon socket:
 
 ```
-docker run -d --privileged --label cuck.line=... --label cuck.worker=... --name <name>-dind docker:27-dind
+docker run -d --privileged --label duck.line=... --label duck.worker=... --name <name>-dind docker:27-dind
 ```
 
 Wait for the inner daemon (docker exec <name>-dind docker info), then run the
@@ -1473,7 +1473,7 @@ auto-discovered from the labels; the UI panel shows every item with a keep
 toggle and a Kill button, plus Kill-all). Worker close, planner run close,
 and line deletion kill their items — skipping only items the user marked
 keep, which survive stage end and line deletion. Stage cleanup matches the
-EXACT `cuck.worker` owner label: a container carrying only `cuck.line` (no
+EXACT `duck.worker` owner label: a container carrying only `duck.line` (no
 worker label) has unknown ownership and is never reaped by a stage — it dies
 with the line deletion. Every reap is logged (`docker.reap`). A router
 restart does NOT purge: it only removes orphans (containers labeled for

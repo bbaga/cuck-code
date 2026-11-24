@@ -99,7 +99,7 @@ test("router: external harness listed, problems reported, reload and a run", { t
   const root = tempDir("harness-plugin-root-");
   const home = tempDir("harness-plugin-home-");
   fs.cpSync(FIXTURES, home, { recursive: true });
-  const router = await startRouter(root, { CUCK_HOME: home });
+  const router = await startRouter(root, { DUCK_HOME: home });
   t.after(async () => {
     await stopRouter(router);
     fs.rmSync(root, { recursive: true, force: true });

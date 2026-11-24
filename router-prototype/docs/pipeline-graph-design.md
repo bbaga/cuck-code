@@ -199,7 +199,7 @@ feedback reset, is stale and is ignored. After the last member ended,
 next stage, or one report to the planner. The planner is woken only at a chain
 end. `line.pendingHandoffs` holds handoffs that wait for a worker slot; the
 router starts them when a run ends and after a line loads. Script checks get
-`CUCK_BASE_COMMIT` (the base commit of the head). `pipelines/choreographed.yaml`
+`DUCK_BASE_COMMIT` (the base commit of the head). `pipelines/choreographed.yaml`
 is a built-in example. `pipelines/example-choreographed.yaml` is the reference
 example: a stage of a validator and a script check, a second chain, a wait node
 and integration.
@@ -470,13 +470,13 @@ reuse a built-in name; it uses `extends` to build on one instead.
 
 1. `<LINES_DIR>/plugins/`: the managed layer. The UI writes pipelines here,
    and migrated presets land here.
-2. `~/.cuck/`: user plugins.
+2. `~/.duck/`: user plugins.
 3. `router-prototype/`: built-in. Read-only.
 
 Each layer can have three folders: `node-types/`, `interactions/` and
 `pipelines/`.
 
-A `.cuck/` folder inside a project repository is not read in v1. A line can
+A `.duck/` folder inside a project repository is not read in v1. A line can
 have several repositories, and two of them could define the same name.
 
 ## Validation rules for a pipeline

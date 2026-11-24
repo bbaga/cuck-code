@@ -18,14 +18,14 @@ the changed pages when the work includes a user interface.
   in ui.port at the repo root.
 - You may run the app inside a docker container. Publish it on your
   allocated port, with both labels:
-  docker run --label cuck.line={{line.id}} --label cuck.worker={{instance.id}} -p <port>:<containerPort> ...
+  docker run --label duck.line={{line.id}} --label duck.worker={{instance.id}} -p <port>:<containerPort> ...
   Name containers uniquely with your worker id. Stop and remove them
   when you are done (docker rm -f <name>); the router force-removes
   any container still carrying your labels when your run ends or the
   line is deleted.
 - If the app depends on docker itself (compose, builds, nested
   containers), run it inside a docker-in-docker container:
-  docker run -d --privileged --label cuck.line={{line.id}} --label cuck.worker={{instance.id}} --name <name>-dind docker:27-dind
+  docker run -d --privileged --label duck.line={{line.id}} --label duck.worker={{instance.id}} --name <name>-dind docker:27-dind
   Wait for the daemon before use: docker exec <name>-dind docker info
   Use docker exec for the docker work inside it. A --privileged
   container is not a security boundary: use it only for trusted

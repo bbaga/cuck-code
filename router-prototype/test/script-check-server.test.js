@@ -1,7 +1,7 @@
 "use strict";
 
 // Script check nodes through a real router. The line is seeded: a pipeline with
-// a script node (the README example cuck-ci) and a completed implementor with a
+// a script node (the README example duck-ci) and a completed implementor with a
 // real git worktree. Scripts are small shell commands. Planner binaries are fakes.
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -19,7 +19,7 @@ const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, "-c", "user.email=
 function graphWith(scripts, checkout, gated = false) {
   const catalog = buildCatalog({ builtInDir: path.join(__dirname, "..") });
   const list = scripts.map(([name, run]) => `      - { name: ${name}, run: "${run}" }`).join("\n");
-  catalog.pipelines["cuck-ci"] = { layer: "managed", text: `name: cuck-ci
+  catalog.pipelines["duck-ci"] = { layer: "managed", text: `name: duck-ci
 start: planner
 nodes:
   planner: { type: planner }
@@ -36,7 +36,7 @@ edges:
   - planner -> ci: start
 ${gated ? "  - planner -> backend-val: start\n  - backend-val -> planner: report\n  - planner -> integration: start\n  - integration -> planner: report\n" : ""}  - ci -> planner: report
 ` };
-  return resolvePipelineDefinition("cuck-ci", catalog);
+  return resolvePipelineDefinition("duck-ci", catalog);
 }
 
 let root, linesDir, src, router, base, seq = 0;

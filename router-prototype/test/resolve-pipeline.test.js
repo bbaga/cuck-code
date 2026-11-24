@@ -233,7 +233,7 @@ test("load failures are reported", () => {
 // ---- script check nodes ----
 
 const CI_PIPELINE = `
-name: cuck-ci
+name: duck-ci
 start: planner
 nodes:
   planner:       { type: planner }

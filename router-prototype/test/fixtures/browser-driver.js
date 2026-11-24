@@ -19,7 +19,7 @@ function findBrowser(options) {
   throw err;
 }
 
-const LOCK_DIR = path.join(os.tmpdir(), 'cuck-browser-launch.lock');
+const LOCK_DIR = path.join(os.tmpdir(), 'duck-browser-launch.lock');
 const LOCK_PID_FILE = path.join(LOCK_DIR, 'pid');
 const LOCK_NO_PID_GRACE_MS = 5000;
 const LOCK_WAIT_LIMIT_MS = 180000;
