@@ -1265,7 +1265,7 @@
 
   // ---- Zoom of the pipeline graph (whole percents) ----
   const ZOOM_MIN = 10;
-  const ZOOM_MAX = 300;
+  const ZOOM_MAX = 100;
   const ZOOM_STEP = 1.0625;
 
   function clampZoom(percent) {

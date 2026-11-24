@@ -14,20 +14,21 @@ const memory = (init = {}) => {
   };
 };
 
-test("clampZoom keeps whole percents inside 10..300", () => {
+test("clampZoom keeps whole percents inside 10..100", () => {
   assert.equal(clampZoom(5), 10);
-  assert.equal(clampZoom(900), 300);
-  assert.equal(clampZoom(124.6), 125);
+  assert.equal(clampZoom(900), 100);
+  assert.equal(clampZoom(74.6), 75);
   assert.equal(clampZoom(NaN), 100);
   assert.equal(clampZoom(Infinity), 100);
 });
 
 test("stepZoom zooms in and out by 1.0625", () => {
-  assert.equal(stepZoom(100, 1), 106);
+  assert.equal(stepZoom(100, 1), 100);
   assert.equal(stepZoom(100, -1), 94);
+  assert.equal(stepZoom(90, 1), 96);
   assert.equal(stepZoom(ZOOM_MAX, 1), ZOOM_MAX);
   assert.equal(stepZoom(ZOOM_MIN, -1), ZOOM_MIN);
-  assert.equal(stepZoom(295, 1), ZOOM_MAX);
+  assert.equal(stepZoom(99, 1), ZOOM_MAX);
 });
 
 test("stepZoom changes the value whenever it is not at a limit", () => {
@@ -40,7 +41,7 @@ test("stepZoom changes the value whenever it is not at a limit", () => {
 test("fitZoom fits the width and clamps", () => {
   assert.equal(fitZoom(1000, 750), 75);
   assert.equal(fitZoom(1000, 50), ZOOM_MIN);
-  assert.equal(fitZoom(100, 1000), 300);
+  assert.equal(fitZoom(100, 1000), 100);
   assert.equal(fitZoom(0, 500), 100);
   assert.equal(fitZoom(-5, 500), 100);
   assert.equal(fitZoom(NaN, 500), 100);
@@ -63,10 +64,10 @@ test("zoomScrollOffset keeps the point under the pointer fixed", () => {
 test("the stored zoom round-trips as a whole percent", () => {
   const s = memory();
   assert.equal(readStoredSize(s, "duck.pipeZoom.l1", ZOOM_MIN, ZOOM_MAX), null);
-  writeStoredSize(s, "duck.pipeZoom.l1", 125);
-  assert.equal(s.getItem("duck.pipeZoom.l1"), "125");
-  assert.equal(readStoredSize(s, "duck.pipeZoom.l1", ZOOM_MIN, ZOOM_MAX), 125);
-  assert.equal(readStoredSize(memory({ k: "900" }), "k", ZOOM_MIN, ZOOM_MAX), 300);
+  writeStoredSize(s, "duck.pipeZoom.l1", 75);
+  assert.equal(s.getItem("duck.pipeZoom.l1"), "75");
+  assert.equal(readStoredSize(s, "duck.pipeZoom.l1", ZOOM_MIN, ZOOM_MAX), 75);
+  assert.equal(readStoredSize(memory({ k: "900" }), "k", ZOOM_MIN, ZOOM_MAX), 100);
 });
 
 test("the pages call attachGraphZoom", () => {

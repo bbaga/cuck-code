@@ -37,20 +37,22 @@ test("pipeline tab: zoom buttons scale the SVG and keep the zoom", async (t) => 
 
     const layoutWidth = await page.evaluate(`Number(${SVG}.getAttribute('width'))`);
     assert.equal(await page.evaluate(`${BTN("Reset zoom")}.textContent`), "100%");
-    await page.evaluate(`${BTN("Zoom in")}.click()`);
-    assert.equal(await page.evaluate(`Number(${SVG}.getAttribute('width'))`), Math.round(layoutWidth * 106) / 100);
-    assert.equal(await page.evaluate(`${BTN("Reset zoom")}.textContent`), "106%");
+    assert.equal(await page.evaluate(`${BTN("Zoom in")}.disabled`), true, "no zoom above 100%");
+    await page.evaluate(`${BTN("Zoom out")}.click()`);
+    assert.equal(await page.evaluate(`Number(${SVG}.getAttribute('width'))`), Math.round(layoutWidth * 94) / 100);
+    assert.equal(await page.evaluate(`${BTN("Reset zoom")}.textContent`), "94%");
     assert.equal(await page.evaluate(`document.querySelectorAll('.pipePane .zoomBar').length`), 1);
-    if (shots) await page.screenshot(path.join(shots, "zoom-125.png"));
+    if (shots) await page.screenshot(path.join(shots, "zoom-94.png"));
     // Ctrl+wheel keeps the graph point under the pointer in both axes.
     const BOX = `${PANE}.querySelector('.pipeGraphBox')`;
-    await page.evaluate(`localStorage.setItem("duck.pipeZoom.${fx.lineId}", "200")`);
+    await page.evaluate(`localStorage.setItem("duck.pipeZoom.${fx.lineId}", "80")`);
     await page.evaluate("location.reload()");
     await page.waitFor("/browser[- ]line/i.test(document.body.innerText)");
     await page.evaluate("[...document.querySelectorAll('button.tabBtn')].find((b) => b.textContent === 'Pipeline').click()");
     await page.waitFor(`${PANE} && !${PANE}.hidden && ${SVG}`);
     const probe = await page.evaluate(`(() => {
       const box = ${BOX}, svg = ${SVG};
+      box.style.maxHeight = "120px"; box.style.maxWidth = "400px"; // make the SVG overflow in both axes
       box.scrollLeft = 100; box.scrollTop = 40;
       const b = box.getBoundingClientRect();
       const x = b.left + b.width / 2, y = b.top + Math.min(b.height, 200) / 2;
@@ -67,7 +69,7 @@ test("pipeline tab: zoom buttons scale the SVG and keep the zoom", async (t) => 
     assert.ok(Math.abs(probe.after.y - probe.before.y) <= 2, "y point fixed");
     if (shots) {
       // The saved zoom applies again after a reload.
-      for (const pct of [50, 100, 200]) {
+      for (const pct of [50, 75, 100]) {
         await page.evaluate(`localStorage.setItem("duck.pipeZoom.${fx.lineId}", "${pct}")`);
         await page.evaluate("location.reload()");
         await page.waitFor("/browser[- ]line/i.test(document.body.innerText)");
