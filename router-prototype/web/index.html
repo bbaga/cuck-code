@@ -442,7 +442,8 @@ window.addEventListener("DOMContentLoaded", () => {
     shouldShowIntegrationValidator, buildGraphLanes, waitCardView, headCardView, scriptSummary,
     selectEvidenceAttempt, clampEvidenceStep, renderEvidenceFromState,
     evidencePollIsCurrent, promptKeyAction, acceptStateStamp, queueRowLabel, createDraftOwner, clampSize, stepSize, chatMaxHeight, readStoredSize, writeStoredSize,
-    formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator, markerState, lineMarkerState, attachGraphZoom } = window.pipelineUI;
+    formatScopePanelData, nodeWidth, columnWidth, NODE_FONT, NODE_CONFIG_FONT, attentionIndicator, markerState, lineMarkerState, attachGraphZoom,
+    choreographySourceIds } = window.pipelineUI;
   const cards = new Map();
   const linesEl = document.getElementById("lines");
   const listEl = document.getElementById("linelist");
@@ -802,13 +803,14 @@ window.addEventListener("DOMContentLoaded", () => {
   function graphSignature(st) {
     const fields = ["id", "name", "role", "kind", "status", "state", "verdict", "validates", "persona", "harness",
       "model", "effort", "attention", "needsAttention", "humanIntervention", "error", "hasError", "lastError", "merged",
-      "node", "runner", "afterChecks", "checkResults"];
+      "node", "runner", "afterChecks", "checkResults", "members"];
     const workers = [...st.workers.values()];
     return JSON.stringify([
       workers.map((w) => fields.map((f) => w[f])),
       workers.map((w) => !!mapPreviewPayload(st.previewPayload, w)),
       st.plannerStatus, st.plannerAttention, st.plannerHumanIntervention, st.plannerError,
-      st.pipeGraph && st.pipeGraph.columns, st.selected, !!st.hideFailedValidators, st.graph.clientWidth, st.tab,
+      st.pipeGraph && st.pipeGraph.columns, st.pipeGraph && st.pipeGraph.edges, st.pipeGraph && st.pipeGraph.nodes,
+      st.selected, !!st.hideFailedValidators, st.graph.clientWidth, st.tab,
       !!(st.previewPanel && st.previewPanel.hidden),
     ]);
   }
@@ -884,39 +886,53 @@ window.addEventListener("DOMContentLoaded", () => {
     pn.addEventListener("click", () => selectNode(st, null));
     inner.appendChild(pn);
 
-    const edge = (x1, y1, x2, y2) => {
+    // A worker relation path names its source and target worker ids ("planner" for the planner).
+    const relate = (path, relation) => {
+      if (!relation) return;
+      path.setAttribute("data-source", relation.source);
+      path.setAttribute("data-target", relation.target);
+    };
+
+    const edge = (x1, y1, x2, y2, relation) => {
       const path = document.createElementNS(SVGNS, "path");
       const mid = x1 + 20;
       path.setAttribute("d", `M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`);
       path.setAttribute("class", "edge");
       path.setAttribute("fill", "none");
+      relate(path, relation);
       svg.appendChild(path);
     };
 
-    const gutterEdge = (from, to) => {
+    const gutterEdge = (from, to, relation) => {
       const path = document.createElementNS(SVGNS, "path");
       const gutterX = from.x + from.w + 22;
       path.setAttribute("d", `M ${from.x + from.w} ${from.y + 18} H ${gutterX} V ${to.y + 18} H ${to.x}`);
       path.setAttribute("class", "edge");
       path.setAttribute("fill", "none");
+      relate(path, relation);
       svg.appendChild(path);
     };
-    // The incoming edges of an instance: from its on-screen "after" checks, else from
-    // its source (validates), else from the planner.
+    // The incoming edges of an instance: from its on-screen "after" checks, else from its
+    // choreography sources (member validators of a wait, the wait of an integration), else
+    // from its source (validates), else from the planner.
+    const workerList = [...st.workers.values()];
+    const visible = (ids) => ids.filter((id) => place.has(id));
     const sourcesOf = (w) => {
-      const afters = (Array.isArray(w.afterChecks) ? w.afterChecks : []).map((id) => place.get(id)).filter(Boolean);
+      const afters = visible(Array.isArray(w.afterChecks) ? w.afterChecks : []);
       if (afters.length) return afters;
-      const source = place.get(w.validates);
-      return source ? [source] : [];
+      const chained = visible(choreographySourceIds(w, workerList, st.pipeGraph));
+      if (chained.length) return chained;
+      return visible([w.validates]);
     };
 
     entries.forEach((e) => {
       const w = e.worker, to = place.get(w.id);
       const sources = sourcesOf(w);
-      if (!sources.length) edge(plannerX + plannerW, plannerY + 18, to.x, to.y + 18);
-      for (const from of sources) {
-        if (from.y === to.y) edge(from.x + from.w, from.y + 18, to.x, to.y + 18);
-        else gutterEdge(from, to);
+      if (!sources.length) edge(plannerX + plannerW, plannerY + 18, to.x, to.y + 18, { source: "planner", target: w.id });
+      for (const id of sources) {
+        const from = place.get(id), relation = { source: id, target: w.id };
+        if (from.y === to.y) edge(from.x + from.w, from.y + 18, to.x, to.y + 18, relation);
+        else gutterEdge(from, to, relation);
       }
       const node = workerNode(st, w, to.x, to.y, to.w);
       if (e.column === null) node.title = "This worker has no node in the pipeline graph.";

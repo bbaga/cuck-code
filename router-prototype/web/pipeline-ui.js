@@ -707,6 +707,46 @@
     return result;
   }
 
+  // The worker ids that feed a choreographed worker, from the graph edges into its node.
+  // A wait worker: per member, the latest validator on an "arrive" edge, in member order.
+  // An integration worker: the latest earlier wait worker whose handoff (create on
+  // complete) started it and whose members cover every merged id. Empty otherwise.
+  function choreographySourceIds(worker, workers, graph) {
+    if (!worker || !worker.node || !graph || !Array.isArray(graph.edges)) return [];
+    const list = (Array.isArray(workers) ? workers : []).filter(Boolean);
+    const nodes = graph.nodes && typeof graph.nodes === "object" ? graph.nodes : {};
+    const sourceNodes = (keep) => new Set(graph.edges
+      .filter((edge) => edge && edge.to === worker.node && Object.values(edge.kinds || {}).some((k) => k && keep(k)))
+      .map((edge) => edge.from));
+    const memberIds = (w) => (Array.isArray(w.members) ? w.members : [])
+      .map((m) => (m && typeof m === "object" ? m.id : m));
+    if (worker.runner === "wait") {
+      const from = sourceNodes((k) => k.effect === "arrive");
+      const ids = [];
+      for (const member of memberIds(worker)) {
+        let latest = null;
+        for (const w of list) if (w.validates === member && from.has(w.node)) latest = w;
+        if (latest && !ids.includes(latest.id)) ids.push(latest.id);
+      }
+      return ids;
+    }
+    if (worker.kind === "integration") {
+      const from = sourceNodes((k) => k.effect === "create" && k.trigger === "complete");
+      const merged = integrationMergedIds(list).get(worker.id) || [];
+      const index = list.findIndex((w) => w.id === worker.id);
+      if (!merged.length || index < 0) return [];
+      let match = null;
+      for (const w of list.slice(0, index)) {
+        const node = nodes[w.node];
+        if (w.runner !== "wait" || !from.has(w.node) || !node || node.runner !== "wait") continue;
+        const members = memberIds(w);
+        if (merged.every((id) => members.includes(id))) match = w;
+      }
+      return match ? [match.id] : [];
+    }
+    return [];
+  }
+
   // The column of a worker comes from the declared relations (graph.columns),
   // never from its role. Without them (an old server answer) every worker is
   // in column 1. A node that the graph does not know has no column.
@@ -1472,6 +1512,7 @@
     NODE_WIDTH_MARGIN,
     nodeWidth,
     columnWidth,
+    choreographySourceIds,
     parseContextSize,
     formatTokens,
     PI_HARNESS_ID,

@@ -1382,3 +1382,62 @@ test("buildGraphLanes: a wait worker joins the lane and the row of its first mem
   assert.equal(out.lanes.length, 1);
   assert.deepEqual(out.placed.map((e) => [e.worker.id, e.column, e.row]), [["a", 1, 0], ["v", 2, 0], ["w", 3, 0]]);
 });
+
+// ---- Line graph: incoming edges of wait and integration workers ----
+
+const CHAIN_VIEW = viewOf(choreo.resolve(choreo.CHAIN));
+const chainImpl = (id) => ({ id, name: id, role: "implementor", node: "impl" });
+const chainVal = (id, validates) => ({ id, name: id, role: "validator", node: "val", validates, verdict: "pass" });
+const chainWait = (id, members) => ({ id, name: id, role: "wait", kind: "wait", runner: "wait", node: "batch",
+  members: members.map((m) => ({ id: m, name: m, state: "arrived" })) });
+const chainIntegration = (id, merged) => ({ id, name: id, role: "validator", kind: "integration",
+  node: "integration", merged });
+const chainWorkers = () => [chainImpl("a"), chainImpl("b"), chainImpl("c"),
+  chainVal("vc", "c"), chainVal("va", "a"), chainVal("vb", "b"),
+  chainWait("w", ["a", "b", "c"]), chainIntegration("g", ["a", "b", "c"])];
+const sourcesOf = (id, workers, graph = CHAIN_VIEW) =>
+  pipelineUiModule.choreographySourceIds(workers.find((w) => w.id === id), workers, graph);
+
+test("a wait worker gets one source per member validator, in member order", () => {
+  assert.deepEqual(sourcesOf("w", chainWorkers()), ["va", "vb", "vc"]);
+});
+
+test("a wait handoff makes the wait worker the source of the integration worker", () => {
+  assert.deepEqual(sourcesOf("g", chainWorkers()), ["w"]);
+});
+
+test("only the latest validator of a member supplies the wait edge", () => {
+  const workers = chainWorkers();
+  workers.splice(3, 0, chainVal("va-old", "a"));
+  workers.push(chainVal("va-new", "a"));
+  assert.deepEqual(sourcesOf("w", workers), ["va-new", "vb", "vc"]);
+});
+
+test("a wait worker gains a member edge when the validator of that member appears", () => {
+  const workers = chainWorkers().filter((w) => w.id !== "vc");
+  assert.deepEqual(sourcesOf("w", workers), ["va", "vb"]);
+  workers.push(chainVal("vc", "c"));
+  assert.deepEqual(sourcesOf("w", workers), ["va", "vb", "vc"]);
+});
+
+test("an integration worker without a matching earlier wait worker has no choreography source", () => {
+  const workers = chainWorkers();
+  workers.push(chainIntegration("g2", ["a", "b", "c", "d"]));
+  assert.deepEqual(sourcesOf("g2", workers), []);
+  const early = [chainIntegration("g0", ["a"]), ...chainWorkers()];
+  assert.deepEqual(sourcesOf("g0", early), []);
+});
+
+test("other worker shapes have no choreography source", () => {
+  const workers = chainWorkers();
+  for (const id of ["a", "va"]) assert.deepEqual(sourcesOf(id, workers), []);
+  assert.deepEqual(sourcesOf("w", workers, null), []);
+});
+
+test("the default pipeline has no wait handoff and gives no choreography source", () => {
+  const view = viewOf(resolvedBuiltIn("default"));
+  const workers = [{ id: "i1", role: "implementor", node: "backend-impl" },
+    { id: "v1", role: "validator", node: "backend-val", validates: "i1" },
+    { id: "g1", role: "validator", kind: "integration", node: "integration", merged: ["i1"] }];
+  for (const id of ["i1", "v1", "g1"]) assert.deepEqual(sourcesOf(id, workers, view), []);
+});

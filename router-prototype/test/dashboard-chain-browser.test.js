@@ -97,6 +97,34 @@ test("wait card: members in order, wait_update, stale member, timeout outcome, l
   });
 });
 
+test("line graph: member validators feed the wait worker, the wait worker feeds its integration", async (t) => {
+  const seed = (line) => {
+    for (const id of ["a", "b", "c"]) line.workers.set(id, head(id, { name: "impl-" + id }));
+    for (const id of ["a", "b", "c"]) line.workers.set("v" + id, checker("v" + id, "val", id));
+    line.workers.set("w", waiter("w", ["a", "b", "c"], { name: "batch-1", status: "completed", outcome: "pass" }));
+    line.workers.set("g", { id: "g", name: "merge-1", role: "validator", kind: "integration", node: "integration",
+      status: "running", transcript: [],
+      integration: { repos: [{ branches: ["a", "b", "c"].map((workerId) => ({ workerId })) }] } });
+  };
+  await run(t, choreo.resolve(choreo.CHAIN), seed, async (page, shot) => {
+    await page.waitFor("document.querySelectorAll('.graph .gnode.worker').length === 8");
+    const relations = await page.evaluate(`[...document.querySelectorAll('.graph svg path[data-target]')]
+      .map((p) => p.getAttribute('data-source') + '>' + p.getAttribute('data-target'))`);
+    const into = (target) => relations.filter((r) => r.endsWith(">" + target)).sort();
+    assert.deepEqual(into("w"), ["va>w", "vb>w", "vc>w"], "one relation per validator: " + relations);
+    assert.deepEqual(into("g"), ["w>g"], "one relation from the wait worker: " + relations);
+    assert.equal(relations.includes("planner>w"), false);
+    assert.equal(relations.includes("planner>g"), false);
+    await shot("wait-relations-1280.png");
+
+    const pos = await page.evaluate(`(() => { const p = {}; for (const n of document.querySelectorAll('.graph .gnode.worker'))
+      p[n.querySelector('.nodeName').textContent] = [n.offsetLeft, n.offsetTop]; return p; })()`);
+    for (const v of ["va", "vb", "vc"]) assert.ok(pos["batch-1"][0] > pos[v][0], "after the validators: " + JSON.stringify(pos));
+    assert.equal(pos["batch-1"][1], pos["impl-a"][1], "in the row of the first member");
+    assert.deepEqual(await page.evaluate("window.__errs"), [], "no console error");
+  });
+});
+
 test("wait card: a finished wait worker from the state shows its outcome after a load", async (t) => {
   const seed = (line) => {
     line.workers.set("a", head("a"));
