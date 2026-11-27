@@ -118,6 +118,7 @@ test("validator FAIL resumes impl with the rework text; the planner gets no wake
   assert.deepEqual(r.texts(), []);
   assert.equal(r.running(), 1, "the implementor runs again");
   assert.match(r.spawned[2].args, /REWORK REQUEST/);
+  assert.match(r.spawned[2].args, /'validator-impl' \(node val\)/);
   assert.equal(r.head.runGeneration, 2);
   assert.deepEqual(r.head.reworkRounds, { impl: 1 });
   assert.equal(r.head.stage, null);
@@ -324,4 +325,25 @@ test("a fan-out PASS with a missing verdict gives one planner report and no rewo
   assert.equal(r.running(), 0);
   assert.equal(r.texts().length, 1);
   assert.deepEqual(r.head.reworkRounds, {});
+});
+
+test("a fan-out with one FAIL and one pending CI names both checkers in the rework", () => {
+  const r = rig(FAN_OUT());
+  r.runHead();
+  r.endNext(FAIL);
+  r.endNext("Polling CI... queued");
+  const rework = r.spawned.find((s) => /REWORK REQUEST/.test(s.args));
+  assert.ok(rework, "the implementor got a rework request");
+  for (const re of [/\(node val\)/, /\(node lint\)/, /1 of 2/, /VERDICT: FAIL/, /CI was not settled/, /not a defect/]) {
+    assert.match(rework.args, re);
+  }
+});
+
+test("a validator that ended without a verdict gives the planner a CHECK INDETERMINATE text", () => {
+  const r = rig(CHOREOGRAPHED());
+  r.runHead();
+  r.endNext("ran out of turns");
+  assert.equal(r.texts().length, 1);
+  assert.match(r.texts()[0], /^CHECK INDETERMINATE/);
+  assert.match(r.texts()[0], /'[^']*val[^']*'/);
 });

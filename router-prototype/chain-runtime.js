@@ -5,7 +5,7 @@
 // The router calls routeCompleted when a run ends. The decisions come from choreography.js.
 
 const { outcomeOf, renderReports } = require("./report-interaction");
-const { routeCompletion, stageOf, resolveStage, combinedReworkText, combinedReportText,
+const { routeCompletion, stageOf, resolveStage, checkerReason, combinedReworkText, indeterminateText, combinedReportText,
   reworkLimitText, maxRoundsOf } = require("./choreography");
 const { chainFieldNames } = require("./call-fields");
 
@@ -186,6 +186,18 @@ function createChainRuntime(deps) {
     tell(line, fallbackText);
   }
 
+  // The named members of a stage decision, in the order of the stage members.
+  function stageMembers(line, head, stage, wanted, withBody) {
+    return Object.keys(stage.members).filter((node) => wanted.includes(node)).map((node) => {
+      const m = stage.members[node];
+      const checker = line.workers.get(m.checkerId);
+      const reason = checkerReason({ outcome: m.outcome, report: checker ? checker.lastRunText : "" });
+      const body = withBody && reason === "fail"
+        ? renderKind(line, checker, head, "rework", m.outcome === "timeout") : "";
+      return { node, name: checker ? checker.name : node, reason, body };
+    });
+  }
+
   function decideStage(line, head, stage) {
     const decision = resolveStage({ graph: line.graph, stage, reworkRounds: head.reworkRounds });
     const nodes = Object.keys(stage.members);
@@ -193,12 +205,10 @@ function createChainRuntime(deps) {
     head.stage = null;
     if (decision.kind === "rework") {
       head.reworkRounds[stage.sender] = rounds + 1;
-      const bodies = decision.rejecting.map((node) => {
-        const m = stage.members[node];
-        return renderKind(line, line.workers.get(m.checkerId), head, "rework", m.outcome === "timeout");
-      });
-      const text = nodes.length === 1 ? bodies[0]
-        : combinedReworkText({ total: nodes.length, bodies, passing: decision.passing });
+      const members = stageMembers(line, head, stage, [...decision.rejecting, ...decision.indeterminate], true);
+      const text = members.length === 1 && members[0].reason === "fail" && nodes.length === 1
+        ? members[0].body
+        : combinedReworkText({ total: nodes.length, members, passing: decision.passing });
       const sent = deliverToInstance(line, head, text);
       if (!sent.ok) {
         tell(line, `REWORK BLOCKED - ${sent.error}\n\n${reportText(line, head, stage, nodes)}`);
@@ -206,7 +216,13 @@ function createChainRuntime(deps) {
     } else if (decision.kind === "handoff") {
       startStage(line, head, nodes[0]);
     } else {
-      const text = reportText(line, head, stage, nodes);
+      let text = reportText(line, head, stage, nodes);
+      const open = Object.values(stage.members).some((m) => ["failed", "timeout", "stopped"].includes(m.outcome));
+      if (decision.kind === "report" && decision.indeterminate.length > 0
+        && decision.rejecting.length === 0 && !open) {
+        const members = stageMembers(line, head, stage, decision.indeterminate, false);
+        text = `${indeterminateText({ headName: head.name, sender: stage.sender, members })}\n\n${text}`;
+      }
       if (decision.kind === "arrive") {
         arrive(line, head, decision.to, line.workers.get(stage.members[nodes[0]].checkerId), text);
       } else {

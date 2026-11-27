@@ -134,15 +134,52 @@ function resolveStage({ graph, stage, reworkRounds = {} }) {
 
 // Text builders. They get texts that are already rendered and read no file.
 
-// One request for the head run: the rendered rework body of each rejecting member.
-// `bodies` is a list of texts. `total` is the number of members. `passing` is a list of node ids.
-function combinedReworkText({ total, bodies, passing }) {
+// The reason of a checker that rejected or ended without a verdict.
+function checkerReason({ outcome, report }) {
+  if (outcome === "reject") return "fail";
+  if (outcome === "missing") {
+    const text = typeof report === "string" ? report : "";
+    return /\bCI\b[^\n]*\b(pending|queued|running|in progress|not settled)\b/i.test(text) ? "ci-pending" : "no-verdict";
+  }
+  return outcome;
+}
+
+const NOT_A_DEFECT = "This is not a defect in your work. Do not change code for this checker. It runs again after your next report.";
+const REASON_TEXT = {
+  fail: "explicit VERDICT: FAIL. Fix the problems in its report.",
+  "no-verdict": `the run ended without a VERDICT line. ${NOT_A_DEFECT}`,
+  "ci-pending": `the run ended while CI was not settled, without a VERDICT line. ${NOT_A_DEFECT}`,
+  timeout: "the checker run hit its time limit and did not complete.",
+  failed: "the checker run failed and did not complete.",
+  stopped: "the checker run was stopped and did not complete.",
+  pass: "VERDICT: PASS.",
+  done: "the checker run completed.",
+};
+
+const memberLine = (m) => `- '${m.name}' (node ${m.node}): ${REASON_TEXT[m.reason]}`;
+
+// One request for the head run. `members` is a list of { node, name, reason, body }:
+// every rejecting and every indeterminate member. `passing` is a list of node ids.
+function combinedReworkText({ total, members, passing }) {
   const passed = passing.length > 0 ? passing.join(", ") : "none";
+  const failed = members.filter((m) => m.reason === "fail");
   return [
-    `REWORK REQUEST - ${bodies.length} of ${total} checkers rejected your latest run.`,
-    ...bodies,
+    `REWORK REQUEST - ${failed.length} of ${total} checkers rejected your latest run with VERDICT: FAIL.`,
+    members.map(memberLine).join("\n"),
+    ...failed.map((m) => m.body),
     `Checkers that passed: ${passed}.`,
   ].join("\n\n");
+}
+
+// The planner text for a stage that ended without a rejection and with indeterminate members.
+// `members` is a list of { node, name, reason }.
+function indeterminateText({ headName, sender, members }) {
+  return [
+    `CHECK INDETERMINATE - no checker after '${sender}' rejected '${headName}', but these checkers ended without a verdict:`,
+    ...members.map(memberLine),
+    "The router did not send the work back to the implementor and used no rework round. " +
+      "Decide: start the checker again for the same implementor, accept the work, or send feedback to the implementor.",
+  ].join("\n");
 }
 
 // One report for the planner: the rendered report of each member, in edge order.
@@ -161,4 +198,4 @@ function reworkLimitText({ sender, headName, rounds }) {
 }
 
 module.exports = { routeCompletion, maxRoundsOf, stageOf, resolveStage,
-  combinedReworkText, combinedReportText, reworkLimitText, OUTCOMES, DEFAULT_MAX_ROUNDS };
+  checkerReason, REASON_TEXT, combinedReworkText, indeterminateText, combinedReportText, reworkLimitText, OUTCOMES, DEFAULT_MAX_ROUNDS };
