@@ -123,6 +123,7 @@ async function launchChrome(exe) {
 const KEYS = {
   Escape: { code: 'Escape', vk: 27 }, Enter: { code: 'Enter', vk: 13, text: '\r' },
   ArrowUp: { code: 'ArrowUp', vk: 38 }, ArrowDown: { code: 'ArrowDown', vk: 40 },
+  ArrowLeft: { code: 'ArrowLeft', vk: 37 }, ArrowRight: { code: 'ArrowRight', vk: 39 }, Delete: { code: 'Delete', vk: 46 },
 };
 
 async function openPageOnce(url, options) {

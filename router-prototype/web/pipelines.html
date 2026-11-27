@@ -93,7 +93,42 @@
   .pipeGraph .pgEdgeLabel { fill: var(--text); font-size: 11px; paint-order: stroke; stroke: var(--deep); stroke-width: 4px; stroke-linejoin: round; }
   .edgesText { font-size: .72rem; color: var(--muted); }
   .edgesText ul { margin: 6px 0 0; padding-left: 18px; }
+  .tabs { display: flex; gap: 4px; margin: 10px 0 8px; border-bottom: 1px solid var(--line); }
+  .tab { background: transparent; color: var(--muted); border: 1px solid transparent; border-bottom: 0; border-radius: 4px 4px 0 0; padding: 6px 16px; }
+  .tab[aria-selected="true"] { background: var(--panel); color: var(--text); border-color: var(--line2); box-shadow: inset 0 -2px 0 var(--accent); }
+  .visualHost { display: flex; gap: 10px; align-items: flex-start; }
+  .cvPalette { flex: 0 0 160px; min-width: 0; }
+  .cvCanvas { flex: 1 1 0; min-width: 0; }
+  .cvInspector { flex: 0 0 220px; min-width: 0; }
+  .cvPalette h2 { margin-top: 0; }
+  .cvPalette h3 { margin: 10px 0 4px; color: var(--muted); font-weight: 600; }
+  .cvPalList { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+  .cvPalItem { width: 100%; text-align: left; background: var(--panel); border: 1px solid var(--line2); cursor: grab; overflow-wrap: anywhere; }
+  .cvPalItem:hover { border-color: var(--accent); }
+  .cvInspector:empty, .cvPalette[hidden] { display: none; }
+  .cvBox { max-width: 100%; height: 60vh; min-height: 300px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--deep); }
+  .cvLegend { display: flex; flex-wrap: wrap; gap: 4px 14px; list-style: none; margin: 0 0 6px; padding: 4px 8px; font-size: .75rem;
+    border: 1px solid var(--line); border-radius: 6px; }
+  .cvKey { display: inline-flex; align-items: center; gap: 4px; }
+  .cvKey.handoff .pgSwatch { border-top: 2px solid var(--accent); }
+  .cvKey.rework .pgSwatch { border-top: 2px dashed #e07a5f; }
+  .cvKey.arrive .pgSwatch { border-top: 2px solid #35c46a; }
+  .cvSvg .cvNode { cursor: grab; touch-action: none; }
+  .cvSvg .pgNode.sel rect { stroke: var(--warn); stroke-width: 2.5; }
+  .cvSvg .pgNode.start rect { stroke: var(--accent); stroke-width: 3; }
+  .cvSvg .pgNode.start.sel rect { stroke: var(--warn); }
+  .cvSvg .cvAnchor { fill: var(--deep); stroke: var(--muted); stroke-width: 1.5; cursor: crosshair; transition: r .1s; }
+  .cvSvg .cvAnchor:hover, .cvSvg .cvAnchor:focus-visible { r: 9; stroke: var(--warn); }
+  .cvSvg .cvHit { fill: none; stroke: transparent; stroke-width: 12px; pointer-events: stroke; cursor: pointer; }
+  .cvSvg .cvArrow.sel .pgEdge { stroke: var(--warn); stroke-width: 3; }
+  .cvSvg .cvArrow:hover .pgEdge { stroke-width: 3; }
+  .cvSvg .pgEdgeLabel { pointer-events: none; }
+  .cvSvg g:focus { outline: none; }
+  .cvSvg g:focus-visible > rect, .cvSvg .cvArrow:focus-visible .pgEdge { stroke: var(--warn); stroke-width: 3; }
   @media (max-width: 800px) {
+    .visualHost { flex-direction: column; align-items: stretch; }
+    .cvPalette, .cvInspector { flex-basis: auto; }
+    .cvPalList { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
     .layout { grid-template-columns: minmax(0, 1fr); }
     #listCol { border-right: 0; border-bottom: 1px solid var(--line); }
   }
@@ -116,6 +151,7 @@
   </main>
 </div>
 <script src="/pipeline-ui.js"></script>
+<script src="/pipeline-canvas.js"></script>
 <script src="/pipelines-page.js"></script>
 </body>
 </html>
