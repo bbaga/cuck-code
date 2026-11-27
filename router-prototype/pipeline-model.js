@@ -293,4 +293,4 @@ function paletteFromCatalog(catalog) {
   };
 }
 
-module.exports = { textToModel, modelToText, modelError, paletteFromCatalog };
+module.exports = { textToModel, modelToText, modelError, paletteFromCatalog, loadAll, resolveOne };

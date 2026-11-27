@@ -30,6 +30,7 @@ const PRODUCTION_SCRIPTS = [
   "plugin-catalog.js",
   "preset-migration.js",
   "pipelines-api.js",
+  "edge-options.js",
   "handoff.js",
   "jsonl.js",
   "repo-source.js",
