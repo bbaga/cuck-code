@@ -14,6 +14,7 @@ const {
   runOutputNote,
   buildUnroutedNotification,
   explicitVerdict,
+  completionState,
   applyCompletion,
   completionFields,
 } = require("../handoff");
@@ -148,12 +149,22 @@ test("builds the unrouted notice for each worker kind without dot-only text", ()
 test("parses only complete explicit verdict lines outside quotes and code fences", () => {
   assert.equal(explicitVerdict("> VERDICT: PASS\n`VERDICT: FAIL`\nVERDICT: PASS"), "pass");
   assert.equal(explicitVerdict("Example: VERDICT: PASS\nVERDICT: PASS — pending"), null);
-  assert.equal(explicitVerdict("VERDICT: PASS\nAdditional incomplete output"), null);
-  assert.equal(explicitVerdict("VERDICT: PASS\n  > quoted trailing line"), null);
+  assert.equal(explicitVerdict("VERDICT: PASS\nAdditional incomplete output"), "pass");
+  assert.equal(explicitVerdict("VERDICT: PASS\n  > quoted trailing line"), "pass");
   assert.equal(explicitVerdict("VERDICT: PASS\nVERDICT: FAIL"), "fail");
   assert.equal(explicitVerdict("verdict: PASS"), null);
   assert.equal(explicitVerdict("```\nVERDICT: PASS\n```\nVERDICT: FAIL"), "fail");
   assert.equal(explicitVerdict("No verdict"), null);
+  const ciReport = "Checked.\nVERDICT: PASS\n\nCI notes:\n- job lint: queued\n- job unit: success";
+  assert.equal(explicitVerdict(ciReport), "pass");
+  assert.equal(explicitVerdict("VERDICT: FAIL\nlater notes\nVERDICT: PASS\nmore notes"), "pass");
+  assert.equal(explicitVerdict("```\nVERDICT: PASS\n```\ntext after"), null);
+  assert.equal(explicitVerdict("> VERDICT: PASS\ntext after"), null);
+  assert.equal(explicitVerdict("VERDICT: PASS — pending\nnotes"), null);
+  assert.equal(
+    completionState({ role: "validator" }, "ok", false, ciReport).verdict,
+    "pass",
+  );
 });
 
 test("publishes completion state before API, saved-state, and event projections", () => {
