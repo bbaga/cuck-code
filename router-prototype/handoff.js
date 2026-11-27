@@ -49,6 +49,9 @@ function reportForValidation(_worker, sourceReport) {
   return report || "[No assistant implementor report text was produced by this run.]";
 }
 
+// The verdict is the last line that is exactly `VERDICT: PASS` or
+// `VERDICT: FAIL`. The last verdict line wins, and trailing text after it is
+// allowed. Lines in code fences and blockquote lines never count.
 function explicitVerdict(report) {
   if (typeof report !== "string") return null;
   const lines = report.split(/\r?\n/);
@@ -63,11 +66,12 @@ function explicitVerdict(report) {
     }
     if (inFence || /^\s*>/.test(line)) quotedOrFenced.add(i);
   }
-  let last = lines.length - 1;
-  while (last >= 0 && !lines[last].trim()) last -= 1;
-  if (last < 0 || quotedOrFenced.has(last)) return null;
-  const match = lines[last].match(/^VERDICT:\s*(PASS|FAIL)\s*$/);
-  return match ? match[1].toLowerCase() : null;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (quotedOrFenced.has(i)) continue;
+    const match = lines[i].match(/^VERDICT:\s*(PASS|FAIL)\s*$/);
+    if (match) return match[1].toLowerCase();
+  }
+  return null;
 }
 
 function applyCompletion(worker, outcome, stopRequested, report) {
