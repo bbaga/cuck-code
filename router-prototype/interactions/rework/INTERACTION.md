@@ -4,10 +4,10 @@ description: Send the checker report back to the implementor whose work the chec
 effect: deliver
 trigger: complete
 target: source
-when: [reject, missing]
+when: [reject]
 fallback: false
 ---
-REWORK REQUEST - checker '{{from.name}}' (node {{from.node}}) rejected your latest run.
+REWORK REQUEST - checker '{{from.name}}' (node {{from.node}}) gave VERDICT: FAIL on your latest run.
 
 CHECKER REPORT (complete):
 {{report}}

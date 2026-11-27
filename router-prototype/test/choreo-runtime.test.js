@@ -292,3 +292,36 @@ test("start stores the chain fields on the head; feedback resets rounds and stag
     assert.equal(head.stage, null);
   });
 });
+
+test("a validator that stopped without a verdict reports to the planner and uses no rework round", () => {
+  const r = rig(CHOREOGRAPHED());
+  r.runHead();
+  r.endNext("Polling CI... 14 of 22 jobs queued");
+  assert.equal(r.running(), 0);
+  assert.deepEqual(r.head.reworkRounds, {});
+  assert.equal(r.head.stage, null);
+  assert.equal(r.texts().length, 1);
+  assert.match(r.texts()[0], /VALIDATION REPORT/);
+  assert.match(r.texts()[0], /DIAGNOSTIC/);
+});
+
+test("a fan-out FAIL with a missing verdict reworks with the FAIL report only", () => {
+  const r = rig(FAN_OUT());
+  r.runHead();
+  r.endNext(FAIL);
+  r.endNext("no verdict text");
+  assert.deepEqual(r.texts(), []);
+  assert.equal(r.head.reworkRounds.impl, 1);
+  assert.match(r.spawned[3].args, /REWORK REQUEST/);
+  assert.match(r.spawned[3].args, /Found a problem\./);
+});
+
+test("a fan-out PASS with a missing verdict gives one planner report and no rework", () => {
+  const r = rig(FAN_OUT());
+  r.runHead();
+  r.endNext(PASS);
+  r.endNext("no verdict text");
+  assert.equal(r.running(), 0);
+  assert.equal(r.texts().length, 1);
+  assert.deepEqual(r.head.reworkRounds, {});
+});

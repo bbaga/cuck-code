@@ -267,3 +267,13 @@ test("implement-only: the implementor report asks for accept or feedback, not a 
   // the default pipeline keeps the validator sentences
   assert.match(newText(impl, "All done."), /Start a validator with the criteria/);
 });
+
+test("a validator with no verdict in the choreographed graph reports to the planner only", () => {
+  const g = loadBuiltinPipeline("choreographed", fs, ROOT);
+  const w = { ...val, node: "val", verdict: null };
+  assert.equal(outcomeOf(g, w), "missing");
+  const out = renderReports({ graph: g, worker: w, source: impl, report: "Polling CI..." });
+  assert.ok(!out.some((item) => item.target === "source"));
+  const starter = out.find((item) => item.target === "starter");
+  assert.ok(starter.text.includes("DIAGNOSTIC: no explicit final VERDICT"));
+});

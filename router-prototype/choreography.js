@@ -9,7 +9,9 @@ const { completeInteractions } = require("./report-interaction");
 const OUTCOMES = ["done", "pass", "reject", "missing", "timeout", "failed", "stopped"];
 const DEFAULT_MAX_ROUNDS = 3;
 const BROKEN = ["failed", "timeout", "stopped"];
-const REJECTED = ["reject", "missing"];
+const REJECTED = ["reject"];
+// No explicit VERDICT line: the checker gave no verdict. This never causes rework.
+const INDETERMINATE = ["missing"];
 
 const isRework = (it) => it.effect === "deliver" && it.target === "source";
 const isReport = (it) => it.effect === "deliver" && it.target === "starter";
@@ -86,7 +88,8 @@ function commonNextStep(graph, members, reworkRounds) {
 //     to,         // node id of the target: the implementor node, the starter node, or the next node
 //     targets,    // all target node ids (more than one only for a handoff)
 //     exhausted,  // true when the rework limit stopped the automatic rework
-//     rejecting,  // nodes of the members that rejected
+//     rejecting,  // nodes of the members that rejected (VERDICT: FAIL)
+//     indeterminate, // nodes of the members that gave no verdict (never a rework)
 //     passing }   // nodes of the members that passed
 // `stage` is { sender, headRun, members: { <node>: { status, checkerId, outcome } } }.
 // `reworkRounds` is { <sender node>: number }. Call this one time, after the last member ended.
@@ -98,11 +101,12 @@ function resolveStage({ graph, stage, reworkRounds = {} }) {
     if (!OUTCOMES.includes(outcomeOf(node))) throw new Error(`member '${node}': unknown outcome '${outcomeOf(node)}'`);
   }
   const rejecting = nodes.filter((n) => REJECTED.includes(outcomeOf(n)));
+  const indeterminate = nodes.filter((n) => INDETERMINATE.includes(outcomeOf(n)));
   const passing = nodes.filter((n) => outcomeOf(n) === "pass" || outcomeOf(n) === "done");
   const rounds = reworkRounds[stage.sender] || 0;
   const report = (exhausted, node) => {
     const to = firstTarget(graph, node, isReport);
-    return { kind: "report", to, targets: to ? [to] : [], exhausted, rejecting, passing };
+    return { kind: "report", to, targets: to ? [to] : [], exhausted, rejecting, indeterminate, passing };
   };
 
   const broken = nodes.find((n) => BROKEN.includes(outcomeOf(n)));
@@ -113,17 +117,19 @@ function resolveStage({ graph, stage, reworkRounds = {} }) {
     if (reworkTargets.every((t) => t !== null)) {
       const limit = Math.min(...rejecting.map((n) => maxRoundsOf(graph, n)));
       if (rounds < limit) {
-        return { kind: "rework", to: reworkTargets[0], targets: [reworkTargets[0]], exhausted: false, rejecting, passing };
+        return { kind: "rework", to: reworkTargets[0], targets: [reworkTargets[0]], exhausted: false, rejecting, indeterminate, passing };
       }
       return report(true, rejecting[0]);
     }
     return report(false, rejecting[0]);
   }
 
+  if (indeterminate.length > 0) return report(false, indeterminate[0]);
+
   const next = commonNextStep(graph, nodes, reworkRounds);
   if (!next) return report(false, nodes[0]);
   const targets = [...new Set(next.map((a) => a.to))];
-  return { kind: next[0].kind, to: targets[0], targets, exhausted: false, rejecting, passing };
+  return { kind: next[0].kind, to: targets[0], targets, exhausted: false, rejecting, indeterminate, passing };
 }
 
 // Text builders. They get texts that are already rendered and read no file.

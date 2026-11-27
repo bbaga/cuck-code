@@ -81,8 +81,45 @@ test("a stage with one reject and one pass gives one combined rework", () => {
 });
 
 test("a stage with a reject at the limit gives a report with exhausted", () => {
-  const r = resolveIt(stage("pass", "missing"), { impl: 3 });
+  const r = resolveIt(stage("reject", "pass"), { impl: 3 });
   assert.deepEqual([r.kind, r.to, r.exhausted], ["report", "planner", true]);
+});
+
+test("a missing member gives a report, not a rework, even at the limit", () => {
+  const r = resolveIt(stage("pass", "missing"), { impl: 3 });
+  assert.deepEqual([r.kind, r.to, r.exhausted], ["report", "planner", false]);
+  assert.deepEqual(r.rejecting, []);
+  assert.deepEqual(r.indeterminate, ["lint"]);
+});
+
+test("a stage with only a missing member gives a report", () => {
+  const r = resolveIt(stage("missing", "pass"), { impl: 0 });
+  assert.deepEqual([r.kind, r.exhausted, r.rejecting, r.indeterminate], ["report", false, [], ["val"]]);
+});
+
+test("a reject with a missing member gives a rework that lists both", () => {
+  const r = resolveIt(stage("reject", "missing"), { impl: 0 });
+  assert.deepEqual([r.kind, r.to, r.rejecting, r.indeterminate], ["rework", "impl", ["val"], ["lint"]]);
+});
+
+test("a failed member goes before a missing member", () => {
+  const r = resolveIt(stage("failed", "missing"));
+  assert.deepEqual([r.kind, r.exhausted], ["report", false]);
+});
+
+test("a missing outcome never gives exhausted", () => {
+  for (const rounds of [0, 2, 3, 4, 10]) {
+    assert.equal(resolveIt(stage("missing", "pass"), { impl: rounds }).exhausted, false, `rounds ${rounds}`);
+    assert.equal(resolveIt(stage("missing", "missing"), { impl: rounds }).exhausted, false, `rounds ${rounds}`);
+  }
+});
+
+test("a missing validator of the choreographed pipeline gives no rework action", () => {
+  const graph = loadBuiltinPipeline("choreographed", fs, path.join(__dirname, ".."));
+  const node = Object.keys(graph.nodes).find((n) => stageOf(graph, "impl").includes(n));
+  const r = route(graph, node, "missing");
+  assert.ok(!r.actions.some((a) => a.kind === "rework"));
+  assert.equal(r.exhausted, false);
 });
 
 test("a stage with a failed member gives a fallback report", () => {
@@ -91,7 +128,7 @@ test("a stage with a failed member gives a fallback report", () => {
 });
 
 test("a stage of one member matches routeCompletion", () => {
-  const cases = [["pass", 0], ["reject", 0], ["reject", 3], ["failed", 0], ["timeout", 0], ["missing", 1]];
+  const cases = [["pass", 0], ["reject", 0], ["reject", 3], ["failed", 0], ["timeout", 0]];
   for (const [outcome, rounds] of cases) {
     const s = { sender: "impl", headRun: "h", members: { val: member(outcome) } };
     const r = resolveStage({ graph: chain, stage: s, reworkRounds: { impl: rounds } });
