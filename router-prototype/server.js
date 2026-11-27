@@ -66,6 +66,8 @@ const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require(
 const { createDashboardLive } = require("./dashboard-live");
 const { migratePresets } = require("./preset-migration");
 const { textToModel, modelToText, paletteFromCatalog } = require("./pipeline-model");
+const { edgeOptions, catalogInputs } = require("./edge-options");
+const { parsePipeline } = require("./pipelines");
 const { nameError, textError, validateText, graphPreview, buildListing, readCatalogItem, resolveSafe, readManagedText,
   renameInText, applyNodeSettingsToText, writeManagedPipeline, deleteManagedPipeline, MAX_BODY_BYTES } = require("./pipelines-api");
 const { isSignalablePid } = require("./process-ref");
@@ -792,6 +794,23 @@ function pipelinesApi(req, res, parts) {
     try { itemName = decodeURIComponent(parts[3]); } catch { itemName = null; }
     const item = readCatalogItem({ catalog: CATALOG, kind: parts[2], name: itemName, readFile: defaultReadFile });
     return item ? json(res, 200, item) : json(res, 404, { error: "not found" });
+  }
+  if (parts.length === 3 && parts[2] === "edge-options") {
+    if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+    return readBody(req, res, (err, body) => {
+      const bad = textError(body.text);
+      if (bad) return json(res, bad.status, { error: bad.message });
+      let pipeline;
+      try {
+        pipeline = parsePipeline(body.text, "pipelines/candidate.yaml", CATALOG.readFile);
+      } catch (e) {
+        return sendErrors(400, [{ rule: "LOAD", message: e.message }]);
+      }
+      const { types, interactions } = catalogInputs(CATALOG);
+      const answer = edgeOptions({ pipeline, types, interactions, from: body.from, to: body.to });
+      if (answer.error) return json(res, 400, { error: answer.error });
+      return json(res, 200, answer);
+    }, MAX_BODY_BYTES);
   }
   let name;
   try { name = decodeURIComponent(parts[2]); } catch { name = null; }
