@@ -7,7 +7,7 @@ const path = require("node:path");
 const { loadBuiltinPipeline } = require("../line-graph");
 const { CHAIN, STAGE, resolve } = require("./choreo-fixtures");
 const { routeCompletion, maxRoundsOf, stageOf, resolveStage,
-  combinedReworkText, combinedReportText, reworkLimitText } = require("../choreography");
+  checkerReason, combinedReworkText, indeterminateText, combinedReportText, reworkLimitText } = require("../choreography");
 
 const chain = resolve(CHAIN);
 const stageGraph = resolve(STAGE);
@@ -144,14 +144,41 @@ test("a stage needs members with a known outcome", () => {
 });
 
 test("the text builders write the exact headers", () => {
-  const rework = combinedReworkText({ total: 2, bodies: ["BODY val"], passing: ["lint"] });
-  assert.equal(rework.split("\n")[0], "REWORK REQUEST - 1 of 2 checkers rejected your latest run.");
+  const fail = { node: "val", name: "val", reason: "fail", body: "BODY val" };
+  const rework = combinedReworkText({ total: 2, members: [fail], passing: ["lint"] });
+  assert.equal(rework.split("\n")[0], "REWORK REQUEST - 1 of 2 checkers rejected your latest run with VERDICT: FAIL.");
   assert.ok(rework.includes("BODY val"));
   assert.ok(rework.endsWith("Checkers that passed: lint."));
-  assert.ok(combinedReworkText({ total: 1, bodies: ["B"], passing: [] }).endsWith("Checkers that passed: none."));
   const report = combinedReportText({ headName: "t1", sender: "impl",
     members: [{ passed: true, text: "R val" }, { passed: false, text: "R lint" }] });
   assert.equal(report, "STAGE REPORT - 't1' after 'impl': 2 checkers, 1 PASS, 1 FAIL.\n\nR val\n\nR lint");
   assert.equal(reworkLimitText({ sender: "impl", headName: "t1", rounds: 3 }),
     "REWORK LIMIT REACHED - the checkers after 'impl' rejected 't1' 3 times. The router stopped the automatic rework.");
+});
+
+test("checkerReason names the reason of each outcome", () => {
+  assert.equal(checkerReason({ outcome: "reject", report: "x" }), "fail");
+  assert.equal(checkerReason({ outcome: "missing", report: "Polling CI: 14 jobs queued" }), "ci-pending");
+  assert.equal(checkerReason({ outcome: "missing", report: "ran out of turns" }), "no-verdict");
+  assert.equal(checkerReason({ outcome: "missing", report: null }), "no-verdict");
+  for (const o of ["timeout", "failed", "stopped", "pass", "done"]) assert.equal(checkerReason({ outcome: o, report: "" }), o);
+});
+
+test("combinedReworkText names each member and counts only fail members", () => {
+  const text = combinedReworkText({ total: 3, passing: [], members: [
+    { node: "val", name: "val-one", reason: "fail", body: "BODY val" },
+    { node: "lint", name: "lint-two", reason: "ci-pending", body: "" }] });
+  assert.match(text.split("\n")[0], /^REWORK REQUEST - 1 of 3 checkers rejected/);
+  assert.match(text, /- 'val-one' \(node val\): explicit VERDICT: FAIL/);
+  assert.match(text, /- 'lint-two' \(node lint\): the run ended while CI was not settled/);
+  assert.match(text, /Do not change code for this checker/);
+  assert.ok(text.endsWith("Checkers that passed: none."));
+});
+
+test("indeterminateText lists each member and says no rework round was used", () => {
+  const text = indeterminateText({ headName: "t1", sender: "impl", members: [
+    { node: "val", name: "val-one", reason: "no-verdict" }] });
+  assert.match(text, /^CHECK INDETERMINATE - no checker after 'impl' rejected 't1'/);
+  assert.match(text, /- 'val-one' \(node val\): the run ended without a VERDICT line/);
+  assert.ok(text.includes("used no rework round"));
 });
