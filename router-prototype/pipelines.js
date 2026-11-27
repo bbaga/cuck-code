@@ -305,4 +305,4 @@ function parsePipeline(text, fileName, readFile) {
   };
 }
 
-module.exports = { parsePipeline };
+module.exports = { parsePipeline, NODE_KEYS, SETTING_KEYS, ID_RE, CHECKOUTS, MAX_ROUNDS_LIMIT, SCRIPT_KEYS };

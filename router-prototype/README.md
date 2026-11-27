@@ -1170,6 +1170,20 @@ Errors of the write routes carry `error` (a one-line text of the rules) and
 `errors` (the list of `{rule, message}`). Any other method or path below
 `/api/pipelines` answers 405 or 404.
 
+### Visual editor API
+
+The browser has no YAML library, so three routes convert between the pipeline
+text and a JSON model. The visual editor uses them. None of them writes a file.
+
+| Route | Answer |
+|---|---|
+| `POST /api/pipelines/model {text}` | 200 `{model, errors}`. `model` is `{name, description (or null), start, defaults, nodes: [{id, ...keys of the node}], edges: [{from, to, interactions, item}], extra}`. `nodes` keep the order of the text. `edges` has one entry for each pair of nodes; a grouped item such as `[a, b] -> c: report` gives two entries with the same `item` (the index in the YAML list). Unknown top-level keys are in `extra`; unknown node keys stay in the node. `model` is `null` and `errors` has a `LOAD` error when the YAML is not valid. 400 for a bad body; 413 for text over 256 KB. Other methods: 405. |
+| `POST /api/pipelines/text {model, baseText}` | 200 `{text}`. The text writer starts from `baseText` (it can be empty) and changes only what differs from the model, so comments and layout of unchanged parts stay. An unchanged model returns `baseText` byte for byte. An edge item whose pairs or interactions changed is written again as single-pair strings `<from> -> <to>: <a>, <b>`; new edges (no `item`) go at the end. 400 `{error}` when the model has not the documented shape. Other methods: 405. |
+| `GET /api/pipelines/palette` | 200 `{nodeTypes, interactions, nodeKeys}` of the live catalog. Each node type is `{name, description, layer, extends, session, workspace, outcome, runner, coordinator, base, fields}` (resolved, `base` is true for `implementor` and `validator`). Each interaction is `{name, description, layer, effect, trigger, target, when, fallback, fields}`. `nodeKeys` is `{keys, settingKeys, checkouts, maxRoundsLimit, scriptKeys, idPattern}`. Other methods: 405. |
+
+The model does not validate the pipeline: send the text from `/text` to
+`/api/pipelines/validate`.
+
 ## Pipeline settings
 
 Every node of a line has run settings: `harness`, `model`, `effort`,

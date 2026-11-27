@@ -65,6 +65,7 @@ const { previewForLine } = require("./preview-instructions");
 const { validateShowcase, checkedFile, publicEvidence, evidenceRole } = require("./evidence");
 const { createDashboardLive } = require("./dashboard-live");
 const { migratePresets } = require("./preset-migration");
+const { textToModel, modelToText, paletteFromCatalog } = require("./pipeline-model");
 const { nameError, textError, validateText, graphPreview, buildListing, readCatalogItem, resolveSafe, readManagedText,
   renameInText, applyNodeSettingsToText, writeManagedPipeline, deleteManagedPipeline, MAX_BODY_BYTES } = require("./pipelines-api");
 const { isSignalablePid } = require("./process-ref");
@@ -764,6 +765,26 @@ function pipelinesApi(req, res, parts) {
       const v = pipelineValidation(text);
       json(res, 200, { errors: v.errors, graph: graphPreview(v.resolved) });
     });
+  }
+  if (parts.length === 3 && parts[2] === "model") {
+    if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+    return withText((text) => json(res, 200, textToModel(text)));
+  }
+  if (parts.length === 3 && parts[2] === "text") {
+    if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+    return readBody(req, res, (err, body) => {
+      const bad = body.baseText === undefined ? null : textError(body.baseText);
+      if (bad) return json(res, bad.status, { error: bad.message });
+      try {
+        json(res, 200, { text: modelToText(body.model, body.baseText) });
+      } catch (e) {
+        json(res, 400, { error: e.message });
+      }
+    }, MAX_BODY_BYTES);
+  }
+  if (parts.length === 3 && parts[2] === "palette") {
+    if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });
+    return json(res, 200, paletteFromCatalog(CATALOG));
   }
   if (parts.length === 4 && (parts[2] === "node-types" || parts[2] === "interactions")) {
     if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });
