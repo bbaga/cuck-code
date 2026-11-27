@@ -119,6 +119,15 @@
   .cvSvg .pgNode.start.sel rect { stroke: var(--warn); }
   .cvSvg .cvAnchor { fill: var(--deep); stroke: var(--muted); stroke-width: 1.5; cursor: crosshair; transition: r .1s; }
   .cvSvg .cvAnchor:hover, .cvSvg .cvAnchor:focus-visible { r: 9; stroke: var(--warn); }
+  .cvSvg .cvAnchor.drop { fill: var(--accent); r: 9; }
+  .cvSvg .cvTemp { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 4; pointer-events: none; }
+  .cvSvg .pgNode.target rect { stroke: var(--accent); stroke-width: 3; stroke-dasharray: 5 3; }
+  .cvDialog { background: var(--panel); color: inherit; border: 1px solid var(--muted); border-radius: 8px; max-width: min(480px, 92vw); }
+  .cvDialog::backdrop { background: rgba(0, 0, 0, .55); }
+  .cvChoices { display: grid; gap: 6px; margin: 10px 0; }
+  .cvChoice { display: grid; grid-template-columns: auto auto 1fr; gap: 6px; align-items: baseline; }
+  .cvDlgError { color: var(--warn); margin: 0; }
+  .cvDlgBar { display: flex; gap: 8px; justify-content: flex-end; }
   .cvSvg .cvHit { fill: none; stroke: transparent; stroke-width: 12px; pointer-events: stroke; cursor: pointer; }
   .cvSvg .cvArrow.sel .pgEdge { stroke: var(--warn); stroke-width: 3; }
   .cvSvg .cvArrow:hover .pgEdge { stroke-width: 3; }

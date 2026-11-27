@@ -159,3 +159,139 @@ test("visual editor: palette drop, text round trip, arrows, delete, save, broken
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("visual editor: connect nodes with arrows and choose the interaction type", async (t) => {
+  const fx = await dashboard.startDashboardFixture();
+  let page = null;
+  try {
+    try { page = await openPage(fx.url + "/pipelines", { initScript: ERRS }); }
+    catch (e) {
+      if (e.code === "BROWSER_UNAVAILABLE") return t.skip("Chrome is missing: " + e.message);
+      throw e;
+    }
+    const q = (sel) => JSON.stringify(sel);
+    const click = (sel) => page.evaluate(`document.querySelector(${q(sel)}).click()`);
+    const count = (sel) => page.evaluate(`document.querySelectorAll(${q(sel)}).length`);
+    const center = (sel) => page.evaluate(`(() => { const r = document.querySelector(${q(sel)}).getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    const editorText = async () => { await click("#tabText"); await page.waitFor("!document.getElementById('panelText').hidden");
+      const v = await page.evaluate("document.getElementById('editor').value"); await click("#tabVisual");
+      await page.waitFor("!document.getElementById('panelVisual').hidden && document.querySelectorAll('.cvNode').length > 0"); return v; };
+    const drag = async (from, to, drop = true) => {
+      const a = await center(from), b = await center(to);
+      await page.mouse("mouseMoved", a.x, a.y);
+      await page.mouse("mousePressed", a.x, a.y);
+      await page.mouse("mouseMoved", (a.x + b.x) / 2, (a.y + b.y) / 2);
+      await page.mouse("mouseMoved", b.x, b.y);
+      if (drop) await page.mouse("mouseReleased", b.x, b.y);
+    };
+    const choices = () => page.evaluate("[...document.querySelectorAll('.cvDialog input')].map((i) => i.value + (i.disabled ? ':disabled' : '') + (i.checked ? ':checked' : ''))");
+    const check = (name) => page.evaluate(`(() => { const i = document.querySelector('.cvDialog input[value=${name}]'); i.click(); })()`);
+    const dialogGone = () => page.waitFor("!document.querySelector('.cvDialog')");
+    await page.setViewport(1280, 1000);
+    await page.waitFor("!!document.querySelector('button[data-name=minimal]')");
+    await page.evaluate(`fetch('/api/pipelines/minimal/duplicate', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ newName: 'connect-copy' }) })`);
+    await page.evaluate("location.reload()");
+    await page.waitFor("!!document.querySelector('button[data-name=connect-copy]')");
+    await click("button[data-name=connect-copy]");
+    await page.waitFor("document.getElementById('editor') && /name: connect-copy/.test(document.getElementById('editor').value)");
+    await click("#tabVisual");
+    await page.waitFor("document.querySelectorAll('.cvNode').length === 4");
+    await page.evaluate(`(() => {
+      const dt = new DataTransfer();
+      document.querySelector('.cvPalItem[data-type=backend-implementor]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+      const box = document.querySelector('.cvBox').getBoundingClientRect();
+      document.querySelector('.cvBox').dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: box.left + 500, clientY: box.top + 250 }));
+    })()`);
+    await page.waitFor("!!document.querySelector('.cvNode[data-node=backend-implementor]')");
+    const impl = "backend-implementor";
+    const anchorOf = (node, side) => `.cvNode[data-node=${node}] circle[data-anchor=${side}]`;
+    assert.equal(await page.evaluate("document.querySelectorAll('.cvAnchor[tabindex]').length"), 0, "anchors are no tab stops");
+
+    // Planner -> new node: start, feedback, accept are valid; report is not.
+    await drag(anchorOf("planner", "right"), anchorOf(impl, "left"));
+    await page.waitFor("!!document.querySelector('.cvDialog[open] input')");
+    assert.equal(await page.evaluate("document.querySelector('.cvDialog h2').textContent"), "What type of interaction does this arrow represent?");
+    assert.deepEqual(await choices(), ["accept", "feedback", "start"]);
+    assert.equal(await page.evaluate("document.querySelector('.cvOk').disabled"), true);
+    await check("start");
+    assert.equal(await page.evaluate("document.querySelector('.cvOk').disabled"), false);
+    await click(".cvOk");
+    await dialogGone();
+    assert.match(await editorText(), new RegExp("planner -> " + impl + ": start"));
+    assert.equal(await count(".cvTemp"), 0, "the temporary arrow is gone");
+
+    // New node -> planner: report.
+    await drag(anchorOf(impl, "left"), anchorOf("planner", "right"));
+    await page.waitFor("!!document.querySelector('.cvDialog[open] input')");
+    assert.ok((await choices()).includes("report"));
+    await check("report");
+    await click(".cvOk");
+    await dialogGone();
+    await page.waitFor(`!!document.querySelector('[data-arrow="${impl}->planner:report"]')`);
+
+    // Cancel changes nothing.
+    const textBefore = await editorText();
+    await drag(anchorOf("planner", "right"), anchorOf(impl, "left"));
+    await page.waitFor("!!document.querySelector('.cvDialog[open]')");
+    await click(".cvCancel");
+    await dialogGone();
+    assert.equal(await editorText(), textBefore);
+    assert.equal(await count(".cvTemp"), 0);
+
+    // A drop in an empty place cancels, and the dashed arrow shows during the drag.
+    const a = await center(anchorOf("planner", "top"));
+    await page.mouse("mouseMoved", a.x, a.y);
+    await page.mouse("mousePressed", a.x, a.y);
+    await page.mouse("mouseMoved", a.x + 40, a.y - 5);
+    assert.equal(await count(".cvTemp"), 1);
+    await page.mouse("mouseReleased", a.x + 40, a.y - 5);
+    assert.equal(await count(".cvTemp"), 0);
+
+    // The same anchor pair again: start is already there; add feedback.
+    await drag(anchorOf("planner", "right"), anchorOf(impl, "left"));
+    await page.waitFor("!!document.querySelector('.cvDialog[open] input')");
+    assert.ok((await choices()).includes("start:disabled:checked"), JSON.stringify(await choices()));
+    assert.match(await page.evaluate("document.querySelector('.cvDialog').textContent"), /already on this arrow/);
+    await check("feedback");
+    await click(".cvOk");
+    await dialogGone();
+    await page.waitFor(`!!document.querySelector('[data-arrow="planner->${impl}:feedback"]')`);
+    for (const key of [`planner->${impl}:start`, `planner->${impl}:feedback`, `${impl}->planner:report`]) {
+      await page.evaluate(`document.querySelector('[data-arrow="${key}"]').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+      assert.equal(await page.evaluate(`[...document.querySelectorAll('.cvArrow.sel')].map((g) => g.dataset.arrow).join()`), key);
+    }
+    assert.match(await editorText(), new RegExp("planner -> " + impl + ": start, feedback"));
+
+    // Delete only feedback.
+    await page.evaluate(`document.querySelector('[data-arrow="planner->${impl}:feedback"]').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+    await page.press("Delete");
+    await page.waitFor(`!document.querySelector('[data-arrow="planner->${impl}:feedback"]') && !!document.querySelector('[data-arrow="planner->${impl}:start"]')`);
+
+    // Double-click start, uncheck it: the edge is gone.
+    await page.evaluate(`document.querySelector('[data-arrow="planner->${impl}:start"]').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+    await page.waitFor("!!document.querySelector('.cvDialog[open] input')");
+    assert.ok((await choices()).includes("start:checked"));
+    await check("start");
+    await click(".cvOk");
+    await dialogGone();
+    await page.waitFor(`!document.querySelector('[data-from=planner][data-to=${impl}]')`);
+    assert.doesNotMatch(await editorText(), new RegExp("planner -> " + impl));
+
+    // The keyboard path: select a node, "c", arrow keys, Enter.
+    await page.evaluate(`document.querySelector('.cvNode[data-node=planner] rect').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))`);
+    await page.press("c");
+    assert.equal(await count(".cvNode.target"), 1);
+    await page.press("ArrowRight");
+    await page.press("Enter");
+    await page.waitFor("!!document.querySelector('.cvDialog[open] input')");
+    await page.press("Escape");
+    await dialogGone();
+    assert.deepEqual(await page.evaluate("window.__errs"), []);
+  } finally {
+    if (page) await page.close();
+    await checks.removeManaged(fx.url, ["connect-copy"]);
+    await fx.close();
+  }
+});

@@ -141,6 +141,37 @@
     return withModel(model, { edges });
   }
 
+  const sameEdge = (from, to) => (e) => e.from === from && e.to === to;
+
+  // Adds names to the edge from -> to. The edge is made when it is missing; a name is never added twice.
+  function addInteractions(model, from, to, names) {
+    const edge = model.edges.find(sameEdge(from, to));
+    const old = edge ? edge.interactions : [];
+    const added = [...new Set(names)].filter((n) => !old.includes(n));
+    if (!edge) return withModel(model, { edges: [...model.edges, { from, to, interactions: added }] });
+    return withModel(model, { edges: model.edges.map((e) => (e === edge ? { ...e, interactions: [...old, ...added] } : e)) });
+  }
+
+  // Sets the interactions of the edge from -> to. An empty list removes the edge.
+  function setInteractions(model, from, to, names) {
+    const wanted = [...new Set(names)];
+    if (!wanted.length) return withModel(model, { edges: model.edges.filter((e) => !sameEdge(from, to)(e)) });
+    const edge = model.edges.find(sameEdge(from, to));
+    if (!edge) return addInteractions(model, from, to, wanted);
+    const kept = edge.interactions.filter((n) => wanted.includes(n));
+    return withModel(model, { edges: model.edges.map((e) => (e === edge ? { ...e, interactions: [...kept, ...wanted.filter((n) => !kept.includes(n))] } : e)) });
+  }
+
+  // Stores the anchors of the arrows that are new on from -> to. Old arrows keep their anchors.
+  function rememberAnchors(layout, from, to, names, pair) {
+    const arrows = { ...layout.arrows };
+    for (const name of names) {
+      const key = arrowKey(from, to, name);
+      if (!arrows[key]) arrows[key] = { fromAnchor: pair.fromAnchor, toAnchor: pair.toAnchor };
+    }
+    return { ...layout, arrows };
+  }
+
   // The stored layout without the entries of nodes and arrows that are not in the model.
   function pruneLayout(layout, model) {
     const ids = new Set(model.nodes.map((n) => n.id));
@@ -165,7 +196,7 @@
   }
 
   const api = { NODE_SIZE, LAYOUT_KEY, NODE_TYPE_MIME, arrowKey, nextNodeId, anchorPoints, nearestAnchorPair, paletteGroups,
-    arrowsOf, anchorOffsets, offsetPoint, arrowCurve, nextFreePosition, addNode, removeNode, removeArrow, pruneLayout, layoutInput };
+    arrowsOf, anchorOffsets, offsetPoint, arrowCurve, nextFreePosition, addNode, removeNode, removeArrow, addInteractions, setInteractions, rememberAnchors, pruneLayout, layoutInput };
   if (!win || typeof document === "undefined") return api;
 
   // ---- DOM (browser only) ----
@@ -290,16 +321,16 @@
     if (start) g.append(make("svg:text", { x: box.x + 10, y: box.y + 55, class: "pgNodeCfg" }, "▶ start"));
     const points = anchorPoints(box);
     for (const anchor of ANCHORS) {
-      g.append(make("svg:circle", { class: "cvAnchor", "data-anchor": anchor, cx: points[anchor].x, cy: points[anchor].y, r: 6,
-        tabindex: "0", role: "button", "aria-label": "Anchor " + anchor + " of " + node.id }));
+      g.append(make("svg:circle", { class: "cvAnchor", "data-anchor": anchor, cx: points[anchor].x, cy: points[anchor].y, r: 6 }));
     }
     g.addEventListener("pointerdown", (ev) => {
-      if (ev.target.closest("[data-anchor]")) return; // an anchor never moves the node
+      const anchor = ev.target.closest("[data-anchor]");
+      if (anchor) { startConnection(ev, node.id, anchor.dataset.anchor); return; } // an anchor never moves the node
       select({ kind: "node", id: node.id });
       g.focus({ preventScroll: true });
       startDrag(ev, node.id);
     });
-    g.addEventListener("click", () => select({ kind: "node", id: node.id }));
+    g.addEventListener("click", (ev) => { if (!ev.target.closest("[data-anchor]")) select({ kind: "node", id: node.id }); });
     return g;
   }
 
@@ -318,6 +349,7 @@
       select({ kind: "arrow", from: a.from, to: a.to, interaction: a.interaction });
       g.focus({ preventScroll: true });
     });
+    g.addEventListener("dblclick", () => openInteractionDialog(a.from, a.to));
     return g;
   }
 
@@ -350,8 +382,177 @@
     }
   }
 
+  // ---- Connections: a drag from an anchor, or the "c" key ----
+  const svgPoint = (ev) => { const r = inst.svg.getBoundingClientRect(); return { x: ev.clientX - r.left, y: ev.clientY - r.top }; };
+
+  function removeTemp() {
+    if (inst.temp) inst.temp.remove();
+    inst.temp = null;
+  }
+
+  function markTarget(id) {
+    for (const g of inst.svg.querySelectorAll("[data-node]")) g.classList.toggle("target", g.dataset.node === id);
+    for (const c of inst.svg.querySelectorAll(".cvAnchor.drop")) c.classList.remove("drop");
+  }
+
+  // The anchor of another node under the pointer, or null.
+  function anchorUnder(ev, fromId) {
+    const el = document.elementFromPoint(ev.clientX, ev.clientY);
+    const anchor = el && el.closest && el.closest("[data-anchor]");
+    const node = anchor && anchor.closest("[data-node]");
+    return node && node.dataset.node !== fromId ? { anchor, node: node.dataset.node } : null;
+  }
+
+  function startConnection(ev, fromId, fromAnchor) {
+    if (inst.readOnly || ev.button !== 0) return;
+    ev.preventDefault();
+    removeTemp();
+    const start = anchorPoints(nodeBoxes()[fromId])[fromAnchor];
+    const temp = make("svg:path", { class: "cvTemp", d: "M" + start.x + " " + start.y });
+    inst.svg.append(temp);
+    inst.temp = temp;
+    const finish = (e, drop) => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onCancel);
+      document.removeEventListener("keydown", onKey);
+      const hit = drop && anchorUnder(e, fromId);
+      markTarget(null);
+      if (!hit) { removeTemp(); return; }
+      const end = anchorPoints(nodeBoxes()[hit.node])[hit.anchor.dataset.anchor];
+      temp.setAttribute("d", "M" + start.x + " " + start.y + " L" + end.x + " " + end.y);
+      openInteractionDialog(fromId, hit.node, { fromAnchor, toAnchor: hit.anchor.dataset.anchor });
+    };
+    const onMove = (e) => {
+      const p = svgPoint(e);
+      temp.setAttribute("d", "M" + start.x + " " + start.y + " L" + p.x + " " + p.y);
+      markTarget(null);
+      const hit = anchorUnder(e, fromId);
+      if (hit) hit.anchor.classList.add("drop");
+    };
+    const onUp = (e) => finish(e, true);
+    const onCancel = (e) => finish(e, false);
+    const onKey = (e) => { if (e.key === "Escape") finish(e, false); };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onCancel);
+    document.addEventListener("keydown", onKey);
+  }
+
+  // The keyboard path: "c" on a selected node, arrow keys choose the target, Enter opens the dialog.
+  function startKeyConnection(fromId) {
+    const targets = inst.model.nodes.map((n) => n.id).filter((id) => id !== fromId);
+    inst.connect = { from: fromId, targets, index: 0 };
+    markTarget(targets[0]);
+    inst.canvasHost.setAttribute("aria-live", "polite");
+  }
+
+  function endKeyConnection() {
+    inst.connect = null;
+    markTarget(null);
+  }
+
+  function connectKey(ev) {
+    const c = inst.connect;
+    const dir = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[ev.key];
+    if (dir) {
+      ev.preventDefault();
+      c.index = (c.index + dir + c.targets.length) % c.targets.length;
+      markTarget(c.targets[c.index]);
+    } else if (ev.key === "Enter") {
+      ev.preventDefault();
+      const boxes = nodeBoxes();
+      const to = c.targets[c.index];
+      endKeyConnection();
+      openInteractionDialog(c.from, to, nearestAnchorPair(boxes[c.from], boxes[to]));
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      endKeyConnection();
+    } else return false;
+    return true;
+  }
+
+  // ---- The interaction dialog ----
+  async function post(url, body) {
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((data && (data.error || (data.errors && data.errors.map((e) => e.message).join("; ")))) || "The request failed (" + res.status + ").");
+    return data;
+  }
+
+  // pair is given for a new connection (the anchors of the drag). Without pair the dialog edits the pair from -> to.
+  async function openInteractionDialog(from, to, pair) {
+    if (!inst || inst.readOnly) return;
+    const edit = !pair;
+    const dialog = make("dialog", { class: "cvDialog", "aria-labelledby": "cvDlgTitle" });
+    const form = make("form", { method: "dialog" });
+    const list = make("div", { class: "cvChoices" });
+    const error = make("p", { class: "cvDlgError", role: "alert" });
+    const ok = make("button", { type: "submit", class: "cvOk" }, "OK");
+    const cancel = make("button", { type: "button", class: "secondary cvCancel" }, "Cancel");
+    form.append(make("h2", { id: "cvDlgTitle" }, "What type of interaction does this arrow represent?"),
+      make("p", { class: "hint" }, from + " → " + to), list, error, make("div", { class: "cvDlgBar" }));
+    form.lastChild.append(ok, cancel);
+    dialog.append(form);
+    ok.disabled = true;
+    const close = () => { dialog.close(); dialog.remove(); removeTemp(); };
+    cancel.addEventListener("click", close);
+    dialog.addEventListener("cancel", (ev) => { ev.preventDefault(); close(); });
+    document.body.append(dialog);
+    dialog.showModal();
+    const boxes = () => [...list.querySelectorAll("input:not(:disabled)")];
+    const refresh = () => { ok.disabled = !edit && !boxes().some((b) => b.checked); };
+    list.addEventListener("change", refresh);
+    try {
+      const { text } = await post("/api/pipelines/text", { model: inst.model, baseText: "" });
+      const r = await post("/api/pipelines/edge-options", { text, from, to });
+      const item = (name, description, checked, disabled, note) => {
+        const input = make("input", { type: "checkbox", value: name });
+        input.checked = checked;
+        input.disabled = disabled;
+        const label = make("label", { class: "cvChoice" });
+        label.append(input, make("strong", {}, name), make("span", { class: "hint" }, note || description || ""));
+        return label;
+      };
+      for (const c of r.current) list.append(item(c, "", true, !edit, edit ? "" : "already on this arrow"));
+      for (const o of r.options) list.append(item(o.name, o.description, false, false));
+      if (!r.options.length && (!edit || !r.current.length)) {
+        list.prepend(make("p", {}, "No interaction is valid between " + from + " and " + to + "."));
+        ok.hidden = true;
+        cancel.textContent = "Close";
+      }
+      refresh();
+      (boxes()[0] || cancel).focus();
+      form.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        const names = boxes().filter((b) => b.checked).map((b) => b.value);
+        const added = names.filter((n) => !r.current.includes(n));
+        if (pair) inst.layout = rememberAnchors(inst.layout, from, to, added, pair);
+        const fn = edit ? (m) => setInteractions(m, from, to, names) : (m) => addInteractions(m, from, to, names);
+        dialog.close();
+        dialog.remove();
+        removeTemp();
+        applyChange(fn);
+      });
+    } catch (e) {
+      error.textContent = e.message;
+      cancel.focus();
+    }
+  }
+
   function onCanvasKey(ev) {
-    if (ev.target.dataset && ev.target.dataset.anchor) return; // T4 handles the keys of an anchor
+    if (inst.connect && connectKey(ev)) return;
+    const selected = inst.selection;
+    if (ev.key === "Enter" && selected && selected.kind === "arrow" && ev.target.closest("[data-arrow]")) {
+      ev.preventDefault();
+      openInteractionDialog(selected.from, selected.to);
+      return;
+    }
+    if (ev.key === "c" && selected && selected.kind === "node" && !inst.readOnly && inst.model.nodes.length > 1) {
+      ev.preventDefault();
+      startKeyConnection(selected.id);
+      return;
+    }
     if (ev.key === "Delete" || ev.key === "Backspace") { ev.preventDefault(); deleteSelection(); return; }
     const sel = inst.selection;
     const step = { ArrowLeft: [-10, 0], ArrowRight: [10, 0], ArrowUp: [0, -10], ArrowDown: [0, 10] }[ev.key];
@@ -398,7 +599,7 @@
     paletteHost.hidden = !!readOnly;
     if (!readOnly) renderPalette(paletteHost, palette);
     inst = { model: clone(model), name, palette, readOnly: !!readOnly, onModelChange: onModelChange || (() => {}),
-      layout: readLayout(name), selection: null, paletteHost, canvasHost, box, svg: null };
+      layout: readLayout(name), selection: null, connect: null, temp: null, paletteHost, canvasHost, box, svg: null };
     canvasHost.onkeydown = onCanvasKey;
     box.ondragover = (ev) => { if (!inst.readOnly) ev.preventDefault(); };
     box.ondrop = (ev) => {
@@ -414,5 +615,5 @@
   function unmount() { inst = null; }
 
   const onSelectionChange = (cb) => { listeners.push(cb); };
-  return Object.assign(api, { mount, unmount, onSelectionChange, applyChange });
+  return Object.assign(api, { mount, unmount, onSelectionChange, applyChange, openInteractionDialog });
 });

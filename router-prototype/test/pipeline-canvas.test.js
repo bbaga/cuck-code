@@ -122,3 +122,32 @@ test("addNode, pruneLayout and layoutInput", () => {
   assert.deepEqual(input.columns, { planner: 0, impl: 1, check: 2, extra: 0 });
   assert.equal(input.relations.length, 2);
 });
+
+test("addInteractions: adds the edge when missing, never a second edge, no name twice", () => {
+  const m = model();
+  const added = c.addInteractions(m, "check", "planner", ["report", "report"]);
+  assert.deepEqual(added.edges.at(-1), { from: "check", to: "planner", interactions: ["report"] });
+  const more = c.addInteractions(m, "planner", "impl", ["accept", "report"]);
+  assert.equal(more.edges.filter((e) => e.from === "planner" && e.to === "impl").length, 1);
+  assert.deepEqual(more.edges[0].interactions, ["start", "feedback", "accept", "report"]);
+  assert.deepEqual(m.edges[0].interactions, ["start", "feedback", "accept"], "the input is not changed");
+});
+
+test("setInteractions: sets the list; an empty list removes the edge", () => {
+  const m = model();
+  const set = c.setInteractions(m, "planner", "impl", ["accept", "report"]);
+  assert.deepEqual(set.edges[0].interactions, ["accept", "report"]);
+  assert.equal(c.setInteractions(m, "planner", "impl", []).edges.length, 1);
+  assert.deepEqual(c.setInteractions(m, "check", "impl", ["report"]).edges.at(-1).interactions, ["report"]);
+});
+
+test("rememberAnchors keeps the anchors of old arrows; pruneLayout removes those of a removed arrow", () => {
+  const model1 = model();
+  const layout = { nodes: {}, arrows: { "planner->impl:start": { fromAnchor: "top", toAnchor: "top" } } };
+  const pair = { fromAnchor: "left", toAnchor: "bottom" };
+  const next = c.rememberAnchors(layout, "planner", "impl", ["start", "feedback"], pair);
+  assert.deepEqual(next.arrows["planner->impl:start"], { fromAnchor: "top", toAnchor: "top" });
+  assert.deepEqual(next.arrows["planner->impl:feedback"], pair);
+  const pruned = c.pruneLayout(next, c.removeArrow(model1, "planner", "impl", "start"));
+  assert.deepEqual(Object.keys(pruned.arrows), ["planner->impl:feedback"], "start is gone, feedback stays");
+});
