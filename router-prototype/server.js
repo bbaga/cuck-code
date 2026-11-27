@@ -3388,7 +3388,7 @@ const routeRequest = (req, res) => {
 
   if (req.method === "GET" && (url.pathname === "/pipeline-ui.js" || url.pathname === "/registry-ui.js"
     || url.pathname === "/markdown-renderer.js" || url.pathname === "/registry-ui-extra.js"
-    || url.pathname === "/pipelines-page.js" || url.pathname === "/pipeline-canvas.js" || url.pathname === "/worker-scope.js"
+    || url.pathname === "/pipelines-page.js" || url.pathname === "/pipeline-canvas.js" || url.pathname === "/pipeline-inspector.js" || url.pathname === "/worker-scope.js"
     || url.pathname === "/registry-line.js")) {
     try {
       res.writeHead(200, { "Content-Type": "application/javascript" });

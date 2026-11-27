@@ -343,6 +343,7 @@
     const name = state.selected.name;
     win.pipelineCanvas.mount({ paletteHost: $("paletteHost"), canvasHost: $("canvasHost"), model: r.data.model, name: r.data.model.name || name,
       palette, readOnly: !toolbarState(selectedItem() || {}).editor, onModelChange: (model) => { syncChain = syncChain.then(() => syncText(name, model)); return syncChain; } });
+    win.pipelineInspector.show(r.data.model, !toolbarState(selectedItem() || {}).editor); // the panel of an empty selection
   }
 
   // A canvas change: the text writer gives the new text; Save and the error list then work as in the Text tab.

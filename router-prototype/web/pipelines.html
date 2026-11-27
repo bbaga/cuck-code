@@ -99,7 +99,7 @@
   .visualHost { display: flex; gap: 10px; align-items: flex-start; }
   .cvPalette { flex: 0 0 160px; min-width: 0; }
   .cvCanvas { flex: 1 1 0; min-width: 0; }
-  .cvInspector { flex: 0 0 220px; min-width: 0; }
+  .cvInspector { flex: 0 0 280px; min-width: 0; max-height: 70vh; overflow: auto; }
   .cvPalette h2 { margin-top: 0; }
   .cvPalette h3 { margin: 10px 0 4px; color: var(--muted); font-weight: 600; }
   .cvPalList { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
@@ -125,6 +125,24 @@
   .cvSvg .pgEdgeLabel { pointer-events: none; }
   .cvSvg g:focus { outline: none; }
   .cvSvg g:focus-visible > rect, .cvSvg .cvArrow:focus-visible .pgEdge { stroke: var(--warn); stroke-width: 3; }
+  .insPanel h2 { margin: 0 0 8px; }
+  .insPanel h3 { margin: 12px 0 6px; color: var(--muted); }
+  .insRow { display: grid; gap: 3px; margin: 8px 0; font-size: .8rem; }
+  .insRow label, .insSet legend { color: var(--muted); }
+  .insRow input:not([type=checkbox]), .insRow select, .insRow textarea { width: 100%; min-width: 0; padding: 5px; background: var(--deep); color: var(--text);
+    border: 1px solid var(--line2); border-radius: 4px; font: inherit; }
+  .insRow input:disabled, .insRow select:disabled, .insRow textarea:disabled { opacity: .6; }
+  .insRow input[type=checkbox] { justify-self: start; }
+  .insSet { margin: 8px 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; min-width: 0; font-size: .8rem; }
+  .insItem { margin: 6px 0; padding: 4px 8px; border: 1px solid var(--line2); border-radius: 6px; min-width: 0; }
+  .insCheck { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+  .insErr { margin: 0; color: var(--bad); font-size: .78rem; }
+  .insErr:empty { display: none; }
+  .insUnknown { margin: 0; padding-left: 18px; font-size: .78rem; overflow-wrap: anywhere; }
+  .insDl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: .8rem; }
+  .insDl dt { color: var(--muted); }
+  .insDl dd { margin: 0; overflow-wrap: anywhere; }
+  .insName { font-size: .85rem; overflow-wrap: anywhere; }
   @media (max-width: 800px) {
     .visualHost { flex-direction: column; align-items: stretch; }
     .cvPalette, .cvInspector { flex-basis: auto; }
@@ -152,6 +170,7 @@
 </div>
 <script src="/pipeline-ui.js"></script>
 <script src="/pipeline-canvas.js"></script>
+<script src="/pipeline-inspector.js"></script>
 <script src="/pipelines-page.js"></script>
 </body>
 </html>
