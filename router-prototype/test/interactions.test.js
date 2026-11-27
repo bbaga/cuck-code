@@ -147,8 +147,8 @@ test("when defaults to all seven outcomes and fallback to false", () => {
 });
 
 test("when and fallback are read from a complete-triggered interaction", () => {
-  const i = load(doc({ ...COMPLETE, extra: "when: [reject, missing]\nfallback: true\n" }));
-  assert.deepEqual(i.when, ["reject", "missing"]);
+  const i = load(doc({ ...COMPLETE, extra: "when: [reject]\nfallback: true\n" }));
+  assert.deepEqual(i.when, ["reject"]);
   assert.equal(i.fallback, true);
 });
 

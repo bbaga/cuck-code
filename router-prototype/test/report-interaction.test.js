@@ -11,6 +11,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { loadBuiltinPipeline } = require("../line-graph");
 const { renderReports, reportValues, completeInteractions, kindOfNode, outcomeOf } = require("../report-interaction");
+const { routeCompletion } = require("../choreography");
 const { runOutputNote } = require("../handoff");
 const { golden } = require("./fixtures/golden-file");
 const { plannerRequest, interactionReportRequest, serializePlannerRequest, restorePlannerRequest,
@@ -266,4 +267,16 @@ test("implement-only: the implementor report asks for accept or feedback, not a 
   assert.ok(!/validat/i.test(out[0].text));
   // the default pipeline keeps the validator sentences
   assert.match(newText(impl, "All done."), /Start a validator with the criteria/);
+});
+
+test("a validator with no verdict in the choreographed graph reports to the planner only", () => {
+  const g = loadBuiltinPipeline("choreographed", fs, ROOT);
+  const w = { ...val, node: "val", verdict: null };
+  assert.equal(outcomeOf(g, w), "missing");
+  const out = renderReports({ graph: g, worker: w, source: impl, report: "Polling CI..." });
+  // renderReports renders every interaction of the node; the "when" filter is in routeCompletion.
+  const kinds = routeCompletion({ graph: g, worker: w, outcome: "missing" }).actions.map((a) => a.kind);
+  assert.ok(!kinds.includes("rework"));
+  const starter = out.find((item) => item.target === "starter");
+  assert.ok(starter.text.includes("DIAGNOSTIC: no explicit final VERDICT"));
 });

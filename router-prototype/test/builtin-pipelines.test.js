@@ -45,9 +45,9 @@ test("the choreography interactions load with the contract values", () => {
   assert.equal(report.fallback, true);
   assert.deepEqual([handoff.effect, handoff.trigger, handoff.target, handoff.when, handoff.fallback],
     ["create", "complete", "new", ["done", "pass"], false]);
-  assert.deepEqual([rework.effect, rework.target, rework.when], ["deliver", "source", ["reject", "missing"]]);
+  assert.deepEqual([rework.effect, rework.target, rework.when], ["deliver", "source", ["reject"]]);
   assert.deepEqual([arrive.effect, arrive.target, arrive.when], ["arrive", "waiter", ["done", "pass"]]);
-  assert.match(rework.body, /^REWORK REQUEST - checker '\{\{from\.name\}\}' \(node \{\{from\.node\}\}\) rejected your latest run\./);
+  assert.match(rework.body, /^REWORK REQUEST - checker '\{\{from\.name\}\}' \(node \{\{from\.node\}\}\) gave VERDICT: FAIL on your latest run\./);
   assert.equal(handoff.body.trim(), "");
   assert.equal(arrive.body.trim(), "");
   assert.equal(r.types.wait.runner, "wait");
