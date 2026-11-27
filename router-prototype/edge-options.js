@@ -7,7 +7,7 @@
 //   edgeOptions({ pipeline, types, interactions, from, to }) -> { error } | { current, options, excluded }
 //   catalogInputs(catalog) -> { types, interactions }  (every item of the catalog)
 
-const { checkPipeline } = require("./pipeline-rules");
+const { checkPipeline, buildContext } = require("./pipeline-rules");
 const { loadAll, resolveOne } = require("./pipeline-model");
 const { loadNodeType } = require("./node-types");
 const { loadInteraction } = require("./interactions");
@@ -33,6 +33,17 @@ function catalogInputs(catalog) {
   const interactions = loadAll(catalog, "interactions", "INTERACTION.md", (r, entry) =>
     loadInteraction(r.dir, r.readFile, { builtIn: entry.builtIn === true || entry.layer === "built-in" }));
   return { types, interactions };
+}
+
+// Rules do not see this: a complete interaction with target "starter" delivers to the
+// node that started the sender. The start node has no starter, and a node that is
+// started only by other nodes cannot report to a third node. No start edge yet: no reason.
+function contextReason(copy, types, interactions, interaction, from, to) {
+  if (interaction.trigger !== "complete" || interaction.target !== "starter") return null;
+  if (copy.start === from) return `node '${from}' is the start node and has no starter`;
+  const starters = buildContext(copy, types, interactions).requestStarters(from);
+  if (starters.length > 0 && !starters.includes(to)) return `node '${to}' does not start node '${from}'`;
+  return null;
 }
 
 function edgeOptions({ pipeline, types, interactions, from, to }) {
@@ -62,11 +73,14 @@ function edgeOptions({ pipeline, types, interactions, from, to }) {
     copy.edges = edges;
     const fresh = checkPipeline(copy, types, interactions)
       .filter((e) => !IGNORED_RULES.includes(e.rule) && !baseline.has(errorKey(e)));
-    if (fresh.length === 0) {
+    const reasons = fresh.map((e) => e.message);
+    const context = contextReason(copy, types, interactions, interactions[name], from, to);
+    if (context) reasons.push(context);
+    if (reasons.length === 0) {
       const { description, effect, trigger, target } = interactions[name];
       options.push({ name, description, effect, trigger, target });
     } else {
-      excluded.push({ name, reasons: fresh.map((e) => e.message) });
+      excluded.push({ name, reasons });
     }
   }
   return { current, options: options.sort(byName), excluded: excluded.sort(byName) };

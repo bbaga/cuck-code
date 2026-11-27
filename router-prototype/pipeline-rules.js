@@ -493,4 +493,4 @@ function checkPipeline(pipeline, types, interactions) {
   return RULES.flatMap((rule) => rule(c));
 }
 
-module.exports = { checkPipeline };
+module.exports = { checkPipeline, buildContext };

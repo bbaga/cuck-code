@@ -37,9 +37,24 @@ const names = (list) => list.map((i) => i.name);
 test("planner -> impl offers start, feedback and accept", () => {
   const out = ask(parse(TWO_NODES), "planner", "impl");
   for (const n of ["start", "feedback", "accept"]) assert.ok(names(out.options).includes(n), n);
-  for (const n of ["handoff", "rework", "arrive"]) assert.ok(!names(out.options).includes(n), n);
-  // No rule forbids a report edge to a node that is not a planner, so report is offered.
-  assert.ok(names(out.options).includes("report"));
+  for (const n of ["report", "handoff", "rework", "arrive"]) assert.ok(!names(out.options).includes(n), n);
+  // No rule catches this: the start node has no starter, so edge-options checks it.
+  const report = out.excluded.find((i) => i.name === "report");
+  assert.ok(report.reasons.includes("node 'planner' is the start node and has no starter"));
+});
+
+test("report follows the starter of the sender", () => {
+  assert.ok(names(ask(parse(TWO_NODES), "impl", "planner").options).includes("report"));
+  const minimal = fromFile("minimal");
+  const edge = minimal.edges.find((e) => e.interactions.includes("start"));
+  const back = ask(minimal, edge.to, edge.from);
+  assert.ok(back.current.includes("report") || names(back.options).includes("report"));
+  const text = TWO_NODES.replace("edges: []", "edges:\n  - planner -> impl: start");
+  const three = parse(text.replace("impl: { type: backend-implementor }",
+    "impl: { type: backend-implementor }\n  other: { type: backend-implementor }"));
+  const out = ask(three, "impl", "other");
+  assert.ok(!names(out.options).includes("report"));
+  assert.ok(out.excluded.find((i) => i.name === "report").reasons.includes("node 'other' does not start node 'impl'"));
 });
 
 test("impl -> planner offers report and not start (R5)", () => {
