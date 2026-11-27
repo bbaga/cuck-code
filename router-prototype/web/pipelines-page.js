@@ -78,8 +78,11 @@
   const SVGNS = "http://www.w3.org/2000/svg";
   const $ = (id) => document.getElementById(id);
   const pipelineUI = win.pipelineUI;
+  const MODE_KEY = "duck.pipelinesEditorMode";
   const state = { listing: null, selected: null, text: "", savedText: "", errors: null,
-    validating: false, saving: false, seq: 0, confirmDelete: false };
+    validating: false, saving: false, seq: 0, confirmDelete: false, mode: "text", modeSeq: 0 };
+  let palettePromise = null; // GET /api/pipelines/palette, one time per page load
+  let syncChain = Promise.resolve(); // canvas changes reach the text one after the other
   const debouncer = createDebouncer(win, VALIDATE_DELAY_MS);
 
   function h(tag, attrs, ...kids) {
@@ -191,6 +194,8 @@
     state.selected = { kind, name };
     state.confirmDelete = false;
     state.errors = null; state.validating = false; state.saving = false;
+    state.mode = "text"; state.modeSeq++;
+    win.pipelineCanvas.unmount();
     renderList();
     say("");
     const r = await call("GET", itemUrl({ kind, name }));
@@ -201,6 +206,7 @@
     renderDetail(item);
     if (toolbarState(item).editor) runValidation();
     else if (kind === "pipeline" && r.data.resolved) await drawReadOnlyGraph(name, r.data.resolved);
+    if (kind === "pipeline" && localStorage.getItem(MODE_KEY) === "visual") await setMode("visual");
   }
 
   // The graph of a read-only pipeline. The validate answer holds the relations, columns and
@@ -241,6 +247,9 @@
       actions.append(saveBtn, del, h("span", { id: "delHost" }), h("span", { id: "saveWhy", class: "why", "aria-live": "polite" }));
     }
     d.append(actions, nameHost);
+    const textPanel = h("div", { id: "panelText", role: "tabpanel", "aria-labelledby": "tabText" });
+    if (item.kind === "pipeline") d.append(tabList(), textPanel, visualPanel(!bar.editor));
+    else d.append(textPanel);
     if (bar.editor) {
       const ta = h("textarea", { id: "editor", class: "editor", spellcheck: "false", rows: "16", "aria-label": "Pipeline YAML text",
         autocapitalize: "off", autocomplete: "off", wrap: "off" });
@@ -250,15 +259,105 @@
         updateSave(); say("");
         debouncer.call(runValidation);
       });
-      d.append(ta, h("ul", { id: "errors", class: "errors", role: "alert" }));
+      textPanel.append(ta);
+      d.append(h("ul", { id: "errors", class: "errors", role: "alert" }));
       updateSave();
     } else {
-      d.append(h("pre", { id: "source", class: "source", tabindex: "0", "aria-label": "Source text of " + item.name + " (read-only)", text: state.text }));
+      textPanel.append(h("pre", { id: "source", class: "source", tabindex: "0", "aria-label": "Source text of " + item.name + " (read-only)", text: state.text }));
     }
     if (item.kind === "pipeline") {
-      d.append(h("h3", { text: "Graph" }), h("div", { id: "graphZoom" }), h("div", { id: "graphBox", class: "graphBox" }),
+      textPanel.append(h("h3", { text: "Graph" }), h("div", { id: "graphZoom" }), h("div", { id: "graphBox", class: "graphBox" }),
         h("div", { class: "edgesText" }, h("ul", { id: "edgesList" })));
     }
+  }
+
+  // ---- Text / Visual tabs ----
+  const TABS = [["text", "Text"], ["visual", "Visual"]];
+
+  function tabList() {
+    const list = h("div", { class: "tabs", role: "tablist", "aria-label": "Editor mode" });
+    for (const [mode, label] of TABS) {
+      const tab = h("button", { type: "button", id: "tab" + label, class: "tab", role: "tab", "data-mode": mode,
+        "aria-controls": "panel" + label, "aria-selected": mode === "text" ? "true" : "false", tabindex: mode === "text" ? "0" : "-1", text: label });
+      tab.addEventListener("click", () => setMode(mode));
+      list.append(tab);
+    }
+    list.addEventListener("keydown", (ev) => {
+      const step = ev.key === "ArrowRight" ? 1 : ev.key === "ArrowLeft" ? -1 : 0;
+      if (!step) return;
+      ev.preventDefault();
+      const next = TABS[(TABS.findIndex(([m]) => m === state.mode) + step + TABS.length) % TABS.length][0];
+      $("tab" + (next === "text" ? "Text" : "Visual")).focus();
+      setMode(next);
+    });
+    return list;
+  }
+
+  function visualPanel(readOnly) {
+    return h("div", { id: "panelVisual", role: "tabpanel", "aria-labelledby": "tabVisual", hidden: "" },
+      h("div", { id: "visualHost", class: "visualHost" + (readOnly ? " readonly" : "") },
+        h("aside", { id: "paletteHost", class: "cvPalette", "aria-label": "Node palette" }),
+        h("div", { id: "canvasHost", class: "cvCanvas" }),
+        h("aside", { id: "inspectorHost", class: "cvInspector", "aria-label": "Inspector" })));
+  }
+
+  function showMode(mode) {
+    state.mode = mode;
+    for (const [m, label] of TABS) {
+      const tab = $("tab" + label);
+      tab.setAttribute("aria-selected", String(m === mode));
+      tab.tabIndex = m === mode ? 0 : -1;
+      $("panel" + label).hidden = m !== mode;
+    }
+  }
+
+  function loadPalette() {
+    if (!palettePromise) {
+      palettePromise = call("GET", "/api/pipelines/palette").then((r) => (r.ok ? r.data : null));
+      palettePromise.then((p) => { if (!p) palettePromise = null; });
+    }
+    return palettePromise;
+  }
+
+  async function setMode(mode) {
+    if (!$("tabVisual") || mode === state.mode) return;
+    const token = ++state.modeSeq;
+    if (mode === "text") {
+      showMode("text");
+      const ta = $("editor");
+      if (ta && ta.value !== state.text) ta.value = state.text; // the canvas already updated state.text
+      localStorage.setItem(MODE_KEY, "text");
+      return;
+    }
+    const [r, palette] = await Promise.all([call("POST", "/api/pipelines/model", { text: state.text }), loadPalette()]);
+    if (token !== state.modeSeq || !state.selected) return;
+    if (!r.ok || !r.data || !r.data.model) {
+      state.errors = (r.data && r.data.errors) || [{ rule: "HTTP", message: "the model call failed (" + r.status + ")" }];
+      showErrors(); updateSave();
+      say("Fix the YAML first: the Visual tab needs valid YAML. " + errorLines(state.errors)[0], true);
+      return;
+    }
+    say("");
+    showMode("visual");
+    localStorage.setItem(MODE_KEY, "visual");
+    const name = state.selected.name;
+    win.pipelineCanvas.mount({ paletteHost: $("paletteHost"), canvasHost: $("canvasHost"), model: r.data.model, name: r.data.model.name || name,
+      palette, readOnly: !toolbarState(selectedItem() || {}).editor, onModelChange: (model) => { syncChain = syncChain.then(() => syncText(name, model)); return syncChain; } });
+  }
+
+  // A canvas change: the text writer gives the new text; Save and the error list then work as in the Text tab.
+  async function syncText(name, model) {
+    state.errors = null; state.validating = true; // Save waits until the new text is checked
+    updateSave();
+    const r = await call("POST", "/api/pipelines/text", { model, baseText: state.text });
+    if (!state.selected || state.selected.name !== name) return;
+    if (!r.ok || !r.data || typeof r.data.text !== "string") {
+      state.validating = false; updateSave();
+      say("Could not write the text (" + r.status + ").", true);
+      return;
+    }
+    state.text = r.data.text;
+    debouncer.call(runValidation);
   }
 
   function renderDelete() {
@@ -326,6 +425,7 @@
     if (!r.ok) { say((r.data && r.data.error) || "Delete failed (" + r.status + ").", true); return; }
     debouncer.cancel();
     state.seq++;
+    win.pipelineCanvas.unmount();
     state.selected = null; state.confirmDelete = false;
     $("detail").textContent = "";
     $("detail").append(h("p", { class: "hint", text: "Select an item on the left." }));
